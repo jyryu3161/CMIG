@@ -12,11 +12,14 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSlider,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -188,6 +191,21 @@ class SearchView(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         self.title = QLabel("Consortium Search")
+        controls = QHBoxLayout()
+        self.targets_input = QLineEdit("ac,but")
+        self.strategy_combo = QComboBox()
+        self.strategy_combo.addItems(["auto", "exhaustive", "ga"])
+        self.top_k_spin = QSpinBox()
+        self.top_k_spin.setRange(1, 100)
+        self.top_k_spin.setValue(3)
+        self.run_btn = QPushButton("Run Search")
+        controls.addWidget(QLabel("Targets"))
+        controls.addWidget(self.targets_input)
+        controls.addWidget(QLabel("Strategy"))
+        controls.addWidget(self.strategy_combo)
+        controls.addWidget(QLabel("Top K"))
+        controls.addWidget(self.top_k_spin)
+        controls.addWidget(self.run_btn)
         self.status = QLabel("")
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
@@ -196,6 +214,7 @@ class SearchView(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.pareto_label = QLabel("")
         layout.addWidget(self.title)
+        layout.addLayout(controls)
         layout.addWidget(self.status)
         layout.addWidget(self.table)
         layout.addWidget(self.pareto_label)

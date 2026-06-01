@@ -12,6 +12,8 @@ JobRunner.poll 로 실 job 상태를 표시.
 
 from __future__ import annotations
 
+import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -134,6 +136,10 @@ class CmigMainWindow(QMainWindow):
         self.jobs_panel = RuntimeJobsPanel(self.tr_map)
         self.bridge = JobsBridge(self.runner, self.jobs_panel)
         self._fixture_jobs: dict[str, Path] = {}
+        self._search_jobs: set[str] = set()
+        self.current_manifest: dict[str, Any] | None = None
+        self.current_graph_payload: dict[str, Any] | None = None
+        self.current_model_review: dict[str, Any] | None = None
 
         center = QWidget()
         layout = QVBoxLayout(center)
@@ -169,15 +175,36 @@ class CmigMainWindow(QMainWindow):
         self.setCentralWidget(splitter)
         self.statusBar().showMessage(self.tr_map["ready"])
         self._install_workflow_actions()
+        self._connect_view_actions()
+        self._completion_timer = QTimer(self)
+        self._completion_timer.setInterval(500)
+        self._completion_timer.timeout.connect(self._poll_completed_jobs)
+        self._completion_timer.start()
+        self.bridge.start()
 
     def _install_workflow_actions(self) -> None:
         toolbar = self.addToolBar("Workflow")
+        self.import_model_action = QAction("Import Model", self)
+        self.import_model_action.triggered.connect(self._import_model_dialog)
         self.open_run_action = QAction("Open Run", self)
         self.open_run_action.triggered.connect(self._open_run_dialog)
         self.run_fixture_action = QAction("Run Fixture", self)
         self.run_fixture_action.triggered.connect(self._run_fixture_dialog)
+        toolbar.addAction(self.import_model_action)
         toolbar.addAction(self.open_run_action)
         toolbar.addAction(self.run_fixture_action)
+
+    def _connect_view_actions(self) -> None:
+        self.sandbox_view.preview_btn.clicked.connect(self._run_sandbox_preview)
+        self.sandbox_view.commit_btn.clicked.connect(self._run_sandbox_commit)
+        self.search_view.run_btn.clicked.connect(self.run_search_fixture)
+
+    def _import_model_dialog(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import GEM Model", "", "Models (*.xml *.sbml *.xml.gz *.sbml.gz *.json *.mat)"
+        )
+        if path:
+            self.import_model_file(path)
 
     def _open_run_dialog(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Open CMIG Run")
@@ -188,6 +215,42 @@ class CmigMainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
         if path:
             self.run_fixture(path)
+
+    def _run_sandbox_preview(self) -> None:
+        self._run_sandbox(commit=False)
+
+    def _run_sandbox_commit(self) -> None:
+        self._run_sandbox(commit=True)
+
+    def _run_sandbox(self, *, commit: bool) -> None:
+        constraints = self.sandbox_view.constraints()
+        if not constraints:
+            self.sandbox_view.status.setText("bound constraint 를 먼저 추가하세요.")
+            return
+        out_dir = None
+        if commit:
+            selected = QFileDialog.getExistingDirectory(self, "Select Commit Output Directory")
+            if not selected:
+                return
+            out_dir = selected
+        c = constraints[0]
+        try:
+            from cmig.service import EngineService
+
+            result = EngineService().sandbox_fixture(
+                reaction_id=c.reaction_id,
+                lower=c.lower,
+                upper=c.upper,
+                commit=commit,
+                out_dir=out_dir,
+            )
+        except Exception as e:
+            self.sandbox_view.status.setText(f"sandbox 실패: {e}")
+            return
+        if commit and result.run_hash:
+            self.sandbox_view.show_commit(result.delta, result.run_hash)
+        else:
+            self.sandbox_view.show_preview(result.delta)
 
     def set_central(self, widget: QWidget) -> None:
         """중앙 위젯 교체(예: Interaction Graph Viewer 도킹)."""
@@ -200,16 +263,54 @@ class CmigMainWindow(QMainWindow):
         self.bridge.track(jid)
         return jid
 
+    def import_model_file(self, path: str | Path) -> bool:
+        """모델 파일 import + namespace review 를 Model 탭과 Explorer 에 반영."""
+        from cmig.io.model_import import build_import_review, import_model
+
+        try:
+            summary = import_model(path)
+            review = build_import_review(summary)
+        except Exception as e:
+            self.statusBar().showMessage(f"Model import failed: {e}")
+            return False
+        self.model_manager.load_summary(summary)
+        self.explorer.add_model(summary.model_id)
+        self.current_model_review = {
+            "model": review.model,
+            "inferred_origin": review.inferred_origin,
+            "namespace": review.namespace,
+            "warnings": review.warnings,
+            "next_actions": review.next_actions,
+        }
+        self.tabs.setCurrentWidget(self.model_manager)
+        ns = review.namespace
+        self.statusBar().showMessage(
+            f"Imported {summary.model_id}; namespace coverage {ns['coverage_pct']:.0f}%"
+        )
+        return True
+
     def load_run_dir(self, path: str | Path) -> None:
         """nodes/edges/profile parquet run 디렉터리를 열어 Profile 탭과 Explorer 에 반영."""
         from cmig.core.tidy import TidyBundle
+        from cmig.gui.graph_data import graph_payload
 
         run_dir = Path(path)
-        bundle = TidyBundle.read(run_dir)
+        try:
+            bundle = TidyBundle.read(run_dir)
+        except Exception as e:
+            self.statusBar().showMessage(f"Run load failed: {e}")
+            return
+        manifest_path = run_dir / "manifest.json"
+        self.current_manifest = (
+            json.loads(manifest_path.read_text()) if manifest_path.exists() else None
+        )
+        self.current_graph_payload = graph_payload(bundle)
         self.profile_view.load_profile(bundle.profile.to_pylist())
         self.explorer.add_run(run_dir.name)
         self.tabs.setCurrentWidget(self.profile_view)
-        self.statusBar().showMessage(f"Loaded run: {run_dir}")
+        run_hash = None if self.current_manifest is None else self.current_manifest.get("run_hash")
+        suffix = "" if run_hash is None else f" (run_hash {str(run_hash)[:12]})"
+        self.statusBar().showMessage(f"Loaded run: {run_dir}{suffix}")
 
     def run_fixture(self, out_dir: str | Path, *, solver: str = "gurobi") -> str:
         """GUI 버튼용 fixture solve. JobRunner 로 제출해 Qt main thread 를 막지 않는다."""
@@ -241,6 +342,58 @@ class CmigMainWindow(QMainWindow):
             return True
         self.statusBar().showMessage(f"Fixture failed: {outcome.diagnostic}")
         return False
+
+    def run_search_fixture(self) -> str:
+        """Search 탭 입력값으로 fixture advanced search 를 background job 으로 실행."""
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        targets = self.search_view.targets_input.text().strip() or "ac"
+        strategy = self.search_view.strategy_combo.currentText()
+        top_k = str(self.search_view.top_k_spin.value())
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            out_dir = Path(tempfile.mkdtemp(prefix="cmig-search-"))
+            rc = main([
+                "search-advanced-fixture",
+                "--metabolites", targets,
+                "--strategy", strategy,
+                "--top-k", top_k,
+                "--out", str(out_dir),
+            ])
+            if rc != 0:
+                raise RuntimeError(f"search failed with rc={rc}")
+            ctx.report_progress(1, 1)
+            payload = json.loads((out_dir / "search_advanced_summary.json").read_text())
+            if not isinstance(payload, dict):
+                raise RuntimeError("search output is not a JSON object")
+            return payload
+
+        jid = self.submit_job("search_fixture", _job)
+        self._search_jobs.add(jid)
+        self.search_view.status.setText(f"search started: {jid}")
+        return jid
+
+    def _poll_completed_jobs(self) -> None:
+        for jid in list(self._fixture_jobs):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE:
+                self._fixture_jobs.pop(jid, None)
+                self.load_completed_fixture(jid)
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                self._fixture_jobs.pop(jid, None)
+                self.statusBar().showMessage(f"Fixture job {job.status.value}: {jid}")
+        for jid in list(self._search_jobs):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE and isinstance(job.result, dict):
+                self._search_jobs.discard(jid)
+                self.search_view.load_summary(job.result)
+                self.tabs.setCurrentWidget(self.search_view)
+                self.statusBar().showMessage(f"Search complete: {jid}")
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                self._search_jobs.discard(jid)
+                self.search_view.status.setText(f"search {job.status.value}: {job.error or jid}")
 
 
 def build_main_window(runner: JobRunner | None = None, lang: str = "ko") -> CmigMainWindow:

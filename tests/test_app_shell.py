@@ -55,6 +55,7 @@ def test_shell_has_file_workflow_actions():
     """GUI shell 이 파일 열기/fixture 실행 액션을 노출한다."""
     _app()
     w = build_main_window()
+    assert w.import_model_action.text() == "Import Model"
     assert w.open_run_action.text() == "Open Run"
     assert w.run_fixture_action.text() == "Run Fixture"
 
@@ -66,12 +67,32 @@ def test_load_run_dir_updates_profile_and_explorer(tmp_path):
     _app()
     empty_bundle().write(tmp_path)
     w = build_main_window()
+    (tmp_path / "manifest.json").write_text('{"run_hash": "abc1234567890"}\n')
     w.load_run_dir(tmp_path)
     runs_root = w.explorer.topLevelItem(2)
     assert runs_root.childCount() == 1
     assert runs_root.child(0).text(0) == tmp_path.name
     assert w.profile_view.table.rowCount() == 0
+    assert w.current_manifest["run_hash"] == "abc1234567890"
+    assert "elements" in w.current_graph_payload
     assert w.tabs.currentWidget() is w.profile_view
+
+
+def test_import_model_file_updates_model_manager(monkeypatch):
+    from cmig.io.model_import import ModelSummary
+
+    _app()
+    w = build_main_window()
+
+    def fake_import_model(path):
+        return ModelSummary(
+            "toy", "sbml", str(path), 2, 2, 0, ["EX_ac_e"], ["BIOMASS"])
+
+    monkeypatch.setattr("cmig.io.model_import.import_model", fake_import_model)
+    assert w.import_model_file("/tmp/toy.xml") is True
+    assert "toy" in w.model_manager.summary_label.text()
+    assert w.explorer.topLevelItem(0).child(0).text(0) == "toy"
+    assert w.current_model_review["model"]["model_id"] == "toy"
 
 
 def test_run_fixture_uses_jobrunner_and_loads_completed_run(tmp_path, monkeypatch):
@@ -97,6 +118,85 @@ def test_run_fixture_uses_jobrunner_and_loads_completed_run(tmp_path, monkeypatc
     runner.result(jid, timeout=5)
     assert w.load_completed_fixture(jid) is True
     assert w.explorer.topLevelItem(2).childCount() == 1
+    runner.shutdown()
+
+
+def test_poll_completed_fixture_auto_loads_run(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import cmig.service
+    from cmig.core.tidy import empty_bundle
+
+    class FakeEngineService:
+        def solve_fixture(self, *, solver, out_dir):
+            empty_bundle().write(out_dir)
+            manifest = out_dir / "manifest.json"
+            manifest.write_text('{"run_hash": "fixturehash"}\n')
+            return SimpleNamespace(status="ok", manifest_path=manifest, diagnostic=None)
+
+    monkeypatch.setattr(cmig.service, "EngineService", FakeEngineService)
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    jid = w.run_fixture(tmp_path)
+    runner.result(jid, timeout=5)
+    w._poll_completed_jobs()
+    assert jid not in w._fixture_jobs
+    assert w.explorer.topLevelItem(2).childCount() == 1
+    assert w.current_manifest["run_hash"] == "fixturehash"
+    runner.shutdown()
+
+
+def test_sandbox_preview_button_runs_service(monkeypatch):
+    from types import SimpleNamespace
+
+    import cmig.service
+    from cmig.core.delta import DeltaResult
+
+    class FakeEngineService:
+        def sandbox_fixture(self, *, reaction_id, lower, upper, commit, out_dir):
+            return SimpleNamespace(
+                delta=DeltaResult([], [], [], 0.0),
+                run_hash="hash" if commit else None,
+            )
+
+    monkeypatch.setattr(cmig.service, "EngineService", FakeEngineService)
+    _app()
+    w = build_main_window()
+    w.sandbox_view.add_bound("EX_glc__D_e", -1.0, 1000.0)
+    w.sandbox_view.preview_btn.click()
+    assert "preview" in w.sandbox_view.status.text()
+
+
+def test_search_button_runs_job_and_loads_summary(monkeypatch):
+    import json
+
+    import cmig.cli.main
+
+    def fake_main(argv):
+        out = argv[argv.index("--out") + 1]
+        payload = {
+            "strategy": "exhaustive",
+            "top_ranked": {
+                "ac": [{"members": ["A", "B"], "score": 1.0, "target_flux": 1.0}]
+            },
+            "pareto_frontier": [],
+            "warnings": [],
+        }
+        from pathlib import Path
+        Path(out).mkdir(parents=True, exist_ok=True)
+        (Path(out) / "search_advanced_summary.json").write_text(json.dumps(payload))
+        return 0
+
+    monkeypatch.setattr(cmig.cli.main, "main", fake_main)
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    jid = w.run_search_fixture()
+    runner.result(jid, timeout=5)
+    w._poll_completed_jobs()
+    assert w.search_view.table.rowCount() == 1
+    assert w.tabs.currentWidget() is w.search_view
     runner.shutdown()
 
 

@@ -132,6 +132,9 @@ def test_search_view_loads_advanced_summary():
     """SC-SR-GUI: advanced search summary → ranked table + Pareto badge."""
     _app()
     view = SearchView()
+    assert view.targets_input.text() == "ac,but"
+    assert view.strategy_combo.currentText() == "auto"
+    assert view.run_btn.text() == "Run Search"
     view.load_summary({
         "strategy": "exhaustive",
         "warnings": [],
