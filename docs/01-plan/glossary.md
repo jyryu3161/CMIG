@@ -94,7 +94,7 @@ G1 sandbox run의 상태 이원화(state dichotomy). **sandbox 실험이 영구 
 
 ### D. QP-only approximate 의미 — §4.2
 
-cooperative tradeoff는 2단계 solve다: ① **OSQP(QP)** 로 member growth L2 확보 → growth/community constraint 고정 → ② **LP solver(Gurobi/HiGHS/CPLEX)** 로 pFBA/normalization **재계산(recompute)**. OSQP는 **QP 전용**이므로 flux는 반드시 LP로 재계산한다(§4.2).
+cooperative tradeoff는 2단계 solve다: ① **OSQP(QP)** 로 member growth L2 확보 → growth/community constraint 고정 → ② **LP solver(Gurobi/HiGHS/CPLEX)** 로 pFBA/normalization **재계산(recompute)**. cobra/optlang의 `solver="osqp"`는 QP=OSQP, LP=HiGHS인 hybrid alias다(§4.2).
 
 - **`QP-only approximate`**: LP flux_solver가 **부재(absent)** 하여 LP pFBA 재계산을 수행할 수 없을 때, **QP 결과만으로 근사한 flux임을 명시적으로 표기**하는 상태(flux_report_status). 정확도 한계를 사용자에게 투명하게 알린다(§4.2·§4.4·§8·A6).
 - 대비 상태값(예: `full`)의 명칭은 `(Design에서 확정)` — spec은 `QP-only approximate`만 명시.
@@ -268,7 +268,7 @@ golden fixture / promotion gate (골든 픽스처 / 승격 게이트)
 : `fixtures/community_3_member/` = models · `expected/`(nodes/edges/profile.parquet + config.json) + growth/sign expected. float rounding/tolerance 후 정규화 hash 비교. **solver별 분리**(`gurobi`·`osqp`) CI 매트릭스. MICOM 버전 업그레이드는 golden 통과 시에만 승격되는 게이트. — **§4.1·§10·§16 MVP-1a·§17·A1·A17**
 
 osqp_growth_highs_flux (solver golden 변형 — **폐기**)
-: (구) growth=OSQP(QP)→flux=HiGHS(LP) 조합 변형. **폐기됨**(cmig-analysis-completion F1): HiGHS는 실 LP 재계산을 하지 않아 osqp와 동일했고, HiGHS 의존을 제거해 full-flux를 gurobi 전용으로 단순화. 무라이선스 경로는 `osqp`(qp_only_approximate). — `docs/decisions/2026-06-01-golden-solver-list.md`
+: (구) growth=OSQP(QP)→flux=HiGHS(LP) 조합 변형 이름. 별도 solver 이름은 **폐기됨**. 현재 `osqp` 자체가 optlang hybrid alias이므로 `growth_solver=osqp`, `flux_solver=highs`, `flux_report_status=full`로 기록한다. — `docs/decisions/2026-06-01-golden-solver-list.md`
 
 flux_report_status (flux 보고 상태)
 : flux 산출의 신뢰 상태 플래그. LP flux_solver 부재 시 `QP-only approximate`로 표기(→ [1.D](#d-qp-only-approximate-의미--42)). 대비 상태값(`full` 등) 명칭은 `(Design에서 확정)`. — **§7·§4.2·§4.4**
@@ -276,16 +276,16 @@ flux_report_status (flux 보고 상태)
 ### 2.7 solver·라이선스 (Solvers & Licensing) — §2
 
 solver capability matrix (솔버 능력 매트릭스)
-: 분석 유형(LP/QP/MILP)별 사용 가능 solver 표. **LP**=Gurobi/HiGHS/CPLEX · **QP**=Gurobi/OSQP/CPLEX(+HiGHS experimental) · **MILP**=Gurobi/HiGHS/CPLEX. OSQP=QP 전용(flux는 LP 재계산), HiGHS-QP=experimental, GLPK=GPL→**비번들(unbundled)**. capability 부재 시 **해당 분석만 비활성화**(앱 전체 강등 아님). — **§2·§16 MVP-0·A6·A7**
+: 분석 유형(LP/QP/MILP)별 사용 가능 solver 표. **LP**=Gurobi/HiGHS/CPLEX/OSQP-hybrid · **QP**=Gurobi/OSQP/CPLEX(+HiGHS experimental) · **MILP**=Gurobi/HiGHS/CPLEX. `solver="osqp"`는 LP를 HiGHS로 처리하는 optlang hybrid alias, HiGHS-QP=experimental, GLPK=GPL→**비번들(unbundled)**. capability 부재 시 **해당 분석만 비활성화**(앱 전체 강등 아님). — **§2·§16 MVP-0·A6·A7**
 
 | problem class | 사용 가능 solver | 비고 |
 |---|---|---|
-| **LP** | Gurobi · HiGHS · CPLEX | pFBA/FVA/flux 정규화·minimal medium의 LP |
+| **LP** | Gurobi · HiGHS · CPLEX · OSQP-hybrid | pFBA/FVA/flux 정규화·minimal medium의 LP |
 | **QP** | Gurobi · OSQP · CPLEX (+ HiGHS *experimental*) | member growth L2 |
 | **MILP** | Gurobi · HiGHS · CPLEX | cardinality minimal medium |
 
 growth_solver / flux_solver 분리 (solver role separation)
-: cooperative tradeoff 2단계 solve를 위한 solver 역할 분리. `growth_solver`(QP)로 member growth L2 확보 → growth/community constraint 고정 → `flux_solver`(LP)로 pFBA/normalization 재수행. OSQP로 QP growth 후 LP solver(Gurobi/HiGHS/CPLEX)로 flux 재계산. LP 부재 시 `QP-only approximate` 표기. manifest에 분리 기록. — **§4.2·§7·A5**
+: cooperative tradeoff 2단계 solve를 위한 solver 역할 분리. `growth_solver`(QP)로 member growth L2 확보 → growth/community constraint 고정 → `flux_solver`(LP)로 pFBA/normalization 재수행. `solver="osqp"` 경로는 OSQP로 QP growth 후 HiGHS로 LP flux를 재계산한다. LP 부재 시 `QP-only approximate` 표기. manifest에 분리 기록. — **§4.2·§7·A5**
 
 default solver (기본 solver)
 : 기본 solver = **Gurobi**(Plan §7.2 결정·권장; spec §2='Gurobi(권장)'). CI=Gurobi WLS; 무라이선스 경로는 highs·osqp golden으로 보존. 무라이선스 환경 자동 fallback 규칙은 `(Design에서 확정)`. — **§2·Plan §7.2**

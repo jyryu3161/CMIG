@@ -21,10 +21,11 @@
 - `io/solve_output` + **`cmig solve-fixture --solver --out`** 및 **`cmig solve --taxonomy [--medium] --solver --tradeoff-f --out`** → nodes/edges/profile.parquet + manifest.json(run_hash). medium 입력은 `medium_presets/`(csv) 또는 사용자 csv/json.
 - `targets`(SCFA target readout) · `render/`(R ggplot2 SVG/TIFF, composer; 논문용 font/palette/line style) · `gui/`(app shell·Cytoscape graph·tables, offscreen 실행 검증).
 
-**Solver (F1: gurobi-only full-flux)**:
+**Solver (F1: full-flux metadata)**:
 - `gurobi` = canonical full-flux(QP+LP 모두 Gurobi → `flux_report_status='full'`).
-- `osqp` = 무라이선스 QP 경로(LP flux 부재 → `qp_only_approximate`, `flux_solver=None`).
-- `osqp_growth_highs_flux`(hybrid)는 **폐기**됨 — HiGHS 의존 제거, full flux 는 gurobi 전용.
+- `osqp` = optlang hybrid 경로(QP는 OSQP, LP pFBA flux는 HiGHS →
+  `flux_report_status='full'`, `flux_solver='highs'`).
+- 별도 `osqp_growth_highs_flux` solver 이름은 폐기됨 — `osqp` alias 자체가 optlang hybrid다.
 
 아직 미구현(후속):
 - **실 AGORA/VMH 모델 import + namespace mapping workflow** — 별도 foundation. (`cmig solve --taxonomy`는 micom 호환 taxonomy csv를 받지만 실 GEM 큐레이션은 사용자 몫.)

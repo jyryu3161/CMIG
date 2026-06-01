@@ -91,12 +91,14 @@ class JobRunner:
         with self._lock:
             self._counter += 1
             job_id = f"job-{self._counter:04d}"
-        event = threading.Event()
-        job = Job(job_id=job_id, kind=kind, status=JobStatus.PENDING)
-        self._jobs[job_id] = job
-        self._specs[job_id] = (kind, fn, on_progress)
-        self._events[job_id] = event
-        self._futures[job_id] = self._executor.submit(self._run, job_id, fn, event, on_progress)
+            event = threading.Event()
+            job = Job(job_id=job_id, kind=kind, status=JobStatus.PENDING)
+            self._jobs[job_id] = job
+            self._specs[job_id] = (kind, fn, on_progress)
+            self._events[job_id] = event
+            self._futures[job_id] = self._executor.submit(
+                self._run, job_id, fn, event, on_progress
+            )
         return job_id
 
     def _run(
@@ -143,7 +145,9 @@ class JobRunner:
 
     def cancel(self, job_id: str) -> None:
         """협조적 취소 신호 — fn 이 ctx.cancelled 를 확인해야 실제 중단(정직 표기)."""
-        self._events[job_id].set()
+        with self._lock:
+            event = self._events[job_id]
+        event.set()
 
     def result(self, job_id: str, timeout: float | None = None) -> Any:
         """job 완료 대기 후 result 반환(future.result)."""

@@ -21,12 +21,12 @@ def test_gurobi_reports_lp_qp_milp():
     assert (cap.lp, cap.qp, cap.milp) == (True, True, True)
 
 
-def test_osqp_is_qp_only():
+def test_osqp_reports_hybrid_lp_qp_capability():
     cap = OsqpBackend().capability()
     assert cap.qp is True
-    assert cap.lp is False and cap.milp is False
-    # OSQP 는 LP 불가 → flux 는 LP solver 재계산 (SC-6)
-    assert cap.supports("LP") is False
+    assert cap.lp is True and cap.milp is False
+    # cobra/optlang solver="osqp"는 hybrid alias라 LP는 HiGHS로 처리한다.
+    assert cap.supports("LP") is True
 
 
 def test_capability_matrix_has_all_backends():

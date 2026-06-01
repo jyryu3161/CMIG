@@ -44,11 +44,12 @@ def test_manifest_run_hash_matches_library(tmp_path):
     assert "nodes.parquet" in manifest["artifacts"]
 
 
-def test_solve_fixture_osqp_qp_only(tmp_path):
-    """F1: osqp solve-fixture 는 qp_only_approximate(LP 부재) — hybrid 폐기 후 무라이선스 경로."""
+def test_solve_fixture_osqp_records_hybrid_flux_solver(tmp_path):
+    """F1: osqp solve-fixture 는 optlang hybrid의 HiGHS LP flux solver 를 기록한다."""
     main(["solve-fixture", "--solver", "osqp", "--out", str(tmp_path)])
     manifest = json.loads((tmp_path / "manifest.json").read_text())
-    assert manifest["components"]["solver_setting"]["flux_solver"] is None
+    assert manifest["components"]["solver_setting"]["growth_solver"] == "osqp"
+    assert manifest["components"]["solver_setting"]["flux_solver"] == "highs"
 
 
 def test_solve_subcommand_requires_taxonomy():

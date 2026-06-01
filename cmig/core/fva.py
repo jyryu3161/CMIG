@@ -72,7 +72,8 @@ def flux_variability(
             f"solver '{solver}' LP capability 부재/미가용 (§2). "
             f"가용 LP solver: {[n for n, c in capability_matrix().items() if c.supports('LP')]}"
         )
-    model.solver = solver
+    from cmig.core.single_model import set_model_solver
+    set_model_solver(model, solver)
     rxn_list = reactions if reactions is not None else [r.id for r in model.reactions]
     # cobra ≥0.29: loopless 는 None|'fastSNP'|'cycleFreeFlux' (bool deprecated).
     loopless_arg = "cycleFreeFlux" if loopless else None
@@ -120,7 +121,8 @@ def community_fva(
         raise FVAUnavailableError(
             f"solver '{solver}' LP capability 부재/미가용 (§2). community FVA 는 gurobi-only."
         )
-    community.solver = solver
+    from cmig.core.single_model import set_model_solver
+    set_model_solver(community, solver)
     rxn_list = (
         reactions if reactions is not None
         else [r.id for r in community.reactions if r.id.startswith("EX_") and r.id.endswith("_m")]

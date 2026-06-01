@@ -1,6 +1,7 @@
 """SC-4 run_hash 결정성·캐시 키 — schema §4.2. Plan SC: SC-4."""
 
 import dataclasses
+from types import SimpleNamespace
 
 from cmig.core.manifest import (
     RUN_HASH_COMPONENTS,
@@ -8,6 +9,7 @@ from cmig.core.manifest import (
     canonical_payload,
     compute_run_hash,
 )
+from cmig.io.solve_output import build_run_components
 
 
 def _components(**over):
@@ -50,6 +52,32 @@ def test_any_component_change_changes_hash():
     assert compute_run_hash(_components(micom_version="0.34.0")) != base
     assert compute_run_hash(_components(bounds={"EX_glc": [-9.0, 1000.0]})) != base
     assert compute_run_hash(_components(flux_normalization_method="fba")) != base
+
+
+def test_build_run_components_threads_bounds_into_hash():
+    result = SimpleNamespace(
+        abundances={"A": 1.0},
+        members=["A"],
+        growth_solver="gurobi",
+        flux_solver="gurobi",
+    )
+    a = build_run_components(
+        result,
+        model_checksum="m",
+        medium_checksum="med",
+        tradeoff_f=0.5,
+        micom_version="0.39.0",
+        bounds={"EX_x": [-1.0, 1000.0]},
+    )
+    b = build_run_components(
+        result,
+        model_checksum="m",
+        medium_checksum="med",
+        tradeoff_f=0.5,
+        micom_version="0.39.0",
+        bounds={"EX_x": [-2.0, 1000.0]},
+    )
+    assert compute_run_hash(a) != compute_run_hash(b)
 
 
 def test_float_rounding_absorbs_noise():

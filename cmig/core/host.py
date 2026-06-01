@@ -137,10 +137,10 @@ def solve_generic_host(host: Any, *, solver: str = "gurobi") -> HostSolveResult:
     """
     from cobra.util.solver import linear_reaction_coefficients
 
-    from cmig.core.single_model import _require_lp
+    from cmig.core.single_model import _require_lp, set_model_solver
 
     _require_lp(solver)
-    host.solver = solver
+    set_model_solver(host, solver)
     sol = host.optimize()
     status = str(sol.status)
     if status != "optimal":
@@ -180,45 +180,46 @@ def solve_host(
     """
     from cmig.core.single_model import _require_lp
     _require_lp(solver)
-    host.solver = solver
+    with host:
+        from cmig.core.single_model import set_model_solver
+        set_model_solver(host, solver)
+        ex_ids = {r.id for r in host.reactions}
+        # [정직성] lumen interface 는 **기본 폐쇄**(uptake=0) — 미생물이 실제 분비한 것만 흡수 가능.
+        # availability 미포함 대사체를 phantom 흡수하지 않도록 모든 EX_*_lumen lower_bound=0 먼저.
+        for r in host.reactions:
+            if r.id.startswith("EX_") and _interface_of(r.id) is HostInterface.LUMEN:
+                r.lower_bound = 0.0
+        # lumen uptake 한계: 가용 대사체만 EX_<met>_lumen lower_bound = -available 개방.
+        for met, avail in lumen_availability.items():
+            ex = f"EX_{met}_lumen"
+            if ex in ex_ids:
+                host.reactions.get_by_id(ex).lower_bound = -abs(avail)
+        # viability: ATP maintenance ≥ 임계 (명시 강제). upper < 임계면 동반 상향(bound 역전 방지).
+        if maintenance_reaction in ex_ids:
+            mr = host.reactions.get_by_id(maintenance_reaction)
+            mr.bounds = (maintenance_flux, max(mr.upper_bound, maintenance_flux))
 
-    ex_ids = {r.id for r in host.reactions}
-    # [정직성] lumen interface 는 **기본 폐쇄**(uptake=0) — 미생물이 실제 분비한 것만 흡수 가능.
-    # availability 미포함 대사체를 phantom 흡수하지 않도록 모든 EX_*_lumen lower_bound=0 먼저.
-    for r in host.reactions:
-        if r.id.startswith("EX_") and _interface_of(r.id) is HostInterface.LUMEN:
-            r.lower_bound = 0.0
-    # lumen uptake 한계: 가용 대사체만 EX_<met>_lumen lower_bound = -available 개방.
-    for met, avail in lumen_availability.items():
-        ex = f"EX_{met}_lumen"
-        if ex in ex_ids:
-            host.reactions.get_by_id(ex).lower_bound = -abs(avail)
-    # viability: ATP maintenance ≥ 임계 (명시 강제). upper < 임계면 동반 상향(bound 역전 방지).
-    if maintenance_reaction in ex_ids:
-        mr = host.reactions.get_by_id(maintenance_reaction)
-        mr.bounds = (maintenance_flux, max(mr.upper_bound, maintenance_flux))
+        sol = host.optimize()
+        status = str(sol.status)
+        viable = status == "optimal"
+        if not viable:
+            from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
+            diag = diagnostic_from_parts([(
+                DiagnosticCode.INFEASIBLE,
+                f"host 비viable — maintenance({maintenance_flux}) 충족 불가 (status={status})")])
+            return HostSolveResult(False, status, 0.0, [], {}, diag)
 
-    sol = host.optimize()
-    status = str(sol.status)
-    viable = status == "optimal"
-    if not viable:
-        from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
-        diag = diagnostic_from_parts([(
-            DiagnosticCode.INFEASIBLE,
-            f"host 비viable — maintenance({maintenance_flux}) 충족 불가 (status={status})")])
-        return HostSolveResult(False, status, 0.0, [], {}, diag)
-
-    fluxes = {str(rid): float(v) for rid, v in sol.fluxes.items()}
-    interface = classify_host_exchanges(fluxes)
-    # 미생물→host 흡수 = lumen interface 에서 uptake(label=uptake)
-    lumen_uptake = {
-        f.metabolite: -f.flux for f in interface
-        if f.interface == HostInterface.LUMEN.value and f.label == Label.UPTAKE.value
-    }
-    from cobra.util.solver import linear_reaction_coefficients
-    coeffs = linear_reaction_coefficients(host)
-    biomass = sum(float(c) * fluxes.get(r.id, 0.0) for r, c in coeffs.items())
-    return HostSolveResult(True, status, biomass, interface, lumen_uptake)
+        fluxes = {str(rid): float(v) for rid, v in sol.fluxes.items()}
+        interface = classify_host_exchanges(fluxes)
+        # 미생물→host 흡수 = lumen interface 에서 uptake(label=uptake)
+        lumen_uptake = {
+            f.metabolite: -f.flux for f in interface
+            if f.interface == HostInterface.LUMEN.value and f.label == Label.UPTAKE.value
+        }
+        from cobra.util.solver import linear_reaction_coefficients
+        coeffs = linear_reaction_coefficients(host)
+        biomass = sum(float(c) * fluxes.get(r.id, 0.0) for r, c in coeffs.items())
+        return HostSolveResult(True, status, biomass, interface, lumen_uptake)
 
 
 def run_host_microbe(

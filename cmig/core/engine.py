@@ -7,9 +7,9 @@ MICOM 호출은 이 wrapper 한 곳만 경유 (public API + documented flux:
 `cooperative_tradeoff(fraction=..., fluxes=True, pfba=True)`). internal API 금지.
 이 단일 격리점 덕에 micom_version pin 변경이 한 곳에 국한된다 (SC-5).
 
-CMIG solver 이름 → MICOM(optlang) solver 매핑 (F1: hybrid 폐기, gurobi-only full):
+CMIG solver 이름 → MICOM(optlang) solver 매핑:
   gurobi  → gurobi   (QP+LP 모두 Gurobi → flux_report_status=full, canonical full-flux)
-  osqp    → osqp     (QP only; LP flux 부재 → qp_only_approximate, flux_solver=None, 무라이선스)
+  osqp    → osqp     (optlang hybrid: OSQP-QP + HiGHS-LP pFBA → flux_report_status=full)
 """
 
 from __future__ import annotations
@@ -25,14 +25,14 @@ FluxReportStatus = Literal["full", "qp_only_approximate"]
 FLUX_REPORT_LABEL = {"full": "Full (LP pFBA)", "qp_only_approximate": "QP-only approximate"}
 
 # CMIG solver 이름 → MICOM optlang solver (schema §5.2 / golden 변형 §16).
-# F1: golden 변형 2종 = gurobi / osqp. (osqp_growth_highs_flux=hybrid 폐기 — HiGHS 제거,
-# 실 LP full-flux 는 gurobi 전용. osqp 는 qp_only_approximate 무라이선스 정직 경로.)
+# optlang/cobra에서 solver="osqp"는 optlang.hybrid_interface alias다. QP는 OSQP, linear
+# pFBA/LP는 HiGHS로 풀리므로 결과 flux는 full pFBA로 표기한다.
 SOLVER_MAP: dict[str, str] = {
     "gurobi": "gurobi",
     "osqp": "osqp",
 }
-# F1: 허용 cmig solver — gurobi(full) / osqp(qp_only_approximate). 그 외(예: highs)는 거부
-# (CLI choices 뿐 아니라 라이브러리 레벨에서도 강제 — 'full=gurobi 전용' 불변).
+# F1: 허용 cmig solver — gurobi(full) / osqp(optlang hybrid full). 그 외(예: highs 직접)는 거부
+# (CLI choices 뿐 아니라 라이브러리 레벨에서도 강제).
 ALLOWED_CMIG_SOLVERS = frozenset(SOLVER_MAP)
 
 
@@ -40,7 +40,7 @@ def _require_allowed_solver(cmig_solver: str) -> None:
     if cmig_solver not in ALLOWED_CMIG_SOLVERS:
         raise ValueError(
             f"미지원 cmig solver: {cmig_solver!r} (허용: {sorted(ALLOWED_CMIG_SOLVERS)}). "
-            f"full-flux 는 gurobi 전용·osqp 는 qp_only_approximate. [F1]"
+            f"지원 solver 는 gurobi 또는 osqp(optlang hybrid)입니다. [F1]"
         )
 
 
@@ -163,14 +163,14 @@ class MicomEngine:
                     row[_met_from_exchange(col, "_e")] = float(fluxes.loc[m, col])
             member_exchange[m] = row
 
-        # solver 분리 기록 (§4.2 [SOLVER-SPLIT]): flux(LP) 부재 시 qp_only_approximate.
+        # solver 분리 기록 (§4.2 [SOLVER-SPLIT]).
         flux_solver: str | None
         flux_report: FluxReportStatus
         # F4: 진단을 (DiagnosticCode, message) 로 수집 → diagnostic_from_parts 구조화.
         diag_parts: list[tuple[DiagnosticCode, str]] = []
         if cmig_solver == "osqp":
-            # OSQP=QP 전용, LP solver 부재 → flux LP 재계산 불가 (schema §5.2·design §4.2).
-            growth_solver, flux_solver, flux_report = "osqp", None, "qp_only_approximate"
+            # optlang "osqp"는 hybrid_interface: QP=OSQP, linear pFBA/LP=HiGHS.
+            growth_solver, flux_solver, flux_report = "osqp", "highs", "full"
         else:
             # gurobi = LP+QP 동일 solver → full (canonical full-flux). gurobi 만 'full' (F1).
             growth_solver = flux_solver = "gurobi"

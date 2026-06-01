@@ -32,6 +32,7 @@ def build_run_components(
     medium_checksum: str,
     tradeoff_f: float,
     micom_version: str,
+    bounds: dict[str, list[float]] | None = None,
     namespace_decisions: Sequence[str] = (),
 ) -> RunHashComponents:
     """임의 taxonomy+medium solve → run_hash 11구성요소 (cmig solve 용, 단일 canonical).
@@ -48,7 +49,7 @@ def build_run_components(
         medium_checksum=medium_checksum,
         member_set=sorted(result.members),
         abundance=abundance,
-        bounds={},
+        bounds=bounds or {},
         tradeoff_f=tradeoff_f,
         solver_setting={"growth_solver": result.growth_solver, "flux_solver": result.flux_solver},
         micom_version=micom_version,

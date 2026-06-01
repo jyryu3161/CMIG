@@ -101,8 +101,17 @@ def test_run_host_microbe_end_to_end():
     assert impact.microbe_to_host.get("but", 0.0) > 1.0             # 미생물→host butyrate 횡단
 
 
-def test_host_lp_gate():
-    """SC-HM6: LP 부재 → fail-fast(osqp qp_only)."""
-    from cmig.core.single_model import SingleModelUnavailableError
-    with pytest.raises(SingleModelUnavailableError):
-        solve_host(build_host_model(), {"ac": 1.0}, solver="osqp")
+def test_host_osqp_hybrid_restores_bounds():
+    """SC-HM6: osqp hybrid LP 경로가 동작하고 host solve bound 변경을 모델에 남기지 않는다."""
+    host = build_host_model()
+    before = {
+        rid: host.reactions.get_by_id(rid).bounds
+        for rid in ("EX_ac_lumen", "ATPM")
+    }
+    result = solve_host(host, {"ac": 1.0}, solver="osqp")
+    assert result.status in ("optimal", "infeasible")
+    after = {
+        rid: host.reactions.get_by_id(rid).bounds
+        for rid in ("EX_ac_lumen", "ATPM")
+    }
+    assert after == before

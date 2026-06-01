@@ -78,8 +78,10 @@ def test_dfba_timecourse_schema():
     assert {"biomass", "growth_rate", "EX_glc__D_e"} <= series
 
 
-def test_dfba_requires_lp():
-    """SC-DF6: LP capability 부재 → fail-fast (osqp qp_only → LP 없음)."""
-    from cmig.core.single_model import SingleModelUnavailableError
-    with pytest.raises(SingleModelUnavailableError):
-        simulate_dfba(_model(), _glucose_cfg(0.5), solver="osqp")
+def test_dfba_osqp_hybrid_restores_model_bounds():
+    """SC-DF6: osqp hybrid LP 경로가 동작하고 시뮬레이션 bound 변경을 모델에 남기지 않는다."""
+    model = _model()
+    before = model.reactions.get_by_id("EX_glc__D_e").bounds
+    result = simulate_dfba(model, _glucose_cfg(0.5), solver="osqp")
+    assert result.status in ("completed", "stalled")
+    assert model.reactions.get_by_id("EX_glc__D_e").bounds == before

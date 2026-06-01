@@ -56,7 +56,7 @@ def test_golden_regression_per_solver(solver):
 
 
 def test_osqp_profile_matches_gurobi_within_tolerance():
-    """SC-6(F1 후): osqp external profile 이 gurobi 와 tolerance 내 일치(QP vs LP 근사)."""
+    """SC-6: osqp hybrid external profile 이 gurobi 와 tolerance 내 일치."""
     keys, floats = KEYS["profile"]
     tables_close(
         _expected("osqp", "profile"),
@@ -113,10 +113,10 @@ def test_expected_dir_is_under_fixtures():
 
 @pytest.mark.parametrize("solver,exp_flux_solver,exp_report", [
     ("gurobi", "gurobi", "full"),                                # gurobi = canonical full-flux
-    ("osqp", None, "qp_only_approximate"),                       # C-1/C-2: OSQP=QP only → LP 부재
+    ("osqp", "highs", "full"),                                   # OSQP-QP + HiGHS-LP
 ])
 def test_flux_report_metadata_per_solver(solver, exp_flux_solver, exp_report):
-    """F1: gurobi=full, osqp=qp_only_approximate(flux_solver=None). hybrid 폐기."""
+    """F1: solver metadata must match the actual optlang backend path."""
     result, _ = solve(solver)
     assert result.flux_solver == exp_flux_solver
     assert result.flux_report_status == exp_report

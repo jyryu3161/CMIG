@@ -43,6 +43,23 @@ def _require_lp(solver: str) -> None:
         )
 
 
+def set_model_solver(model: Any, solver: str) -> None:
+    """cobra model solver 설정.
+
+    optlang hybrid(`solver="osqp"`)는 `lp_method` 값 집합이 Gurobi와 달라서, 기존
+    Gurobi 설정(`primal`)을 가진 모델을 그대로 clone하면 실패한다. 전환 전 common 값으로
+    정리해 solver switching을 결정적으로 만든다.
+    """
+    if solver == "osqp":
+        config = getattr(getattr(model, "solver", None), "configuration", None)
+        if config is not None and hasattr(config, "lp_method"):
+            try:
+                config.lp_method = "auto"
+            except ValueError:
+                pass
+    model.solver = solver
+
+
 def solve_single_model(
     model: Any, *, method: str = "FBA", solver: str = "gurobi",
 ) -> SingleModelResult:
@@ -50,7 +67,7 @@ def solve_single_model(
     if method not in ("FBA", "pFBA"):
         raise ValueError(f"미지원 method: {method} (FBA|pFBA)")
     _require_lp(solver)
-    model.solver = solver
+    set_model_solver(model, solver)
     if method == "pFBA":
         from cobra.flux_analysis import pfba
         sol = pfba(model)            # pFBA objective_value = 총 flux(절약), growth 아님

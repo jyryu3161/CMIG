@@ -12,7 +12,8 @@ optlang solver 이름 선택으로 실현된다(Check G-1 동기화).
 
 capability 부재 시 해당 분석만 비활성화([disable_analysis_on_missing], §2·schema §5.3) —
 앱 전체 강등이 아니다. GLPK 는 미번들(GPL) → 전 role 제외.
-역할별 enum(§4.2 노트): growth_solver∋osqp, flux_solver∌osqp, 모두 ∌glpk.
+역할별 enum(§4.2 노트): solver="osqp"는 optlang hybrid alias(OSQP-QP + HiGHS-LP),
+glpk는 GPL 이슈로 registry 제외.
 """
 
 from __future__ import annotations
@@ -77,17 +78,18 @@ class HighsBackend:
 
 
 class OsqpBackend:
-    """OSQP — QP 전용 (Apache). flux 는 LP solver 로 재계산해야 함 (SC-6·§4.2).
+    """OSQP hybrid alias — QP는 OSQP, LP flux는 HiGHS가 담당한다.
 
-    LP 미지원(`lp=False`)은 capability 로 표현 — solve 는 MICOM 이 OSQP-QP 후
-    HiGHS-LP 로 flux 를 재계산한다(engine SOLVER_MAP).
+    cobra/optlang에서 solver="osqp"는 `optlang.hybrid_interface`로 등록된다. 따라서
+    linear LP는 HiGHS로 풀 수 있지만, MILP는 CMIG의 "osqp" role로 노출하지 않는다.
     """
 
     name: SolverName = "osqp"
 
     def capability(self) -> SolverCapability:
         return SolverCapability(
-            name="osqp", lp=False, qp=True, milp=False, available=_importable("osqp")
+            name="osqp", lp=True, qp=True, milp=False,
+            available=_importable("osqp") and _importable("highspy")
         )
 
 

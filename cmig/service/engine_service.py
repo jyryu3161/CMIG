@@ -89,6 +89,7 @@ class EngineService:
         fva: bool = False,
         targets: str | None = None,
         out_dir: str | Path,
+        bounds: dict[str, list[float]] | None = None,
         env_lock: str | None = None,
     ) -> SolveOutcome:
         """임의 taxonomy(+medium) community solve → parquet+manifest.
@@ -121,6 +122,7 @@ class EngineService:
             medium_checksum=medium_checksum(spec),
             tradeoff_f=tradeoff_f,
             micom_version=self._engine.micom_version,
+            bounds=bounds,
             namespace_decisions=namespace_decision_keys(decisions),
         )
         diagnostic = self._merge_run_diagnostic(result.diagnostic, unknown_medium)

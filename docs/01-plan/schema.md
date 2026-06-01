@@ -251,7 +251,7 @@ CMIG Baseline의 **데이터 모델(data model)** 을 정식화한다. 검증된
 
 | problem_class | 사용 가능 solver (solvers) | 비고 (notes) | anchor |
 |---------------|---------------------------|--------------|--------|
-| **LP** (pFBA/FVA/flux 정규화·minimal medium LP) | Gurobi · HiGHS · CPLEX | flux 재계산 경로 | §2·A6 |
+| **LP** (pFBA/FVA/flux 정규화·minimal medium LP) | Gurobi · HiGHS · CPLEX · OSQP-hybrid | flux 재계산 경로 | §2·A6 |
 | **QP** (member growth L2) | Gurobi · OSQP · CPLEX (+ **HiGHS experimental**) | growth solve | §2·A6 |
 | **MILP** (cardinality minimal medium) | Gurobi · HiGHS · CPLEX | minimal medium | §2·§4.5·A6 |
 
@@ -261,14 +261,14 @@ CMIG Baseline의 **데이터 모델(data model)** 을 정식화한다. 검증된
 |--------|:--:|:--:|:----:|-------------------|:--------------:|--------------|--------|
 | **Gurobi** | ✅ | ✅ | ✅ | commercial-academic | ❌ (미번들) | **기본 solver (default)** (Plan §7.2; spec §2='권장'). CI=Gurobi WLS. | §2·Plan §7.2 |
 | **HiGHS** | ✅ | ⚠️ experimental | ✅ | MIT | ✅ | HiGHS-QP=experimental. 무라이선스 경로. | §2·A6 |
-| **OSQP** | ❌ | ✅ | ❌ | Apache | ✅ | **QP 전용** → flux는 LP solver로 재계산. | §2·§4.2·A6 |
+| **OSQP** | ✅ | ✅ | ❌ | Apache+MIT(HiGHS) | ✅ | optlang hybrid alias: QP=OSQP, LP/pFBA=HiGHS. | §2·§4.2·A6 |
 | **CPLEX** | ✅ | ✅ | ✅ | commercial-academic | ❌ (미번들) | 상용 학술. | §2·A6 |
 | **GLPK** | ✅ | ❌ | ✅ | **GPL** | ❌ (**미번들**) | GPL → 번들/배포 제외. matrix에 존재하되 is_bundled=false. | §2·A6·A7 |
 
 ### 5.3 정책 불변식 (policy invariants)
-- **OSQP=QP 전용**: OSQP로 growth 확보 → community/growth constraint 고정 → LP solver(Gurobi/HiGHS/CPLEX)로 flux(pFBA/normalization) 재계산. LP 부재 시 'QP-only approximate' 표기 (§4.2·A6).
+- **OSQP hybrid alias**: cobra/optlang의 `solver="osqp"`는 QP를 OSQP로, LP/pFBA를 HiGHS로 푸는 hybrid interface다. LP/HiGHS 부재 시에만 'QP-only approximate' 표기를 고려한다 (§4.2·A6).
 - **disable_analysis_on_missing=true**: capability 부재 시 해당 분석만 비활성화 (§2·§8 NFR Reliability).
-- **golden solver 변형 2종**: `gurobi`(full) · `osqp`(qp_only_approximate) — CI 매트릭스 (§16·A17·Plan §7.2). (`highs`/`osqp_growth_highs_flux` hybrid 는 **폐기**: `docs/decisions/2026-06-01-golden-solver-list.md`; HiGHS 제거·full=gurobi 전용.)
+- **golden solver 변형 2종**: `gurobi`(full) · `osqp`(full; OSQP-QP + HiGHS-LP) — CI 매트릭스 (§16·A17·Plan §7.2). 별도 `osqp_growth_highs_flux` 이름은 폐기한다.
 - **HiGHS-QP(experimental) baseline 노출 여부**는 `(Design에서 확정)` (§2·A6).
 
 ---
@@ -363,13 +363,13 @@ fixtures/
         │   ├── expected_profile.parquet  # tidy profile (external profile, §4.6)
         │   ├── growth_expected.tsv       # community/member growth 기대값
         │   └── sign_expected.tsv         # §4.7 canonical (ui_flux,label) 기대값
-        └── osqp/                         # qp_only_approximate (무라이선스 QP)
+        └── osqp/                         # full: OSQP-QP + HiGHS-LP
             ├── expected_nodes.parquet
             ├── expected_edges.parquet
             ├── expected_profile.parquet
             ├── growth_expected.tsv
             └── sign_expected.tsv
-        # (highs/osqp_growth_highs_flux hybrid 폐기 — F1, decisions/2026-06-01-golden-solver-list.md)
+        # (별도 highs/osqp_growth_highs_flux solver 이름은 폐기 — decisions/2026-06-01-golden-solver-list.md)
 ```
 
 > **디렉토리 레이아웃 주의**: 위 트리는 verified fragment 기준 권장 구조다. solver별 `expected/` 중복 vs 공유(예: 입력 모델/medium은 공유, expected만 solver별 분리) 정확 구조는 `(Design에서 확정)` (§16·A17).
@@ -419,7 +419,7 @@ fixtures/
 ### 8.6 직렬화·solver·gate (Serialization, solver, gate, §2·§4.2·§4.8·§8)
 - **[NO-PICKLE]** 어떤 엔티티/산출/fixture도 pickle로 직렬화하지 않는다. 일반 직렬화 허용=Parquet/Arrow/JSON/YAML/SQLite (§5·§8). **TSV는 golden fixture(growth_expected/sign_expected) 전용** — spec §5/§8 일반 직렬화 목록에는 미명시, §16 fixture 형식에서 도출.
 - **[FILE-FORMAT]** MemberModel.source.file_format ∈ {SBML, JSON, MAT}만 허용 (§5·§8).
-- **[SOLVER-SPLIT]** growth=QP(OSQP 등), flux=LP(Gurobi/HiGHS/CPLEX). OSQP는 QP 전용 → flux LP 재계산. LP 부재 시 'QP-only approximate' 표기 (§4.2·A6).
+- **[SOLVER-SPLIT]** growth=QP(OSQP 등), flux=LP(Gurobi/HiGHS/CPLEX). `solver="osqp"`는 optlang hybrid alias이므로 growth_solver=osqp, flux_solver=highs로 기록한다. LP 부재 시 'QP-only approximate' 표기 (§4.2·A6).
 - **[MILP-CAPABILITY]** Medium.is_minimal=true 산출은 MILP capability(Gurobi/HiGHS/CPLEX) 요구. 미지원 시 minimal medium 분석만 비활성화 (§2·§4.5).
 - **[GATE-BLOCK]** unresolved high-confidence exchange mapping 존재 ⇒ CommunityModel.namespace_gate_status=blocked ⇒ MICOM solve 미호출. low-confidence는 warning 진행·자동병합 금지·audit (§4.8).
 - **[MICOM-PIN]** MICOM은 정확(exact) pin(micom==X.Y.Z). 버전 업그레이드는 solver별 golden 전부 통과 시에만 승격 (§4.1·§16·SC-5).

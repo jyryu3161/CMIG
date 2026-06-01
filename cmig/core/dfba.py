@@ -68,54 +68,61 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
     """well-mixed dFBA. timecourse + status. non-negativity 강제(dt 적응)."""
     from cmig.core.single_model import _require_lp
     _require_lp(solver)
-    model.solver = solver
 
-    managed = list(config.initial_concentrations)
-    # vmax 기본 = 모델 exchange |lower_bound| (정의된 최대 흡수율)
-    vmax = dict(config.vmax) if config.vmax else {}
-    for ex in managed:
-        if ex not in vmax:
-            vmax[ex] = abs(model.reactions.get_by_id(ex).lower_bound)
+    with model:
+        from cmig.core.single_model import set_model_solver
+        set_model_solver(model, solver)
 
-    conc = dict(config.initial_concentrations)
-    biomass = config.initial_biomass
-    t = 0.0
-    dt = config.dt
-    tc: list[DfbaTimepoint] = [DfbaTimepoint(0.0, biomass, 0.0, dict(conc))]
-
-    while t < config.t_end - 1e-12:
-        # (1) Michaelis-Menten 흡수 한계 → exchange lower_bound
+        managed = list(config.initial_concentrations)
+        # vmax 기본 = 모델 exchange |lower_bound| (정의된 최대 흡수율)
+        vmax = dict(config.vmax) if config.vmax else {}
         for ex in managed:
-            s = max(conc[ex], 0.0)
-            uptake = vmax[ex] * s / (config.km + s) if s > 0 else 0.0
-            model.reactions.get_by_id(ex).lower_bound = -uptake
-        # (2) FBA
-        sol = model.optimize()
-        if sol.status != "optimal":
-            return DfbaResult(tc, "infeasible", f"FBA status={sol.status} at t={t:.4f}", managed)
-        mu = _growth_of(model, sol)
-        if mu <= config.growth_floor:                       # 성장 정지 → stalled 종료
-            return DfbaResult(tc, "stalled", None, managed)
-        # (3) explicit Euler + non-negativity (농도<0 이면 dt halving)
-        step_dt = min(dt, config.t_end - t)
-        while step_dt >= config.min_dt:
-            new_conc = {
-                ex: conc[ex] + float(sol.fluxes[ex]) * biomass * step_dt for ex in managed
-            }
-            if all(v >= -1e-9 for v in new_conc.values()):  # non-negativity OK
-                break
-            step_dt /= 2.0                                  # 적응: 농도 음수 방지
-        else:
-            # min_dt 에서도 음수 → 0 으로 clamp(고갈) 후 진행
-            new_conc = {ex: max(conc[ex] + float(sol.fluxes[ex]) * biomass * config.min_dt, 0.0)
-                        for ex in managed}
-            step_dt = config.min_dt
-        conc = {ex: max(v, 0.0) for ex, v in new_conc.items()}
-        biomass = biomass + mu * biomass * step_dt
-        t += step_dt
-        tc.append(DfbaTimepoint(t, biomass, mu, dict(conc)))
+            if ex not in vmax:
+                vmax[ex] = abs(model.reactions.get_by_id(ex).lower_bound)
 
-    return DfbaResult(tc, "completed", None, managed)
+        conc = dict(config.initial_concentrations)
+        biomass = config.initial_biomass
+        t = 0.0
+        dt = config.dt
+        tc: list[DfbaTimepoint] = [DfbaTimepoint(0.0, biomass, 0.0, dict(conc))]
+
+        while t < config.t_end - 1e-12:
+            # (1) Michaelis-Menten 흡수 한계 → exchange lower_bound
+            for ex in managed:
+                s = max(conc[ex], 0.0)
+                uptake = vmax[ex] * s / (config.km + s) if s > 0 else 0.0
+                model.reactions.get_by_id(ex).lower_bound = -uptake
+            # (2) FBA
+            sol = model.optimize()
+            if sol.status != "optimal":
+                return DfbaResult(
+                    tc, "infeasible", f"FBA status={sol.status} at t={t:.4f}", managed
+                )
+            mu = _growth_of(model, sol)
+            if mu <= config.growth_floor:                       # 성장 정지 → stalled 종료
+                return DfbaResult(tc, "stalled", None, managed)
+            # (3) explicit Euler + non-negativity (농도<0 이면 dt halving)
+            step_dt = min(dt, config.t_end - t)
+            while step_dt >= config.min_dt:
+                new_conc = {
+                    ex: conc[ex] + float(sol.fluxes[ex]) * biomass * step_dt for ex in managed
+                }
+                if all(v >= -1e-9 for v in new_conc.values()):  # non-negativity OK
+                    break
+                step_dt /= 2.0                                  # 적응: 농도 음수 방지
+            else:
+                # min_dt 에서도 음수 → 0 으로 clamp(고갈) 후 진행
+                new_conc = {
+                    ex: max(conc[ex] + float(sol.fluxes[ex]) * biomass * config.min_dt, 0.0)
+                    for ex in managed
+                }
+                step_dt = config.min_dt
+            conc = {ex: max(v, 0.0) for ex, v in new_conc.items()}
+            biomass = biomass + mu * biomass * step_dt
+            t += step_dt
+            tc.append(DfbaTimepoint(t, biomass, mu, dict(conc)))
+
+        return DfbaResult(tc, "completed", None, managed)
 
 
 def timecourse_rows(result: DfbaResult) -> list[dict[str, Any]]:
