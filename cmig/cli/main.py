@@ -7,6 +7,7 @@ solve --taxonomy --medium 은 P1(후속).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -75,7 +76,6 @@ def _cmd_solve(args: argparse.Namespace) -> int:
         import pandas as pd
 
         from cmig.core.namespace import GateBlockedError, load_namespace_decisions
-        from cmig.io.solve_output import file_checksum
         from cmig.service import EngineService
     except ImportError:
         print("solve 는 엔진 stack 필요: uv sync --extra engine", file=sys.stderr)
@@ -102,7 +102,7 @@ def _cmd_solve(args: argparse.Namespace) -> int:
         )
         outcome = EngineService().solve_community(
             taxonomy=taxonomy,
-            model_checksum=file_checksum(tax_path),
+            model_checksum=_taxonomy_model_checksum(taxonomy, tax_path),
             solver=args.solver,
             tradeoff_f=args.tradeoff_f,
             medium_path=args.medium,
@@ -680,11 +680,38 @@ def _load_bounds_json(path: str) -> dict[str, list[float]]:
             or len(pair) != 2
         ):
             raise ValueError("bounds JSON 항목은 reaction_id: [lower, upper] 형식이어야 함")
-        lo, hi = float(pair[0]), float(pair[1])
+        if isinstance(pair[0], bool) or isinstance(pair[1], bool):
+            raise ValueError(f"bounds 값 오류: {rid} -> {pair}")
+        try:
+            lo, hi = float(pair[0]), float(pair[1])
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"bounds 값 오류: {rid} -> {pair}") from e
         if not (math.isfinite(lo) and math.isfinite(hi)) or lo > hi:
             raise ValueError(f"bounds 값 오류: {rid} -> {pair}")
         out[rid] = [lo, hi]
     return out
+
+
+def _taxonomy_model_checksum(taxonomy: Any, tax_path: Path) -> str:
+    """taxonomy file 컬럼이 가리키는 GEM 파일 바이트 집합의 결정적 checksum."""
+    from cmig.io.solve_output import file_checksum
+
+    rows: list[dict[str, str]] = []
+    for record in taxonomy.to_dict("records"):
+        member_id = str(record["id"])
+        raw_path = Path(str(record["file"]))
+        model_path = raw_path
+        if not model_path.exists() and not model_path.is_absolute():
+            model_path = tax_path.parent / raw_path
+        if not model_path.exists():
+            raise ValueError(f"taxonomy model 파일 없음: {raw_path}")
+        rows.append({"id": member_id, "file_checksum": file_checksum(model_path)})
+    payload = json.dumps(
+        sorted(rows, key=lambda row: row["id"]),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
 def _parse_member_sets(raw: str | None) -> list[str | None]:
@@ -790,7 +817,6 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
 
         from cmig.core.namespace import GateBlockedError, load_namespace_decisions
         from cmig.core.sweep import SweepAxis, SweepRow, enumerate_conditions, write_sweep_parquet
-        from cmig.io.solve_output import file_checksum
         from cmig.service import EngineService
     except ImportError:
         print("sweep 는 engine stack 필요: uv sync --extra engine", file=sys.stderr)
@@ -851,7 +877,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
             bounds = None if bounds_variant is None else _load_bounds_json(str(bounds_variant))
             outcome = service.solve_community(
                 taxonomy=taxonomy_variant,
-                model_checksum=file_checksum(tax_path),
+                model_checksum=_taxonomy_model_checksum(taxonomy_variant, tax_path),
                 solver=solver,
                 tradeoff_f=float(cond.axis_values["tradeoff_f"]),
                 medium_path=medium_path,

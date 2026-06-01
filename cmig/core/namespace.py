@@ -85,7 +85,7 @@ def evaluate_gate(decisions: list[NamespaceDecision]) -> NamespaceGateResult:
         d for d in decisions
         if d.confidence is Confidence.HIGH and d.status is DecisionStatus.UNRESOLVED
     ]
-    warned_low = [d for d in decisions if d.confidence is Confidence.LOW]
+    warned_low = [d for d in decisions if d.status is DecisionStatus.WARNED]
     resolved = sum(1 for d in decisions if d.status is DecisionStatus.RESOLVED)
     total = len(decisions)
     coverage = 100.0 if total == 0 else (resolved / total) * 100.0

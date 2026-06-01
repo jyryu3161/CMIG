@@ -14,7 +14,7 @@ import pytest
 
 pytest.importorskip("micom")
 
-from cmig.cli.main import main  # noqa: E402
+from cmig.cli.main import _taxonomy_model_checksum, main  # noqa: E402
 from cmig.core.manifest import compute_run_hash  # noqa: E402
 from cmig.core.tidy import TidyBundle  # noqa: E402
 from cmig.golden_fixture import _run_hash_components, solve  # noqa: E402
@@ -49,12 +49,13 @@ def test_manifest_run_hash_matches_library(tmp_path):
     assert "nodes.parquet" in manifest["artifacts"]
 
 
-def test_solve_fixture_osqp_records_hybrid_flux_solver(tmp_path):
-    """F1: osqp solve-fixture 는 optlang hybrid의 HiGHS LP flux solver 를 기록한다."""
+def test_solve_fixture_osqp_records_approximate_flux_solver(tmp_path):
+    """F1: osqp solve-fixture 는 QP-only approximate provenance 를 기록한다."""
     main(["solve-fixture", "--solver", "osqp", "--out", str(tmp_path)])
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["components"]["solver_setting"]["growth_solver"] == "osqp"
-    assert manifest["components"]["solver_setting"]["flux_solver"] == "highs"
+    assert manifest["components"]["solver_setting"]["flux_solver"] is None
+    assert manifest["solver"]["flux_report_status"] == "qp_only_approximate"
 
 
 def test_solve_subcommand_requires_taxonomy():
@@ -72,6 +73,19 @@ def test_sweep_fixture_writes_store(tmp_path):
     assert rc == 0
     assert (tmp_path / "sweep.parquet").exists()
     assert json.loads((tmp_path / "sweep_summary.json").read_text())["n_runs"] == 2
+
+
+def test_taxonomy_model_checksum_tracks_model_bytes(tmp_path):
+    import pandas as pd
+
+    model = tmp_path / "member.xml"
+    model.write_text("<model>a</model>")
+    taxonomy = pd.DataFrame([{"id": "m1", "file": "member.xml"}])
+    tax_path = tmp_path / "taxonomy.csv"
+    taxonomy.to_csv(tax_path, index=False)
+    first = _taxonomy_model_checksum(taxonomy, tax_path)
+    model.write_text("<model>b</model>")
+    assert _taxonomy_model_checksum(taxonomy, tax_path) != first
 
 
 def test_sweep_user_taxonomy_writes_runs(tmp_path):

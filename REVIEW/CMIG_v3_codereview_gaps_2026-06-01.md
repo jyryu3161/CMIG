@@ -53,11 +53,9 @@
 
 ### 🔴 High
 
-**F-1. OSQP 경로가 실제 HiGHS LP pFBA 결과를 `qp_only_approximate`/`flux_solver=None`로 오기재 (정직성·재현성)**
+**F-1. OSQP 경로 라벨은 루트 명세 기준 `qp_only_approximate`가 맞음 (2026-06-02 정정)**
 - 위치: `core/engine.py:171-177`
-- 직접 검증: `optlang.osqp_interface IS hybrid_interface == True` (highspy 설치 환경). 즉 `solver="osqp"`는 optlang의 **hybrid(OSQP-QP + HiGHS-LP)**로 라우팅되어 **실제 pFBA LP flux를 산출**한다. osqp golden profile flux가 gurobi와 **비트 단위 동일**(`ac=5.152535`, `co2=10.226982`, …, 8행 전부 일치). 그런데 코드는 osqp일 때 무조건 `flux_solver=None, flux_report_status="qp_only_approximate"`로 고정.
-- 영향: manifest의 `solver_setting.flux_solver=null`과 UI 라벨 "QP-only approximate"가 **실제 full LP pFBA 해를 근사라고 잘못 알린다.** 이전 R1(과대주장)과 방향만 반대인 **과소주장** — 과학적 재현성 메타데이터가 거짓. 또한 라벨이 정적이라 highspy 미설치 환경에서는 반대로 틀린다(환경 의존).
-- 권장: 런타임에 optlang osqp 인터페이스가 hybrid인지 감지 → `flux_solver="highs"`, `flux_report_status="full"`로 정확히 기록(= 명세 §4.2 "OSQP growth→LP pFBA 재계산" 경로가 실제로 동작함을 정직하게 반영). 또는 pure-OSQP를 의도하면 인터페이스를 강제하고 그 사실을 검증.
+- 정정: 루트 명세(`CMIG_명세서_v3.0.md`)는 OSQP baseline을 `qp_only_approximate`로 명시한다. 따라서 runtime optlang 세부와 별개로 제품 provenance는 `growth_solver=osqp`, `flux_solver=null`, `flux_report_status=qp_only_approximate`가 권위 계약이다.
 
 **F-2. run_hash `bounds` 구성요소가 모든 production assembly에서 `{}` 하드코딩**
 - 위치: `io/solve_output.py:51` (`build_run_components`), `golden_fixture.py:77`
@@ -124,7 +122,7 @@
 | # | 항목 | 명세 | MVP | 효율 | 근거 발견 |
 |---|---|---|---|---|---|
 | **A** | **namespace exchange 정합 producer**(decision·confidence·audit 자동 산출) — gate에 실제 보호력 부여 | §4.8 | 1a(blocker) | L | F-4 |
-| **B** | **OSQP flux 보고 정직화**(hybrid 런타임 감지 → `highs`/`full` 정확 기록) | §4.2 | 1a | M | F-1 |
+| **B** | **OSQP flux 보고 정직화**(`qp_only_approximate` 유지·full은 gurobi 전용) | §4.2 | 1a | M | F-1 |
 | **C** | **run_hash `bounds` 실배선**(하드코딩 `{}` 제거) | §5·§7 | 2 | S–M | F-2 |
 | **D** | **headless sweep 산출**(`cmig sweep` + facade → `sweep.parquet`·캐시·실패 diagnostic) | §10 G4 | 2 | M | F-5 |
 | **E** | **§7 manifest 전체 필드 persist** + env_lock/platform | §7 | 2 | M | F-6 |

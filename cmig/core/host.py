@@ -154,32 +154,33 @@ def solve_generic_host(host: Any, *, solver: str = "gurobi") -> HostSolveResult:
     from cmig.core.single_model import _require_lp, set_model_solver
 
     _require_lp(solver)
-    set_model_solver(host, solver)
-    sol = host.optimize()
-    status = str(sol.status)
-    if status != "optimal":
-        from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
+    with host:
+        set_model_solver(host, solver)
+        sol = host.optimize()
+        status = str(sol.status)
+        if status != "optimal":
+            from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
 
-        diag = diagnostic_from_parts([(
-            DiagnosticCode.INFEASIBLE,
-            f"generic host LP non-optimal (status={status})",
-        )])
-        return HostSolveResult(False, status, 0.0, [], {}, diag)
+            diag = diagnostic_from_parts([(
+                DiagnosticCode.INFEASIBLE,
+                f"generic host LP non-optimal (status={status})",
+            )])
+            return HostSolveResult(False, status, 0.0, [], {}, diag)
 
-    fluxes = {str(rid): float(v) for rid, v in sol.fluxes.items()}
-    coeffs = linear_reaction_coefficients(host)
-    objective_value = sum(float(c) * fluxes.get(r.id, 0.0) for r, c in coeffs.items())
-    interface = classify_host_exchanges(fluxes)
-    return HostSolveResult(
-        viable=objective_value > 1e-9,
-        status=status,
-        biomass=objective_value,
-        interface_fluxes=interface,
-        lumen_uptake={
-            f.metabolite: -f.flux for f in interface
-            if f.interface == HostInterface.LUMEN.value and f.label == Label.UPTAKE.value
-        },
-    )
+        fluxes = {str(rid): float(v) for rid, v in sol.fluxes.items()}
+        coeffs = linear_reaction_coefficients(host)
+        objective_value = sum(float(c) * fluxes.get(r.id, 0.0) for r, c in coeffs.items())
+        interface = classify_host_exchanges(fluxes)
+        return HostSolveResult(
+            viable=objective_value > 1e-9,
+            status=status,
+            biomass=objective_value,
+            interface_fluxes=interface,
+            lumen_uptake={
+                f.metabolite: -f.flux for f in interface
+                if f.interface == HostInterface.LUMEN.value and f.label == Label.UPTAKE.value
+            },
+        )
 
 
 def benchmark_generic_host(host: Any, *, solver: str = "gurobi") -> HostBenchmarkResult:
@@ -244,7 +245,18 @@ def solve_host(
         # viability: ATP maintenance ≥ 임계 (명시 강제). upper < 임계면 동반 상향(bound 역전 방지).
         if maintenance_reaction in ex_ids:
             mr = host.reactions.get_by_id(maintenance_reaction)
-            mr.bounds = (maintenance_flux, max(mr.upper_bound, maintenance_flux))
+            mr.bounds = (
+                max(mr.lower_bound, maintenance_flux),
+                max(mr.upper_bound, maintenance_flux),
+            )
+        else:
+            from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
+
+            diag = diagnostic_from_parts([(
+                DiagnosticCode.HOST_MAINTENANCE_ABSENT,
+                f"host maintenance reaction absent: {maintenance_reaction}",
+            )])
+            return HostSolveResult(False, "infeasible", 0.0, [], {}, diag)
 
         sol = host.optimize()
         status = str(sol.status)
@@ -284,6 +296,10 @@ def run_host_microbe(
     eng = engine if engine is not None else MicomEngine()
     community = eng.build_community(taxonomy, cmig_solver=solver)
     result = eng.cooperative_tradeoff(community, tradeoff_f, cmig_solver=solver)
+    if result.status != "optimal":
+        diag = result.diagnostic
+        host_res = HostSolveResult(False, result.status, 0.0, [], {}, diag)
+        return host_res, host_impact({}, host_res)
     secretion = {m: v for m, v in result.external_exchange.items() if v > 1e-6}  # lumen 가용
     host_res = solve_host(host, secretion, maintenance_flux=maintenance_flux, solver=solver)
     return host_res, host_impact(secretion, host_res)

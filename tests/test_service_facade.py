@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("micom")
 
-from cmig.cli.main import main  # noqa: E402
+from cmig.cli.main import _taxonomy_model_checksum, main  # noqa: E402
 from cmig.core.manifest import compute_run_hash  # noqa: E402
 from cmig.golden_fixture import _run_hash_components, build_taxonomy, solve  # noqa: E402
 from cmig.io.solve_output import file_checksum  # noqa: E402
@@ -57,7 +57,7 @@ def test_facade_solve_community_matches_cli(tmp_path):
     main(["solve", "--taxonomy", str(tax), "--solver", "gurobi", "--out", str(cli_dir)])
     EngineService().solve_community(
         taxonomy=pd.read_csv(tax),
-        model_checksum=file_checksum(tax),
+        model_checksum=_taxonomy_model_checksum(pd.read_csv(tax), tax),
         solver="gurobi", tradeoff_f=0.5, out_dir=fac_dir,
     )
     cli_hash = json.loads((cli_dir / "manifest.json").read_text())["run_hash"]

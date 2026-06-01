@@ -17,11 +17,13 @@ class DiagnosticCode(enum.Enum):
     """진단 코드 폐쇄 enum (§9). value = 직렬화/필터 키."""
 
     INFEASIBLE = "infeasible"                 # solve infeasible (§4.4)
+    UNBOUNDED = "unbounded"                   # solve unbounded/non-finite (§4.4)
     SOLVER_ERROR = "solver_error"             # solver 예외/실패
     CAPABILITY_MISSING = "capability_missing"  # solver/cobra capability 부재 (§2)
     GATE_BLOCKED = "gate_blocked"             # namespace hard gate 차단 (§4.8)
     MEDIUM_UNAPPLIED = "medium_unapplied"     # medium exchange 가 community 에 없음
     MEMBERS_MISSING = "members_missing"       # MICOM summary 멤버 누락 (I-1)
+    HOST_MAINTENANCE_ABSENT = "host_maintenance_absent"
 
 
 @dataclass(frozen=True)
@@ -40,11 +42,12 @@ class Diagnostic:
 
     @classmethod
     def from_exception(cls, exc: BaseException) -> Diagnostic:
-        """예외 → Diagnostic. 'infeasible' 메시지는 INFEASIBLE, 그 외 SOLVER_ERROR."""
+        """예외 → Diagnostic. 도메인 infeasible 타입을 우선하고 자유 문자열 추정은 피한다."""
         msg = f"{type(exc).__name__}: {exc}"
+        exc_type = type(exc).__name__.lower()
         code = (
             DiagnosticCode.INFEASIBLE
-            if "infeasible" in str(exc).lower()
+            if exc_type.endswith("infeasibleerror")
             else DiagnosticCode.SOLVER_ERROR
         )
         return cls(code=code, message=msg, detail={"exc_type": type(exc).__name__})
@@ -53,11 +56,13 @@ class Diagnostic:
 # F4: 다중 원인 → primary code 우선순위(앞일수록 우선). 미등재 code 는 후순위.
 _PRIORITY: tuple[DiagnosticCode, ...] = (
     DiagnosticCode.INFEASIBLE,
+    DiagnosticCode.UNBOUNDED,
     DiagnosticCode.SOLVER_ERROR,
     DiagnosticCode.CAPABILITY_MISSING,
     DiagnosticCode.GATE_BLOCKED,
     DiagnosticCode.MEDIUM_UNAPPLIED,
     DiagnosticCode.MEMBERS_MISSING,
+    DiagnosticCode.HOST_MAINTENANCE_ABSENT,
 )
 
 

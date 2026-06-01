@@ -56,6 +56,12 @@ def test_all_resolved_passes_with_full_coverage():
     assert result.coverage_pct == 100.0
 
 
+def test_low_confidence_resolved_is_not_warned():
+    result = evaluate_gate([_d("x", Confidence.LOW, DecisionStatus.RESOLVED)])
+    assert result.coverage_pct == 100.0
+    assert result.warned_low == []
+
+
 def test_coverage_pct_partial():
     decisions = [
         _d("a", Confidence.HIGH, DecisionStatus.RESOLVED),

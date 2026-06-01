@@ -23,8 +23,12 @@ def test_to_json_rejects_non_finite():
         d.to_json()
 
 
-def test_from_exception_maps_infeasible():
-    d = Diagnostic.from_exception(RuntimeError("model is infeasible"))
+class DemoInfeasibleError(RuntimeError):
+    pass
+
+
+def test_from_exception_maps_domain_infeasible_error():
+    d = Diagnostic.from_exception(DemoInfeasibleError("model is infeasible"))
     assert d.code is DiagnosticCode.INFEASIBLE
     assert "infeasible" in d.to_json()
 
@@ -46,6 +50,6 @@ def test_parse_diagnostic_roundtrip_and_legacy():
 
 def test_all_codes_present():
     assert {c.value for c in DiagnosticCode} == {
-        "infeasible", "solver_error", "capability_missing",
-        "gate_blocked", "medium_unapplied", "members_missing",
+        "infeasible", "unbounded", "solver_error", "capability_missing",
+        "gate_blocked", "medium_unapplied", "members_missing", "host_maintenance_absent",
     }

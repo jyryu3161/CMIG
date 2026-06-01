@@ -140,10 +140,14 @@ def apply_bounds(
     """
     original: dict[str, tuple[float, float]] = {}
     reactions = community.reactions  # type: ignore[attr-defined]
-    for b in bounds:
-        rxn = reactions.get_by_id(b.reaction_id)
-        original[b.reaction_id] = (rxn.lower_bound, rxn.upper_bound)
-        rxn.lower_bound, rxn.upper_bound = b.lower, b.upper
+    try:
+        for b in bounds:
+            rxn = reactions.get_by_id(b.reaction_id)
+            original[b.reaction_id] = (rxn.lower_bound, rxn.upper_bound)
+            rxn.bounds = (b.lower, b.upper)
+    except Exception:
+        restore_bounds(community, original)
+        raise
     return original
 
 
@@ -152,4 +156,4 @@ def restore_bounds(community: object, original: dict[str, tuple[float, float]]) 
     reactions = community.reactions  # type: ignore[attr-defined]
     for rid, (lo, hi) in original.items():
         rxn = reactions.get_by_id(rid)
-        rxn.lower_bound, rxn.upper_bound = lo, hi
+        rxn.bounds = (lo, hi)

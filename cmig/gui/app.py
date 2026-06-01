@@ -354,18 +354,19 @@ class CmigMainWindow(QMainWindow):
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
-            out_dir = Path(tempfile.mkdtemp(prefix="cmig-search-"))
-            rc = main([
-                "search-advanced-fixture",
-                "--metabolites", targets,
-                "--strategy", strategy,
-                "--top-k", top_k,
-                "--out", str(out_dir),
-            ])
-            if rc != 0:
-                raise RuntimeError(f"search failed with rc={rc}")
-            ctx.report_progress(1, 1)
-            payload = json.loads((out_dir / "search_advanced_summary.json").read_text())
+            with tempfile.TemporaryDirectory(prefix="cmig-search-") as td:
+                out_dir = Path(td)
+                rc = main([
+                    "search-advanced-fixture",
+                    "--metabolites", targets,
+                    "--strategy", strategy,
+                    "--top-k", top_k,
+                    "--out", str(out_dir),
+                ])
+                if rc != 0:
+                    raise RuntimeError(f"search failed with rc={rc}")
+                ctx.report_progress(1, 1)
+                payload = json.loads((out_dir / "search_advanced_summary.json").read_text())
             if not isinstance(payload, dict):
                 raise RuntimeError("search output is not a JSON object")
             return payload

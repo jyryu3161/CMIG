@@ -10,7 +10,12 @@ import pytest
 
 pytest.importorskip("micom")
 
-from cmig.core.golden import bundle_hashes, normalized_table_hash, tables_close  # noqa: E402
+from cmig.core.golden import (  # noqa: E402
+    GoldenMismatch,
+    bundle_hashes,
+    normalized_table_hash,
+    tables_close,
+)
 from cmig.golden_fixture import (  # noqa: E402
     FIXTURE_DIR,
     SOLVER_VARIANTS,
@@ -65,6 +70,15 @@ def test_osqp_profile_matches_gurobi_within_tolerance():
     )
 
 
+def test_tables_close_rejects_nan_against_finite():
+    import pyarrow as pa
+
+    actual = pa.table({"id": ["a"], "value": [float("nan")]})
+    expected = pa.table({"id": ["a"], "value": [1.0]})
+    with pytest.raises(GoldenMismatch):
+        tables_close(actual, expected, ["id"], ["value"])
+
+
 def test_sign_labels_real_data():
     """SC-2(실데이터): profile label 이 sign 규약(+secretion/−uptake)과 일치."""
     _result, bundle = solve("gurobi")
@@ -113,7 +127,7 @@ def test_expected_dir_is_under_fixtures():
 
 @pytest.mark.parametrize("solver,exp_flux_solver,exp_report", [
     ("gurobi", "gurobi", "full"),                                # gurobi = canonical full-flux
-    ("osqp", "highs", "full"),                                   # OSQP-QP + HiGHS-LP
+    ("osqp", None, "qp_only_approximate"),                       # OSQP baseline approximate
 ])
 def test_flux_report_metadata_per_solver(solver, exp_flux_solver, exp_report):
     """F1: solver metadata must match the actual optlang backend path."""

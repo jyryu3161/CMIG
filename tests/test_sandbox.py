@@ -4,9 +4,12 @@ import pytest
 
 from cmig.core.engine import SolveResult
 from cmig.core.sandbox import (
+    BoundConstraint,
     InMemoryRunStore,
     SandboxState,
+    apply_bounds,
     evaluate_sandbox,
+    restore_bounds,
 )
 
 
@@ -72,3 +75,16 @@ def test_multiple_previews_never_contaminate():
     for i in range(5):
         evaluate_sandbox(base, _result({"ac": 5.0 + i}), state=SandboxState.PREVIEW, store=store)
     assert store.count == 0
+
+
+def test_apply_bounds_is_atomic_for_upward_window_shift():
+    cobra = pytest.importorskip("cobra")
+
+    model = cobra.Model("m")
+    rxn = cobra.Reaction("R")
+    rxn.bounds = (-10.0, 5.0)
+    model.add_reactions([rxn])
+    original = apply_bounds(model, [BoundConstraint("R", 8.0, 20.0)])
+    assert rxn.bounds == (8.0, 20.0)
+    restore_bounds(model, original)
+    assert rxn.bounds == (-10.0, 5.0)

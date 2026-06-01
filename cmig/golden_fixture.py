@@ -3,7 +3,7 @@
 Design Ref: §16 / schema §7.4 / Plan SC: SC-1·SC-5·SC-6.
 
 MICOM 번들 test 모델에서 3-member community 를 구성해 solver별 golden 을 캡처/검증한다.
-solver 변형 2종: gurobi(기본·full)·osqp(optlang hybrid: OSQP-QP + HiGHS-LP full).
+solver 변형 2종: gurobi(기본·full)·osqp(qp_only_approximate).
 float 컬럼은 hash 전 rounding (golden.DEFAULT_DECIMALS).
 """
 
@@ -89,6 +89,7 @@ def capture(base_dir: Path = FIXTURE_DIR) -> dict[str, dict[str, str]]:
     hashes: dict[str, dict[str, str]] = {}
     for solver in SOLVER_VARIANTS:
         result, bundle = solve(solver)
+        dec = VARIANT_DECIMALS[solver]
         out = base_dir / "expected" / solver
         out.mkdir(parents=True, exist_ok=True)
         pq.write_table(bundle.nodes, out / "nodes.parquet")
@@ -98,18 +99,17 @@ def capture(base_dir: Path = FIXTURE_DIR) -> dict[str, dict[str, str]]:
         lines = ["member\tgrowth_rate"]
         for m in sorted(result.member_growth):
             g = result.member_growth[m]
-            lines.append(f"{m}\t{g:.{DEFAULT_DECIMALS}f}" if g is not None else f"{m}\tnan")
-        lines.append(f"__community__\t{result.objective:.{DEFAULT_DECIMALS}f}")
+            lines.append(f"{m}\t{g:.{dec}f}" if g is not None else f"{m}\tnan")
+        lines.append(f"__community__\t{result.objective:.{dec}f}")
         (out / "growth_expected.tsv").write_text("\n".join(lines) + "\n")
         # sign_expected.tsv (external profile 의 (metabolite, ui_flux, label))
         prof = bundle.profile.to_pylist()
         slines = ["metabolite\tui_flux\tlabel"]
-        slines += [f"{r['metabolite']}\t{r['ui_flux']:.{DEFAULT_DECIMALS}f}\t{r['label']}"
+        slines += [f"{r['metabolite']}\t{r['ui_flux']:.{dec}f}\t{r['label']}"
                    for r in sorted(prof, key=lambda x: x["metabolite"])]
         (out / "sign_expected.tsv").write_text("\n".join(slines) + "\n")
         # run_hash — 단일 canonical 구현 경유 ([HASH-SINGLE], I-5).
         comps = _run_hash_components(result)
-        dec = VARIANT_DECIMALS[solver]
         run_hash = compute_run_hash(comps, dec)
         (out / "config.json").write_text(
             json.dumps(

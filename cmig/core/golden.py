@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Any
 
 import pyarrow as pa
@@ -23,6 +24,8 @@ def _round(v: Any, decimals: int) -> Any:
         # NaN/inf 정규화 (OD-47: NaN 처리)
         if v != v:  # NaN
             return "NaN"
+        if math.isinf(v):
+            return "Infinity" if v > 0 else "-Infinity"
         return round(v, decimals)
     return v
 
@@ -42,7 +45,8 @@ def normalized_rows(table: pa.Table, decimals: int = DEFAULT_DECIMALS) -> list[d
 def normalized_table_hash(table: pa.Table, decimals: int = DEFAULT_DECIMALS) -> str:
     """float rounding·정렬 후 SHA-256 (SC-1 golden 비교용)."""
     payload = json.dumps(
-        normalized_rows(table, decimals), sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        normalized_rows(table, decimals), sort_keys=True, separators=(",", ":"),
+        ensure_ascii=True, allow_nan=False,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -99,9 +103,15 @@ def tables_close(
                 if av is not ev and not (av is None and ev is None):
                     raise GoldenMismatch(f"row{i}.{c}: None 불일치 {av} != {ev}")
                 continue
+            if isinstance(av, float) and isinstance(ev, float):
+                if math.isnan(av) or math.isnan(ev):
+                    raise GoldenMismatch(f"row{i}.{c}: NaN 불일치 {av} != {ev}")
+                if math.isinf(av) or math.isinf(ev):
+                    if av != ev:
+                        raise GoldenMismatch(f"row{i}.{c}: inf 불일치 {av} != {ev}")
+                    continue
             if abs(av - ev) > atol + rtol * abs(ev):
                 raise GoldenMismatch(
                     f"row{i}.{c}: |{av}-{ev}|={abs(av - ev):.2e} > atol={atol}+rtol·|e|"
                 )
     return True
-

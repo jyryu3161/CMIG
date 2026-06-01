@@ -9,6 +9,7 @@ member_growth) → 상호작용 유형(metrics.interaction_type)·MRO·MIP. 모�
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,6 +34,8 @@ class PairResult:
     mro_score: float                                  # NB: 'mro' 는 type.mro 와 충돌 → mro_score
     mip: int
     co_member_exchange: dict[str, dict[str, float]]
+    status: str = "ok"
+    diagnostic: str | None = None
 
 
 def analyze_pair(
@@ -58,12 +61,26 @@ def analyze_pair(
     community = eng.build_community(taxonomy, cmig_solver=solver)
     co = eng.cooperative_tradeoff(community, tradeoff_f, cmig_solver=solver)
     co_growth = {m: float(co.member_growth.get(m, 0.0) or 0.0) for m in ids}
+    if co.status != "optimal" or any(not math.isfinite(v) for v in co_growth.values()):
+        return PairResult(
+            member_a=a, member_b=b, mono_growth={}, co_growth=co_growth,
+            interaction="failed", mro_score=0.0, mip=0, co_member_exchange={},
+            status="failed", diagnostic=co.diagnostic or f"co-culture status={co.status}",
+        )
 
     # monoculture — 각 멤버 GEM 단독 FBA
     mono_growth: dict[str, float] = {}
     for m, f in zip(ids, list(taxonomy["file"]), strict=True):
         model = cobra.io.read_sbml_model(str(f))
-        mono_growth[m] = solve_single_model(model, method="FBA", solver=solver).objective
+        mono = solve_single_model(model, method="FBA", solver=solver)
+        mono_growth[m] = mono.objective
+        if mono.status != "optimal" or not math.isfinite(mono.objective):
+            return PairResult(
+                member_a=a, member_b=b, mono_growth=mono_growth, co_growth=co_growth,
+                interaction="failed", mro_score=0.0, mip=0, co_member_exchange={},
+                status="failed",
+                diagnostic=mono.diagnostic or f"monoculture {m} status={mono.status}",
+            )
 
     itype = interaction_type(mono_growth[a], mono_growth[b], co_growth[a], co_growth[b])
 

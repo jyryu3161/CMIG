@@ -115,7 +115,7 @@ def genetic_search(
             nxt.append(child)
         pop = nxt
 
-    final = sorted(set(pop) | set(cache), key=fit, reverse=True)
+    final = sorted(set(pop) | set(cache), key=lambda g: (-fit(g), g))
     best = final[0]
     return GAResult(
         best_members=best, best_fitness=fit(best),

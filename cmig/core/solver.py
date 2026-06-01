@@ -1,10 +1,10 @@
 """SolverBackend seam — solver **capability 보고 + selection**.
 
 Design Ref: §4.2 (seam) / schema §5 [SOLVER-SPLIT] / Plan §7.2 (Gurobi 기본).
-Plan SC: SC-1 (solver별 golden), SC-6 (OSQP→LP 재계산).
+Plan SC: SC-1 (solver별 golden), SC-6 (OSQP approximate provenance).
 
 이 seam 의 책임은 **(1) solver capability 보고**(LP/QP/MILP·가용성)와 **(2) solver 선택**이다.
-실제 community solve·pFBA·OSQP(QP)→LP 재계산은 **MICOM(optlang)이 내부 수행**하며,
+실제 community solve는 **MICOM(optlang)이 내부 수행**하며,
 CMIG 는 `engine.SOLVER_MAP` 으로 cmig solver 이름을 MICOM optlang solver 로 매핑한다
 (solve 는 MICOM 이 수행; CMIG 는 capability 보고·선택만, §4.2).
 즉 이 seam 은 solve_* 를 직접 호출하지 않는다 — solver 교체(golden 변형·OSQP→LP swap)는
@@ -12,7 +12,8 @@ optlang solver 이름 선택으로 실현된다(Check G-1 동기화).
 
 capability 부재 시 해당 분석만 비활성화([disable_analysis_on_missing], §2·schema §5.3) —
 앱 전체 강등이 아니다. GLPK 는 미번들(GPL) → 전 role 제외.
-역할별 enum(§4.2 노트): solver="osqp"는 optlang hybrid alias(OSQP-QP + HiGHS-LP),
+역할별 enum(§4.2 노트): baseline community solver="osqp"는 QP-only approximate 로 보고한다.
+단일모델 cobra/optlang helper에서는 osqp hybrid LP capability를 사용할 수 있다.
 glpk는 GPL 이슈로 registry 제외.
 """
 
@@ -78,18 +79,14 @@ class HighsBackend:
 
 
 class OsqpBackend:
-    """OSQP hybrid alias — QP는 OSQP, LP flux는 HiGHS가 담당한다.
-
-    cobra/optlang에서 solver="osqp"는 `optlang.hybrid_interface`로 등록된다. 따라서
-    linear LP는 HiGHS로 풀 수 있지만, MILP는 CMIG의 "osqp" role로 노출하지 않는다.
-    """
+    """OSQP optlang hybrid capability. Community provenance is still QP-only approximate."""
 
     name: SolverName = "osqp"
 
     def capability(self) -> SolverCapability:
         return SolverCapability(
             name="osqp", lp=True, qp=True, milp=False,
-            available=_importable("osqp") and _importable("highspy")
+            available=_importable("osqp") and _importable("highspy"),
         )
 
 

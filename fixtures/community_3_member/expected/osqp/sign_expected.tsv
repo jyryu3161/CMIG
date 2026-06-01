@@ -1,9 +1,9 @@
 metabolite	ui_flux	label
-ac	5.152535	secretion
-co2	10.226982	secretion
-glc__D	6.521189	uptake
-h	13.917968	secretion
-h2o	13.409979	secretion
-nh4	2.382660	uptake
-o2	9.721812	uptake
-pi	1.607448	uptake
+ac	5.1525	secretion
+co2	10.2270	secretion
+glc__D	6.5212	uptake
+h	13.9180	secretion
+h2o	13.4100	secretion
+nh4	2.3827	uptake
+o2	9.7218	uptake
+pi	1.6074	uptake

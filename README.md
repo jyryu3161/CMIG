@@ -23,8 +23,8 @@
 
 **Solver (F1: full-flux metadata)**:
 - `gurobi` = canonical full-flux(QP+LP 모두 Gurobi → `flux_report_status='full'`).
-- `osqp` = optlang hybrid 경로(QP는 OSQP, LP pFBA flux는 HiGHS →
-  `flux_report_status='full'`, `flux_solver='highs'`).
+- `osqp` = baseline approximate 경로(`flux_report_status='qp_only_approximate'`,
+  `flux_solver=null`).
 - 별도 `osqp_growth_highs_flux` solver 이름은 폐기됨 — `osqp` alias 자체가 optlang hybrid다.
 
 범위:

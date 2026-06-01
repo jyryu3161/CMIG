@@ -5,7 +5,8 @@
 
 args <- commandArgs(trailingOnly = TRUE)
 opt <- list(width = "6", height = "4", dpi = "600", title = "External Profile",
-            format = "svg", out = "out.svg", data = "data.csv", seed = "42")
+            format = "svg", out = "out.svg", data = "data.csv", seed = "42",
+            rlib = "")
 i <- 1
 while (i <= length(args)) {
   key <- sub("^--", "", args[[i]])
@@ -14,6 +15,9 @@ while (i <= length(args)) {
 }
 
 set.seed(as.integer(opt$seed))            # figure_spec 재현(§9)
+if (!is.null(opt$rlib) && nzchar(opt$rlib) && dir.exists(opt$rlib)) {
+  .libPaths(c(opt$rlib, .libPaths()))
+}
 df <- read.csv(opt$data, stringsAsFactors = FALSE)
 suppressMessages(library(ggplot2))
 

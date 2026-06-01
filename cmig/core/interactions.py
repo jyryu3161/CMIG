@@ -12,7 +12,7 @@ from __future__ import annotations
 import pyarrow as pa
 
 from cmig.core.engine import SolveResult
-from cmig.core.sign import Label, Scope, convert, cross_feeding_weight
+from cmig.core.sign import NOISE_FLOOR, Label, Scope, convert, cross_feeding_weight
 from cmig.core.tidy import (
     EDGES_SCHEMA,
     NODES_SCHEMA,
@@ -28,7 +28,7 @@ def _label_str(label: Label | None) -> str | None:
     return label.value if label is not None else None
 
 
-def build_tidy(result: SolveResult, eps: float = 1e-6) -> TidyBundle:
+def build_tidy(result: SolveResult, eps: float = NOISE_FLOOR) -> TidyBundle:
     """SolveResult → TidyBundle. 정렬 결정적(determinism) for golden 비교."""
     members = sorted(result.members)
 

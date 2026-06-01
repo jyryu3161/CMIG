@@ -9,7 +9,7 @@ MICOM 호출은 이 wrapper 한 곳만 경유 (public API + documented flux:
 
 CMIG solver 이름 → MICOM(optlang) solver 매핑:
   gurobi  → gurobi   (QP+LP 모두 Gurobi → flux_report_status=full, canonical full-flux)
-  osqp    → osqp     (optlang hybrid: OSQP-QP + HiGHS-LP pFBA → flux_report_status=full)
+  osqp    → osqp     (OSQP growth 경로, flux_report_status=qp_only_approximate)
 """
 
 from __future__ import annotations
@@ -25,13 +25,12 @@ FluxReportStatus = Literal["full", "qp_only_approximate"]
 FLUX_REPORT_LABEL = {"full": "Full (LP pFBA)", "qp_only_approximate": "QP-only approximate"}
 
 # CMIG solver 이름 → MICOM optlang solver (schema §5.2 / golden 변형 §16).
-# optlang/cobra에서 solver="osqp"는 optlang.hybrid_interface alias다. QP는 OSQP, linear
-# pFBA/LP는 HiGHS로 풀리므로 결과 flux는 full pFBA로 표기한다.
+# 루트 명세 기준: baseline에서 OSQP는 QP-only approximate 로 보고한다.
 SOLVER_MAP: dict[str, str] = {
     "gurobi": "gurobi",
     "osqp": "osqp",
 }
-# F1: 허용 cmig solver — gurobi(full) / osqp(optlang hybrid full). 그 외(예: highs 직접)는 거부
+# F1: 허용 cmig solver — gurobi(full) / osqp(qp_only_approximate).
 # (CLI choices 뿐 아니라 라이브러리 레벨에서도 강제).
 ALLOWED_CMIG_SOLVERS = frozenset(SOLVER_MAP)
 
@@ -40,7 +39,7 @@ def _require_allowed_solver(cmig_solver: str) -> None:
     if cmig_solver not in ALLOWED_CMIG_SOLVERS:
         raise ValueError(
             f"미지원 cmig solver: {cmig_solver!r} (허용: {sorted(ALLOWED_CMIG_SOLVERS)}). "
-            f"지원 solver 는 gurobi 또는 osqp(optlang hybrid)입니다. [F1]"
+            f"지원 solver 는 gurobi 또는 osqp입니다. [F1]"
         )
 
 
@@ -169,8 +168,7 @@ class MicomEngine:
         # F4: 진단을 (DiagnosticCode, message) 로 수집 → diagnostic_from_parts 구조화.
         diag_parts: list[tuple[DiagnosticCode, str]] = []
         if cmig_solver == "osqp":
-            # optlang "osqp"는 hybrid_interface: QP=OSQP, linear pFBA/LP=HiGHS.
-            growth_solver, flux_solver, flux_report = "osqp", "highs", "full"
+            growth_solver, flux_solver, flux_report = "osqp", None, "qp_only_approximate"
         else:
             # gurobi = LP+QP 동일 solver → full (canonical full-flux). gurobi 만 'full' (F1).
             growth_solver = flux_solver = "gurobi"
@@ -179,9 +177,15 @@ class MicomEngine:
         # status — growth 비유한(infeasible) 가드 + 멤버 누락 진단 (§4.4).
         objective = float(sol.growth_rate)
         status: Literal["optimal", "infeasible", "unbounded"] = "optimal"
-        if math.isnan(objective):
-            status = "infeasible"
-            diag_parts.append((DiagnosticCode.INFEASIBLE, "community growth NaN (infeasible)"))
+        if not math.isfinite(objective):
+            if math.isinf(objective):
+                status = "unbounded"
+                diag_parts.append(
+                    (DiagnosticCode.UNBOUNDED, "community growth is infinite (unbounded)")
+                )
+            else:
+                status = "infeasible"
+                diag_parts.append((DiagnosticCode.INFEASIBLE, "community growth NaN (infeasible)"))
         if missing:
             diag_parts.append(
                 (DiagnosticCode.MEMBERS_MISSING, f"MICOM summary 누락 멤버: {sorted(missing)}")

@@ -151,12 +151,15 @@ class JobRunner:
 
     def result(self, job_id: str, timeout: float | None = None) -> Any:
         """job 완료 대기 후 result 반환(future.result)."""
-        self._futures[job_id].result(timeout=timeout)
+        with self._lock:
+            future = self._futures[job_id]
+        future.result(timeout=timeout)
         return self.poll(job_id).result
 
     def retry(self, job_id: str) -> str:
         """실패/취소 job 의 (kind, fn, on_progress) 재제출 → 새 job_id."""
-        kind, fn, on_progress = self._specs[job_id]
+        with self._lock:
+            kind, fn, on_progress = self._specs[job_id]
         return self.submit(kind, fn, on_progress=on_progress)
 
     def shutdown(self, wait: bool = True) -> None:
@@ -179,9 +182,11 @@ def make_sweep_job(
     from cmig.core.sweep import run_sweep
 
     def _job(ctx: JobContext) -> Any:
-        return run_sweep(
+        result = run_sweep(
             axes, run_hash_fn=run_hash_fn, solve_fn=solve_fn, metric=metric, cache=cache,
             progress=ctx.report_progress, should_cancel=lambda: ctx.cancelled,
         )
+        ctx.raise_if_cancelled()
+        return result
 
     return _job

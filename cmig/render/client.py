@@ -83,6 +83,7 @@ class RenderClient:
                 "--data", str(data_csv), "--out", str(out), "--format", spec.format,
                 "--width", str(spec.width_in), "--height", str(spec.height_in),
                 "--dpi", str(spec.dpi), "--title", spec.title, "--seed", str(spec.seed),
+                "--rlib", str(Path(".Rlib").resolve()),
             ]
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if proc.returncode != 0 or not out.exists():
@@ -109,8 +110,10 @@ class RenderClient:
         ax.set_title(spec.title)
         ax.set_xlabel("net exchange flux (+ secretion / - uptake)")
         fig.tight_layout()
-        fig.savefig(out, format=spec.format)
-        plt.close(fig)
+        try:
+            fig.savefig(out, format=spec.format)
+        finally:
+            plt.close(fig)
         return out
 
 

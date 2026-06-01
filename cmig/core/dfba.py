@@ -103,6 +103,7 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
                 return DfbaResult(tc, "stalled", None, managed)
             # (3) explicit Euler + non-negativity (농도<0 이면 dt halving)
             step_dt = min(dt, config.t_end - t)
+            growth_scale = 1.0
             while step_dt >= config.min_dt:
                 new_conc = {
                     ex: conc[ex] + float(sol.fluxes[ex]) * biomass * step_dt for ex in managed
@@ -111,16 +112,25 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
                     break
                 step_dt /= 2.0                                  # 적응: 농도 음수 방지
             else:
-                # min_dt 에서도 음수 → 0 으로 clamp(고갈) 후 진행
+                # min_dt 에서도 음수 → 가용 기질 이하로 flux/growth를 함께 스케일.
+                step_dt = config.min_dt
+                fractions = []
+                for ex in managed:
+                    flux = float(sol.fluxes[ex])
+                    required = -flux * biomass * step_dt
+                    if required > 0.0:
+                        fractions.append(max(0.0, min(1.0, conc[ex] / required)))
+                growth_scale = min(fractions) if fractions else 1.0
                 new_conc = {
-                    ex: max(conc[ex] + float(sol.fluxes[ex]) * biomass * config.min_dt, 0.0)
+                    ex: max(conc[ex] + float(sol.fluxes[ex]) * biomass * step_dt * growth_scale,
+                            0.0)
                     for ex in managed
                 }
-                step_dt = config.min_dt
             conc = {ex: max(v, 0.0) for ex, v in new_conc.items()}
-            biomass = biomass + mu * biomass * step_dt
+            effective_mu = mu * growth_scale
+            biomass = biomass + effective_mu * biomass * step_dt
             t += step_dt
-            tc.append(DfbaTimepoint(t, biomass, mu, dict(conc)))
+            tc.append(DfbaTimepoint(t, biomass, effective_mu, dict(conc)))
 
         return DfbaResult(tc, "completed", None, managed)
 

@@ -37,10 +37,9 @@
   solver 표면을 단순화. 실 LP full-flux 가 필요하면 gurobi 사용.
 - `osqp_growth_gurobi_flux`(OSQP-growth→gurobi-LP recalc) experimental 변형은 필요 시 별도 후속.
 
-## 개정 (2026-06-01, final review) — Accepted
+## 개정 (2026-06-02, debug review) — Accepted
 
-- 재검증 결과 cobra/optlang에서 `solver="osqp"`는 `optlang.hybrid_interface` alias이며,
-  QP는 OSQP, linear LP/pFBA는 HiGHS로 실행된다.
-- 별도 `osqp_growth_highs_flux` 이름은 계속 폐기하지만, 남아 있는 `osqp` 변형의 메타데이터는
-  `growth_solver="osqp"`, `flux_solver="highs"`, `flux_report_status="full"`로 기록한다.
-- 따라서 위 "gurobi-only full-flux" 개정은 런타임 사실과 맞지 않아 supersede한다.
+- 루트 명세(`CMIG_명세서_v3.0.md`)를 권위로 보아 baseline `osqp` 변형은
+  `growth_solver="osqp"`, `flux_solver=null`, `flux_report_status="qp_only_approximate"`로
+  기록한다.
+- 별도 `osqp_growth_highs_flux` 이름은 계속 폐기한다.

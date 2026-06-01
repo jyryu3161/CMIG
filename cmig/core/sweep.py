@@ -99,6 +99,8 @@ class RunHashCache:
 def enumerate_conditions(axes: list[SweepAxis]) -> list[SweepCondition]:
     """축들의 데카르트 곱 → 조건 목록 (결정적 순서)."""
     kinds = [a.kind for a in axes]
+    if len(kinds) != len(set(kinds)):
+        raise ValueError(f"sweep axis kind 중복: {kinds}")
     combos = itertools.product(*[a.values for a in axes])
     conditions = []
     for i, combo in enumerate(combos):

@@ -138,6 +138,30 @@ def test_sweep_cooperative_cancel_partial():
     )
     assert rows == []
 
+    r = _runner()
+    started = threading.Event()
+    axes = [SweepAxis("tradeoff_f", [0.3, 0.5, 0.7])]
+
+    def slow_solve(c):
+        started.set()
+        time.sleep(0.05)
+        return 1.0
+
+    jid = r.submit(
+        "sweep",
+        make_sweep_job(
+            axes,
+            run_hash_fn=lambda c: c.condition_id,
+            solve_fn=slow_solve,
+            metric="g",
+        ),
+    )
+    started.wait(timeout=2)
+    r.cancel(jid)
+    r.result(jid, timeout=5)
+    assert r.poll(jid).status is JobStatus.CANCELLED
+    r.shutdown()
+
 
 def test_jobrunner_qt_independent():
     """SC-J6: cmig.service.jobrunner 단독 import 가 PySide6 미로드(subprocess)."""

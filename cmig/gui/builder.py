@@ -228,7 +228,7 @@ class SearchView(QWidget):
             f"strategy: {strategy}" + (f" · warnings: {warning_count}" if warning_count else "")
         )
         ranked = summary.get("top_ranked", {})
-        rows: list[tuple[str, str, float, float, str]] = []
+        rows: list[tuple[str, str, float | None, float | None, str]] = []
         if isinstance(ranked, dict):
             for target, items in ranked.items():
                 if not isinstance(items, list):
@@ -237,12 +237,13 @@ class SearchView(QWidget):
                     if not isinstance(item, dict):
                         continue
                     members = item.get("members", [])
-                    score = _float_value(item.get("score", 0.0))
+                    score = _optional_float(item.get("score"))
+                    target_flux = _optional_float(item.get("target_flux"))
                     rows.append((
                         "+".join(str(x) for x in members) if isinstance(members, list) else "",
                         str(target),
                         score,
-                        _float_value(item.get("target_flux", score)),
+                        target_flux if target_flux is not None else score,
                         str(item.get("status", "ok")),
                     ))
         elif isinstance(ranked, list):
@@ -250,7 +251,7 @@ class SearchView(QWidget):
                 if not isinstance(item, dict):
                     continue
                 members = item.get("members", [])
-                score = _float_value(item.get("score", 0.0))
+                score = _optional_float(item.get("score"))
                 rows.append((
                     "+".join(str(x) for x in members) if isinstance(members, list) else "",
                     str(summary.get("target", "")),
@@ -261,7 +262,11 @@ class SearchView(QWidget):
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             for c, value in enumerate(row):
-                text = f"{value:.4g}" if isinstance(value, float) else str(value)
+                text = (
+                    "—" if value is None
+                    else f"{value:.4g}" if isinstance(value, float)
+                    else str(value)
+                )
                 self.table.setItem(r, c, QTableWidgetItem(text))
         pareto = summary.get("pareto_frontier")
         pareto_count = len(pareto) if isinstance(pareto, list) else 0
@@ -274,3 +279,11 @@ def _float_value(value: object) -> float:
     if isinstance(value, (int, float, str)):
         return float(value)
     return 0.0
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float, str)):
+        return float(value)
+    return None

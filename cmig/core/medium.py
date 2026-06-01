@@ -81,7 +81,7 @@ def _apply_min_medium_invariants(
             continue
         if not _is_blocked(model, ex):
             rxn = model.reactions.get_by_id(ex)
-            out[ex] = abs(float(rxn.lower_bound)) or 1000.0   # 허용 uptake 량
+            out[ex] = abs(float(rxn.lower_bound))   # 허용 uptake 량
     # oxygen_mode: anaerobic → O₂ 제외.
     if oxygen_mode == "anaerobic":
         out.pop(O2_EXCHANGE, None)

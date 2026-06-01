@@ -11,7 +11,7 @@ import pytest
 
 pytest.importorskip("micom")
 
-from cmig.cli.main import main  # noqa: E402
+from cmig.cli.main import _load_bounds_json, main  # noqa: E402
 from cmig.core.tidy import TidyBundle  # noqa: E402
 from cmig.golden_fixture import build_taxonomy  # noqa: E402
 
@@ -65,6 +65,17 @@ def test_solve_missing_taxonomy(tmp_path, capsys):
     rc = main(["solve", "--taxonomy", str(tmp_path / "nope.csv"), "--out", str(tmp_path / "o")])
     assert rc == 2
     assert "taxonomy" in capsys.readouterr().err.lower()
+
+
+def test_bounds_json_rejects_null_and_bool(tmp_path):
+    for payload in (
+        {"R1": [None, 1]},
+        {"R1": [False, True]},
+    ):
+        bounds = tmp_path / "bounds.json"
+        bounds.write_text(json.dumps(payload))
+        with pytest.raises(ValueError, match="bounds 값 오류"):
+            _load_bounds_json(str(bounds))
 
 
 def test_solve_blocks_unresolved_high_namespace_decision(tmp_path, capsys):
