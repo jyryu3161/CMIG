@@ -74,10 +74,18 @@ def test_empty_decisions_is_full_coverage_unblocked():
 
 
 def test_namespace_suggest_exact_matches_and_unresolved():
-    decisions = suggest_namespace_decisions(["ac", "unknown"], known_targets={"ac"})
+    decisions = suggest_namespace_decisions(
+        ["ac", "EX_GLC_e", "unknown"],
+        known_targets={"ac", "glc"},
+    )
     by_met = {d.metabolite: d for d in decisions}
     assert by_met["ac"].status is DecisionStatus.RESOLVED
     assert by_met["ac"].target_id == "bigg:ac"
+    assert by_met["EX_GLC_e"].status is DecisionStatus.WARNED
+    assert by_met["EX_GLC_e"].confidence is Confidence.LOW
+    assert by_met["EX_GLC_e"].target_id == "bigg:glc"
     assert by_met["unknown"].status is DecisionStatus.UNRESOLVED
     payload = decisions_to_jsonable(decisions)
-    assert payload[0]["confidence"] == "high"
+    by_payload = {d["metabolite"]: d for d in payload}
+    assert by_payload["ac"]["confidence"] == "high"
+    assert by_payload["EX_GLC_e"]["confidence"] == "low"

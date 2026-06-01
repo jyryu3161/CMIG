@@ -50,6 +50,29 @@ def test_project_explorer_add_model():
     assert models_root.child(0).text(0) == "e_coli_core"
 
 
+def test_shell_has_file_workflow_actions():
+    """GUI shell 이 파일 열기/fixture 실행 액션을 노출한다."""
+    _app()
+    w = build_main_window()
+    assert w.open_run_action.text() == "Open Run"
+    assert w.run_fixture_action.text() == "Run Fixture"
+
+
+def test_load_run_dir_updates_profile_and_explorer(tmp_path):
+    """Open Run 워크플로: tidy run 디렉터리 → Profile 탭 + run explorer."""
+    from cmig.core.tidy import empty_bundle
+
+    _app()
+    empty_bundle().write(tmp_path)
+    w = build_main_window()
+    w.load_run_dir(tmp_path)
+    runs_root = w.explorer.topLevelItem(2)
+    assert runs_root.childCount() == 1
+    assert runs_root.child(0).text(0) == tmp_path.name
+    assert w.profile_view.table.rowCount() == 0
+    assert w.tabs.currentWidget() is w.profile_view
+
+
 def test_jobrunner_qt_bridge_reflects_job():
     """SC-AP4: JobRunner→Qt bridge 가 실 job 상태 표시(orphan UI 아님)."""
     _app()

@@ -129,28 +129,58 @@ def suggest_namespace_decisions(
 ) -> list[NamespaceDecision]:
     """exchange/metabolite id 목록 → namespace decision 초안 생성.
 
-    Exact id match 는 high-confidence resolved 로 제안하고, target 목록에 없거나 목록이
-    제공되지 않은 id 는 high-confidence unresolved 로 둔다. 이 producer 는 자동병합을 하지
-    않고, 사용자가 검토할 JSON decision 파일의 초안을 만드는 제품 경로다.
+    Exact id match 는 high-confidence resolved 로 제안한다. 대소문자·구획 suffix 정규화로만
+    맞는 후보는 low-confidence warned 로 제안해 자동병합을 피하고 사용자 검토를 요구한다.
+    후보가 없으면 high-confidence unresolved 로 둔다.
     """
     targets = known_targets or set()
+    normalized_targets = {_normalize_metabolite_id(t): t for t in targets}
     out: list[NamespaceDecision] = []
     for sid in sorted(set(source_ids)):
         clean = sid.strip()
         if not clean:
             continue
-        target = clean if clean in targets else None
+        normalized = _normalize_metabolite_id(clean)
+        exact = clean in targets
+        target = clean if exact else normalized_targets.get(normalized)
+        confidence = Confidence.HIGH if exact or target is None else Confidence.LOW
+        status = (
+            DecisionStatus.RESOLVED if exact else
+            DecisionStatus.WARNED if target is not None else
+            DecisionStatus.UNRESOLVED
+        )
         out.append(
             NamespaceDecision(
                 metabolite=clean,
                 source_id=f"{source_namespace}:{clean}",
                 target_id=None if target is None else f"{target_namespace}:{target}",
-                confidence=Confidence.HIGH,
-                status=DecisionStatus.RESOLVED if target is not None else DecisionStatus.UNRESOLVED,
-                rationale="exact id match" if target is not None else "no exact target id match",
+                confidence=confidence,
+                status=status,
+                rationale=(
+                    "exact id match" if exact else
+                    "normalized id candidate; manual review required"
+                    if target is not None else
+                    "no exact or normalized target id match"
+                ),
             )
         )
     return out
+
+
+def _normalize_metabolite_id(raw: str) -> str:
+    """Namespace 후보 비교용 느슨한 metabolite id 정규화."""
+    x = raw.strip()
+    if x.startswith("EX_"):
+        x = x[3:]
+    if "__" in x and x.rsplit("__", 1)[-1]:
+        maybe_member = x.rsplit("__", 1)[-1]
+        if maybe_member and maybe_member[0].isupper():
+            x = x.rsplit("__", 1)[0]
+    for suffix in ("_e", "_m", "_c", "_p", "_lumen", "_blood"):
+        if x.endswith(suffix):
+            x = x[: -len(suffix)]
+            break
+    return x.lower()
 
 
 def decisions_to_jsonable(decisions: list[NamespaceDecision]) -> list[dict[str, Any]]:

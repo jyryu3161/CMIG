@@ -12,10 +12,13 @@ JobRunner.poll 로 실 job 상태를 표시.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, Qt, QTimer
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QFileDialog,
     QHeaderView,
     QMainWindow,
     QSplitter,
@@ -66,6 +69,9 @@ class ProjectExplorer(QTreeWidget):
 
     def add_model(self, label: str) -> None:
         self._roots["models"].addChild(QTreeWidgetItem([label]))
+
+    def add_run(self, label: str) -> None:
+        self._roots["runs"].addChild(QTreeWidgetItem([label]))
 
 
 class RuntimeJobsPanel(QTableWidget):
@@ -154,6 +160,26 @@ class CmigMainWindow(QMainWindow):
         splitter.setSizes([200, 600, 250])
         self.setCentralWidget(splitter)
         self.statusBar().showMessage(self.tr_map["ready"])
+        self._install_workflow_actions()
+
+    def _install_workflow_actions(self) -> None:
+        toolbar = self.addToolBar("Workflow")
+        self.open_run_action = QAction("Open Run", self)
+        self.open_run_action.triggered.connect(self._open_run_dialog)
+        self.run_fixture_action = QAction("Run Fixture", self)
+        self.run_fixture_action.triggered.connect(self._run_fixture_dialog)
+        toolbar.addAction(self.open_run_action)
+        toolbar.addAction(self.run_fixture_action)
+
+    def _open_run_dialog(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Open CMIG Run")
+        if path:
+            self.load_run_dir(path)
+
+    def _run_fixture_dialog(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        if path:
+            self.run_fixture(path)
 
     def set_central(self, widget: QWidget) -> None:
         """중앙 위젯 교체(예: Interaction Graph Viewer 도킹)."""
@@ -165,6 +191,28 @@ class CmigMainWindow(QMainWindow):
         jid = self.runner.submit(kind, fn)
         self.bridge.track(jid)
         return jid
+
+    def load_run_dir(self, path: str | Path) -> None:
+        """nodes/edges/profile parquet run 디렉터리를 열어 Profile 탭과 Explorer 에 반영."""
+        from cmig.core.tidy import TidyBundle
+
+        run_dir = Path(path)
+        bundle = TidyBundle.read(run_dir)
+        self.profile_view.load_profile(bundle.profile.to_pylist())
+        self.explorer.add_run(run_dir.name)
+        self.tabs.setCurrentWidget(self.profile_view)
+        self.statusBar().showMessage(f"Loaded run: {run_dir}")
+
+    def run_fixture(self, out_dir: str | Path, *, solver: str = "gurobi") -> Any:
+        """GUI 버튼용 fixture solve. 성공 시 산출 run 을 즉시 연다."""
+        from cmig.service import EngineService
+
+        outcome = EngineService().solve_fixture(solver=solver, out_dir=out_dir)
+        if outcome.status == "ok" and outcome.manifest_path is not None:
+            self.load_run_dir(outcome.manifest_path.parent)
+        else:
+            self.statusBar().showMessage(f"Fixture failed: {outcome.diagnostic}")
+        return outcome
 
 
 def build_main_window(runner: JobRunner | None = None, lang: str = "ko") -> CmigMainWindow:

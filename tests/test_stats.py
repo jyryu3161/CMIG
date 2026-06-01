@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from cmig.core.stats import (
@@ -84,6 +86,29 @@ def test_groups_from_sweep_rows_wiring():
     g = groups_from_sweep_rows(rows, metric="growth", group_axis="solver")
     assert set(g) == {"gurobi", "osqp"}
     assert g["gurobi"] == [1.0, 1.2] and g["osqp"] == [0.8]
+
+
+def test_stats_sweep_cli_reads_sweep_store(tmp_path):
+    from cmig.cli.main import main
+    from cmig.core.sweep import SweepRow, write_sweep_parquet
+
+    sweep = tmp_path / "sweep.parquet"
+    write_sweep_parquet(
+        [
+            SweepRow("c0", {"solver": "gurobi"}, "growth", 1.0, "h0", "ok", None, False),
+            SweepRow("c1", {"solver": "gurobi"}, "growth", 1.2, "h1", "ok", None, False),
+            SweepRow("c2", {"solver": "osqp"}, "growth", 0.8, "h2", "ok", None, False),
+            SweepRow("c3", {"solver": "osqp"}, "growth", 0.9, "h3", "ok", None, False),
+        ],
+        sweep,
+    )
+    out = tmp_path / "stats"
+    rc = main(["stats-sweep", "--sweep", str(sweep), "--out", str(out)])
+    assert rc == 0
+    payload = json.loads((out / "stats_sweep_summary.json").read_text())
+    assert payload["group_axis"] == "solver"
+    assert payload["groups"] == {"gurobi": 2, "osqp": 2}
+    assert payload["test"]["test"] == "mann_whitney_u"
 
 
 def test_normality_pvalue():

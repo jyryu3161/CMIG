@@ -347,6 +347,55 @@ def _cmd_stats_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_stats_sweep(args: argparse.Namespace) -> int:
+    """sweep.parquet 결과를 stats summary 로 변환."""
+    try:
+        import pyarrow.parquet as pq
+
+        from cmig.core.stats import (
+            distribution_summary,
+            groups_from_sweep_rows,
+            stats_warnings,
+            two_group_test,
+        )
+    except ImportError:
+        print("stats-sweep 는 stats extra 필요: uv sync --extra stats", file=sys.stderr)
+        return 2
+    sweep_path = Path(args.sweep)
+    if not sweep_path.exists():
+        print(f"sweep 파일 없음: {sweep_path}", file=sys.stderr)
+        return 2
+    rows = pq.read_table(sweep_path).to_pylist()  # type: ignore[no-untyped-call]
+    groups = groups_from_sweep_rows(rows, metric=args.metric, group_axis=args.group_axis)
+    names = sorted(groups)
+    test = None
+    if len(names) == 2:
+        result = two_group_test(
+            groups[names[0]],
+            groups[names[1]],
+            parametric=args.parametric,
+        )
+        test = {
+            "groups": names,
+            "test": result.test,
+            "statistic": result.statistic,
+            "pvalue": result.pvalue,
+            "effect_size": result.effect_size,
+            "effect_name": result.effect_name,
+        }
+    payload = {
+        "metric": args.metric,
+        "group_axis": args.group_axis,
+        "groups": {name: len(groups[name]) for name in names},
+        "summary": [s.__dict__ for s in distribution_summary(groups)],
+        "test": test,
+        "warnings": stats_warnings(groups),
+        "source": str(sweep_path),
+    }
+    _write_json_or_print(payload, args.out, "stats_sweep_summary.json")
+    return 0
+
+
 def _cmd_namespace_suggest(args: argparse.Namespace) -> int:
     """Model import 후 namespace decision 초안 생성."""
     try:
@@ -417,6 +466,89 @@ def _cmd_sweep_fixture(args: argparse.Namespace) -> int:
             "n_runs": len(rows),
             "metric": args.metric,
             "artifacts": ["sweep.parquet", "sweep_summary.json"],
+        },
+        args.out,
+        "sweep_summary.json",
+    )
+    return 0
+
+
+def _cmd_sweep(args: argparse.Namespace) -> int:
+    """사용자 taxonomy 기반 headless sweep."""
+    try:
+        import pandas as pd
+
+        from cmig.core.namespace import GateBlockedError, load_namespace_decisions
+        from cmig.core.sweep import SweepAxis, SweepRow, enumerate_conditions, write_sweep_parquet
+        from cmig.io.solve_output import file_checksum
+        from cmig.service import EngineService
+    except ImportError:
+        print("sweep 는 engine stack 필요: uv sync --extra engine", file=sys.stderr)
+        return 2
+
+    tax_path = Path(args.taxonomy)
+    if not tax_path.exists():
+        print(f"taxonomy 파일 없음: {tax_path}", file=sys.stderr)
+        return 2
+    taxonomy = pd.read_csv(tax_path)
+    missing_cols = {"id", "file"} - set(taxonomy.columns)
+    if missing_cols:
+        print(f"taxonomy 필수 컬럼 누락: {sorted(missing_cols)} (필요: id, file)", file=sys.stderr)
+        return 2
+    mediums = [m.strip() for m in args.mediums.split(",") if m.strip()] if args.mediums else [None]
+    axes = [
+        SweepAxis("tradeoff_f", _parse_csv_floats(args.tradeoff_fs)),
+        SweepAxis("solver", [s.strip() for s in args.solvers.split(",") if s.strip()]),
+        SweepAxis("medium_variant", mediums),
+    ]
+    out = Path(args.out)
+    run_root = out / "runs"
+    rows: list[SweepRow] = []
+    service = EngineService()
+    try:
+        namespace_decisions = (
+            load_namespace_decisions(args.namespace_decisions)
+            if args.namespace_decisions else None
+        )
+        for cond in enumerate_conditions(axes):
+            cond_dir = run_root / cond.condition_id
+            solver = str(cond.axis_values["solver"])
+            medium = cond.axis_values.get("medium_variant")
+            medium_path = None if medium is None else str(medium)
+            outcome = service.solve_community(
+                taxonomy=taxonomy,
+                model_checksum=file_checksum(tax_path),
+                solver=solver,
+                tradeoff_f=float(cond.axis_values["tradeoff_f"]),
+                medium_path=medium_path,
+                namespace_decisions=namespace_decisions,
+                strict_medium=not args.allow_unknown_medium,
+                out_dir=cond_dir,
+            )
+            status = "ok" if outcome.status == "ok" else "failed"
+            rows.append(
+                SweepRow(
+                    condition_id=cond.condition_id,
+                    axis_values=cond.axis_values,
+                    metric=args.metric,
+                    value=None if outcome.result is None else float(outcome.result.objective),
+                    run_hash=outcome.run_hash or "",
+                    status=status,
+                    diagnostic=outcome.diagnostic,
+                    cache_hit=False,
+                )
+            )
+    except (ValueError, GateBlockedError, OSError) as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    out.mkdir(parents=True, exist_ok=True)
+    write_sweep_parquet(rows, out / "sweep.parquet")
+    _write_json_or_print(
+        {
+            "status": "ok",
+            "n_runs": len(rows),
+            "metric": args.metric,
+            "artifacts": ["sweep.parquet", "sweep_summary.json", "runs/"],
         },
         args.out,
         "sweep_summary.json",
@@ -533,6 +665,13 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--fdr-method", default="fdr_bh", choices=["fdr_bh", "fdr_by"])
     st.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
     st.set_defaults(func=_cmd_stats_demo)
+    ss = sub.add_parser("stats-sweep", help="sweep.parquet → stats_sweep_summary.json")
+    ss.add_argument("--sweep", required=True, help="sweep.parquet path")
+    ss.add_argument("--metric", default="growth")
+    ss.add_argument("--group-axis", default="solver", dest="group_axis")
+    ss.add_argument("--parametric", action="store_true")
+    ss.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
+    ss.set_defaults(func=_cmd_stats_sweep)
     ns = sub.add_parser("namespace-suggest", help="model exchange namespace decision 초안 생성")
     ns.add_argument("--model", required=True, help="SBML/JSON/MAT model path")
     ns.add_argument("--known-targets", default=None, help="known target metabolite id 목록(txt)")
@@ -546,6 +685,16 @@ def build_parser() -> argparse.ArgumentParser:
     sw.add_argument("--metric", default="growth")
     sw.add_argument("--out", required=True, help="산출 디렉터리")
     sw.set_defaults(func=_cmd_sweep_fixture)
+    us = sub.add_parser("sweep", help="taxonomy 기반 parameter sweep → sweep.parquet + runs/")
+    us.add_argument("--taxonomy", required=True, help="taxonomy csv (micom Community 입력)")
+    us.add_argument("--tradeoff-fs", default="0.3,0.5", dest="tradeoff_fs")
+    us.add_argument("--solvers", default="gurobi")
+    us.add_argument("--mediums", default=None, help="comma-separated medium csv/json paths")
+    us.add_argument("--namespace-decisions", default=None)
+    us.add_argument("--allow-unknown-medium", action="store_true")
+    us.add_argument("--metric", default="growth")
+    us.add_argument("--out", required=True, help="산출 디렉터리")
+    us.set_defaults(func=_cmd_sweep)
     sb = sub.add_parser("sandbox-fixture", help="fixture bound sandbox preview/commit")
     sb.add_argument("--reaction", required=True, help="reaction id to constrain")
     sb.add_argument("--lower", type=float, required=True)

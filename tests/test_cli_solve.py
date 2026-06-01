@@ -74,6 +74,25 @@ def test_sweep_fixture_writes_store(tmp_path):
     assert json.loads((tmp_path / "sweep_summary.json").read_text())["n_runs"] == 2
 
 
+def test_sweep_user_taxonomy_writes_runs(tmp_path):
+    from cmig.golden_fixture import build_taxonomy
+
+    taxonomy = tmp_path / "taxonomy.csv"
+    build_taxonomy().to_csv(taxonomy, index=False)
+    out = tmp_path / "sweep"
+    rc = main([
+        "sweep",
+        "--taxonomy", str(taxonomy),
+        "--tradeoff-fs", "0.5",
+        "--solvers", "gurobi",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    assert (out / "sweep.parquet").exists()
+    assert (out / "runs" / "cond-0000" / "manifest.json").exists()
+    assert json.loads((out / "sweep_summary.json").read_text())["n_runs"] == 1
+
+
 def test_sandbox_fixture_preview_and_commit(tmp_path):
     rxn = "EX_glc__D_e__Escherichia_coli_1"
     rc = main([
