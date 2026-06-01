@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+
+# uv
+# (uv.lock is committed)
+
+# pytest / mypy / ruff
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# CMIG runtime / data
+*.parquet
+!fixtures/**/*.parquet
+.bkit/
+.claude/
+.Rlib/
+.bkit/runtime/
+Rplots.pdf
+
+# Large external GEM fixtures: keep local, not in source control.
+Recon3D.xml
+fixtures/Recon3D.xml
+fixtures/human_models/
+
+# OS
+.DS_Store

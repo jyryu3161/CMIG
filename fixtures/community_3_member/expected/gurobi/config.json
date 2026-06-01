@@ -1,0 +1,33 @@
+{
+  "components": {
+    "abundance": {
+      "Escherichia_coli_1": 0.333333,
+      "Escherichia_coli_2": 0.333333,
+      "Escherichia_coli_3": 0.333333
+    },
+    "bounds": {},
+    "cmig_core_version": "0.1.0",
+    "flux_normalization_method": "pfba",
+    "medium_checksum": "micom_default_medium",
+    "member_set": [
+      "Escherichia_coli_1",
+      "Escherichia_coli_2",
+      "Escherichia_coli_3"
+    ],
+    "micom_version": "0.39.0",
+    "model_checksum": "micom_test_taxonomy_3",
+    "namespace_mapping_decisions": [],
+    "solver_setting": {
+      "flux_solver": "gurobi",
+      "growth_solver": "gurobi"
+    },
+    "tradeoff_f": 0.5
+  },
+  "golden_decimals": 6,
+  "run_hash": "29844e29103603324d118cc9a8b9ae4fa2a79070418860cfc2ed70095cef29ab",
+  "tidy_hashes": {
+    "edges": "1b2a297aa8fa4ee0bb1871d94ae692b17c59697cbfc76ec005422a294e5b5279",
+    "nodes": "8628ea3cfc74394121d8febb71880dad56541b71a14a1a71871e14292a9b228a",
+    "profile": "81cbf0df96b397317dd3af30ea67124c3c56cee0055678f07b87ffb3eb4496c4"
+  }
+}

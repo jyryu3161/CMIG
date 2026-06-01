@@ -1,0 +1,90 @@
+[project]
+name = "cmig"
+version = "0.1.0"
+description = "CMIG — Community Metabolic Interaction GUI (headless core). Community FBA delegated to MICOM; CMIG owns the value-added layer (namespace gate, sign, tidy, delta, sandbox, sweep, R figures)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "TBD (see CMIG_명세서_v3.0.md §2 / NFR-License)" }
+# Base runtime deps kept minimal so `uv sync` is fast and the pure-logic core
+# (sign / namespace / tidy / manifest) imports without the solver/engine stack.
+dependencies = [
+    "pyarrow>=13",
+]
+
+[project.optional-dependencies]
+# 2b engine stack — installed when wiring real MICOM community solves + golden capture.
+# OD-51: pin exact micom==X.Y.Z at 2b install time (Design §11.2 risk).
+engine = [
+    "cobra>=0.29",
+    "micom==0.39.0",          # OD-51 (Resolved): exact MICOM pin (golden 승격 게이트 기준, SC-5)
+    "osqp",
+    "highspy",
+    "gurobipy>=12,<13",       # 환경 Gurobi 라이선스 = v12 (license version match)
+    "pandas>=2.0",
+    "networkx>=3.0",
+]
+
+gui = [
+    "pyside6>=6.6",          # QtWebEngineWidgets 포함 — Cytoscape.js graph (module-1b)
+]
+stats = [
+    "scipy>=1.10",
+    "statsmodels>=0.14",
+    "scikit-learn>=1.3",
+    "umap-learn>=0.5",
+    "numpy>=1.23",
+]
+render = [
+    "matplotlib>=3.7",       # R(Rscript) 부재 시 Python fallback (§9). 다중 패널(ggraph/ComplexHeatmap/circlize)은 R 전용(.Rlib).
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+cmig = "cmig.cli.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cmig"]
+
+# ── Conventions (Phase 2 essentials folded in — Design §10) ──
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "TID"]
+# [NO-PICKLE] (schema §8.6): ban pickle import project-wide.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"pickle".msg = "pickle 금지 (schema §8.6 [NO-PICKLE]) — Parquet/Arrow/JSON/YAML/SQLite만 사용."
+"cPickle".msg = "pickle 금지 (schema §8.6 [NO-PICKLE])."
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+# core/ 는 strict, 외부 stub 부재 라이브러리는 무시
+[[tool.mypy.overrides]]
+module = ["gurobipy.*", "micom.*", "cobra.*", "highspy.*", "osqp.*", "pyarrow.*", "PySide6.*", "matplotlib.*", "pandas.*", "scipy.*", "statsmodels.*", "sklearn.*", "umap.*", "numpy.*"]
+ignore_missing_imports = true
+
+# pyarrow stub 미제공 → I/O 경계 모듈에서만 untyped-call 허용.
+[[tool.mypy.overrides]]
+module = ["cmig.core.tidy", "cmig.core.sweep", "cmig.core.matrix", "cmig.core.dfba", "cmig.core.stats", "cmig.core.stats_embed", "cmig.core.host", "cmig.core.host_impact", "cmig.golden_fixture"]
+disallow_untyped_calls = false
+
+# graph_view 는 PySide6(미설치 시 Any) Qt 위젯 subclass — 정적 검사 불가, 실행 검증 대상.
+[[tool.mypy.overrides]]
+module = ["cmig.gui.graph_view"]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<!-- CMIG Interaction Graph (Cytoscape.js in QWebEngineView). Design Ref: §11 / FR-1b.1.
+     graph_view.py 가 window.setGraph(payload) 를 호출해 graph_data.graph_payload 결과를 주입한다.
+     cytoscape.js 는 로컬 번들(cytoscape.min.js, v3.30.2) — Design Ref(hardening track-A):
+     CDN 의존 제거 → 오프라인 데스크톱 앱 + network-free offscreen 검증(결정성). -->
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>CMIG Interaction Graph</title>
+  <script src="cytoscape.min.js"></script>
+  <style>
+    html, body { margin: 0; height: 100%; font-family: sans-serif; }
+    #cy { width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
+    #legend { position: absolute; right: 8px; top: 8px; background: rgba(255,255,255,.9);
+              padding: 6px 10px; border: 1px solid #ccc; font-size: 12px; z-index: 10; }
+    #gate { position: absolute; left: 8px; top: 8px; padding: 6px 10px; font-size: 12px;
+            border-radius: 4px; z-index: 10; }
+    .gate-ok { background: #e5f5e0; color: #137; }
+    .gate-blocked { background: #fee0d2; color: #a50f15; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div id="gate"></div>
+  <div id="legend"></div>
+  <div id="cy"></div>
+  <script>
+    let cy = null;
+    // graph_view.py (또는 graph_data.graph_payload) 의 payload 를 주입하는 단일 진입점.
+    window.setGraph = function (payload) {
+      cy = cytoscape({
+        container: document.getElementById('cy'),
+        elements: payload.elements || [],
+        style: payload.style || [],
+        layout: payload.layout || { name: 'cose' },
+      });
+      // 부호 범례 상시 (§11)
+      const legend = document.getElementById('legend');
+      legend.innerHTML = (payload.legend || [])
+        .map(l => `<div><b>${l.symbol}</b> ${l.meaning}</div>`).join('');
+      // Gate UI (FR-1b.3)
+      if (payload.gate) {
+        const g = document.getElementById('gate');
+        g.className = payload.gate.blocked ? 'gate-blocked' : 'gate-ok';
+        g.textContent = payload.gate.status_text;
+      }
+    };
+    // linked selection (FR-1b.2) — 노드 클릭 시 인접 엣지 강조
+    window.highlightNeighborhood = function (nodeId) {
+      if (!cy) return;
+      cy.elements().removeClass('faded');
+      const n = cy.getElementById(nodeId);
+      const nbhd = n.closedNeighborhood();
+      cy.elements().not(nbhd).addClass('faded');
+    };
+  </script>
+</body>
+</html>

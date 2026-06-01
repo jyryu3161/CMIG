@@ -1,0 +1,185 @@
+"""EngineService — 명시 facade (Option C, seam 경계).
+
+Design Ref: §2 (cmig-engine-service-facade.design). Plan SC: SC-S1·SC-S3·SC-S5.
+
+**순수 위임**: 모든 메서드가 기존 core/io 함수를 동일 순서·동일 인자로 호출한다.
+신규 계산·신규 run_hash 코드 0 — run_hash 는 write_solve_output 이 쓴 manifest 에서 read
+([HASH-SINGLE]). Qt 비의존(NFR1): PySide6 미import.
+
+CLI(_cmd_solve/_cmd_solve_fixture)·GUI·JobRunner 가 이 facade 를 공통 소비한다.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from cmig.core.diagnostics import Diagnostic, DiagnosticCode, parse_diagnostic
+from cmig.core.engine import MicomEngine
+from cmig.core.interactions import build_tidy
+from cmig.core.medium_spec import apply_medium_checked, load_medium, medium_checksum
+from cmig.core.namespace import (
+    NamespaceDecision,
+    evaluate_gate,
+    namespace_decision_keys,
+)
+from cmig.io.solve_output import build_run_components, write_solve_output
+from cmig.service.outcome import SolveOutcome
+
+
+class EngineService:
+    """solve/sandbox/sweep/io 오케스트레이션의 단일 진입점. 단일 MicomEngine 보유(주입 가능)."""
+
+    def __init__(self, engine: MicomEngine | None = None) -> None:
+        self._engine = engine if engine is not None else MicomEngine()
+
+    @property
+    def engine(self) -> MicomEngine:
+        return self._engine
+
+    @property
+    def micom_version(self) -> str:
+        return self._engine.micom_version
+
+    # ---- P0: fixture 경로 (_cmd_solve_fixture 본문 위임) ----
+    def solve_fixture(
+        self,
+        *,
+        solver: str = "gurobi",
+        out_dir: str | Path,
+        fva: bool = False,
+        targets: str | None = None,
+    ) -> SolveOutcome:
+        """3-member 번들 fixture solve → parquet+manifest. components = fixture 고정 11구성.
+
+        Plan SC: SC-S1. run_hash 는 manifest 에서 read(재계산 0).
+        """
+        from cmig.golden_fixture import (
+            TRADEOFF_F,
+            _run_hash_components,
+            solve_with_community,
+        )
+
+        result, bundle, community = solve_with_community(solver)
+        if fva:
+            from cmig.core.fva import attach_community_fva_to_bundle, community_fva
+            ranges = community_fva(community, fraction_of_optimum=TRADEOFF_F)
+            attach_community_fva_to_bundle(bundle, ranges)
+        tsum = self._target_summary_or_none(bundle, targets)  # 미지 preset → ValueError
+        # fixture 경로는 _run_hash_components(고정 11구성), build_run_components 아님.
+        components = _run_hash_components(result)
+        manifest_path = write_solve_output(
+            bundle, components, out_dir, diagnostic=result.diagnostic, target_summary=tsum,
+        )
+        return SolveOutcome.from_manifest(
+            result, bundle, components, manifest_path, community=community,
+        )
+
+    # ---- P1: 사용자 taxonomy(+medium) 경로 (_cmd_solve 본문 위임) ----
+    def solve_community(
+        self,
+        *,
+        taxonomy: Any,
+        model_checksum: str,
+        solver: str = "gurobi",
+        tradeoff_f: float = 0.5,
+        medium_path: str | None = None,
+        namespace_decisions: list[NamespaceDecision] | None = None,
+        strict_medium: bool = True,
+        fva: bool = False,
+        targets: str | None = None,
+        out_dir: str | Path,
+        env_lock: str | None = None,
+    ) -> SolveOutcome:
+        """임의 taxonomy(+medium) community solve → parquet+manifest.
+
+        Plan SC: SC-S1·SC-S3. components = build_run_components(user 경로).
+        `model_checksum` 은 호출자(CLI)가 file_checksum(tax_path)로 산출해 주입 — 파일 I/O 는 edge.
+        `env_lock` 기본 None — CLI shim 은 전달하지 않음(manifest bytes 불변, §2.3).
+        """
+        decisions = namespace_decisions or []
+        gate = evaluate_gate(decisions)
+        gate.raise_if_blocked()
+
+        spec = load_medium(medium_path) if medium_path else None
+        community = self._engine.build_community(taxonomy, cmig_solver=solver)
+        unknown_medium: list[str] = []
+        if spec is not None:
+            _, unknown_medium = apply_medium_checked(
+                community, spec, strict=strict_medium
+            )  # MICOM public API
+        result = self._engine.cooperative_tradeoff(community, tradeoff_f, cmig_solver=solver)
+        bundle = build_tidy(result)
+        if fva:
+            from cmig.core.fva import attach_community_fva_to_bundle, community_fva
+            ranges = community_fva(community, fraction_of_optimum=tradeoff_f)
+            attach_community_fva_to_bundle(bundle, ranges)
+        tsum = self._target_summary_or_none(bundle, targets)
+        components = build_run_components(
+            result,
+            model_checksum=model_checksum,
+            medium_checksum=medium_checksum(spec),
+            tradeoff_f=tradeoff_f,
+            micom_version=self._engine.micom_version,
+            namespace_decisions=namespace_decision_keys(decisions),
+        )
+        diagnostic = self._merge_run_diagnostic(result.diagnostic, unknown_medium)
+        manifest_path = write_solve_output(
+            bundle, components, out_dir,
+            diagnostic=diagnostic, env_lock=env_lock, target_summary=tsum,
+        )
+        return SolveOutcome.from_manifest(
+            result, bundle, components, manifest_path, community=community,
+        )
+
+    @staticmethod
+    def _merge_run_diagnostic(base: str | None, unknown_medium: list[str]) -> str | None:
+        """solve diagnostic 에 non-fatal medium warning 을 구조화해 병합."""
+        if not unknown_medium:
+            return base
+        warning = Diagnostic(
+            DiagnosticCode.MEDIUM_UNAPPLIED,
+            "medium exchange 일부가 community 에 없어 적용되지 않음",
+            {"exchange_ids": unknown_medium},
+        ).to_json()
+        if base is None:
+            return warning
+        parsed = parse_diagnostic(base)
+        if parsed is None:
+            return warning
+        return Diagnostic(
+            DiagnosticCode(str(parsed.get("code") or DiagnosticCode.MEDIUM_UNAPPLIED.value)),
+            str(parsed.get("message", "")),
+            {"base": parsed, "warning": parse_diagnostic(warning)},
+        ).to_json()
+
+    # ---- AN-SINGLE (Phase 1.1): 단일-GEM FBA/pFBA 위임 (0.1 stub 대체) ----
+    def solve_single(
+        self, model: Any, *, method: str = "FBA", solver: str = "gurobi",
+    ) -> Any:
+        """단일 GEM(cobra Model) 분석 → SingleModelResult (core.single_model 위임).
+
+        Plan SC: SC-AS1. LP capability 부재 → 정직한 capability_missing SingleModelResult
+        (가짜 success 금지). model 은 필수(cobra Model).
+        """
+        from cmig.core.single_model import (
+            SingleModelUnavailableError,
+            capability_missing_result,
+            solve_single_model,
+        )
+        try:
+            return solve_single_model(model, method=method, solver=solver)
+        except SingleModelUnavailableError:
+            return capability_missing_result(solver)
+
+    @staticmethod
+    def _target_summary_or_none(
+        bundle: Any, targets: str | None,
+    ) -> list[dict[str, Any]] | None:
+        """F3: --targets preset → profile target summary (미지 preset → ValueError)."""
+        if not targets:
+            return None
+        from cmig.core.targets import TARGET_PRESETS, target_summary
+        if targets not in TARGET_PRESETS:
+            raise ValueError(f"미지 target preset: {targets} (가능: {sorted(TARGET_PRESETS)})")
+        return target_summary(bundle.profile.to_pylist(), TARGET_PRESETS[targets])
