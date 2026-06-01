@@ -7,7 +7,9 @@ from cmig.core.namespace import (
     DecisionStatus,
     GateBlockedError,
     NamespaceDecision,
+    decisions_to_jsonable,
     evaluate_gate,
+    suggest_namespace_decisions,
 )
 
 
@@ -69,3 +71,13 @@ def test_empty_decisions_is_full_coverage_unblocked():
     result = evaluate_gate([])
     assert result.blocked is False
     assert result.coverage_pct == 100.0
+
+
+def test_namespace_suggest_exact_matches_and_unresolved():
+    decisions = suggest_namespace_decisions(["ac", "unknown"], known_targets={"ac"})
+    by_met = {d.metabolite: d for d in decisions}
+    assert by_met["ac"].status is DecisionStatus.RESOLVED
+    assert by_met["ac"].target_id == "bigg:ac"
+    assert by_met["unknown"].status is DecisionStatus.UNRESOLVED
+    payload = decisions_to_jsonable(decisions)
+    assert payload[0]["confidence"] == "high"

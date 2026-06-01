@@ -21,7 +21,7 @@ from typing import Any
 R_SCRIPT = Path(__file__).resolve().parent.parent / "render_r" / "figure.R"
 
 PROFILE_COLUMNS = ("metabolite", "net_flux", "ui_flux", "label")
-SUPPORTED_FORMATS = frozenset({"svg", "tiff"})
+SUPPORTED_FORMATS = frozenset({"svg", "tiff", "pdf", "eps"})
 
 
 class RenderError(RuntimeError):

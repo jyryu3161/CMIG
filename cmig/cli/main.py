@@ -347,6 +347,115 @@ def _cmd_stats_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_namespace_suggest(args: argparse.Namespace) -> int:
+    """Model import 후 namespace decision 초안 생성."""
+    try:
+        from cmig.core.namespace import decisions_to_jsonable, suggest_namespace_decisions
+        from cmig.io.model_import import exchange_metabolite_ids, import_model
+    except ImportError:
+        print("namespace-suggest 는 engine stack 필요: uv sync --extra engine", file=sys.stderr)
+        return 2
+    try:
+        summary = import_model(args.model)
+        known = None
+        if args.known_targets:
+            known = {
+                line.strip()
+                for line in Path(args.known_targets).read_text().splitlines()
+                if line.strip() and not line.startswith("#")
+            }
+        decisions = suggest_namespace_decisions(
+            exchange_metabolite_ids(summary),
+            known_targets=known,
+            source_namespace=args.source_namespace,
+            target_namespace=args.target_namespace,
+        )
+    except Exception as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    payload = {
+        "model": summary.as_dict(),
+        "decisions": decisions_to_jsonable(decisions),
+    }
+    _write_json_or_print(payload, args.out, "namespace_decisions.json")
+    return 0
+
+
+def _parse_csv_floats(raw: str) -> list[float]:
+    return [float(x.strip()) for x in raw.split(",") if x.strip()]
+
+
+def _cmd_sweep_fixture(args: argparse.Namespace) -> int:
+    """Fixture 기반 headless sweep 산출 경로."""
+    try:
+        from cmig.core.sweep import SweepAxis, run_sweep, write_sweep_parquet
+        from cmig.golden_fixture import solve
+    except ImportError:
+        print("sweep-fixture 는 engine stack 필요: uv sync --extra engine", file=sys.stderr)
+        return 2
+    axes = [
+        SweepAxis("tradeoff_f", _parse_csv_floats(args.tradeoff_fs)),
+        SweepAxis("solver", [s.strip() for s in args.solvers.split(",") if s.strip()]),
+    ]
+
+    def run_hash_fn(cond: Any) -> str:
+        import hashlib
+
+        return hashlib.sha256(json.dumps(cond.axis_values, sort_keys=True).encode()).hexdigest()
+
+    def solve_fn(cond: Any) -> float:
+        result, _bundle = solve(str(cond.axis_values["solver"]))
+        return float(result.objective)
+
+    rows = run_sweep(axes, run_hash_fn=run_hash_fn, solve_fn=solve_fn, metric=args.metric)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    write_sweep_parquet(rows, out / "sweep.parquet")
+    _write_json_or_print(
+        {
+            "status": "ok",
+            "n_runs": len(rows),
+            "metric": args.metric,
+            "artifacts": ["sweep.parquet", "sweep_summary.json"],
+        },
+        args.out,
+        "sweep_summary.json",
+    )
+    return 0
+
+
+def _cmd_sandbox_fixture(args: argparse.Namespace) -> int:
+    """Fixture community sandbox preview/commit 제품 경로."""
+    try:
+        from cmig.service import EngineService
+    except ImportError:
+        print("sandbox-fixture 는 engine stack 필요: uv sync --extra engine", file=sys.stderr)
+        return 2
+    try:
+        res = EngineService().sandbox_fixture(
+            reaction_id=args.reaction,
+            lower=args.lower,
+            upper=args.upper,
+            solver=args.solver,
+            commit=args.commit,
+            out_dir=args.out if args.commit else None,
+        )
+    except Exception as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    payload = {
+        "status": res.status,
+        "state": res.state.value,
+        "committed": res.committed,
+        "run_hash": res.run_hash,
+        "no_significant_change": res.no_significant_change,
+        "diagnostic": res.diagnostic,
+        "growth_delta": res.delta.growth_delta,
+    }
+    _write_json_or_print(payload, args.out, "sandbox_summary.json")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cmig", description="CMIG headless community metabolic core")
     sub = p.add_subparsers(dest="command", required=True)
@@ -424,6 +533,27 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--fdr-method", default="fdr_bh", choices=["fdr_bh", "fdr_by"])
     st.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
     st.set_defaults(func=_cmd_stats_demo)
+    ns = sub.add_parser("namespace-suggest", help="model exchange namespace decision 초안 생성")
+    ns.add_argument("--model", required=True, help="SBML/JSON/MAT model path")
+    ns.add_argument("--known-targets", default=None, help="known target metabolite id 목록(txt)")
+    ns.add_argument("--source-namespace", default="model")
+    ns.add_argument("--target-namespace", default="bigg")
+    ns.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
+    ns.set_defaults(func=_cmd_namespace_suggest)
+    sw = sub.add_parser("sweep-fixture", help="fixture parameter sweep → sweep.parquet")
+    sw.add_argument("--tradeoff-fs", default="0.3,0.5", dest="tradeoff_fs")
+    sw.add_argument("--solvers", default="gurobi")
+    sw.add_argument("--metric", default="growth")
+    sw.add_argument("--out", required=True, help="산출 디렉터리")
+    sw.set_defaults(func=_cmd_sweep_fixture)
+    sb = sub.add_parser("sandbox-fixture", help="fixture bound sandbox preview/commit")
+    sb.add_argument("--reaction", required=True, help="reaction id to constrain")
+    sb.add_argument("--lower", type=float, required=True)
+    sb.add_argument("--upper", type=float, required=True)
+    sb.add_argument("--solver", default="gurobi", choices=["gurobi", "osqp"])
+    sb.add_argument("--commit", action="store_true")
+    sb.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
+    sb.set_defaults(func=_cmd_sandbox_fixture)
     return p
 
 

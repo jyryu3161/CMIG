@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import platform as platform_lib
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,9 @@ def write_solve_output(
     env_lock: str | None = None,
     platform: dict[str, str] | None = None,
     target_summary: list[dict[str, Any]] | None = None,
+    sweep: dict[str, Any] | None = None,
+    figure_specs: list[dict[str, Any]] | None = None,
+    flux_report_status: str | None = None,
 ) -> Path:
     """tidy bundle(parquet) + manifest.json 산출. manifest 경로 반환.
 
@@ -90,14 +94,38 @@ def write_solve_output(
         )
         artifacts.append("target_summary.json")
 
-    manifest = RunManifest(components=components, env_lock=env_lock, platform=platform or {})
+    platform_info = platform or {
+        "os": platform_lib.system().lower(),
+        "arch": platform_lib.machine(),
+        "python": platform_lib.python_version(),
+    }
+    manifest = RunManifest(components=components, env_lock=env_lock, platform=platform_info)
     payload = {
+        "manifest_schema_version": "1.0",
         "run_hash": manifest.run_hash,                       # compute_run_hash (단일 canonical)
         "float_decimals": manifest.float_decimals,
         # canonical_json 은 비유한 float sentinel·정렬·allow_nan=False (결정적·재현)
         "components": json.loads(canonical_json(components, manifest.float_decimals)),
         "diagnostic": diagnostic,
         "env_lock": env_lock,                                # manifest 만 (run_hash 미포함, §7)
+        "inputs": {
+            "model_checksum": components.model_checksum,
+            "medium_checksum": components.medium_checksum,
+            "member_set": components.member_set,
+            "abundance": components.abundance,
+            "bounds": components.bounds,
+            "namespace_mapping_decisions": components.namespace_mapping_decisions,
+        },
+        "solver": {
+            **components.solver_setting,
+            "flux_report_status": flux_report_status,
+        },
+        "software": {
+            "cmig_core_version": components.cmig_core_version,
+            "micom_version": components.micom_version,
+        },
+        "sweep": sweep,
+        "figure_specs": figure_specs or [],
         "platform": manifest.platform,
         "artifacts": artifacts,
     }

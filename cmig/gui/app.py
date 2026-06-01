@@ -17,18 +17,21 @@ from typing import Any
 from PySide6.QtCore import QObject, Qt, QTimer
 from PySide6.QtWidgets import (
     QHeaderView,
-    QLabel,
     QMainWindow,
     QSplitter,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from cmig.gui.builder import CommunityBuilderView, ConstraintSandboxView, ScenarioCompareView
+from cmig.gui.editors import MediumEditor, ModelManagerPanel
+from cmig.gui.views import ExternalProfileView, SweepView
 from cmig.service import JobRunner
 
 I18N: dict[str, dict[str, str]] = {
@@ -123,9 +126,25 @@ class CmigMainWindow(QMainWindow):
         center = QWidget()
         layout = QVBoxLayout(center)
         self.central_stack = QStackedWidget()
-        welcome = QLabel(self.tr_map["welcome"])
-        welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.central_stack.addWidget(welcome)
+        self.tabs = QTabWidget()
+        self.model_manager = ModelManagerPanel()
+        self.community_builder = CommunityBuilderView()
+        self.medium_editor = MediumEditor()
+        self.profile_view = ExternalProfileView()
+        self.sweep_view = SweepView(runner=self.runner)
+        self.sandbox_view = ConstraintSandboxView()
+        self.scenario_compare = ScenarioCompareView()
+        for label, widget in [
+            ("Models", self.model_manager),
+            ("Community", self.community_builder),
+            ("Medium", self.medium_editor),
+            ("Profile", self.profile_view),
+            ("Sweep", self.sweep_view),
+            ("Sandbox", self.sandbox_view),
+            ("Compare", self.scenario_compare),
+        ]:
+            self.tabs.addTab(widget, label)
+        self.central_stack.addWidget(self.tabs)
         layout.addWidget(self.central_stack)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)

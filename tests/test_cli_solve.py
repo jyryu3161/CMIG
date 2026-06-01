@@ -29,6 +29,11 @@ def test_solve_fixture_writes_artifacts(tmp_path):
     # parquet 재로드 가능(유효 tidy)
     bundle = TidyBundle.read(tmp_path)
     assert bundle.nodes.num_rows == 4          # 3 member + environment_pool
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["manifest_schema_version"] == "1.0"
+    assert manifest["inputs"]["model_checksum"]
+    assert manifest["solver"]["flux_report_status"] == "full"
+    assert manifest["software"]["cmig_core_version"]
 
 
 def test_manifest_run_hash_matches_library(tmp_path):
@@ -60,3 +65,31 @@ def test_solve_subcommand_requires_taxonomy():
 
 def test_solve_fixture_out_is_path(tmp_path):
     assert isinstance(tmp_path, Path)
+
+
+def test_sweep_fixture_writes_store(tmp_path):
+    rc = main(["sweep-fixture", "--solvers", "gurobi", "--out", str(tmp_path)])
+    assert rc == 0
+    assert (tmp_path / "sweep.parquet").exists()
+    assert json.loads((tmp_path / "sweep_summary.json").read_text())["n_runs"] == 2
+
+
+def test_sandbox_fixture_preview_and_commit(tmp_path):
+    rxn = "EX_glc__D_e__Escherichia_coli_1"
+    rc = main([
+        "sandbox-fixture", "--reaction", rxn, "--lower", "-1", "--upper", "1000",
+        "--out", str(tmp_path / "preview"),
+    ])
+    assert rc == 0
+    preview = json.loads((tmp_path / "preview" / "sandbox_summary.json").read_text())
+    assert preview["state"] == "preview" and preview["run_hash"] is None
+
+    out = tmp_path / "commit"
+    rc = main([
+        "sandbox-fixture", "--reaction", rxn, "--lower", "-1", "--upper", "1000",
+        "--commit", "--out", str(out),
+    ])
+    assert rc == 0
+    committed = json.loads((out / "sandbox_summary.json").read_text())
+    assert committed["committed"] is True and committed["run_hash"]
+    assert (out / "manifest.json").exists()

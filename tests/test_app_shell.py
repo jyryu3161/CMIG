@@ -27,6 +27,8 @@ def test_shell_constructs_offscreen():
     assert isinstance(w, CmigMainWindow)
     assert w.explorer.topLevelItemCount() == 3        # 모델·시나리오·실행
     assert w.jobs_panel.columnCount() == 4
+    assert w.tabs.count() >= 7
+    assert w.sweep_view.runner is w.runner
     assert "CMIG" in w.windowTitle()
 
 

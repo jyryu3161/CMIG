@@ -120,6 +120,55 @@ def namespace_decision_keys(decisions: list[NamespaceDecision]) -> list[str]:
     return sorted(namespace_decision_key(d) for d in decisions)
 
 
+def suggest_namespace_decisions(
+    source_ids: list[str],
+    *,
+    known_targets: set[str] | None = None,
+    source_namespace: str = "model",
+    target_namespace: str = "bigg",
+) -> list[NamespaceDecision]:
+    """exchange/metabolite id 목록 → namespace decision 초안 생성.
+
+    Exact id match 는 high-confidence resolved 로 제안하고, target 목록에 없거나 목록이
+    제공되지 않은 id 는 high-confidence unresolved 로 둔다. 이 producer 는 자동병합을 하지
+    않고, 사용자가 검토할 JSON decision 파일의 초안을 만드는 제품 경로다.
+    """
+    targets = known_targets or set()
+    out: list[NamespaceDecision] = []
+    for sid in sorted(set(source_ids)):
+        clean = sid.strip()
+        if not clean:
+            continue
+        target = clean if clean in targets else None
+        out.append(
+            NamespaceDecision(
+                metabolite=clean,
+                source_id=f"{source_namespace}:{clean}",
+                target_id=None if target is None else f"{target_namespace}:{target}",
+                confidence=Confidence.HIGH,
+                status=DecisionStatus.RESOLVED if target is not None else DecisionStatus.UNRESOLVED,
+                rationale="exact id match" if target is not None else "no exact target id match",
+            )
+        )
+    return out
+
+
+def decisions_to_jsonable(decisions: list[NamespaceDecision]) -> list[dict[str, Any]]:
+    """NamespaceDecision 목록을 사람이 편집 가능한 JSON 객체로 변환."""
+    return [
+        {
+            "metabolite": d.metabolite,
+            "source_id": d.source_id,
+            "target_id": d.target_id,
+            "confidence": d.confidence.value,
+            "status": d.status.value,
+            "rationale": d.rationale,
+            **({} if d.audit_ts is None else {"audit_ts": d.audit_ts}),
+        }
+        for d in decisions
+    ]
+
+
 def _decision_from_obj(obj: dict[str, Any]) -> NamespaceDecision:
     try:
         return NamespaceDecision(

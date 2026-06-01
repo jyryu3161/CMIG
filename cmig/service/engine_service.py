@@ -70,6 +70,7 @@ class EngineService:
         components = _run_hash_components(result)
         manifest_path = write_solve_output(
             bundle, components, out_dir, diagnostic=result.diagnostic, target_summary=tsum,
+            flux_report_status=result.flux_report_status,
         )
         return SolveOutcome.from_manifest(
             result, bundle, components, manifest_path, community=community,
@@ -129,6 +130,7 @@ class EngineService:
         manifest_path = write_solve_output(
             bundle, components, out_dir,
             diagnostic=diagnostic, env_lock=env_lock, target_summary=tsum,
+            flux_report_status=result.flux_report_status,
         )
         return SolveOutcome.from_manifest(
             result, bundle, components, manifest_path, community=community,
@@ -173,6 +175,67 @@ class EngineService:
             return solve_single_model(model, method=method, solver=solver)
         except SingleModelUnavailableError:
             return capability_missing_result(solver)
+
+    def sandbox_fixture(
+        self,
+        *,
+        reaction_id: str,
+        lower: float,
+        upper: float,
+        solver: str = "gurobi",
+        tradeoff_f: float = 0.5,
+        commit: bool = False,
+        out_dir: str | Path | None = None,
+    ) -> Any:
+        """Fixture community constraint sandbox 제품 경로.
+
+        baseline fixture를 풀고, 지정 reaction bound를 preview/commit으로 재solve한다.
+        commit+out_dir이면 constrained tidy 산출과 manifest를 쓴다.
+        """
+        from dataclasses import replace
+
+        from cmig.core.manifest import compute_run_hash
+        from cmig.core.sandbox import (
+            BoundConstraint,
+            SandboxState,
+            apply_bounds,
+            evaluate_sandbox,
+            restore_bounds,
+        )
+        from cmig.golden_fixture import _run_hash_components, solve_with_community
+
+        baseline, _base_bundle, community = solve_with_community(solver)
+        original = apply_bounds(community, [BoundConstraint(reaction_id, lower, upper)])
+        try:
+            constrained = self._engine.cooperative_tradeoff(
+                community, tradeoff_f, cmig_solver=solver
+            )
+        finally:
+            restore_bounds(community, original)
+        state = SandboxState.COMMITTED if commit else SandboxState.PREVIEW
+        run_hash = None
+        if commit:
+            comps = _run_hash_components(constrained)
+            comps = replace(comps, bounds={reaction_id: [lower, upper]})
+            run_hash = compute_run_hash(comps)
+        result = evaluate_sandbox(
+            baseline,
+            constrained,
+            state=state,
+            run_hash=run_hash,
+        )
+        if commit and out_dir is not None:
+            from cmig.core.interactions import build_tidy
+            comps = _run_hash_components(constrained)
+            comps = replace(comps, bounds={reaction_id: [lower, upper]})
+            write_solve_output(
+                build_tidy(constrained),
+                comps,
+                out_dir,
+                diagnostic=result.diagnostic,
+                flux_report_status=constrained.flux_report_status,
+            )
+        return result
 
     @staticmethod
     def _target_summary_or_none(

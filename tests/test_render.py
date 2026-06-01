@@ -29,6 +29,8 @@ def _bundle():
 def test_figure_spec_validate_rejects_bad_format():
     with pytest.raises(RenderError):
         FigureSpec(format="png").validate()
+    FigureSpec(format="pdf").validate()
+    FigureSpec(format="eps").validate()
 
 
 def test_render_writes_figure_spec_sidecar(tmp_path):
@@ -47,7 +49,7 @@ def test_render_writes_figure_spec_sidecar(tmp_path):
 
 def test_bad_format_raises_before_render(tmp_path):
     with pytest.raises(RenderError):
-        RenderClient().render([], FigureSpec(format="pdf"), tmp_path / "x.pdf")
+        RenderClient().render([], FigureSpec(format="png"), tmp_path / "x.png")
 
 
 @pytest.mark.skipif(not rscript_available(), reason="Rscript 미설치")

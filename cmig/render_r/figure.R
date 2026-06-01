@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # CMIG R Render — external profile diverging bar (ggplot2).
 # Design Ref: §9 / FR-2.5. GPL 격리: 별도 프로세스로만 실행(§2). CMIG 는 R 을 링크하지 않는다.
-# 입력: --data CSV(metabolite,net_flux,ui_flux,label) + spec flags. 출력: --out (svg|tiff).
+# 입력: --data CSV(metabolite,net_flux,ui_flux,label) + spec flags. 출력: --out (svg|tiff|pdf|eps).
 
 args <- commandArgs(trailingOnly = TRUE)
 opt <- list(width = "6", height = "4", dpi = "600", title = "External Profile",
@@ -79,6 +79,13 @@ if (opt$format == "svg") {
     grDevices::tiff(opt$out, width = w, height = h, units = "in", res = dpi,
                     compression = "lzw")
   }
+  print(p); grDevices::dev.off()
+} else if (opt$format == "pdf") {
+  grDevices::pdf(opt$out, width = w, height = h, family = PLOT_FONT, useDingbats = FALSE)
+  print(p); grDevices::dev.off()
+} else if (opt$format == "eps") {
+  grDevices::postscript(opt$out, width = w, height = h, family = PLOT_FONT,
+                        horizontal = FALSE, onefile = FALSE, paper = "special")
   print(p); grDevices::dev.off()
 } else {
   stop(paste("unsupported format:", opt$format))

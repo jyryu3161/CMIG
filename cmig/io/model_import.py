@@ -95,3 +95,20 @@ def import_model(path: str | Path) -> ModelSummary:
         exchanges=exchanges,
         biomass_reactions=_biomass_reactions(model),
     )
+
+
+def exchange_metabolite_ids(summary: ModelSummary) -> list[str]:
+    """ModelSummary exchange ids에서 namespace 후보 metabolite id 추출.
+
+    `EX_ac_e` → `ac`, `EX_glc__D_m` → `glc__D`처럼 흔한 exchange prefix/suffix를 제거한다.
+    """
+    out: list[str] = []
+    suffixes = ("_e", "_m", "_lumen", "_blood")
+    for ex in summary.exchanges:
+        name = ex[3:] if ex.startswith("EX_") else ex
+        for suffix in suffixes:
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                break
+        out.append(name)
+    return sorted(set(out))
