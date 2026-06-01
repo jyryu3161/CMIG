@@ -50,10 +50,10 @@ def test_summary_as_dict():
 
 
 def test_import_review_namespace_payload():
-    """AGORA/VMH review UX: import summary + namespace coverage + next actions."""
+    """User-provided GEM review: import summary + namespace coverage + next actions."""
     summary = import_model(_SBML)
     review = build_import_review(summary, known_targets={"glc__D"})
-    assert review.inferred_origin == "generic_gem"
+    assert review.inferred_origin == "user_provided_gem"
     assert review.namespace["n_decisions"] > 0
     assert "decisions" in review.namespace
     assert review.next_actions
@@ -61,16 +61,16 @@ def test_import_review_namespace_payload():
 
 def test_infer_model_origin_from_path():
     summary = ModelSummary(
-        model_id="AGORA_member",
+        model_id="Recon3D",
         source_format="sbml",
-        source_path="/models/VMH_AGORA.xml",
+        source_path="/models/Recon3D.xml",
         n_reactions=1,
         n_metabolites=1,
         n_genes=0,
         exchanges=[],
         biomass_reactions=[],
     )
-    assert infer_model_origin(summary) == "agora"
+    assert infer_model_origin(summary) == "human_gem"
 
 
 def test_unsupported_extension(tmp_path):

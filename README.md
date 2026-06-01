@@ -27,9 +27,11 @@
   `flux_report_status='full'`, `flux_solver='highs'`).
 - 별도 `osqp_growth_highs_flux` solver 이름은 폐기됨 — `osqp` alias 자체가 optlang hybrid다.
 
+범위:
+- 현재 제품 범위는 사용자가 직접 제공하는 SBML/JSON/MAT 모델과 MICOM 호환 taxonomy csv를 입력받는 방식이다. 외부 모델 카탈로그를 자동으로 가져오거나 큐레이션하지 않는다.
+
 아직 미구현(후속):
-- **실 AGORA/VMH 모델 import + namespace mapping workflow** — 별도 foundation. (`cmig solve --taxonomy`는 micom 호환 taxonomy csv를 받지만 실 GEM 큐레이션은 사용자 몫.)
-- **실 Human-GEM host 정량 coupling 검증** — 현재 host-microbe coupling은 synthetic toy + 실 MICOM 분비 wiring 검증, generic human GEM은 Recon3D smoke solve로 검증.
+- **실 Human-GEM/Recon host 정량 coupling 검증** — 현재 host-microbe coupling은 synthetic toy + 실 MICOM 분비 wiring 검증, generic human GEM은 사용자가 제공한 모델의 smoke solve로 검증.
 - **사람 시각 QA(G-7b)** — GUI는 offscreen 실행 증거까지 자동화.
 
 ## 개발 (uv)
@@ -42,15 +44,16 @@ uv run cmig solvers                                 # solver capability matrix
 uv run cmig solve-fixture --solver gurobi --out out/  # 고정 fixture solve → parquet + manifest
 uv run cmig solve --taxonomy tax.csv --medium medium_presets/western_diet.csv --out out/  # 사용자 입력
 uv run cmig host-fixture --out out/                 # synthetic host-microbe smoke
-uv run cmig host-generic --model Recon3D.xml --out out/  # generic human GEM smoke
+uv run cmig model-review --model /path/to/model.xml --out out/  # user-provided GEM review
+uv run cmig host-generic --model /path/to/Recon3D.xml --out out/  # generic human GEM smoke
 uv run cmig dfba-fixture --out out/                 # e_coli_core dFBA timecourse
 uv run cmig search-fixture --out out/               # 3-member target-max search
 uv run cmig stats-demo --out out/                   # stats/FDR demo
 uv run cmig golden verify                           # MICOM-version golden gate (SC-5)
 ```
 
-`Recon3D.xml` 같은 대용량 외부 GEM은 git에 포함하지 않는다. 로컬 검증은 repo root의
-`Recon3D.xml`, `fixtures/Recon3D.xml`, 또는 `CMIG_RECON3D_PATH=/path/to/Recon3D.xml`로 수행하며,
+`Recon3D.xml` 같은 대용량 외부 GEM은 git에 포함하지 않는다. 로컬 검증은 사용자가 직접 경로를
+지정해 수행한다. 테스트 편의를 위해 `CMIG_RECON3D_PATH=/path/to/Recon3D.xml`를 설정할 수 있으며,
 파일이 없으면 Recon3D smoke tests는 skip된다.
 
 ## Success Criteria

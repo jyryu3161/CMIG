@@ -2,7 +2,7 @@
 
 문헌의 대표 cross-feeding 관계(primary fermenter 가 acetate 분비 → butyrate producer 가 acetate
 흡수→butyrate 분비)를 **정성 검증**하기 위한 synthetic toy GEM 쌍이다.
-**실제 AGORA/VMH 모델이 아니며 종명을 부여하지 않는다** — 정량 해석 금지
+**실제 외부 GEM이 아니며 종명을 부여하지 않는다** — 정량 해석 금지
 (정성 cross-feeding/sign 검증용).
 
 - synthetic_acetate_producer: glucose 흡수 → acetate 분비 (+biomass)

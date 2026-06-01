@@ -102,7 +102,7 @@
 - 분석 질문: primary fermenter가 만든 acetate가 butyrate producer 성장과 butyrate secretion에 얼마나 기여하는가?
 - 현재 구현 가능성: **microbe-only pair/community는 가능**.
 - 가능한 현재 기능: pair/community solve, cross-feeding edge `weight=min(secretor,consumer)`, external profile, member add/remove delta.
-- 부족한 점: 실제 AGORA/VMH 모델 import와 namespace mapping workflow가 필요하다. Butyrate/acetate exchange ID 매핑 품질이 관건이다.
+- 범위 정정: 외부 모델 카탈로그 자동 import/curation workflow는 현재 제품 범위에서 제외한다. 사용자가 직접 제공한 GEM 파일과 MICOM 호환 taxonomy csv를 입력받고, 필요한 namespace decision 파일을 명시적으로 전달하는 경로만 유지한다.
 - 반영 의견: 이 시나리오를 `fixtures/pair_acetate_butyrate/` golden 후보로 추가하면 sign/cross-feeding 검증에 과학적 의미가 생긴다.
 
 ### S4. Keystone taxa add/remove: community resilience와 metabolic shift
@@ -127,14 +127,14 @@
   - host-specific profile/sign table
 - 반영 의견: 명세 §12의 spike를 우선 구현해야 한다. 작은 1 host + 1 microbe LGG 또는 E. coli toy model로 시작하고, 바로 Human-GEM 전체를 붙이지 않는 것이 안전하다.
 
-### S6. Drug/xenobiotic metabolism by gut microbiome
+### S6. Drug/xenobiotic exchange screening
 
-- 문헌 근거: AGORA2는 7,302 strains와 98 drugs의 strain-resolved drug degradation/biotransformation capability를 포함하며, personalized gut microbial drug metabolism 예측에 쓰였다.
+- 범위 근거: 외부 카탈로그 자동 import/curation 없이, 사용자가 직접 제공한 모델 안에 존재하는 exchange/biotransformation reaction만 분석 대상으로 삼는다.
 - 분석 질문: 특정 drug/metabolite가 어떤 taxa에 의해 소비/변환되고, community composition에 따라 잔류/생성 flux가 어떻게 달라지는가?
 - 현재 구현 가능성: **부분 가능하지만 데이터 의존성이 큼**.
 - 가능한 현재 기능: drug을 medium/external metabolite로 표현할 수 있으면 uptake/secretion profile과 taxon exchange 비교는 가능하다.
 - 부족한 점: drug biotransformation reaction curation, metabolite namespace, host absorption/blood interface, toxicity objective가 없다.
-- 반영 의견: MVP에서는 "drug metabolism"이라고 넓게 선언하지 말고 `xenobiotic exchange screening`으로 제한한다. AGORA2/VMH 호환 모델을 입력으로 받을 때만 활성화하는 것이 안전하다.
+- 반영 의견: MVP에서는 "drug metabolism"이라고 넓게 선언하지 말고, 사용자가 직접 제공한 모델에서 검증 가능한 `xenobiotic exchange screening` 수준으로 제한한다.
 
 ## 6. 시나리오별 구현 우선순위 제안
 
@@ -145,7 +145,7 @@
 | 3 | S2 SCFA/prebiotic/probiotic response | S1/S3 위에 target summary와 add-member delta를 얹으면 가능 |
 | 4 | S4 keystone add/remove | delta와 graph를 활용하되 metric 정의는 보수적으로 시작 |
 | 5 | S5 host epithelial maintenance | 플랫폼 정체성상 중요하지만 설계/스키마 확장이 필요 |
-| 6 | S6 drug/xenobiotic metabolism | AGORA2/VMH 데이터 의존성이 커서 입력 호환성 확보 후 진행 |
+| 6 | S6 drug/xenobiotic metabolism | 외부 카탈로그 자동 import 없이, 사용자 제공 모델에서 검증 가능한 입력 호환성 확보 후 진행 |
 
 ## 7. 구현 로드맵에 반영할 의견
 
@@ -161,7 +161,6 @@
 - MICOM: Metagenome-Scale Modeling To Infer Metabolic Interactions in the Gut Microbiota. mSystems, 2020. https://journals.asm.org/doi/10.1128/msystems.00606-19
 - MICOM paper PMC mirror/search record: https://pmc.ncbi.nlm.nih.gov/articles/PMC6977071/
 - MICOMWeb: microbial community metabolic modeling of the human gut, 2025. https://pmc.ncbi.nlm.nih.gov/articles/PMC12674444/
-- AGORA2 / Genome-scale metabolic reconstruction of 7,302 human microorganisms for personalized medicine. Nature Biotechnology, 2023. https://www.nature.com/articles/s41587-022-01628-0
 - Microbial community-scale metabolic modelling predicts personalized short-chain fatty acid production profiles in the human gut. https://pmc.ncbi.nlm.nih.gov/articles/PMC11841136/
 - Understanding the host-microbe interactions using metabolic modeling. Microbiome, 2021. https://link.springer.com/article/10.1186/s40168-020-00955-1
 - Community metabolic modeling of host-microbiota interactions through multi-objective optimization. iScience, 2024. https://pubmed.ncbi.nlm.nih.gov/38952683/

@@ -1,4 +1,4 @@
-"""Model Import — SBML/JSON/MAT GEM → ModelSummary (Roadmap Phase 0.4, §11 Model Manager).
+"""Model Import — user-provided SBML/JSON/MAT GEM → ModelSummary.
 
 Design Ref: §5 MemberModel / §11 Model Manager / cmig-model-import.design. Plan SC: SC-MI1~MI5.
 
@@ -42,7 +42,7 @@ class ModelSummary:
 
 @dataclass(frozen=True)
 class ModelImportReview:
-    """AGORA/VMH/Human-GEM import 후 solve 전 review/audit payload."""
+    """사용자가 제공한 GEM 파일의 solve 전 review/audit payload."""
 
     model: dict[str, Any]
     inferred_origin: str
@@ -126,15 +126,11 @@ def exchange_metabolite_ids(summary: ModelSummary) -> list[str]:
 
 
 def infer_model_origin(summary: ModelSummary) -> str:
-    """파일명/model_id 힌트로 AGORA/VMH/Human-GEM 계열을 보수적으로 추정."""
+    """파일명/model_id 힌트로 Human-GEM/Recon 계열 여부만 보수적으로 추정."""
     blob = f"{summary.model_id} {Path(summary.source_path).name}".lower()
-    if "agora" in blob:
-        return "agora"
-    if "vmh" in blob:
-        return "vmh"
     if "human" in blob or "recon" in blob:
         return "human_gem"
-    return "generic_gem"
+    return "user_provided_gem"
 
 
 def build_import_review(
@@ -171,8 +167,6 @@ def build_import_review(
     if not summary.biomass_reactions:
         warnings.append("biomass/objective reaction not detected")
     origin = infer_model_origin(summary)
-    if origin in {"agora", "vmh"} and not known_targets:
-        warnings.append("AGORA/VMH import should provide a curated namespace target list")
     next_actions = [
         "review namespace_decisions.json and resolve high-confidence unresolved mappings",
         "confirm biomass/objective reaction before community assembly",

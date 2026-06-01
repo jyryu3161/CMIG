@@ -72,7 +72,7 @@ def test_solve_blocks_unresolved_high_namespace_decision(tmp_path, capsys):
     decisions = tmp_path / "namespace.json"
     decisions.write_text(json.dumps([{
         "metabolite": "ac",
-        "source_id": "vmh:ac",
+        "source_id": "source:ac",
         "target_id": None,
         "confidence": "high",
         "status": "unresolved",
@@ -90,7 +90,7 @@ def test_solve_records_namespace_decisions_in_run_hash_components(tmp_path):
     decisions = tmp_path / "namespace.json"
     decisions.write_text(json.dumps([{
         "metabolite": "ac",
-        "source_id": "vmh:ac",
+        "source_id": "source:ac",
         "target_id": "bigg:ac",
         "confidence": "high",
         "status": "resolved",

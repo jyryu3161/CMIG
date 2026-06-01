@@ -602,7 +602,7 @@ def _cmd_namespace_suggest(args: argparse.Namespace) -> int:
 
 
 def _cmd_model_review(args: argparse.Namespace) -> int:
-    """AGORA/VMH/Human-GEM import review + namespace audit payload."""
+    """User-provided GEM import review + namespace audit payload."""
     try:
         from cmig.io.model_import import build_import_review, import_model
     except ImportError:
@@ -1040,7 +1040,7 @@ def build_parser() -> argparse.ArgumentParser:
     ns.add_argument("--target-namespace", default="bigg")
     ns.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
     ns.set_defaults(func=_cmd_namespace_suggest)
-    mr = sub.add_parser("model-review", help="AGORA/VMH/Human-GEM import review")
+    mr = sub.add_parser("model-review", help="user-provided GEM import review")
     mr.add_argument("--model", required=True, help="SBML/JSON/MAT model path")
     mr.add_argument("--known-targets", default=None, help="known target metabolite id 목록(txt)")
     mr.add_argument("--source-namespace", default="model")
