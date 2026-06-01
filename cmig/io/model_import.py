@@ -40,6 +40,17 @@ class ModelSummary:
         }
 
 
+@dataclass(frozen=True)
+class ModelImportReview:
+    """AGORA/VMH/Human-GEM import 후 solve 전 review/audit payload."""
+
+    model: dict[str, Any]
+    inferred_origin: str
+    namespace: dict[str, Any]
+    warnings: list[str]
+    next_actions: list[str]
+
+
 def _detect_format(path: Path) -> str:
     name = path.name.lower()
     if name.endswith((".xml", ".sbml", ".xml.gz", ".sbml.gz")):
@@ -112,3 +123,72 @@ def exchange_metabolite_ids(summary: ModelSummary) -> list[str]:
                 break
         out.append(name)
     return sorted(set(out))
+
+
+def infer_model_origin(summary: ModelSummary) -> str:
+    """파일명/model_id 힌트로 AGORA/VMH/Human-GEM 계열을 보수적으로 추정."""
+    blob = f"{summary.model_id} {Path(summary.source_path).name}".lower()
+    if "agora" in blob:
+        return "agora"
+    if "vmh" in blob:
+        return "vmh"
+    if "human" in blob or "recon" in blob:
+        return "human_gem"
+    return "generic_gem"
+
+
+def build_import_review(
+    summary: ModelSummary,
+    *,
+    known_targets: set[str] | None = None,
+    source_namespace: str = "model",
+    target_namespace: str = "bigg",
+) -> ModelImportReview:
+    """ModelSummary → namespace 후보·coverage·다음 조치가 포함된 review payload."""
+    from cmig.core.namespace import (
+        DecisionStatus,
+        decisions_to_jsonable,
+        evaluate_gate,
+        suggest_namespace_decisions,
+    )
+
+    decisions = suggest_namespace_decisions(
+        exchange_metabolite_ids(summary),
+        known_targets=known_targets,
+        source_namespace=source_namespace,
+        target_namespace=target_namespace,
+    )
+    gate = evaluate_gate(decisions)
+    unresolved = [d.metabolite for d in decisions if d.status is DecisionStatus.UNRESOLVED]
+    warned = [d.metabolite for d in decisions if d.status is DecisionStatus.WARNED]
+    warnings: list[str] = []
+    if unresolved:
+        warnings.append(
+            f"{len(unresolved)} unresolved high-confidence namespace mappings block solve"
+        )
+    if warned:
+        warnings.append(f"{len(warned)} low-confidence normalized candidates require review")
+    if not summary.biomass_reactions:
+        warnings.append("biomass/objective reaction not detected")
+    origin = infer_model_origin(summary)
+    if origin in {"agora", "vmh"} and not known_targets:
+        warnings.append("AGORA/VMH import should provide a curated namespace target list")
+    next_actions = [
+        "review namespace_decisions.json and resolve high-confidence unresolved mappings",
+        "confirm biomass/objective reaction before community assembly",
+        "save reviewed decisions and pass them to cmig solve --namespace-decisions",
+    ]
+    return ModelImportReview(
+        model=summary.as_dict(),
+        inferred_origin=origin,
+        namespace={
+            "coverage_pct": gate.coverage_pct,
+            "blocked": gate.blocked,
+            "n_decisions": len(decisions),
+            "n_unresolved_high": len(gate.unresolved_high),
+            "n_warned_low": len(gate.warned_low),
+            "decisions": decisions_to_jsonable(decisions),
+        },
+        warnings=warnings,
+        next_actions=next_actions,
+    )

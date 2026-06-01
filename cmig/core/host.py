@@ -13,6 +13,8 @@ sign 단일 진입점(sign.convert)으로 방향 라벨. cobra 위임(자체 LP 
 from __future__ import annotations
 
 import enum
+import time
+import tracemalloc
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -73,6 +75,18 @@ class HostModelSummary:
     objective_reactions: list[str]
     exchange_examples: list[str]
     has_lumen_blood_interfaces: bool
+
+
+@dataclass(frozen=True)
+class HostBenchmarkResult:
+    """Human-GEM/Recon3D scale host benchmark record."""
+
+    summary: HostModelSummary
+    solve: HostSolveResult
+    solve_seconds: float
+    peak_memory_mb: float
+    quantitative_coupling_ready: bool
+    warnings: list[str]
 
 
 def _met_from_host_exchange(exchange_id: str) -> str:
@@ -165,6 +179,39 @@ def solve_generic_host(host: Any, *, solver: str = "gurobi") -> HostSolveResult:
             f.metabolite: -f.flux for f in interface
             if f.interface == HostInterface.LUMEN.value and f.label == Label.UPTAKE.value
         },
+    )
+
+
+def benchmark_generic_host(host: Any, *, solver: str = "gurobi") -> HostBenchmarkResult:
+    """Generic Human-GEM/Recon3D scale benchmark: model size + LP solve time/memory.
+
+    This does not pretend CMIG lumen/blood coupling exists. `quantitative_coupling_ready`
+    is true only if the host already exposes CMIG-style `_lumen`/`_blood` exchange IDs.
+    """
+    summary = summarize_host_model(host)
+    tracemalloc.start()
+    start = time.perf_counter()
+    try:
+        result = solve_generic_host(host, solver=solver)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    elapsed = time.perf_counter() - start
+    warnings: list[str] = []
+    if not summary.has_lumen_blood_interfaces:
+        warnings.append(
+            "host model has no CMIG lumen/blood exchange convention; quantitative coupling "
+            "requires mapping before microbe-host flux constraints"
+        )
+    if result.status != "optimal":
+        warnings.append(f"host LP solve status is {result.status}")
+    return HostBenchmarkResult(
+        summary=summary,
+        solve=result,
+        solve_seconds=elapsed,
+        peak_memory_mb=peak / (1024 * 1024),
+        quantitative_coupling_ready=summary.has_lumen_blood_interfaces,
+        warnings=warnings,
     )
 
 

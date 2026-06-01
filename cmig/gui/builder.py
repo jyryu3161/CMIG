@@ -179,3 +179,79 @@ class ScenarioCompareView(QWidget):
         status = "" if delta.status == "ok" else f" [실패: {delta.diagnostic}]"
         self.growth_label.setText(
             f"growth Δ: {delta.growth_delta:+.4g} · added: {added}{status}")
+
+
+class SearchView(QWidget):
+    """Consortium Search — ranked candidates + Pareto/strategy warnings."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+        self.title = QLabel("Consortium Search")
+        self.status = QLabel("")
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["Members", "Target", "Score", "Flux", "Status"]
+        )
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.pareto_label = QLabel("")
+        layout.addWidget(self.title)
+        layout.addWidget(self.status)
+        layout.addWidget(self.table)
+        layout.addWidget(self.pareto_label)
+
+    def load_summary(self, summary: dict[str, object]) -> None:
+        """search_advanced_summary.json 형태를 표로 표시."""
+        strategy = str(summary.get("strategy", ""))
+        warnings = summary.get("warnings")
+        warning_count = len(warnings) if isinstance(warnings, list) else 0
+        self.status.setText(
+            f"strategy: {strategy}" + (f" · warnings: {warning_count}" if warning_count else "")
+        )
+        ranked = summary.get("top_ranked", {})
+        rows: list[tuple[str, str, float, float, str]] = []
+        if isinstance(ranked, dict):
+            for target, items in ranked.items():
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    members = item.get("members", [])
+                    score = _float_value(item.get("score", 0.0))
+                    rows.append((
+                        "+".join(str(x) for x in members) if isinstance(members, list) else "",
+                        str(target),
+                        score,
+                        _float_value(item.get("target_flux", score)),
+                        str(item.get("status", "ok")),
+                    ))
+        elif isinstance(ranked, list):
+            for item in ranked:
+                if not isinstance(item, dict):
+                    continue
+                members = item.get("members", [])
+                score = _float_value(item.get("score", 0.0))
+                rows.append((
+                    "+".join(str(x) for x in members) if isinstance(members, list) else "",
+                    str(summary.get("target", "")),
+                    score,
+                    score,
+                    str(item.get("status", "ok")),
+                ))
+        self.table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            for c, value in enumerate(row):
+                text = f"{value:.4g}" if isinstance(value, float) else str(value)
+                self.table.setItem(r, c, QTableWidgetItem(text))
+        pareto = summary.get("pareto_frontier")
+        pareto_count = len(pareto) if isinstance(pareto, list) else 0
+        self.pareto_label.setText(
+            "" if not pareto_count else f"Pareto frontier candidates: {pareto_count}"
+        )
+
+
+def _float_value(value: object) -> float:
+    if isinstance(value, (int, float, str)):
+        return float(value)
+    return 0.0

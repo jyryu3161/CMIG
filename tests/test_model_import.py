@@ -12,7 +12,13 @@ pytest.importorskip("micom")
 import cobra  # noqa: E402
 import micom  # noqa: E402
 
-from cmig.io.model_import import ModelImportError, ModelSummary, import_model  # noqa: E402
+from cmig.io.model_import import (  # noqa: E402
+    ModelImportError,
+    ModelSummary,
+    build_import_review,
+    import_model,
+    infer_model_origin,
+)
 
 _SBML = os.path.join(os.path.dirname(micom.__file__), "data", "e_coli_core.xml.gz")
 
@@ -41,6 +47,30 @@ def test_summary_as_dict():
     """SC-MI3: as_dict (Model Manager 표시용)."""
     d = import_model(_SBML).as_dict()
     assert d["n_exchanges"] == 20 and d["n_biomass"] == 1 and d["source_format"] == "sbml"
+
+
+def test_import_review_namespace_payload():
+    """AGORA/VMH review UX: import summary + namespace coverage + next actions."""
+    summary = import_model(_SBML)
+    review = build_import_review(summary, known_targets={"glc__D"})
+    assert review.inferred_origin == "generic_gem"
+    assert review.namespace["n_decisions"] > 0
+    assert "decisions" in review.namespace
+    assert review.next_actions
+
+
+def test_infer_model_origin_from_path():
+    summary = ModelSummary(
+        model_id="AGORA_member",
+        source_format="sbml",
+        source_path="/models/VMH_AGORA.xml",
+        n_reactions=1,
+        n_metabolites=1,
+        n_genes=0,
+        exchanges=[],
+        biomass_reactions=[],
+    )
+    assert infer_model_origin(summary) == "agora"
 
 
 def test_unsupported_extension(tmp_path):

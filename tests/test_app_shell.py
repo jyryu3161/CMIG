@@ -29,6 +29,7 @@ def test_shell_constructs_offscreen():
     assert w.jobs_panel.columnCount() == 4
     assert w.tabs.count() >= 7
     assert w.sweep_view.runner is w.runner
+    assert w.search_view is not None
     assert "CMIG" in w.windowTitle()
 
 

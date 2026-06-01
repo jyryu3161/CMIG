@@ -12,6 +12,7 @@ pytest.importorskip("cobra")
 
 from cmig.core.host import (  # noqa: E402
     InterfaceFlux,
+    benchmark_generic_host,
     classify_host_exchanges,
     solve_host,
 )
@@ -115,3 +116,21 @@ def test_host_osqp_hybrid_restores_bounds():
         for rid in ("EX_ac_lumen", "ATPM")
     }
     assert after == before
+
+
+def test_generic_host_benchmark_reports_scale_and_readiness():
+    """Human-GEM 정량 coupling 전 benchmark 계약: 시간/메모리/readiness를 명시한다."""
+    import os
+
+    import cobra
+    import micom
+
+    model = cobra.io.read_sbml_model(
+        os.path.join(os.path.dirname(micom.__file__), "data", "e_coli_core.xml.gz")
+    )
+    result = benchmark_generic_host(model, solver="gurobi")
+    assert result.summary.n_reactions == 95
+    assert result.solve_seconds >= 0.0
+    assert result.peak_memory_mb >= 0.0
+    assert result.quantitative_coupling_ready is False
+    assert any("mapping" in w for w in result.warnings)

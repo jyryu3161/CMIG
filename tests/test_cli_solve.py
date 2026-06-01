@@ -143,3 +143,47 @@ def test_sandbox_fixture_preview_and_commit(tmp_path):
     committed = json.loads((out / "sandbox_summary.json").read_text())
     assert committed["committed"] is True and committed["run_hash"]
     assert (out / "manifest.json").exists()
+
+
+def test_model_review_cli_writes_payload(tmp_path):
+    import os
+
+    import micom
+
+    model = os.path.join(os.path.dirname(micom.__file__), "data", "e_coli_core.xml.gz")
+    out = tmp_path / "review"
+    rc = main(["model-review", "--model", model, "--out", str(out)])
+    assert rc == 0
+    payload = json.loads((out / "model_review.json").read_text())
+    assert payload["model"]["model_id"] == "e_coli_core"
+    assert "namespace" in payload and payload["next_actions"]
+
+
+def test_host_benchmark_cli_writes_measurement(tmp_path):
+    import os
+
+    import micom
+
+    model = os.path.join(os.path.dirname(micom.__file__), "data", "e_coli_core.xml.gz")
+    out = tmp_path / "host"
+    rc = main(["host-benchmark", "--model", model, "--out", str(out)])
+    assert rc == 0
+    payload = json.loads((out / "host_benchmark.json").read_text())
+    assert payload["model"]["n_reactions"] == 95
+    assert payload["benchmark"]["solve_seconds"] >= 0.0
+    assert payload["quantitative_coupling_ready"] is False
+
+
+def test_search_advanced_fixture_cli_writes_pareto(tmp_path):
+    out = tmp_path / "search"
+    rc = main([
+        "search-advanced-fixture",
+        "--metabolites", "ac,but",
+        "--top-k", "3",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    payload = json.loads((out / "search_advanced_summary.json").read_text())
+    assert payload["strategy"] == "exhaustive"
+    assert set(payload["targets"]) == {"ac", "but"}
+    assert "pareto_frontier" in payload

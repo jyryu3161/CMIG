@@ -238,6 +238,40 @@ def _cmd_host_generic(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_host_benchmark(args: argparse.Namespace) -> int:
+    """Generic Human-GEM/Recon3D host scale benchmark."""
+    try:
+        from cobra.io import read_sbml_model
+
+        from cmig.core.host import benchmark_generic_host
+    except ImportError:
+        print("host-benchmark 는 engine stack 필요: uv sync --extra engine", file=sys.stderr)
+        return 2
+    model_path = Path(args.model)
+    if not model_path.exists():
+        print(f"host model 파일 없음: {model_path}", file=sys.stderr)
+        return 2
+    result = benchmark_generic_host(read_sbml_model(str(model_path)), solver=args.solver)
+    payload = {
+        "model": result.summary.__dict__,
+        "solve": {
+            "status": result.solve.status,
+            "viable": result.solve.viable,
+            "objective_value": result.solve.biomass,
+            "n_interface_fluxes": len(result.solve.interface_fluxes),
+            "diagnostic": result.solve.diagnostic,
+        },
+        "benchmark": {
+            "solve_seconds": result.solve_seconds,
+            "peak_memory_mb": result.peak_memory_mb,
+        },
+        "quantitative_coupling_ready": result.quantitative_coupling_ready,
+        "warnings": result.warnings,
+    }
+    _write_json_or_print(payload, args.out, "host_benchmark.json")
+    return 0
+
+
 def _cmd_dfba_fixture(args: argparse.Namespace) -> int:
     """e_coli_core glucose-batch dFBA fixture → optional timecourse.parquet."""
     try:
@@ -323,6 +357,141 @@ def _cmd_search_fixture(args: argparse.Namespace) -> int:
     }
     _write_json_or_print(payload, args.out, "search_summary.json")
     return 0
+
+
+def _cmd_search_advanced_fixture(args: argparse.Namespace) -> int:
+    """Fixture-backed advanced search: strategy dispatch + Pareto/GA surface."""
+    try:
+        import itertools
+
+        from cmig.core.engine import MicomEngine
+        from cmig.core.search import TargetSpec, rank_consortia
+        from cmig.core.search_advanced import (
+            Strategy,
+            explain_consortium,
+            pareto_frontier,
+            select_strategy,
+        )
+        from cmig.core.search_ga import GAConfig, genetic_search
+        from cmig.golden_fixture import build_taxonomy
+    except ImportError:
+        print(
+            "search-advanced-fixture 는 engine stack 필요: uv sync --extra engine",
+            file=sys.stderr,
+        )
+        return 2
+    taxonomy: Any = build_taxonomy()
+    ids = [str(x) for x in taxonomy["id"]]
+    targets = [TargetSpec(m.strip()) for m in args.metabolites.split(",") if m.strip()]
+    if not targets:
+        print("--metabolites 값이 비어 있음", file=sys.stderr)
+        return 2
+    combos = [
+        tuple(c)
+        for k in range(args.min_size, args.max_size + 1)
+        for c in itertools.combinations(ids, k)
+    ]
+    strategy = (
+        select_strategy(len(combos))
+        if args.strategy == "auto" else
+        Strategy(args.strategy)
+    )
+    engine = MicomEngine()
+
+    def score_members(members: tuple[str, ...], spec: TargetSpec) -> float:
+        sub = taxonomy[taxonomy["id"].isin(members)].copy()
+        ranked = rank_consortia(
+            engine,
+            sub,
+            spec,
+            sizes=(len(members),),
+            growth_fraction=args.growth_fraction,
+            solver=args.solver,
+            n_max=max(20, len(combos)),
+        )
+        return ranked[0].score if ranked else float("-inf")
+
+    warning = None
+    if strategy is Strategy.GA:
+        warning = "GA approximate search; not globally optimal"
+        ga = genetic_search(
+            ids,
+            lambda g: score_members(g, targets[0]),
+            GAConfig(min_size=args.min_size, max_size=args.max_size, seed=args.seed),
+            top_k=args.top_k,
+        )
+        top = [
+            {"members": list(members), "score": _finite_or_none(score)}
+            for members, score in ga.top_k
+        ]
+        payload = {
+            "strategy": strategy.value,
+            "target": targets[0].metabolite,
+            "top_ranked": top,
+            "ga": {
+                "best_members": list(ga.best_members),
+                "best_fitness": _finite_or_none(ga.best_fitness),
+                "evaluations": ga.evaluations,
+                "generations_run": ga.generations_run,
+            },
+            "warnings": [warning, ga.warning],
+        }
+        _write_json_or_print(payload, args.out, "search_advanced_summary.json")
+        return 0
+
+    ranked_by_target = []
+    for spec in targets:
+        ranked = rank_consortia(
+            engine,
+            taxonomy,
+            spec,
+            sizes=tuple(range(args.min_size, args.max_size + 1)),
+            growth_fraction=args.growth_fraction,
+            solver=args.solver,
+            n_max=max(20, len(combos)),
+        )
+        ranked_by_target.append((spec, ranked[: args.top_k]))
+    pareto = None
+    if len(ranked_by_target) >= 2:
+        first = {r.members: r.score for r in ranked_by_target[0][1]}
+        second = {r.members: r.score for r in ranked_by_target[1][1]}
+        members = sorted(set(first) & set(second))
+        points = [(first[m], second[m]) for m in members]
+        keep = pareto_frontier(points)
+        pareto = [
+            {
+                "members": list(members[i]),
+                targets[0].metabolite: _finite_or_none(points[i][0]),
+                targets[1].metabolite: _finite_or_none(points[i][1]),
+            }
+            for i in keep
+        ]
+    payload = {
+        "strategy": strategy.value,
+        "targets": [s.metabolite for s in targets],
+        "top_ranked": {
+            spec.metabolite: [
+                {
+                    "members": list(r.members),
+                    "score": _finite_or_none(r.score),
+                    "target_flux": _finite_or_none(r.target_flux),
+                    "community_growth": _finite_or_none(r.community_growth),
+                    "status": r.status,
+                    "explain": explain_consortium(r, spec),
+                }
+                for r in ranked
+            ]
+            for spec, ranked in ranked_by_target
+        },
+        "pareto_frontier": pareto,
+        "warnings": [] if warning is None else [warning],
+    }
+    _write_json_or_print(payload, args.out, "search_advanced_summary.json")
+    return 0
+
+
+def _finite_or_none(value: float) -> float | None:
+    return value if math.isfinite(value) else None
 
 
 def _cmd_stats_demo(args: argparse.Namespace) -> int:
@@ -429,6 +598,41 @@ def _cmd_namespace_suggest(args: argparse.Namespace) -> int:
         "decisions": decisions_to_jsonable(decisions),
     }
     _write_json_or_print(payload, args.out, "namespace_decisions.json")
+    return 0
+
+
+def _cmd_model_review(args: argparse.Namespace) -> int:
+    """AGORA/VMH/Human-GEM import review + namespace audit payload."""
+    try:
+        from cmig.io.model_import import build_import_review, import_model
+    except ImportError:
+        print("model-review 는 engine stack 필요: uv sync --extra engine", file=sys.stderr)
+        return 2
+    try:
+        known = None
+        if args.known_targets:
+            known = {
+                line.strip()
+                for line in Path(args.known_targets).read_text().splitlines()
+                if line.strip() and not line.startswith("#")
+            }
+        review = build_import_review(
+            import_model(args.model),
+            known_targets=known,
+            source_namespace=args.source_namespace,
+            target_namespace=args.target_namespace,
+        )
+    except Exception as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    payload = {
+        "model": review.model,
+        "inferred_origin": review.inferred_origin,
+        "namespace": review.namespace,
+        "warnings": review.warnings,
+        "next_actions": review.next_actions,
+    }
+    _write_json_or_print(payload, args.out, "model_review.json")
     return 0
 
 
@@ -778,6 +982,17 @@ def build_parser() -> argparse.ArgumentParser:
     hg.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     hg.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
     hg.set_defaults(func=_cmd_host_generic)
+    hb = sub.add_parser(
+        "host-benchmark", help="generic Human-GEM/Recon3D benchmark → host_benchmark.json"
+    )
+    hb.add_argument(
+        "--model",
+        default=os.environ.get("CMIG_RECON3D_PATH", "Recon3D.xml"),
+        help="SBML/XML host model path (default: $CMIG_RECON3D_PATH or ./Recon3D.xml)",
+    )
+    hb.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
+    hb.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
+    hb.set_defaults(func=_cmd_host_benchmark)
     df = sub.add_parser("dfba-fixture", help="e_coli_core glucose dFBA → timecourse.parquet")
     df.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     df.add_argument("--t-end", type=float, default=1.0, dest="t_end")
@@ -793,6 +1008,20 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument("--top-k", type=int, default=3, dest="top_k")
     se.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
     se.set_defaults(func=_cmd_search_fixture)
+    sa = sub.add_parser(
+        "search-advanced-fixture",
+        help="fixture advanced search with strategy/Pareto/GA → search_advanced_summary.json",
+    )
+    sa.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
+    sa.add_argument("--metabolites", default="ac,but", help="comma-separated target metabolites")
+    sa.add_argument("--growth-fraction", type=float, default=0.5, dest="growth_fraction")
+    sa.add_argument("--min-size", type=int, default=2, dest="min_size")
+    sa.add_argument("--max-size", type=int, default=2, dest="max_size")
+    sa.add_argument("--strategy", default="auto", choices=["auto", "exhaustive", "ga"])
+    sa.add_argument("--seed", type=int, default=0)
+    sa.add_argument("--top-k", type=int, default=3, dest="top_k")
+    sa.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
+    sa.set_defaults(func=_cmd_search_advanced_fixture)
     st = sub.add_parser("stats-demo", help="deterministic stats demo → stats_summary.json")
     st.add_argument("--fdr-method", default="fdr_bh", choices=["fdr_bh", "fdr_by"])
     st.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
@@ -811,6 +1040,13 @@ def build_parser() -> argparse.ArgumentParser:
     ns.add_argument("--target-namespace", default="bigg")
     ns.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
     ns.set_defaults(func=_cmd_namespace_suggest)
+    mr = sub.add_parser("model-review", help="AGORA/VMH/Human-GEM import review")
+    mr.add_argument("--model", required=True, help="SBML/JSON/MAT model path")
+    mr.add_argument("--known-targets", default=None, help="known target metabolite id 목록(txt)")
+    mr.add_argument("--source-namespace", default="model")
+    mr.add_argument("--target-namespace", default="bigg")
+    mr.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
+    mr.set_defaults(func=_cmd_model_review)
     sw = sub.add_parser("sweep-fixture", help="fixture parameter sweep → sweep.parquet")
     sw.add_argument("--tradeoff-fs", default="0.3,0.5", dest="tradeoff_fs")
     sw.add_argument("--solvers", default="gurobi")

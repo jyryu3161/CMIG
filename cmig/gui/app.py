@@ -32,7 +32,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cmig.gui.builder import CommunityBuilderView, ConstraintSandboxView, ScenarioCompareView
+from cmig.gui.builder import (
+    CommunityBuilderView,
+    ConstraintSandboxView,
+    ScenarioCompareView,
+    SearchView,
+)
 from cmig.gui.editors import MediumEditor, ModelManagerPanel
 from cmig.gui.views import ExternalProfileView, SweepView
 from cmig.service import JobRunner, JobStatus
@@ -141,6 +146,7 @@ class CmigMainWindow(QMainWindow):
         self.sweep_view = SweepView(runner=self.runner)
         self.sandbox_view = ConstraintSandboxView()
         self.scenario_compare = ScenarioCompareView()
+        self.search_view = SearchView()
         for label, widget in [
             ("Models", self.model_manager),
             ("Community", self.community_builder),
@@ -149,6 +155,7 @@ class CmigMainWindow(QMainWindow):
             ("Sweep", self.sweep_view),
             ("Sandbox", self.sandbox_view),
             ("Compare", self.scenario_compare),
+            ("Search", self.search_view),
         ]:
             self.tabs.addTab(widget, label)
         self.central_stack.addWidget(self.tabs)

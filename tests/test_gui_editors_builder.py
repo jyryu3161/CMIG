@@ -16,6 +16,7 @@ from cmig.gui.builder import (  # noqa: E402
     CommunityBuilderView,
     ConstraintSandboxView,
     ScenarioCompareView,
+    SearchView,
 )
 from cmig.gui.editors import MediumEditor, ModelManagerPanel  # noqa: E402
 from cmig.io.model_import import ModelSummary  # noqa: E402
@@ -125,6 +126,30 @@ def test_scenario_compare():
     sc.load_comparison(_delta())
     assert sc.delta_view.rowCount() == 2
     assert "-0.1" in sc.growth_label.text()
+
+
+def test_search_view_loads_advanced_summary():
+    """SC-SR-GUI: advanced search summary → ranked table + Pareto badge."""
+    _app()
+    view = SearchView()
+    view.load_summary({
+        "strategy": "exhaustive",
+        "warnings": [],
+        "top_ranked": {
+            "ac": [
+                {
+                    "members": ["A", "B"],
+                    "score": 1.2,
+                    "target_flux": 1.2,
+                    "status": "optimal",
+                }
+            ]
+        },
+        "pareto_frontier": [{"members": ["A", "B"], "ac": 1.2, "but": 0.8}],
+    })
+    assert view.table.rowCount() == 1
+    assert view.table.item(0, 0).text() == "A+B"
+    assert "Pareto" in view.pareto_label.text()
 
 
 # --- Journal presets ---
