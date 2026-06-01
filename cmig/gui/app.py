@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 from cmig.gui.builder import CommunityBuilderView, ConstraintSandboxView, ScenarioCompareView
 from cmig.gui.editors import MediumEditor, ModelManagerPanel
 from cmig.gui.views import ExternalProfileView, SweepView
-from cmig.service import JobRunner
+from cmig.service import JobRunner, JobStatus
 
 I18N: dict[str, dict[str, str]] = {
     "ko": {
@@ -128,6 +128,7 @@ class CmigMainWindow(QMainWindow):
         self.explorer = ProjectExplorer(self.tr_map)
         self.jobs_panel = RuntimeJobsPanel(self.tr_map)
         self.bridge = JobsBridge(self.runner, self.jobs_panel)
+        self._fixture_jobs: dict[str, Path] = {}
 
         center = QWidget()
         layout = QVBoxLayout(center)
@@ -203,16 +204,36 @@ class CmigMainWindow(QMainWindow):
         self.tabs.setCurrentWidget(self.profile_view)
         self.statusBar().showMessage(f"Loaded run: {run_dir}")
 
-    def run_fixture(self, out_dir: str | Path, *, solver: str = "gurobi") -> Any:
-        """GUI 버튼용 fixture solve. 성공 시 산출 run 을 즉시 연다."""
-        from cmig.service import EngineService
+    def run_fixture(self, out_dir: str | Path, *, solver: str = "gurobi") -> str:
+        """GUI 버튼용 fixture solve. JobRunner 로 제출해 Qt main thread 를 막지 않는다."""
+        from cmig.service import EngineService, JobContext
 
-        outcome = EngineService().solve_fixture(solver=solver, out_dir=out_dir)
+        run_dir = Path(out_dir)
+
+        def _job(ctx: JobContext) -> Any:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            outcome = EngineService().solve_fixture(solver=solver, out_dir=run_dir)
+            ctx.report_progress(1, 1)
+            return outcome
+
+        jid = self.submit_job("solve_fixture", _job)
+        self._fixture_jobs[jid] = run_dir
+        self.statusBar().showMessage(f"Started fixture run: {jid}")
+        return jid
+
+    def load_completed_fixture(self, job_id: str) -> bool:
+        """완료된 fixture job 산출물을 Profile 탭으로 로드한다."""
+        job = self.runner.poll(job_id)
+        if job.status is not JobStatus.DONE or job.result is None:
+            self.statusBar().showMessage(f"Fixture job not complete: {job_id}")
+            return False
+        outcome = job.result
         if outcome.status == "ok" and outcome.manifest_path is not None:
             self.load_run_dir(outcome.manifest_path.parent)
-        else:
-            self.statusBar().showMessage(f"Fixture failed: {outcome.diagnostic}")
-        return outcome
+            return True
+        self.statusBar().showMessage(f"Fixture failed: {outcome.diagnostic}")
+        return False
 
 
 def build_main_window(runner: JobRunner | None = None, lang: str = "ko") -> CmigMainWindow:

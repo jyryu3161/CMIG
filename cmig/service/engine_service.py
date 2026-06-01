@@ -105,36 +105,53 @@ class EngineService:
 
         spec = load_medium(medium_path) if medium_path else None
         community = self._engine.build_community(taxonomy, cmig_solver=solver)
+        original_bounds = None
         unknown_medium: list[str] = []
-        if spec is not None:
-            _, unknown_medium = apply_medium_checked(
-                community, spec, strict=strict_medium
-            )  # MICOM public API
-        result = self._engine.cooperative_tradeoff(community, tradeoff_f, cmig_solver=solver)
-        bundle = build_tidy(result)
-        if fva:
-            from cmig.core.fva import attach_community_fva_to_bundle, community_fva
-            ranges = community_fva(community, fraction_of_optimum=tradeoff_f)
-            attach_community_fva_to_bundle(bundle, ranges)
-        tsum = self._target_summary_or_none(bundle, targets)
-        components = build_run_components(
-            result,
-            model_checksum=model_checksum,
-            medium_checksum=medium_checksum(spec),
-            tradeoff_f=tradeoff_f,
-            micom_version=self._engine.micom_version,
-            bounds=bounds,
-            namespace_decisions=namespace_decision_keys(decisions),
-        )
-        diagnostic = self._merge_run_diagnostic(result.diagnostic, unknown_medium)
-        manifest_path = write_solve_output(
-            bundle, components, out_dir,
-            diagnostic=diagnostic, env_lock=env_lock, target_summary=tsum,
-            flux_report_status=result.flux_report_status,
-        )
-        return SolveOutcome.from_manifest(
-            result, bundle, components, manifest_path, community=community,
-        )
+        try:
+            if spec is not None:
+                _, unknown_medium = apply_medium_checked(
+                    community, spec, strict=strict_medium
+                )  # MICOM public API
+            if bounds:
+                from cmig.core.sandbox import BoundConstraint, apply_bounds
+
+                original_bounds = apply_bounds(
+                    community,
+                    [
+                        BoundConstraint(rid, float(pair[0]), float(pair[1]))
+                        for rid, pair in sorted(bounds.items())
+                    ],
+                )
+            result = self._engine.cooperative_tradeoff(community, tradeoff_f, cmig_solver=solver)
+            bundle = build_tidy(result)
+            if fva:
+                from cmig.core.fva import attach_community_fva_to_bundle, community_fva
+                ranges = community_fva(community, fraction_of_optimum=tradeoff_f)
+                attach_community_fva_to_bundle(bundle, ranges)
+            tsum = self._target_summary_or_none(bundle, targets)
+            components = build_run_components(
+                result,
+                model_checksum=model_checksum,
+                medium_checksum=medium_checksum(spec),
+                tradeoff_f=tradeoff_f,
+                micom_version=self._engine.micom_version,
+                bounds=bounds,
+                namespace_decisions=namespace_decision_keys(decisions),
+            )
+            diagnostic = self._merge_run_diagnostic(result.diagnostic, unknown_medium)
+            manifest_path = write_solve_output(
+                bundle, components, out_dir,
+                diagnostic=diagnostic, env_lock=env_lock, target_summary=tsum,
+                flux_report_status=result.flux_report_status,
+            )
+            return SolveOutcome.from_manifest(
+                result, bundle, components, manifest_path, community=community,
+            )
+        finally:
+            if original_bounds:
+                from cmig.core.sandbox import restore_bounds
+
+                restore_bounds(community, original_bounds)
 
     @staticmethod
     def _merge_run_diagnostic(base: str | None, unknown_medium: list[str]) -> str | None:

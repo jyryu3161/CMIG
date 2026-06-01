@@ -73,6 +73,32 @@ def test_load_run_dir_updates_profile_and_explorer(tmp_path):
     assert w.tabs.currentWidget() is w.profile_view
 
 
+def test_run_fixture_uses_jobrunner_and_loads_completed_run(tmp_path, monkeypatch):
+    """Run Fixture 워크플로는 GUI thread 직접 solve 대신 JobRunner 를 사용한다."""
+    from types import SimpleNamespace
+
+    import cmig.service
+    from cmig.core.tidy import empty_bundle
+
+    class FakeEngineService:
+        def solve_fixture(self, *, solver, out_dir):
+            empty_bundle().write(out_dir)
+            manifest = out_dir / "manifest.json"
+            manifest.write_text("{}\n")
+            return SimpleNamespace(status="ok", manifest_path=manifest, diagnostic=None)
+
+    monkeypatch.setattr(cmig.service, "EngineService", FakeEngineService)
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    jid = w.run_fixture(tmp_path)
+    assert w.runner.poll(jid).kind == "solve_fixture"
+    runner.result(jid, timeout=5)
+    assert w.load_completed_fixture(jid) is True
+    assert w.explorer.topLevelItem(2).childCount() == 1
+    runner.shutdown()
+
+
 def test_jobrunner_qt_bridge_reflects_job():
     """SC-AP4: JobRunner→Qt bridge 가 실 job 상태 표시(orphan UI 아님)."""
     _app()

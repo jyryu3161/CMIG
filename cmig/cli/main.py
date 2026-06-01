@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -110,6 +111,7 @@ def _cmd_solve(args: argparse.Namespace) -> int:
             fva=args.fva,
             targets=args.targets,
             out_dir=args.out,
+            bounds=_load_bounds_json(args.bounds) if args.bounds else None,
         )
     except ImportError:
         print("solve 는 엔진 stack 필요: uv sync --extra engine", file=sys.stderr)
@@ -430,8 +432,108 @@ def _cmd_namespace_suggest(args: argparse.Namespace) -> int:
     return 0
 
 
-def _parse_csv_floats(raw: str) -> list[float]:
-    return [float(x.strip()) for x in raw.split(",") if x.strip()]
+def _parse_csv_floats(raw: str, *, flag: str) -> list[float]:
+    try:
+        values = [float(x.strip()) for x in raw.split(",") if x.strip()]
+    except ValueError as e:
+        raise ValueError(f"{flag} 는 comma-separated float 이어야 함: {raw}") from e
+    if not values:
+        raise ValueError(f"{flag} 값이 비어 있음")
+    if any(not math.isfinite(v) for v in values):
+        raise ValueError(f"{flag} 는 finite float 이어야 함")
+    return values
+
+
+def _parse_csv_strings(raw: str, *, flag: str) -> list[str]:
+    values = [x.strip() for x in raw.split(",") if x.strip()]
+    if not values:
+        raise ValueError(f"{flag} 값이 비어 있음")
+    return values
+
+
+def _parse_optional_paths(raw: str | None, *, flag: str) -> list[str | None]:
+    if raw is None:
+        return [None]
+    paths = _parse_csv_strings(raw, flag=flag)
+    missing = [p for p in paths if not Path(p).exists()]
+    if missing:
+        raise ValueError(f"{flag} 파일 없음: {missing}")
+    return list(paths)
+
+
+def _load_bounds_json(path: str) -> dict[str, list[float]]:
+    p = Path(path)
+    if not p.exists():
+        raise ValueError(f"bounds 파일 없음: {p}")
+    raw = json.loads(p.read_text())
+    if not isinstance(raw, dict):
+        raise ValueError("bounds JSON 은 {reaction_id: [lower, upper]} 객체여야 함")
+    out: dict[str, list[float]] = {}
+    for rid, pair in raw.items():
+        if (
+            not isinstance(rid, str)
+            or not isinstance(pair, (list, tuple))
+            or len(pair) != 2
+        ):
+            raise ValueError("bounds JSON 항목은 reaction_id: [lower, upper] 형식이어야 함")
+        lo, hi = float(pair[0]), float(pair[1])
+        if not (math.isfinite(lo) and math.isfinite(hi)) or lo > hi:
+            raise ValueError(f"bounds 값 오류: {rid} -> {pair}")
+        out[rid] = [lo, hi]
+    return out
+
+
+def _parse_member_sets(raw: str | None) -> list[str | None]:
+    if raw is None:
+        return [None]
+    sets: list[str | None] = [x.strip() for x in raw.split(";") if x.strip()]
+    if not sets:
+        raise ValueError("--member-sets 값이 비어 있음")
+    return sets
+
+
+def _apply_member_set(taxonomy: Any, member_set: str | None) -> Any:
+    if member_set is None:
+        return taxonomy.copy()
+    ids = [x.strip() for x in member_set.replace("+", ",").split(",") if x.strip()]
+    if not ids:
+        raise ValueError(f"member_set 값이 비어 있음: {member_set}")
+    available = {str(x) for x in taxonomy["id"]}
+    missing = sorted(set(ids) - available)
+    if missing:
+        raise ValueError(f"member_set 에 taxonomy 미존재 id 포함: {missing}")
+    return taxonomy[taxonomy["id"].astype(str).isin(ids)].copy()
+
+
+def _apply_abundance_variant(taxonomy: Any, path: str | None) -> Any:
+    if path is None:
+        return taxonomy
+    import pandas as pd
+
+    p = Path(path)
+    if p.suffix.lower() == ".json":
+        raw = json.loads(p.read_text())
+        if not isinstance(raw, dict):
+            raise ValueError("abundance JSON 은 {member_id: abundance} 객체여야 함")
+        mapping = {str(k): float(v) for k, v in raw.items()}
+    else:
+        df = pd.read_csv(p)
+        missing_cols = {"id", "abundance"} - set(df.columns)
+        if missing_cols:
+            raise ValueError(f"abundance csv 필수 컬럼 누락: {sorted(missing_cols)}")
+        mapping = {str(r["id"]): float(r["abundance"]) for r in df.to_dict("records")}
+    missing = sorted(set(mapping) - {str(x) for x in taxonomy["id"]})
+    if missing:
+        raise ValueError(f"abundance variant 에 taxonomy 미존재 id 포함: {missing}")
+    out = taxonomy.copy()
+    if "abundance" not in out.columns:
+        out["abundance"] = 1.0
+    out["abundance"] = [mapping.get(str(mid), float(cur)) for mid, cur in zip(
+        out["id"], out["abundance"], strict=True
+    )]
+    if any(float(v) < 0 or not math.isfinite(float(v)) for v in out["abundance"]):
+        raise ValueError("abundance 값은 finite non-negative 이어야 함")
+    return out
 
 
 def _cmd_sweep_fixture(args: argparse.Namespace) -> int:
@@ -442,10 +544,14 @@ def _cmd_sweep_fixture(args: argparse.Namespace) -> int:
     except ImportError:
         print("sweep-fixture 는 engine stack 필요: uv sync --extra engine", file=sys.stderr)
         return 2
-    axes = [
-        SweepAxis("tradeoff_f", _parse_csv_floats(args.tradeoff_fs)),
-        SweepAxis("solver", [s.strip() for s in args.solvers.split(",") if s.strip()]),
-    ]
+    try:
+        axes = [
+            SweepAxis("tradeoff_f", _parse_csv_floats(args.tradeoff_fs, flag="--tradeoff-fs")),
+            SweepAxis("solver", _parse_csv_strings(args.solvers, flag="--solvers")),
+        ]
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
 
     def run_hash_fn(cond: Any) -> str:
         import hashlib
@@ -495,12 +601,28 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     if missing_cols:
         print(f"taxonomy 필수 컬럼 누락: {sorted(missing_cols)} (필요: id, file)", file=sys.stderr)
         return 2
-    mediums = [m.strip() for m in args.mediums.split(",") if m.strip()] if args.mediums else [None]
-    axes = [
-        SweepAxis("tradeoff_f", _parse_csv_floats(args.tradeoff_fs)),
-        SweepAxis("solver", [s.strip() for s in args.solvers.split(",") if s.strip()]),
-        SweepAxis("medium_variant", mediums),
-    ]
+    try:
+        tradeoff_fs = _parse_csv_floats(args.tradeoff_fs, flag="--tradeoff-fs")
+        bad_tradeoffs = [v for v in tradeoff_fs if not (0.0 < v <= 1.0)]
+        if bad_tradeoffs:
+            raise ValueError(f"--tradeoff-fs 는 0<f≤1 이어야 함: {bad_tradeoffs}")
+        axes = [
+            SweepAxis("tradeoff_f", tradeoff_fs),
+            SweepAxis("solver", _parse_csv_strings(args.solvers, flag="--solvers")),
+            SweepAxis("medium_variant", _parse_optional_paths(args.mediums, flag="--mediums")),
+            SweepAxis("member_set", _parse_member_sets(args.member_sets)),
+            SweepAxis(
+                "abundance",
+                _parse_optional_paths(args.abundance_variants, flag="--abundance-variants"),
+            ),
+            SweepAxis(
+                "bounds",
+                _parse_optional_paths(args.bounds_variants, flag="--bounds-variants"),
+            ),
+        ]
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
     out = Path(args.out)
     run_root = out / "runs"
     rows: list[SweepRow] = []
@@ -514,9 +636,17 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
             cond_dir = run_root / cond.condition_id
             solver = str(cond.axis_values["solver"])
             medium = cond.axis_values.get("medium_variant")
+            member_set = cond.axis_values.get("member_set")
+            abundance = cond.axis_values.get("abundance")
+            bounds_variant = cond.axis_values.get("bounds")
             medium_path = None if medium is None else str(medium)
+            taxonomy_variant = _apply_abundance_variant(
+                _apply_member_set(taxonomy, None if member_set is None else str(member_set)),
+                None if abundance is None else str(abundance),
+            )
+            bounds = None if bounds_variant is None else _load_bounds_json(str(bounds_variant))
             outcome = service.solve_community(
-                taxonomy=taxonomy,
+                taxonomy=taxonomy_variant,
                 model_checksum=file_checksum(tax_path),
                 solver=solver,
                 tradeoff_f=float(cond.axis_values["tradeoff_f"]),
@@ -524,6 +654,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
                 namespace_decisions=namespace_decisions,
                 strict_medium=not args.allow_unknown_medium,
                 out_dir=cond_dir,
+                bounds=bounds,
             )
             status = "ok" if outcome.status == "ok" else "failed"
             rows.append(
@@ -622,6 +753,7 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f", help="0<f≤1")
     sv.add_argument("--targets", default=None, help="target preset(scfa) → target_summary.json")
     sv.add_argument("--fva", action="store_true", help="community FVA → fva_lo/hi(gurobi)")
+    sv.add_argument("--bounds", default=None, help="reaction bounds JSON {reaction_id: [lo, hi]}")
     sv.add_argument("--out", required=True, help="산출 디렉터리")
     sv.set_defaults(func=_cmd_solve)
     golden = sub.add_parser("golden", help="golden fixture 관리").add_subparsers(
@@ -690,6 +822,21 @@ def build_parser() -> argparse.ArgumentParser:
     us.add_argument("--tradeoff-fs", default="0.3,0.5", dest="tradeoff_fs")
     us.add_argument("--solvers", default="gurobi")
     us.add_argument("--mediums", default=None, help="comma-separated medium csv/json paths")
+    us.add_argument(
+        "--member-sets",
+        default=None,
+        help="semicolon-separated member sets, e.g. 'A+B;A+C' (default: full taxonomy)",
+    )
+    us.add_argument(
+        "--abundance-variants",
+        default=None,
+        help="comma-separated csv/json files with id,abundance overrides",
+    )
+    us.add_argument(
+        "--bounds-variants",
+        default=None,
+        help="comma-separated JSON files {reaction_id: [lo, hi]}",
+    )
     us.add_argument("--namespace-decisions", default=None)
     us.add_argument("--allow-unknown-medium", action="store_true")
     us.add_argument("--metric", default="growth")

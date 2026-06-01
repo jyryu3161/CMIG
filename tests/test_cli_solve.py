@@ -93,6 +93,37 @@ def test_sweep_user_taxonomy_writes_runs(tmp_path):
     assert json.loads((out / "sweep_summary.json").read_text())["n_runs"] == 1
 
 
+def test_sweep_user_taxonomy_records_member_abundance_and_bounds_axes(tmp_path):
+    import pyarrow.parquet as pq
+
+    from cmig.golden_fixture import build_taxonomy
+
+    tax_df = build_taxonomy()
+    taxonomy = tmp_path / "taxonomy.csv"
+    tax_df.to_csv(taxonomy, index=False)
+    member_set = "+".join(str(x) for x in tax_df["id"])
+    abundance = tmp_path / "abundance.json"
+    abundance.write_text(json.dumps({str(x): 1.0 for x in tax_df["id"]}) + "\n")
+    bounds = tmp_path / "bounds.json"
+    bounds.write_text(json.dumps({"EX_glc__D_e__Escherichia_coli_1": [-1.0, 1000.0]}) + "\n")
+    out = tmp_path / "sweep"
+    rc = main([
+        "sweep",
+        "--taxonomy", str(taxonomy),
+        "--tradeoff-fs", "0.5",
+        "--solvers", "gurobi",
+        "--member-sets", member_set,
+        "--abundance-variants", str(abundance),
+        "--bounds-variants", str(bounds),
+        "--out", str(out),
+    ])
+    assert rc == 0
+    row = pq.read_table(out / "sweep.parquet").to_pylist()[0]
+    assert row["axis_member_set"] == member_set
+    assert row["axis_abundance"] == str(abundance)
+    assert row["axis_bounds"] == str(bounds)
+
+
 def test_sandbox_fixture_preview_and_commit(tmp_path):
     rxn = "EX_glc__D_e__Escherichia_coli_1"
     rc = main([

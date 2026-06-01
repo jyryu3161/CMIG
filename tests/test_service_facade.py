@@ -67,6 +67,31 @@ def test_facade_solve_community_matches_cli(tmp_path):
         assert pq.read_table(cli_dir / f).equals(pq.read_table(fac_dir / f)), f"{f} 내용 불일치"
 
 
+def test_facade_solve_community_applies_bounds(tmp_path):
+    """bounds 는 manifest/hash 뿐 아니라 실제 community solve 에도 적용된다."""
+    tax = tmp_path / "tax.csv"
+    build_taxonomy().to_csv(tax, index=False)
+    base = EngineService().solve_community(
+        taxonomy=pd.read_csv(tax),
+        model_checksum=file_checksum(tax),
+        solver="gurobi",
+        tradeoff_f=0.5,
+        out_dir=tmp_path / "base",
+    )
+    constrained = EngineService().solve_community(
+        taxonomy=pd.read_csv(tax),
+        model_checksum=file_checksum(tax),
+        solver="gurobi",
+        tradeoff_f=0.5,
+        bounds={"EX_glc__D_e__Escherichia_coli_1": [-1.0, 1000.0]},
+        out_dir=tmp_path / "constrained",
+    )
+    assert constrained.result is not None and base.result is not None
+    assert constrained.result.objective != base.result.objective
+    manifest = json.loads((tmp_path / "constrained" / "manifest.json").read_text())
+    assert manifest["components"]["bounds"] == {"EX_glc__D_e__Escherichia_coli_1": [-1.0, 1000.0]}
+
+
 def test_facade_targets_writes_summary(tmp_path):
     """SC-S1: --targets 위임 — target_summary.json 산출(미지 preset → ValueError)."""
     outcome = EngineService().solve_fixture(solver="gurobi", out_dir=tmp_path, targets="scfa")
