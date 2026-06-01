@@ -3,7 +3,7 @@
 Design Ref: §16 / schema §7.4 / Plan SC: SC-1·SC-5·SC-6.
 
 MICOM 번들 test 모델에서 3-member community 를 구성해 solver별 golden 을 캡처/검증한다.
-solver 변형 2종: gurobi(기본·full)·osqp(qp_only_approximate). (F1: hybrid 폐기)
+solver 변형 2종: gurobi(기본·full)·osqp(optlang hybrid: OSQP-QP + HiGHS-LP full).
 float 컬럼은 hash 전 rounding (golden.DEFAULT_DECIMALS).
 """
 
