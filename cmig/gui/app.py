@@ -612,45 +612,40 @@ class CmigMainWindow(QMainWindow):
         return False
 
     def run_search_fixture(self) -> str:
-        """Run fixture search or user model-pool search from the Search tab."""
+        """Run user model-pool search from the Search tab."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        targets = self.search_view.targets_input.text().strip() or "but"
-        target = targets.split(",", 1)[0].strip() or "but"
+        target_text = self.search_view.targets_input.text().strip() or "but"
+        target = target_text.split(",", 1)[0].strip() or "but"
         model_dir = self.search_view.model_dir_input.text().strip()
         strategy = self.search_view.strategy_combo.currentText()
         min_size = str(self.search_view.min_size_spin.value())
         max_size = str(self.search_view.max_size_spin.value())
         top_k = str(self.search_view.top_k_spin.value())
         robustness_fva = self.search_view.robustness_check.isChecked()
+        if not model_dir:
+            self.search_view.status.setText(
+                "Select a model folder before running product search."
+            )
+            return ""
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            if model_dir:
-                argv = [
-                    "search",
-                    "--model-dir", model_dir,
-                    "--target", target,
-                    "--strategy", strategy,
-                    "--min-size", min_size,
-                    "--max-size", max_size,
-                    "--top-k", top_k,
-                    "--out", str(out_dir),
-                ]
-                if robustness_fva:
-                    argv.insert(-2, "--robustness-fva")
-                output_name = "search_summary.json"
-            else:
-                argv = [
-                    "search-advanced-fixture",
-                    "--metabolites", targets,
-                    "--strategy", strategy if strategy != "random" else "auto",
-                    "--top-k", top_k,
-                    "--out", str(out_dir),
-                ]
-                output_name = "search_advanced_summary.json"
+            argv = [
+                "search",
+                "--model-dir", model_dir,
+                "--target", target,
+                "--strategy", strategy,
+                "--min-size", min_size,
+                "--max-size", max_size,
+                "--top-k", top_k,
+                "--out", str(out_dir),
+            ]
+            if robustness_fva:
+                argv.insert(-2, "--robustness-fva")
+            output_name = "search_summary.json"
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"search failed with rc={rc}")
