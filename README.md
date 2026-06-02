@@ -1,62 +1,248 @@
-# CMIG — Community Metabolic Interaction GUI
+# CMIG
 
-네이티브 데스크톱 커뮤니티 대사 상호작용 분석 도구. community FBA를 **MICOM**(정확 pin·public API only)에
-위임하고, CMIG가 **namespace gate · sign 정규화 · tidy 계약 · delta · sandbox · sweep · R 출판 그림**의
-부가가치 계층을 소유한다.
+CMIG is a desktop and command-line platform for community metabolic interaction
+analysis. It uses user-provided GEM files and delegates community FBA to MICOM,
+while CMIG owns the product layer around model-pool search, host-microbe
+coupling, namespace checks, reproducible manifests, tidy outputs, diagnostics,
+and publication-oriented figures.
 
-- 명세(권위): `CMIG_명세서_v3.0.md` (§1–§11, §16)
-- PDCA 문서: `docs/00-pm` · `docs/01-plan` · `docs/02-design`
-- 아키텍처: Option C — layered headless `core/` + EngineService facade + 4 SC-driven seams
+The current workflow is intentionally local-file based. CMIG does not download,
+curate, or auto-select external model catalogues. Prepare the microbial SBML,
+JSON, or MAT models yourself, then load them through the GUI or CLI.
 
-## 현재 상태 (2026-06)
+## What Is Implemented
 
-**headless core + EngineService facade + 기본 GUI shell + fixture/demo CLI 산출 경로.**
-`uv run pytest` 기준 전 테스트 green(실 MICOM·R·MILP·FVA·GUI offscreen 포함). `mypy` gate는
-프로덕션 소스(`cmig/`) strict 기준이며, `tests/`는 pytest/ruff 대상으로 관리한다.
+- MICOM-backed community solve through a single engine wrapper.
+- User model-pool search, including combinations such as "choose 2 models from
+  a folder and maximize butyrate or acetate production".
+- BiGG-ID direct host-microbe coupling for Recon/Human-GEM style host models and
+  user-provided microbial models.
+- Search and host-microbe GUI workflows with non-blocking jobs, result tables,
+  SVG previews, and figure export.
+- Interaction figures for host-microbe runs: circle, heatmap, bubble, and member
+  contribution plots, plus source CSV tables.
+- Search figures: ranking bar plot and growth-production scatter plot.
+- Reproducible run manifests, run hashes, structured diagnostics, tidy Parquet
+  outputs, FVA where supported, and regression tests.
+- A simplified GUI shell: primary tabs are `Models`, `Search`, `Host`, and
+  `Profile`; less common tools are behind `Show Advanced Tools`.
 
-구현됨:
-- `core/sign·namespace(gate)·tidy·manifest(run_hash 11)·solver` — 순수 로직 + 계약.
-- `core/engine`(실 MICOM cooperative_tradeoff) · `core/interactions·delta·sandbox·sweep·medium_spec·targets·metrics·fva` · `core/diagnostics`(구조화 {code,message,detail} — **engine/delta/sandbox/sweep 전면 적용**).
-- `core/single_model·pair·matrix·dfba·host·host_impact·search·search_advanced·search_ga·stats·stats_embed` — v3.0 extension의 구현 가능분. host는 synthetic toy coupling + generic human GEM(Recon3D/Human-GEM style) smoke solve를 분리.
-- `io/solve_output` + **`cmig solve-fixture --solver --out`** 및 **`cmig solve --taxonomy [--medium] --solver --tradeoff-f --out`** → nodes/edges/profile.parquet + manifest.json(run_hash). medium 입력은 `medium_presets/`(csv) 또는 사용자 csv/json.
-- `targets`(SCFA target readout) · `render/`(R ggplot2 SVG/TIFF, composer; 논문용 font/palette/line style) · `gui/`(app shell·Cytoscape graph·tables, offscreen 실행 검증).
+## Requirements
 
-**Solver (F1: full-flux metadata)**:
-- `gurobi` = canonical full-flux(QP+LP 모두 Gurobi → `flux_report_status='full'`).
-- `osqp` = baseline approximate 경로(`flux_report_status='qp_only_approximate'`,
-  `flux_solver=null`).
-- 별도 `osqp_growth_highs_flux` solver 이름은 폐기됨 — `osqp` alias 자체가 optlang hybrid다.
+- Python 3.10 or newer.
+- `uv` for environment and dependency management.
+- A Gurobi installation and valid license for the default full solver workflow.
+- macOS, Linux, or Windows with Qt support for the GUI.
 
-범위:
-- 현재 제품 범위는 사용자가 직접 제공하는 SBML/JSON/MAT 모델과 MICOM 호환 taxonomy csv를 입력받는 방식이다. 외부 모델 카탈로그를 자동으로 가져오거나 큐레이션하지 않는다.
+CMIG pins `micom==0.39.0` and expects Gurobi 12.x through `gurobipy>=12,<13`.
+The `osqp` solver path is available for approximate QP-only provenance in core
+community solves, but Gurobi is required for the current host-microbe and model
+pool product commands.
 
-아직 미구현(후속):
-- **실 Human-GEM/Recon host 정량 coupling 검증** — 현재 host-microbe coupling은 synthetic toy + 실 MICOM 분비 wiring 검증, generic human GEM은 사용자가 제공한 모델의 smoke solve로 검증.
-- **사람 시각 QA(G-7b)** — GUI는 offscreen 실행 증거까지 자동화.
+## Installation
 
-## 개발 (uv)
+Clone the repository and install the full local environment:
 
 ```bash
-uv sync --extra engine --extra render --extra gui   # 전체 stack
-uv run pytest                                       # 전 테스트 (실 MICOM·R·FVA·GUI offscreen)
-uv run ruff check . && uv run mypy cmig
-uv run cmig solvers                                 # solver capability matrix
-uv run cmig solve-fixture --solver gurobi --out out/  # 고정 fixture solve → parquet + manifest
-uv run cmig solve --taxonomy tax.csv --medium medium_presets/western_diet.csv --out out/  # 사용자 입력
-uv run cmig host-fixture --out out/                 # synthetic host-microbe smoke
-uv run cmig model-review --model /path/to/model.xml --out out/  # user-provided GEM review
-uv run cmig host-generic --model /path/to/Recon3D.xml --out out/  # generic human GEM smoke
-uv run cmig dfba-fixture --out out/                 # e_coli_core dFBA timecourse
-uv run cmig search-fixture --out out/               # 3-member target-max search
-uv run cmig stats-demo --out out/                   # stats/FDR demo
-uv run cmig golden verify                           # MICOM-version golden gate (SC-5)
+git clone https://github.com/jyryu3161/CMIG.git
+cd CMIG
+uv sync --extra engine --extra gui --extra render --extra stats
 ```
 
-`Recon3D.xml` 같은 대용량 외부 GEM은 git에 포함하지 않는다. 로컬 검증은 사용자가 직접 경로를
-지정해 수행한다. 테스트 편의를 위해 `CMIG_RECON3D_PATH=/path/to/Recon3D.xml`를 설정할 수 있으며,
-파일이 없으면 Recon3D smoke tests는 skip된다.
+For a smaller headless environment without GUI/statistics extras:
 
-## Success Criteria
-SC-1~9(golden·MICOM regression·OSQP→LP tolerance·sign·gate·tidy·재현)은 `tests/`로 검증되며,
-hardening cycle에서 SC-H1~6(GUI 실행·E2E·적대리뷰·FVA 등)이 추가로 통과한다. 상세는
-`docs/archive/`의 각 사이클 report 참조.
+```bash
+uv sync --extra engine --extra render
+```
+
+Check the installation:
+
+```bash
+uv run cmig version
+uv run cmig solvers
+uv run ruff check cmig tests
+uv run mypy cmig
+uv run pytest -q
+```
+
+## Launch The GUI
+
+CMIG currently exposes the GUI as a Python entry point:
+
+```bash
+uv run python - <<'PY'
+from PySide6.QtWidgets import QApplication
+from cmig.gui.app import build_main_window
+
+app = QApplication([])
+window = build_main_window(lang="en")
+window.resize(1500, 950)
+window.show()
+app.exec()
+PY
+```
+
+The default GUI is focused on the main user workflows:
+
+- `Search`: find high-producing microbial model combinations from a folder.
+- `Host`: run host-microbe interaction analysis with a host model and microbial
+  model folder.
+- `Profile`: open and inspect completed CMIG runs.
+- `Models`: import and review a user-provided GEM.
+
+Use `Show Advanced Tools` only when you need the lower-level editor or preview
+tabs.
+
+## Typical CLI Workflows
+
+### 1. Review a user-provided model
+
+```bash
+uv run cmig model-review \
+  --model /path/to/model.xml \
+  --out runs/model_review
+```
+
+### 2. Search a microbial model pool
+
+Example: choose the best 2-model combinations from a folder for butyrate
+production.
+
+```bash
+uv run cmig search \
+  --model-dir /path/to/microbial_models \
+  --target but \
+  --min-size 2 \
+  --max-size 2 \
+  --top-k 10 \
+  --strategy auto \
+  --out runs/search_butyrate
+```
+
+Useful outputs:
+
+- `search_summary.json`
+- `search_rankings.csv`
+- `search_member_matrix.csv`
+- `pool_diagnostics.csv`
+- `search_plot.svg`
+- `search_scatter.svg`
+
+Use `--recursive` if your model pool is organized as subfolders, for example
+`strainA/model.xml`, `strainB/model.xml`.
+
+### 3. Run host-microbe coupling
+
+Example with a Recon/Human-GEM style host model and a microbial model folder:
+
+```bash
+uv run cmig host-microbe-bigg \
+  --host /path/to/Recon3D.xml \
+  --model-dir /path/to/microbial_models \
+  --recursive \
+  --out runs/host_microbe
+```
+
+Useful outputs:
+
+- `host_microbe_bigg_summary.json`
+- `microbial_secretion.csv`
+- `host_uptake.csv`
+- `microbe_to_host.csv`
+- `interaction_edges.csv`
+- `interaction_matrix.csv`
+- `member_contribution.csv`
+- `figure_manifest.json`
+- `interaction_circle.svg`
+- `interaction_heatmap.svg`
+- `interaction_bubble.svg`
+- `member_contribution.svg`
+
+The direct coupling assumes compatible BiGG-style exchange identifiers. CMIG does
+not perform Recon-specific interface curation or external model import.
+
+### 4. Run a MICOM taxonomy solve
+
+If you already have a MICOM-compatible taxonomy CSV:
+
+```bash
+uv run cmig solve \
+  --taxonomy /path/to/taxonomy.csv \
+  --medium medium_presets/western_diet.csv \
+  --solver gurobi \
+  --tradeoff-f 0.5 \
+  --out runs/solve
+```
+
+Useful outputs include `nodes.parquet`, `edges.parquet`, `profile.parquet`, and
+`manifest.json`.
+
+### 5. Run fixture demos
+
+```bash
+uv run cmig solve-fixture --solver gurobi --out runs/solve_fixture
+uv run cmig search-fixture --out runs/search_fixture
+uv run cmig host-fixture --out runs/host_fixture
+uv run cmig dfba-fixture --out runs/dfba_fixture
+uv run cmig stats-demo --out runs/stats_demo
+```
+
+## Medium Files
+
+Medium files can be CSV or JSON. Built-in examples live in `medium_presets/`.
+For user commands, pass them with `--medium`, `--host-medium`, or
+`--microbe-medium` depending on the workflow.
+
+## Solver Provenance
+
+- `gurobi`: canonical full-flux workflow.
+- `osqp`: QP-only approximate provenance for supported community solve paths.
+- Community FVA and product host/search workflows currently require Gurobi.
+
+CMIG records solver choice and flux provenance in run outputs so cached or
+published results can be interpreted correctly.
+
+## Development
+
+Run the standard checks:
+
+```bash
+uv run ruff check cmig tests
+uv run mypy cmig
+uv run pytest -q
+```
+
+Golden-version gate:
+
+```bash
+uv run cmig golden verify
+```
+
+The test suite includes headless core tests, MICOM-backed tests, solver
+provenance tests, GUI offscreen smoke tests, and real workflow regressions.
+
+## Scope And Limitations
+
+- CMIG expects users to provide their own GEM files.
+- CMIG does not automatically download AGORA, VMH, Recon, Human-GEM, or BiGG
+  model collections.
+- Host-microbe coupling is implemented for BiGG-style direct exchange matching.
+- The GUI has been tested in offscreen mode; final manual desktop QA may still
+  be useful before distribution.
+- README examples assume Gurobi is installed and licensed.
+
+## Repository Layout
+
+- `cmig/core/`: domain logic and solver-facing workflows.
+- `cmig/service/`: application service facade and non-blocking job runner.
+- `cmig/gui/`: PySide6 desktop UI.
+- `cmig/cli/`: command-line entry point.
+- `cmig/io/`: run output, checksums, manifests, and import helpers.
+- `cmig/render/`: figure rendering helpers.
+- `tests/`: regression and workflow tests.
+- `medium_presets/`: example medium definitions.
+- `docs/`: design and project-management notes.
+
+## License
+
+The project license is currently marked as TBD in `pyproject.toml`.
