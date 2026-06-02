@@ -6,6 +6,8 @@ QT_QPA_PLATFORM=offscreen(conftest)에서 PySide6 셸을 *실제로* 생성·소
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
@@ -267,6 +269,53 @@ def test_search_button_uses_model_dir_product_command(monkeypatch, tmp_path):
     assert seen["argv"][seen["argv"].index("--model-dir") + 1] == str(tmp_path)
     assert "--robustness-fva" in seen["argv"]
     assert w.search_view.table.item(0, 1).text() == "but"
+    runner.shutdown()
+
+
+def test_host_microbe_run_button_uses_product_command(monkeypatch, tmp_path):
+    import json
+
+    import cmig.cli.main
+
+    seen = {"argv": []}
+
+    def fake_main(argv):
+        seen["argv"] = list(argv)
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "host_microbe_bigg_summary.json").write_text(json.dumps({
+            "host": {
+                "status": "optimal",
+                "viable": True,
+                "objective_value": 3.0,
+                "lumen_uptake": {"ac": 1.0},
+            },
+            "microbial_secretion": {"ac": 1.0},
+            "microbe_to_host": {"ac": 1.0},
+            "unused_secretion": {},
+            "warnings": [],
+        }))
+        (out / "host_uptake.csv").write_text("metabolite,uptake_flux\nac,1.0\n")
+        return 0
+
+    monkeypatch.setattr(cmig.cli.main, "main", fake_main)
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    w.host_view.host_path_input.setText(str(tmp_path / "Recon3D.xml"))
+    w.host_view.model_dir_input.setText(str(tmp_path / "models"))
+    w.host_view.out_dir_input.setText(str(tmp_path / "out"))
+    w.host_view.recursive_check.setChecked(True)
+    jid = w.run_host_microbe_bigg()
+    runner.result(jid, timeout=5)
+    w._poll_completed_jobs()
+    assert seen["argv"][0] == "host-microbe-bigg"
+    assert seen["argv"][seen["argv"].index("--host") + 1].endswith("Recon3D.xml")
+    assert seen["argv"][seen["argv"].index("--model-dir") + 1].endswith("models")
+    assert "--recursive" in seen["argv"]
+    assert w.tabs.currentWidget() is w.host_view
+    assert w.host_view.cross_table.rowCount() == 1
+    assert w.host_view.network_payload is not None
     runner.shutdown()
 
 

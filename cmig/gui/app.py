@@ -140,6 +140,7 @@ class CmigMainWindow(QMainWindow):
         self.bridge = JobsBridge(self.runner, self.jobs_panel)
         self._fixture_jobs: dict[str, Path] = {}
         self._search_jobs: set[str] = set()
+        self._host_microbe_jobs: dict[str, Path] = {}
         self.current_manifest: dict[str, Any] | None = None
         self.current_graph_payload: dict[str, Any] | None = None
         self.current_model_review: dict[str, Any] | None = None
@@ -204,11 +205,48 @@ class CmigMainWindow(QMainWindow):
         self.sandbox_view.commit_btn.clicked.connect(self._run_sandbox_commit)
         self.search_view.browse_pool_btn.clicked.connect(self._browse_search_model_dir)
         self.search_view.run_btn.clicked.connect(self.run_search_fixture)
+        self.host_view.browse_host_btn.clicked.connect(self._browse_host_model)
+        self.host_view.browse_model_dir_btn.clicked.connect(self._browse_host_microbe_model_dir)
+        self.host_view.browse_host_medium_btn.clicked.connect(self._browse_host_medium)
+        self.host_view.browse_microbe_medium_btn.clicked.connect(self._browse_microbe_medium)
+        self.host_view.browse_out_dir_btn.clicked.connect(self._browse_host_microbe_out_dir)
+        self.host_view.run_btn.clicked.connect(self.run_host_microbe_bigg)
 
     def _browse_search_model_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Model Pool Folder")
         if path:
             self.search_view.model_dir_input.setText(path)
+
+    def _browse_host_model(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Host Model", "", "Models (*.xml *.sbml *.xml.gz *.sbml.gz)"
+        )
+        if path:
+            self.host_view.host_path_input.setText(path)
+
+    def _browse_host_microbe_model_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Microbial Model Folder")
+        if path:
+            self.host_view.model_dir_input.setText(path)
+
+    def _browse_host_medium(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Host Medium", "", "Medium (*.csv *.json);;All Files (*)"
+        )
+        if path:
+            self.host_view.host_medium_input.setText(path)
+
+    def _browse_microbe_medium(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Microbe Medium", "", "Medium (*.csv *.json);;All Files (*)"
+        )
+        if path:
+            self.host_view.microbe_medium_input.setText(path)
+
+    def _browse_host_microbe_out_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Host-Microbe Output Folder")
+        if path:
+            self.host_view.out_dir_input.setText(path)
 
     def _import_model_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -338,6 +376,14 @@ class CmigMainWindow(QMainWindow):
             return False
         try:
             payload = json.loads(summary_path.read_text())
+            if "microbial_secretion" not in payload:
+                secretion_path = run_dir / "microbial_secretion.csv"
+                if secretion_path.exists():
+                    with open(secretion_path, newline="") as f:
+                        payload["microbial_secretion"] = {
+                            str(row["metabolite"]): float(row["flux"])
+                            for row in csv.DictReader(f)
+                        }
             host_payload = payload.get("host", {})
             transfer = {
                 str(met): float(value)
@@ -383,6 +429,7 @@ class CmigMainWindow(QMainWindow):
         )
         self.host_view.load_host_result(host_result)
         self.host_view.load_impact(impact)
+        self.host_view.load_bigg_summary(payload, run_dir=run_dir)
         self.explorer.add_run(run_dir.name)
         self.tabs.setCurrentWidget(self.host_view)
         self.statusBar().showMessage(
@@ -477,6 +524,56 @@ class CmigMainWindow(QMainWindow):
         self.search_view.status.setText(f"search started: {jid}")
         return jid
 
+    def run_host_microbe_bigg(self) -> str:
+        """Run BiGG host-microbe analysis from the Host tab."""
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        request = self.host_view.request()
+        host = request["host"]
+        model_dir = request["model_dir"]
+        out_dir_text = request["out_dir"]
+        if not host or not model_dir or not out_dir_text:
+            self.host_view.run_status.setText(
+                "Host model, microbial model folder, and output folder are required."
+            )
+            return ""
+        out_dir = Path(out_dir_text)
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            argv = [
+                "host-microbe-bigg",
+                "--host", str(host),
+                "--model-dir", str(model_dir),
+                "--tradeoff-f", f"{float(request['tradeoff_f']):.6g}",
+                "--out", str(out_dir),
+            ]
+            if request["recursive"]:
+                argv.append("--recursive")
+            if request["keep_host_uptake"]:
+                argv.append("--keep-host-uptake")
+            if request["include_currency_metabolites"]:
+                argv.append("--include-currency-metabolites")
+            if request["host_medium"]:
+                argv.extend(["--host-medium", str(request["host_medium"])])
+            if request["microbe_medium"]:
+                argv.extend(["--microbe-medium", str(request["microbe_medium"])])
+            rc = main(argv)
+            if rc != 0:
+                raise RuntimeError(f"host-microbe run failed with rc={rc}")
+            ctx.report_progress(1, 1)
+            payload = json.loads((out_dir / "host_microbe_bigg_summary.json").read_text())
+            if not isinstance(payload, dict):
+                raise RuntimeError("host-microbe output is not a JSON object")
+            return payload
+
+        jid = self.submit_job("host_microbe_bigg", _job)
+        self._host_microbe_jobs[jid] = out_dir
+        self.host_view.set_running(jid)
+        self.statusBar().showMessage(f"Started host-microbe run: {jid}")
+        return jid
+
     def _poll_completed_jobs(self) -> None:
         for jid in list(self._fixture_jobs):
             job = self.runner.poll(jid)
@@ -496,6 +593,17 @@ class CmigMainWindow(QMainWindow):
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._search_jobs.discard(jid)
                 self.search_view.status.setText(f"search {job.status.value}: {job.error or jid}")
+        for jid, out_dir in list(self._host_microbe_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE:
+                self._host_microbe_jobs.pop(jid, None)
+                self.load_host_microbe_bigg_dir(out_dir)
+                self.statusBar().showMessage(f"Host-microbe complete: {jid}")
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                self._host_microbe_jobs.pop(jid, None)
+                self.host_view.run_status.setText(
+                    f"host-microbe {job.status.value}: {job.error or jid}"
+                )
 
 
 def build_main_window(runner: JobRunner | None = None, lang: str = "ko") -> CmigMainWindow:

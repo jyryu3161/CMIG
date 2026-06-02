@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.core.host import HostSolveResult, InterfaceFlux  # noqa: E402
 from cmig.core.host_impact import HostImpact  # noqa: E402
-from cmig.gui.host_view import HostImpactView  # noqa: E402
+from cmig.gui.host_view import HostImpactView, host_microbe_network_payload  # noqa: E402
 
 
 def _app() -> QApplication:
@@ -56,3 +56,34 @@ def test_host_view_cross_feeding():
     rows = {v.cross_table.item(i, 0).text(): v.cross_table.item(i, 1).text()
             for i in range(v.cross_table.rowCount())}
     assert rows["but"] == "6.25"
+
+
+def test_host_view_request_controls():
+    """Host tab exposes a complete host-microbe run request."""
+    _app()
+    v = HostImpactView()
+    v.host_path_input.setText("/tmp/host.xml")
+    v.model_dir_input.setText("/tmp/models")
+    v.out_dir_input.setText("/tmp/out")
+    v.recursive_check.setChecked(True)
+    req = v.request()
+    assert req["host"] == "/tmp/host.xml"
+    assert req["model_dir"] == "/tmp/models"
+    assert req["out_dir"] == "/tmp/out"
+    assert req["recursive"] is True
+
+
+def test_host_microbe_network_payload_has_transfer_edges():
+    """BiGG summary -> microbiome/metabolite/host interaction network."""
+    payload = host_microbe_network_payload({
+        "microbial_secretion": {"ac": 2.0, "h2o": 3.0},
+        "host": {"lumen_uptake": {"ac": 1.5}},
+        "microbe_to_host": {"ac": 1.5},
+        "unused_secretion": {"h2o": 3.0},
+    })
+    data = [element["data"] for element in payload["elements"]]
+    ids = {item["id"] for item in data if "source" not in item}
+    etypes = {item["etype"] for item in data if "source" in item}
+    assert {"microbiome", "host", "met:ac"} <= ids
+    assert "met:h2o" not in ids
+    assert {"secretion", "uptake", "cross_feeding"} <= etypes

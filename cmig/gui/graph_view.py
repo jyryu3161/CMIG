@@ -252,6 +252,24 @@ class InteractionGraphView(QWidget):
             uptake=not has_cross_feeding,
         )
 
+    def set_payload(self, payload: dict) -> None:
+        """Inject a pre-built graph payload, e.g. host-microbe result networks."""
+        self._base_payload = payload
+        has_cross_feeding = any(
+            "source" in element["data"] and element["data"].get("etype") == "cross_feeding"
+            for element in payload.get("elements", [])
+        )
+        has_secretion_or_uptake = any(
+            "source" in element["data"]
+            and element["data"].get("etype") in {"secretion", "uptake"}
+            for element in payload.get("elements", [])
+        )
+        self.set_edge_filters(
+            cross_feeding=has_cross_feeding or not has_secretion_or_uptake,
+            secretion=has_secretion_or_uptake,
+            uptake=has_secretion_or_uptake,
+        )
+
     def highlight(self, node_id: str) -> None:
         """linked selection — 노드 인접 강조 (FR-1b.2)."""
         self._web.page().runJavaScript(f"window.highlightNeighborhood({json.dumps(node_id)});")

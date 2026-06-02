@@ -391,6 +391,7 @@ def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> N
         },
         "matched_exchanges": result.matched_exchanges,
         "unmatched_metabolites": result.unmatched_metabolites,
+        "microbial_secretion": result.microbial_secretion,
         "microbe_to_host": result.impact.microbe_to_host,
         "unused_secretion": result.impact.unused_secretion,
         "warnings": result.warnings,

@@ -304,6 +304,7 @@ def test_host_microbe_bigg_cli_writes_coupling_outputs(tmp_path):
     payload = json.loads((out / "host_microbe_bigg_summary.json").read_text())
     assert payload["coupling"] == "bigg_direct_exchange"
     assert payload["matched_exchanges"]["but"] == "EX_but_e"
+    assert payload["microbial_secretion"]["but"] > 0.0
     assert payload["host"]["viable"] is True
     assert (out / "microbe_to_host.csv").exists()
 

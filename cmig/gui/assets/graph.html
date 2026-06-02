@@ -27,31 +27,38 @@
     let cy = null;
     // graph_view.py (또는 graph_data.graph_payload) 의 payload 를 주입하는 단일 진입점.
     window.setGraph = function (payload) {
-      cy = cytoscape({
-        container: document.getElementById('cy'),
-        elements: payload.elements || [],
-        style: payload.style || [],
-        layout: payload.layout || { name: 'cose' },
-        minZoom: 0.25,
-        maxZoom: 1.4,
-      });
-      cy.ready(() => {
-        cy.resize();
-        cy.fit(undefined, 80);
-      });
-      cy.on('layoutstop', () => {
-        cy.resize();
-        cy.fit(undefined, 80);
-      });
-      // 부호 범례 상시 (§11)
-      const legend = document.getElementById('legend');
-      legend.innerHTML = (payload.legend || [])
-        .map(l => `<div><b>${l.symbol}</b> ${l.meaning}</div>`).join('');
-      // Gate UI (FR-1b.3)
-      if (payload.gate) {
-        const g = document.getElementById('gate');
-        g.className = payload.gate.blocked ? 'gate-blocked' : 'gate-ok';
-        g.textContent = payload.gate.status_text;
+      try {
+        cy = cytoscape({
+          container: document.getElementById('cy'),
+          elements: payload.elements || [],
+          style: payload.style || [],
+          layout: payload.layout || { name: 'cose' },
+          minZoom: 0.25,
+          maxZoom: 1.4,
+        });
+        window.cy = cy;
+        window.lastGraphError = null;
+        cy.ready(() => {
+          cy.resize();
+          cy.fit(undefined, 80);
+        });
+        cy.on('layoutstop', () => {
+          cy.resize();
+          cy.fit(undefined, 80);
+        });
+        // 부호 범례 상시 (§11)
+        const legend = document.getElementById('legend');
+        legend.innerHTML = (payload.legend || [])
+          .map(l => `<div><b>${l.symbol}</b> ${l.meaning}</div>`).join('');
+        // Gate UI (FR-1b.3)
+        if (payload.gate) {
+          const g = document.getElementById('gate');
+          g.className = payload.gate.blocked ? 'gate-blocked' : 'gate-ok';
+          g.textContent = payload.gate.status_text;
+        }
+      } catch (err) {
+        window.lastGraphError = String(err && err.message ? err.message : err);
+        throw err;
       }
     };
     // linked selection (FR-1b.2) — 노드 클릭 시 인접 엣지 강조

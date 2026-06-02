@@ -30,6 +30,7 @@ from cmig.core.namespace import (  # noqa: E402
     evaluate_gate,
 )
 from cmig.gui.graph_view import GateBadge, InteractionGraphView  # noqa: E402
+from cmig.gui.host_view import host_microbe_network_payload  # noqa: E402
 
 _LOAD_TIMEOUT_MS = 10_000
 
@@ -130,6 +131,26 @@ def test_cytoscape_receives_all_nodes(qapp):
     e_all = _run_js(view, "cy ? cy.edges().length : -1")
     assert int(e_all) == bundle.edges.num_rows, "edge filter did not restore all edges"
     assert view.edge_table.rowCount() == bundle.edges.num_rows
+
+
+def test_cytoscape_receives_host_microbe_payload(qapp):
+    """Host-microbe network payload renders in the shared Cytoscape widget."""
+    view = InteractionGraphView()
+    view.resize(640, 480)
+    _wait_loaded(view)
+    payload = host_microbe_network_payload({
+        "microbial_secretion": {"ac": 2.0, "etoh": 3.0},
+        "host": {"lumen_uptake": {"ac": 1.0}},
+        "microbe_to_host": {"ac": 1.0},
+        "unused_secretion": {"etoh": 3.0},
+    })
+    view.set_payload(payload)
+    nodes = _run_js(view, "window.cy ? window.cy.nodes().length : -1")
+    edges = _run_js(view, "window.cy ? window.cy.edges().length : -1")
+    err = _run_js(view, "window.lastGraphError")
+    assert err in (None, "")
+    assert int(nodes) >= 4
+    assert int(edges) >= 3
 
 
 def test_graph_aggregates_parallel_crossfeeding_edges(qapp):
