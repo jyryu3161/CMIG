@@ -70,6 +70,29 @@ def test_af1_artifacts_omit_matrix_when_absent(tmp_path):
     assert "matrix.parquet" not in json.loads(mp.read_text())["artifacts"]
 
 
+def test_write_solve_output_manifest_is_publish_commit_marker(tmp_path, monkeypatch):
+    pytest.importorskip("micom")
+    import cmig.io.solve_output as solve_output
+    from cmig.golden_fixture import _run_hash_components, solve
+
+    result, bundle = solve("gurobi")
+    stale = tmp_path / "manifest.json"
+    stale.write_text('{"stale": true}\n')
+
+    real_replace = solve_output.os.replace
+
+    def fail_before_manifest(src, dst):
+        if str(dst).endswith("edges.parquet"):
+            raise RuntimeError("simulated publish failure")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(solve_output.os, "replace", fail_before_manifest)
+    with pytest.raises(RuntimeError, match="simulated publish failure"):
+        solve_output.write_solve_output(bundle, _run_hash_components(result), tmp_path)
+
+    assert not stale.exists()
+
+
 # ── AF-5: cli solve taxonomy 컬럼 검증 ───────────────────────────────────────
 
 def test_af5_solve_rejects_taxonomy_missing_columns(tmp_path, capsys):

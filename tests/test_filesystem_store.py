@@ -40,12 +40,13 @@ def test_filesystem_store_satisfies_runstore_protocol(tmp_path):
 def test_record_run_then_cache_lookup_hit(tmp_path):
     """SC-S2: record_run 후 cache_lookup hit(meta dict) + run_dir 생성."""
     store = FileSystemStore(tmp_path)
-    store.record_run("abc123", _result(objective=0.42))
+    store.record_run("abc123", _result(objective=0.42), micom_version="0.39.0")
     row = store.cache_lookup_by_run_hash("abc123")
     assert row is not None
     assert row["run_hash"] == "abc123" and row["status"] == "optimal"
     assert abs(float(row["objective"]) - 0.42) < 1e-9
     assert row["flux_solver"] == "gurobi"
+    assert row["micom_version"] == "0.39.0"
     assert (tmp_path / "abc123").is_dir()
 
 
@@ -76,10 +77,12 @@ def test_sandbox_commit_via_filesystem_store(tmp_path):
     store = FileSystemStore(tmp_path)
     res = evaluate_sandbox(
         _result(objective=0.4), _result(objective=0.3),
-        state=SandboxState.COMMITTED, store=store, run_hash="commit1",
+        state=SandboxState.COMMITTED, store=store, run_hash="commit1", micom_version="0.39.0",
     )
     assert res.committed and res.run_hash == "commit1"
-    assert store.cache_lookup_by_run_hash("commit1") is not None
+    row = store.cache_lookup_by_run_hash("commit1")
+    assert row is not None
+    assert row["micom_version"] == "0.39.0"
 
 
 def test_sandbox_preview_does_not_persist(tmp_path):

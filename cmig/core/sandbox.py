@@ -46,7 +46,9 @@ class InMemoryRunStore:
     def __init__(self) -> None:
         self.records: list[tuple[str, SolveResult]] = []
 
-    def record_run(self, run_hash: str, result: SolveResult) -> None:
+    def record_run(
+        self, run_hash: str, result: SolveResult, *, micom_version: str | None = None
+    ) -> None:
         self.records.append((run_hash, result))
 
     @property
@@ -83,6 +85,7 @@ def evaluate_sandbox(
     state: SandboxState = SandboxState.PREVIEW,
     store: RunStore | None = None,
     run_hash: str | None = None,
+    micom_version: str | None = None,
     threshold: float = 1e-6,
     fva: dict[str, FVARange] | None = None,
 ) -> SandboxResult:
@@ -116,7 +119,7 @@ def evaluate_sandbox(
         if run_hash is None:
             raise ValueError("commit 시 run_hash 필요 ([RUNHASH-COMMIT], schema §8.5)")
         if store is not None:
-            store.record_run(run_hash, constrained)
+            store.record_run(run_hash, constrained, micom_version=micom_version)
         return SandboxResult(
             delta=delta, state=state, no_significant_change=no_sig,
             run_hash=run_hash, committed=True, status=status, diagnostic=diagnostic,

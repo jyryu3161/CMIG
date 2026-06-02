@@ -266,7 +266,8 @@
 - D-21 namespace warned_low status 기준, D-22 NOISE_FLOOR 단일 기준 사용.
 - D-23 duplicate sweep axis kind 거부, D-24 host-microbe community failure 전파.
 - D-25 profile R renderer `--rlib`, D-26 matplotlib fallback figure close, D-27 JobRunner lock read.
+- D-20 store provenance: `FileSystemStore.record_run`/sandbox commit 경로가 `micom_version`을 명시 저장.
+- D-28 atomic output publish: temp dir + `os.replace`, `manifest.json` 마지막 publish commit marker.
 
 이번 수정에서 제외:
-- D-20 `FileSystemStore.record_run`의 `micom_version` 컬럼 보강은 store API 변경이 필요해 별도 패치로 분리.
-- D-28 atomic output publish는 crash-consistency hardening 성격이라 별도 패치로 분리.
+- 없음.

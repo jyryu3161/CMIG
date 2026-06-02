@@ -23,4 +23,6 @@ class RunStore(Protocol):
     run_hash 는 **인자로 받는다** — store 는 run_hash 를 재계산하지 않는다([HASH-SINGLE]).
     """
 
-    def record_run(self, run_hash: str, result: SolveResult) -> None: ...
+    def record_run(
+        self, run_hash: str, result: SolveResult, *, micom_version: str | None = None
+    ) -> None: ...

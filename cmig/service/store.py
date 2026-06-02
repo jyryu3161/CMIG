@@ -51,10 +51,13 @@ class FileSystemStore:
         cx.execute("PRAGMA journal_mode=WAL")
         return cx
 
-    def record_run(self, run_hash: str, result: SolveResult) -> None:
+    def record_run(
+        self, run_hash: str, result: SolveResult, *, micom_version: str | None = None
+    ) -> None:
         """RunStore Protocol — COMMIT 시에만 호출(preview 비기록). 멱등(INSERT OR IGNORE).
 
         run_hash 는 **인자**(재계산 안 함). NaN objective → NULL.
+        micom_version 은 caller 가 manifest/engine 에서 명시 주입한다.
         """
         run_dir = self.root / run_hash
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -71,7 +74,7 @@ class FileSystemStore:
                     obj,
                     result.growth_solver,
                     result.flux_solver,
-                    getattr(result, "micom_version", None),
+                    micom_version,
                     result.diagnostic,
                 ),
             )

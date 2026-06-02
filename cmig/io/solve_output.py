@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform as platform_lib
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -80,57 +82,73 @@ def write_solve_output(
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    # parquet — TidyBundle.write (pickle 금지, schema §8.6)
-    bundle.write(out)  # type: ignore[attr-defined]
-
-    # AF-1: artifacts 를 실제 산출 파일에서 파생(하드코딩 X) — matrix 등 누락 방지.
-    artifacts = ["nodes.parquet", "edges.parquet", "profile.parquet"]
-    if getattr(bundle, "matrix", None) is not None:
-        artifacts.append("matrix.parquet")
-    # F3: target readout 산출(SCFA 등) — manifest artifacts 에 반영.
-    if target_summary is not None:
-        (out / "target_summary.json").write_text(
-            json.dumps(target_summary, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False)
-        )
-        artifacts.append("target_summary.json")
-
-    platform_info = platform or {
-        "os": platform_lib.system().lower(),
-        "arch": platform_lib.machine(),
-        "python": platform_lib.python_version(),
-    }
-    manifest = RunManifest(components=components, env_lock=env_lock, platform=platform_info)
-    payload = {
-        "manifest_schema_version": "1.0",
-        "run_hash": manifest.run_hash,                       # compute_run_hash (단일 canonical)
-        "float_decimals": manifest.float_decimals,
-        # canonical_json 은 비유한 float sentinel·정렬·allow_nan=False (결정적·재현)
-        "components": json.loads(canonical_json(components, manifest.float_decimals)),
-        "diagnostic": diagnostic,
-        "env_lock": env_lock,                                # manifest 만 (run_hash 미포함, §7)
-        "inputs": {
-            "model_checksum": components.model_checksum,
-            "medium_checksum": components.medium_checksum,
-            "member_set": components.member_set,
-            "abundance": components.abundance,
-            "bounds": components.bounds,
-            "namespace_mapping_decisions": components.namespace_mapping_decisions,
-        },
-        "solver": {
-            **components.solver_setting,
-            "flux_report_status": flux_report_status,
-        },
-        "software": {
-            "cmig_core_version": components.cmig_core_version,
-            "micom_version": components.micom_version,
-        },
-        "sweep": sweep,
-        "figure_specs": figure_specs or [],
-        "platform": manifest.platform,
-        "artifacts": artifacts,
-    }
+    tmp_parent = out.parent
+    tmp_parent.mkdir(parents=True, exist_ok=True)
+    tmp_prefix = f".{out.name}.tmp-"
     manifest_path = out / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False)
-    )
+
+    with tempfile.TemporaryDirectory(prefix=tmp_prefix, dir=tmp_parent) as td:
+        tmp = Path(td)
+        # parquet — TidyBundle.write (pickle 금지, schema §8.6)
+        bundle.write(tmp)  # type: ignore[attr-defined]
+
+        # AF-1: artifacts 를 실제 산출 파일에서 파생(하드코딩 X) — matrix 등 누락 방지.
+        artifacts = ["nodes.parquet", "edges.parquet", "profile.parquet"]
+        if getattr(bundle, "matrix", None) is not None:
+            artifacts.append("matrix.parquet")
+        # F3: target readout 산출(SCFA 등) — manifest artifacts 에 반영.
+        if target_summary is not None:
+            (tmp / "target_summary.json").write_text(
+                json.dumps(
+                    target_summary, indent=2, sort_keys=True, ensure_ascii=True,
+                    allow_nan=False,
+                )
+            )
+            artifacts.append("target_summary.json")
+
+        platform_info = platform or {
+            "os": platform_lib.system().lower(),
+            "arch": platform_lib.machine(),
+            "python": platform_lib.python_version(),
+        }
+        manifest = RunManifest(components=components, env_lock=env_lock, platform=platform_info)
+        payload = {
+            "manifest_schema_version": "1.0",
+            "run_hash": manifest.run_hash,                       # compute_run_hash
+            "float_decimals": manifest.float_decimals,
+            # canonical_json 은 비유한 float sentinel·정렬·allow_nan=False (결정적·재현)
+            "components": json.loads(canonical_json(components, manifest.float_decimals)),
+            "diagnostic": diagnostic,
+            "env_lock": env_lock,                                # manifest 만 (§7)
+            "inputs": {
+                "model_checksum": components.model_checksum,
+                "medium_checksum": components.medium_checksum,
+                "member_set": components.member_set,
+                "abundance": components.abundance,
+                "bounds": components.bounds,
+                "namespace_mapping_decisions": components.namespace_mapping_decisions,
+            },
+            "solver": {
+                **components.solver_setting,
+                "flux_report_status": flux_report_status,
+            },
+            "software": {
+                "cmig_core_version": components.cmig_core_version,
+                "micom_version": components.micom_version,
+            },
+            "sweep": sweep,
+            "figure_specs": figure_specs or [],
+            "platform": manifest.platform,
+            "artifacts": artifacts,
+        }
+        (tmp / "manifest.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False)
+        )
+
+        # manifest.json is the commit marker. Remove any stale marker before publishing artifacts.
+        if manifest_path.exists():
+            manifest_path.unlink()
+        for artifact in artifacts:
+            os.replace(tmp / artifact, out / artifact)
+        os.replace(tmp / "manifest.json", manifest_path)
     return manifest_path
