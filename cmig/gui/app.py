@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -144,6 +145,7 @@ class CmigMainWindow(QMainWindow):
         self.current_manifest: dict[str, Any] | None = None
         self.current_graph_payload: dict[str, Any] | None = None
         self.current_model_review: dict[str, Any] | None = None
+        self.current_host_microbe_dir: Path | None = None
 
         center = QWidget()
         layout = QVBoxLayout(center)
@@ -211,6 +213,7 @@ class CmigMainWindow(QMainWindow):
         self.host_view.browse_microbe_medium_btn.clicked.connect(self._browse_microbe_medium)
         self.host_view.browse_out_dir_btn.clicked.connect(self._browse_host_microbe_out_dir)
         self.host_view.run_btn.clicked.connect(self.run_host_microbe_bigg)
+        self.host_view.export_figure_btn.clicked.connect(self._export_host_figure)
 
     def _browse_search_model_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Model Pool Folder")
@@ -247,6 +250,26 @@ class CmigMainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Select Host-Microbe Output Folder")
         if path:
             self.host_view.out_dir_input.setText(path)
+
+    def _export_host_figure(self) -> None:
+        if self.current_host_microbe_dir is None:
+            self.host_view.run_status.setText("No host-microbe result is loaded.")
+            return
+        artifact = self.host_view.selected_figure_artifact()
+        src = self.current_host_microbe_dir / artifact
+        if not src.exists():
+            self.host_view.run_status.setText(f"Figure artifact not found: {artifact}")
+            return
+        target, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Host-Microbe Figure",
+            artifact,
+            "SVG (*.svg);;All Files (*)",
+        )
+        if not target:
+            return
+        shutil.copyfile(src, target)
+        self.host_view.run_status.setText(f"Exported figure: {target}")
 
     def _import_model_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -343,7 +366,7 @@ class CmigMainWindow(QMainWindow):
         from cmig.core.tidy import TidyBundle
         from cmig.gui.graph_data import graph_payload
 
-        run_dir = Path(path)
+        run_dir = Path(path).resolve()
         if (run_dir / "host_microbe_bigg_summary.json").exists():
             self.load_host_microbe_bigg_dir(run_dir)
             return
@@ -369,7 +392,8 @@ class CmigMainWindow(QMainWindow):
         from cmig.core.host import InterfaceFlux
         from cmig.core.host_impact import HostImpact
 
-        run_dir = Path(path)
+        run_dir = Path(path).resolve()
+        self.current_host_microbe_dir = run_dir
         summary_path = run_dir / "host_microbe_bigg_summary.json"
         if not summary_path.exists():
             self.statusBar().showMessage(f"Host-microbe summary not found: {summary_path}")

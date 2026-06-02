@@ -351,6 +351,14 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
 
 
 def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> None:
+    from cmig.core.interaction_figures import (
+        contribution_rows,
+        host_microbe_interaction_rows,
+        matrix_rows,
+        render_interaction_figures,
+        write_interaction_artifacts,
+    )
+
     out.mkdir(parents=True, exist_ok=True)
     taxonomy.to_csv(out / "microbe_taxonomy.csv", index=False)
     with open(out / "microbial_secretion.csv", "w", newline="") as f:
@@ -374,6 +382,40 @@ def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> N
         writer.writeheader()
         for metabolite, flux in sorted(result.impact.microbe_to_host.items()):
             writer.writerow({"metabolite": metabolite, "transfer_flux": _finite_csv(float(flux))})
+    edge_rows = host_microbe_interaction_rows(
+        microbial_secretion=result.microbial_secretion,
+        host_uptake=result.host_result.lumen_uptake,
+        microbe_to_host=result.impact.microbe_to_host,
+        member_secretion=result.member_secretion,
+    )
+    contributions = contribution_rows(result.member_secretion, result.impact.microbe_to_host)
+    matrix = matrix_rows(edge_rows)
+    figure_manifest = {
+        "figure_schema_version": "1.0",
+        "source": "host-microbe-bigg",
+        "figure_modes": ["network", "circle", "heatmap", "bubble", "contribution"],
+        "edge_width": "normalized_flux",
+        "node_size": "aggregate flux",
+        "hidden_by_default": ["h", "h2o", "co2"],
+        "artifacts": [
+            "interaction_edges.csv",
+            "interaction_matrix.csv",
+            "member_contribution.csv",
+            "figure_manifest.json",
+            "interaction_circle.svg",
+            "interaction_heatmap.svg",
+            "interaction_bubble.svg",
+            "member_contribution.svg",
+        ],
+    }
+    interaction_artifacts = write_interaction_artifacts(
+        out,
+        edge_rows=edge_rows,
+        matrix=matrix,
+        contributions=contributions,
+        figure_manifest=figure_manifest,
+    )
+    figure_artifacts = render_interaction_figures(out)
     payload = {
         "status": "ok",
         "coupling": "bigg_direct_exchange",
@@ -392,6 +434,7 @@ def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> N
         "matched_exchanges": result.matched_exchanges,
         "unmatched_metabolites": result.unmatched_metabolites,
         "microbial_secretion": result.microbial_secretion,
+        "member_secretion": result.member_secretion,
         "microbe_to_host": result.impact.microbe_to_host,
         "unused_secretion": result.impact.unused_secretion,
         "warnings": result.warnings,
@@ -401,7 +444,7 @@ def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> N
             "host_uptake.csv",
             "microbe_to_host.csv",
             "host_microbe_bigg_summary.json",
-        ],
+        ] + interaction_artifacts + figure_artifacts,
     }
     (out / "host_microbe_bigg_summary.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"

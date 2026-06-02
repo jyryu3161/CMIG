@@ -321,6 +321,27 @@ def test_host_microbe_run_button_uses_product_command(monkeypatch, tmp_path):
     runner.shutdown()
 
 
+def test_host_figure_export_copies_selected_svg(monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+
+    _app()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "interaction_heatmap.svg").write_text("<svg>heatmap</svg>")
+    target = tmp_path / "export.svg"
+    w = build_main_window()
+    w.current_host_microbe_dir = run_dir
+    w.host_view.figure_mode_combo.setCurrentText("Heatmap")
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(target), "SVG (*.svg)"),
+    )
+    w._export_host_figure()
+    assert target.read_text() == "<svg>heatmap</svg>"
+    assert "Exported figure" in w.host_view.run_status.text()
+
+
 def test_jobrunner_qt_bridge_reflects_job():
     """SC-AP4: JobRunner→Qt bridge 가 실 job 상태 표시(orphan UI 아님)."""
     _app()

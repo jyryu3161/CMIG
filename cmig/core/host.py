@@ -99,6 +99,7 @@ class BiggHostMicrobeResult:
     community_status: str
     community_growth: float
     microbial_secretion: dict[str, float]
+    member_secretion: dict[str, dict[str, float]]
     matched_exchanges: dict[str, str]
     unmatched_metabolites: list[str]
     host_result: HostSolveResult
@@ -489,6 +490,7 @@ def run_bigg_host_microbe(
             community_status=community_result.status,
             community_growth=community_result.objective,
             microbial_secretion={},
+            member_secretion={},
             matched_exchanges={},
             unmatched_metabolites=[],
             host_result=host_res,
@@ -499,6 +501,14 @@ def run_bigg_host_microbe(
         metabolite: flux
         for metabolite, flux in community_result.external_exchange.items()
         if flux > 1e-6
+    }
+    member_secretion = {
+        member: {
+            metabolite: flux
+            for metabolite, flux in exchange.items()
+            if flux > 1e-6
+        }
+        for member, exchange in community_result.member_exchange.items()
     }
     excluded = set(exclude_metabolites or set())
     host_exchange_ids = {str(r.id) for r in host.reactions if str(r.id).startswith("EX_")}
@@ -530,6 +540,7 @@ def run_bigg_host_microbe(
         community_status=community_result.status,
         community_growth=community_result.objective,
         microbial_secretion=secretion,
+        member_secretion=member_secretion,
         matched_exchanges=matched,
         unmatched_metabolites=unmatched,
         host_result=host_res,

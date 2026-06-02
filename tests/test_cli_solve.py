@@ -308,6 +308,28 @@ def test_host_microbe_bigg_cli_writes_coupling_outputs(tmp_path):
     assert payload["microbial_secretion"]["but"] > 0.0
     assert payload["host"]["viable"] is True
     assert (out / "microbe_to_host.csv").exists()
+    for artifact in (
+        "interaction_edges.csv",
+        "interaction_matrix.csv",
+        "member_contribution.csv",
+        "figure_manifest.json",
+        "interaction_circle.svg",
+        "interaction_heatmap.svg",
+        "interaction_bubble.svg",
+        "member_contribution.svg",
+    ):
+        assert (out / artifact).exists(), artifact
+        assert artifact in payload["artifacts"]
+    with open(out / "interaction_edges.csv", newline="") as f:
+        import csv
+
+        edge_rows = list(csv.DictReader(f))
+    assert edge_rows
+    assert max(float(row["normalized_flux"]) for row in edge_rows) <= 1.0
+    with open(out / "member_contribution.csv", newline="") as f:
+        contribution_rows = list(csv.DictReader(f))
+    assert contribution_rows
+    assert {row["metabolite"] for row in contribution_rows} <= set(payload["microbe_to_host"])
 
 
 def test_search_advanced_fixture_cli_writes_pareto(tmp_path):

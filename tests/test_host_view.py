@@ -71,6 +71,8 @@ def test_host_view_request_controls():
     assert req["model_dir"] == "/tmp/models"
     assert req["out_dir"] == "/tmp/out"
     assert req["recursive"] is True
+    v.figure_mode_combo.setCurrentText("Heatmap")
+    assert v.selected_figure_artifact() == "interaction_heatmap.svg"
 
 
 def test_host_microbe_network_payload_has_transfer_edges():

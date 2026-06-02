@@ -11,9 +11,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from PySide6.QtCore import QUrl
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
     QHeaderView,
@@ -21,6 +23,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -84,6 +87,15 @@ class HostImpactView(QWidget):
         run_row.addWidget(self.include_currency_check)
         run_row.addStretch(1)
         run_row.addWidget(self.run_btn)
+        figure_row = QHBoxLayout()
+        self.figure_mode_combo = QComboBox()
+        self.figure_mode_combo.addItems(["Network", "Circle", "Heatmap", "Bubble", "Contribution"])
+        self.export_figure_btn = QPushButton("Export Figure")
+        self.figure_mode_combo.currentTextChanged.connect(self.refresh_figure_mode)
+        figure_row.addWidget(QLabel("Figure Mode"))
+        figure_row.addWidget(self.figure_mode_combo)
+        figure_row.addWidget(self.export_figure_btn)
+        figure_row.addStretch(1)
         self.viability_label = QLabel("")
         self.run_status = QLabel("")
         # 2-interface flux 표
@@ -97,6 +109,7 @@ class HostImpactView(QWidget):
         self.cross_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.network_label = QLabel("Interaction Network")
         self.show_currency_metabolites = False
+        self.current_run_dir: Path | None = None
         self.network_payload: dict[str, Any] | None = None
         try:
             from cmig.gui.graph_view import InteractionGraphView
@@ -104,6 +117,15 @@ class HostImpactView(QWidget):
             self.network_view: QWidget = InteractionGraphView()
         except ImportError:  # pragma: no cover - optional GUI extra
             self.network_view = QLabel("QtWebEngine is unavailable; network view disabled.")
+        try:
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+
+            self.static_figure_view: QWidget = QWebEngineView()
+        except ImportError:  # pragma: no cover - optional GUI extra
+            self.static_figure_view = QLabel("QtWebEngine is unavailable; SVG preview disabled.")
+        self.figure_stack = QStackedWidget()
+        self.figure_stack.addWidget(self.network_view)
+        self.figure_stack.addWidget(self.static_figure_view)
         tables = QWidget()
         tables_layout = QVBoxLayout(tables)
         tables_layout.setContentsMargins(0, 0, 0, 0)
@@ -111,12 +133,13 @@ class HostImpactView(QWidget):
             tables_layout.addWidget(w)
         splitter = QSplitter()
         splitter.addWidget(tables)
-        splitter.addWidget(self.network_view)
+        splitter.addWidget(self.figure_stack)
         splitter.setSizes([430, 570])
         layout.addWidget(self.title)
         layout.addLayout(file_row)
         layout.addLayout(medium_row)
         layout.addLayout(run_row)
+        layout.addLayout(figure_row)
         layout.addWidget(self.run_status)
         layout.addWidget(splitter)
 
@@ -136,6 +159,43 @@ class HostImpactView(QWidget):
 
     def set_running(self, job_id: str) -> None:
         self.run_status.setText(f"host-microbe run started: {job_id}")
+
+    def selected_figure_artifact(self) -> str:
+        mapping = {
+            "Network": "interaction_circle.svg",
+            "Circle": "interaction_circle.svg",
+            "Heatmap": "interaction_heatmap.svg",
+            "Bubble": "interaction_bubble.svg",
+            "Contribution": "member_contribution.svg",
+        }
+        return mapping[self.figure_mode_combo.currentText()]
+
+    def refresh_figure_mode(self, _mode: str | None = None) -> None:
+        """Switch the preview between interactive network and saved SVG figures."""
+        if self.figure_mode_combo.currentText() == "Network":
+            self.figure_stack.setCurrentWidget(self.network_view)
+            if self.network_payload is not None and hasattr(self.network_view, "set_payload"):
+                self.network_view.set_payload(self.network_payload)
+            return
+        self.figure_stack.setCurrentWidget(self.static_figure_view)
+        if self.current_run_dir is None:
+            return
+        artifact = self.current_run_dir / self.selected_figure_artifact()
+        if not artifact.exists():
+            return
+        if hasattr(self.static_figure_view, "setHtml"):
+            uri = artifact.as_uri()
+            self.static_figure_view.setHtml(
+                "<!doctype html><html><head><style>"
+                "html,body{margin:0;width:100%;height:100%;overflow:hidden;background:white;}"
+                "img{width:100%;height:100%;object-fit:contain;display:block;}"
+                "</style></head><body>"
+                f"<img src='{uri}' alt='{artifact.name}'>"
+                "</body></html>",
+                QUrl.fromLocalFile(str(artifact.parent)),
+            )
+        elif hasattr(self.static_figure_view, "load"):
+            self.static_figure_view.load(QUrl.fromLocalFile(str(artifact)))
 
     def load_host_result(self, host_result: Any) -> None:
         """HostSolveResult → viability + 2-interface flux 표(interface/sign 색)."""
@@ -169,9 +229,10 @@ class HostImpactView(QWidget):
 
     def load_bigg_summary(self, payload: dict[str, Any], *, run_dir: Path | None = None) -> None:
         """Load parsed `host_microbe_bigg_summary.json` into tables and network."""
+        self.current_run_dir = None if run_dir is None else run_dir.resolve()
         self.run_status.setText(
             "Loaded host-microbe result"
-            + ("" if run_dir is None else f": {run_dir}")
+            + ("" if self.current_run_dir is None else f": {self.current_run_dir}")
             + _warning_suffix(payload)
         )
         self.network_payload = host_microbe_network_payload(
@@ -180,6 +241,7 @@ class HostImpactView(QWidget):
         )
         if hasattr(self.network_view, "set_payload"):
             self.network_view.set_payload(self.network_payload)
+        self.refresh_figure_mode()
 
 
 def host_microbe_network_payload(
