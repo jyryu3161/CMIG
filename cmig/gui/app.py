@@ -161,18 +161,23 @@ class CmigMainWindow(QMainWindow):
         self.scenario_compare = ScenarioCompareView()
         self.search_view = SearchView()
         self.host_view = HostImpactView()
-        for label, widget in [
+        self._primary_tabs = [
             ("Models", self.model_manager),
+            ("Search", self.search_view),
+            ("Host", self.host_view),
+            ("Profile", self.profile_view),
+        ]
+        self._advanced_tabs = [
             ("Community", self.community_builder),
             ("Medium", self.medium_editor),
-            ("Profile", self.profile_view),
             ("Sweep", self.sweep_view),
             ("Sandbox", self.sandbox_view),
             ("Compare", self.scenario_compare),
-            ("Search", self.search_view),
-            ("Host", self.host_view),
-        ]:
+        ]
+        self._advanced_tabs_visible = False
+        for label, widget in self._primary_tabs:
             self.tabs.addTab(widget, label)
+        self.tabs.setCurrentWidget(self.search_view)
         self.central_stack.addWidget(self.tabs)
         layout.addWidget(self.central_stack)
 
@@ -199,9 +204,31 @@ class CmigMainWindow(QMainWindow):
         self.open_run_action.triggered.connect(self._open_run_dialog)
         self.run_fixture_action = QAction("Run Fixture", self)
         self.run_fixture_action.triggered.connect(self._run_fixture_dialog)
+        self.advanced_tools_action = QAction("Show Advanced Tools", self)
+        self.advanced_tools_action.setCheckable(True)
+        self.advanced_tools_action.toggled.connect(self._set_advanced_tabs_visible)
         toolbar.addAction(self.import_model_action)
         toolbar.addAction(self.open_run_action)
         toolbar.addAction(self.run_fixture_action)
+        toolbar.addAction(self.advanced_tools_action)
+
+    def _set_advanced_tabs_visible(self, visible: bool) -> None:
+        """Show or hide advanced/preview tools so the default workflow stays focused."""
+        if visible == self._advanced_tabs_visible:
+            return
+        self._advanced_tabs_visible = visible
+        self.advanced_tools_action.setText(
+            "Hide Advanced Tools" if visible else "Show Advanced Tools"
+        )
+        if visible:
+            for label, widget in self._advanced_tabs:
+                if self.tabs.indexOf(widget) == -1:
+                    self.tabs.addTab(widget, label)
+            return
+        for _label, widget in self._advanced_tabs:
+            idx = self.tabs.indexOf(widget)
+            if idx != -1:
+                self.tabs.removeTab(idx)
 
     def _connect_view_actions(self) -> None:
         self.sandbox_view.preview_btn.clicked.connect(self._run_sandbox_preview)

@@ -137,7 +137,7 @@ def test_search_view_loads_advanced_summary(tmp_path):
     assert view.targets_input.text() == "but"
     assert view.strategy_combo.currentText() == "auto"
     assert view.run_btn.text() == "Run Search"
-    assert view.model_dir_input.placeholderText() == "Model folder"
+    assert view.model_dir_input.placeholderText() == "Folder of user-prepared microbial models"
     assert view.min_size_spin.value() == 2
     assert view.max_size_spin.value() == 2
     assert view.robustness_check.text() == "FVA"

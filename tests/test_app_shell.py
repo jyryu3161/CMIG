@@ -29,7 +29,10 @@ def test_shell_constructs_offscreen():
     assert isinstance(w, CmigMainWindow)
     assert w.explorer.topLevelItemCount() == 3        # 모델·시나리오·실행
     assert w.jobs_panel.columnCount() == 4
-    assert w.tabs.count() >= 7
+    assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == [
+        "Models", "Search", "Host", "Profile"
+    ]
+    assert w.tabs.currentWidget() is w.search_view
     assert w.sweep_view.runner is w.runner
     assert w.search_view is not None
     assert "CMIG" in w.windowTitle()
@@ -60,6 +63,27 @@ def test_shell_has_file_workflow_actions():
     assert w.import_model_action.text() == "Import Model"
     assert w.open_run_action.text() == "Open Run"
     assert w.run_fixture_action.text() == "Run Fixture"
+    assert w.advanced_tools_action.text() == "Show Advanced Tools"
+
+
+def test_advanced_tabs_are_hidden_until_requested():
+    """Non-primary tools should not look like unfinished default workflows."""
+    _app()
+    w = build_main_window()
+    assert w.tabs.indexOf(w.community_builder) == -1
+    assert w.tabs.indexOf(w.medium_editor) == -1
+    assert w.tabs.indexOf(w.sweep_view) == -1
+    assert w.tabs.indexOf(w.sandbox_view) == -1
+    assert w.tabs.indexOf(w.scenario_compare) == -1
+    w.advanced_tools_action.setChecked(True)
+    labels = [w.tabs.tabText(i) for i in range(w.tabs.count())]
+    assert {"Community", "Medium", "Sweep", "Sandbox", "Compare"} <= set(labels)
+    assert w.advanced_tools_action.text() == "Hide Advanced Tools"
+    w.advanced_tools_action.setChecked(False)
+    assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == [
+        "Models", "Search", "Host", "Profile"
+    ]
+    assert w.advanced_tools_action.text() == "Show Advanced Tools"
 
 
 def test_load_run_dir_updates_profile_and_explorer(tmp_path):
