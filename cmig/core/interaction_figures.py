@@ -28,6 +28,12 @@ MEMBER_CONTRIBUTION_COLUMNS = (
     "contribution_fraction",
 )
 CURRENCY_METABOLITES = frozenset({"h", "h2o", "co2"})
+EDGE_COLORS = {
+    "secretion": "#2ca25f",
+    "host_uptake": "#3182bd",
+    "cross_feeding": "#e6550d",
+}
+BAR_COLORS = ("#3182bd", "#2ca25f", "#756bb1", "#e6550d", "#636363")
 
 
 def host_microbe_interaction_rows(
@@ -241,7 +247,22 @@ def _load_matplotlib() -> Any:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    plt.rcParams.update({
+        "font.family": "Arial",
+        "axes.titlesize": 14,
+        "axes.labelsize": 11,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "svg.fonttype": "none",
+    })
     return plt
+
+
+def _polish_axes(ax: Any, *, grid_axis: str = "x") -> None:
+    ax.grid(True, axis=grid_axis, color="#d9dee3", linewidth=0.7, alpha=0.8)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
 
 def _filtered_edges(rows: list[dict[str, str]], *, top_n: int) -> list[dict[str, str]]:
@@ -257,22 +278,21 @@ def _render_circle(rows: list[dict[str, str]], path: Path, *, top_n: int) -> Pat
     plt = _load_matplotlib()
     edges = _filtered_edges(rows, top_n=top_n)
     nodes = sorted({r["source"] for r in edges} | {r["target"] for r in edges})
-    fig, ax = plt.subplots(figsize=(7.2, 6.6), dpi=300)
+    fig, ax = plt.subplots(figsize=(8.2, 7.2), dpi=300)
     ax.axis("off")
-    ax.set_title("CMIG interaction circle", fontsize=12, pad=22)
-    ax.set_xlim(-1.38, 1.38)
-    ax.set_ylim(-1.35, 1.5)
+    ax.set_title("Interaction circle", pad=24)
+    ax.set_xlim(-1.62, 1.62)
+    ax.set_ylim(-1.56, 1.72)
     if not nodes:
         fig.savefig(path, format="svg")
         plt.close(fig)
         return path
     coords = {}
-    radius = 1.0
+    radius = 1.14
     for i, node in enumerate(nodes):
         angle = 2 * math.pi * i / len(nodes)
         coords[node] = (radius * math.cos(angle), radius * math.sin(angle))
     max_flux = max(abs(float(r.get("flux") or 0.0)) for r in edges) if edges else 1.0
-    colors = {"secretion": "#31a354", "host_uptake": "#1f77b4", "cross_feeding": "#d95f0e"}
     for row in edges:
         x1, y1 = coords[row["source"]]
         x2, y2 = coords[row["target"]]
@@ -284,16 +304,23 @@ def _render_circle(rows: list[dict[str, str]], path: Path, *, top_n: int) -> Pat
             arrowprops={
                 "arrowstyle": "->",
                 "lw": width,
-                "color": colors.get(row["edge_type"], "#777777"),
+                "color": EDGE_COLORS.get(row["edge_type"], "#777777"),
                 "alpha": 0.65,
-                "shrinkA": 12,
-                "shrinkB": 12,
+                "shrinkA": 16,
+                "shrinkB": 16,
             },
         )
     for node, (x, y) in coords.items():
-        color = "#d95f0e" if node == "host" else "#999999" if node.startswith("met:") else "#2c7fb8"
-        ax.scatter([x], [y], s=260, color=color, edgecolor="white", linewidth=1.0, zorder=3)
-        ax.text(x * 1.15, y * 1.15, node.replace("met:", ""), ha="center", va="center", fontsize=8)
+        color = "#e6550d" if node == "host" else "#9aa0a6" if node.startswith("met:") else "#3182bd"
+        ax.scatter([x], [y], s=430, color=color, edgecolor="white", linewidth=1.4, zorder=3)
+        ax.text(
+            x * 1.23,
+            y * 1.23,
+            node.replace("met:", ""),
+            ha="center",
+            va="center",
+            fontsize=10,
+        )
     fig.tight_layout()
     fig.subplots_adjust(top=0.9)
     fig.savefig(path, format="svg")
@@ -324,7 +351,13 @@ def _render_heatmap(rows: list[dict[str, str]], path: Path) -> Path:
         ha="right",
     )
     ax.set_yticks(range(len(sources)), [x.replace("met:", "") for x in sources])
-    ax.set_title("CMIG aggregate interaction heatmap", fontsize=12)
+    ax.set_title("Aggregate interaction heatmap")
+    ax.tick_params(axis="both", labelsize=10)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.set_xticks([x - 0.5 for x in range(1, len(targets))], minor=True)
+    ax.set_yticks([y - 0.5 for y in range(1, len(sources))], minor=True)
+    ax.grid(which="minor", color="white", linewidth=0.6, alpha=0.55)
     fig.tight_layout()
     fig.subplots_adjust(bottom=0.28, left=0.18, right=0.88)
     fig.savefig(path, format="svg")
@@ -342,21 +375,22 @@ def _render_bubble(rows: list[dict[str, str]], path: Path, *, top_n: int) -> Pat
     fig, ax = plt.subplots(figsize=(width, height), dpi=300)
     x_map = {s: i for i, s in enumerate(sources)}
     y_map = {m: i for i, m in enumerate(metabolites)}
-    colors = {"secretion": "#31a354", "host_uptake": "#1f77b4", "cross_feeding": "#d95f0e"}
     max_flux = max([abs(float(row.get("flux") or 0.0)) for row in edges] + [1.0])
     for row in edges:
         flux = abs(float(row["flux"] or 0.0))
         ax.scatter(
             x_map[row["source"]],
             y_map[row["metabolite"]],
-            s=40 + 260 * flux / max_flux,
-            color=colors.get(row["edge_type"], "#777777"),
-            alpha=0.75,
+            s=70 + 380 * flux / max_flux,
+            color=EDGE_COLORS.get(row["edge_type"], "#777777"),
+            alpha=0.82,
             edgecolor="white",
+            linewidth=0.8,
         )
     ax.set_xticks(range(len(sources)), sources, rotation=45, ha="right")
     ax.set_yticks(range(len(metabolites)), metabolites)
-    ax.set_title("CMIG interaction bubble plot", fontsize=12)
+    ax.set_title("Interaction bubble plot")
+    _polish_axes(ax, grid_axis="both")
     fig.tight_layout()
     fig.subplots_adjust(bottom=0.28, left=0.18)
     fig.savefig(path, format="svg")
@@ -371,10 +405,12 @@ def _render_contribution(rows: list[dict[str, str]], path: Path, *, top_n: int) 
     items = items[:top_n]
     labels = [f"{r['member']}:{r['metabolite']}" for r in items]
     values = [float(r["transfer_flux"]) for r in items]
-    fig, ax = plt.subplots(figsize=(6.5, 4.8), dpi=300)
-    ax.barh(labels[::-1], values[::-1], color="#d95f0e", edgecolor="black", linewidth=0.3)
+    fig, ax = plt.subplots(figsize=(7.2, 4.8), dpi=300)
+    colors = [BAR_COLORS[i % len(BAR_COLORS)] for i, _ in enumerate(labels[::-1])]
+    ax.barh(labels[::-1], values[::-1], color=colors, edgecolor="white", linewidth=0.8, height=0.55)
     ax.set_xlabel("Transfer flux")
-    ax.set_title("Member contribution to host transfer", fontsize=12)
+    ax.set_title("Member contribution to host transfer")
+    _polish_axes(ax, grid_axis="x")
     fig.tight_layout()
     fig.savefig(path, format="svg")
     plt.close(fig)

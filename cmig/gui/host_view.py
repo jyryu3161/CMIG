@@ -41,6 +41,8 @@ class HostImpactView(QWidget):
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
         self.title = QLabel("Host-Microbe Interaction")
         file_row = QHBoxLayout()
         self.host_path_input = QLineEdit("")
@@ -134,14 +136,14 @@ class HostImpactView(QWidget):
         splitter = QSplitter()
         splitter.addWidget(tables)
         splitter.addWidget(self.figure_stack)
-        splitter.setSizes([430, 570])
+        splitter.setSizes([450, 760])
         layout.addWidget(self.title)
         layout.addLayout(file_row)
         layout.addLayout(medium_row)
         layout.addLayout(run_row)
         layout.addLayout(figure_row)
         layout.addWidget(self.run_status)
-        layout.addWidget(splitter)
+        layout.addWidget(splitter, 1)
 
     def request(self) -> dict[str, Any]:
         """Return the current host-microbe run request from GUI controls."""
@@ -338,7 +340,7 @@ def host_microbe_network_payload(
     return {
         "elements": elements,
         "style": _host_network_stylesheet(),
-        "layout": {"name": "cose", "animate": False, "padding": 110},
+        "layout": {"name": "cose", "animate": False, "padding": 42},
         "legend": [
             {"symbol": "+", "meaning": "microbial secretion"},
             {"symbol": "-", "meaning": "host uptake"},

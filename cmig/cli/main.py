@@ -909,7 +909,9 @@ def _write_search_svg(result: Any, path: Path) -> None:
     plot_h = height - margin_top - margin_bottom
     max_flux = max([abs(r.target_flux) for r in rows] + [1.0])
     bar_gap = 8
-    bar_h = max(12, int((plot_h - bar_gap * max(len(rows) - 1, 0)) / max(len(rows), 1)))
+    bar_h = min(34, max(14, int((plot_h - bar_gap * max(len(rows) - 1, 0)) / max(len(rows), 1))))
+    total_bar_h = len(rows) * bar_h + max(len(rows) - 1, 0) * bar_gap
+    y0 = margin_top + max(0, (plot_h - total_bar_h) / 2)
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}">',
@@ -922,15 +924,21 @@ def _write_search_svg(result: Any, path: Path) -> None:
     ]
     axis_x = margin_left
     axis_y = margin_top + plot_h
+    for frac in (0.25, 0.5, 0.75, 1.0):
+        gx = axis_x + plot_w * frac
+        parts.append(
+            f'<line x1="{gx:.1f}" y1="{margin_top}" x2="{gx:.1f}" y2="{axis_y}" '
+            'stroke="#d9dee3" stroke-width="1"/>'
+        )
     parts.append(
         f'<line x1="{axis_x}" y1="{axis_y}" x2="{axis_x + plot_w}" y2="{axis_y}" '
         'stroke="#222" stroke-width="1"/>'
     )
     for i, row in enumerate(rows):
-        y = margin_top + i * (bar_h + bar_gap)
+        y = y0 + i * (bar_h + bar_gap)
         bar_w = int((abs(row.target_flux) / max_flux) * plot_w)
         label = html.escape("+".join(row.members))
-        color = "#0b9e77" if row.target_flux >= 0 else "#d95f02"
+        color = "#2ca25f" if row.target_flux >= 0 else "#e6550d"
         parts.extend([
             f'<text x="{axis_x - 12}" y="{y + bar_h * 0.72:.1f}" font-family="Arial" '
             f'font-size="13" text-anchor="end">{label}</text>',
@@ -985,12 +993,26 @@ def _write_search_scatter_svg(result: Any, path: Path) -> None:
         'transform="rotate(-90 20 '
         f'{top + plot_h / 2:.1f})" text-anchor="middle">Target exchange flux</text>',
     ]
+    for frac in (0.25, 0.5, 0.75):
+        gx = left + plot_w * frac
+        gy = top + plot_h * frac
+        parts.extend([
+            f'<line x1="{gx:.1f}" y1="{top}" x2="{gx:.1f}" y2="{top + plot_h}" '
+            'stroke="#d9dee3" stroke-width="1"/>',
+            f'<line x1="{left}" y1="{gy:.1f}" x2="{left + plot_w}" y2="{gy:.1f}" '
+            'stroke="#d9dee3" stroke-width="1"/>',
+        ])
+    if len(rows) == 1:
+        parts.append(
+            f'<text x="{left + plot_w - 4}" y="{top + 18}" font-family="Arial" '
+            'font-size="12" text-anchor="end" fill="#555">single candidate</text>'
+        )
     for row in rows:
         px, py = x(row.community_growth), y(row.target_flux)
         label = html.escape(str(row.rank))
         title = html.escape("+".join(row.members))
         parts.extend([
-            f'<circle cx="{px:.1f}" cy="{py:.1f}" r="7" fill="#2b8cbe" opacity="0.86"/>',
+            f'<circle cx="{px:.1f}" cy="{py:.1f}" r="8" fill="#3182bd" opacity="0.9"/>',
             f'<text x="{px + 10:.1f}" y="{py + 4:.1f}" font-family="Arial" '
             f'font-size="12">#{label}</text>',
             f'<title>{title}: flux={row.target_flux:.4g}, '
