@@ -63,7 +63,10 @@ class EngineService:
         result, bundle, community = solve_with_community(solver)
         if fva:
             from cmig.core.fva import attach_community_fva_to_bundle, community_fva
-            ranges = community_fva(community, fraction_of_optimum=TRADEOFF_F)
+            # AE-1: 실제 요청 solver 를 FVA 에 전달(미전달 시 gurobi 기본으로 community solver 와
+            # 불일치 → osqp 경로가 time_limit→infeasible 로 오표기). osqp 는 community_fva 가
+            # capability 부재로 사전 거부.
+            ranges = community_fva(community, fraction_of_optimum=TRADEOFF_F, solver=solver)
             attach_community_fva_to_bundle(bundle, ranges)
         tsum = self._target_summary_or_none(bundle, targets)  # 미지 preset → ValueError
         # fixture 경로는 _run_hash_components(고정 11구성), build_run_components 아님.
@@ -126,7 +129,8 @@ class EngineService:
             bundle = build_tidy(result)
             if fva:
                 from cmig.core.fva import attach_community_fva_to_bundle, community_fva
-                ranges = community_fva(community, fraction_of_optimum=tradeoff_f)
+                # AE-1: 실제 요청 solver 전달(미전달 시 community solver 불일치 → 오표기).
+                ranges = community_fva(community, fraction_of_optimum=tradeoff_f, solver=solver)
                 attach_community_fva_to_bundle(bundle, ranges)
             tsum = self._target_summary_or_none(bundle, targets)
             components = build_run_components(

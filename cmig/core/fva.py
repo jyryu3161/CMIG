@@ -121,6 +121,15 @@ def community_fva(
         raise FVAUnavailableError(
             f"solver '{solver}' LP capability 부재/미가용 (§2). community FVA 는 gurobi-only."
         )
+    # AE-1: osqp 는 community 경로에서 QP-only approximate(§4.2) — 명목상 LP 하이브리드가
+    # FVA 반복 재최적화에서 time_limit 으로 퇴화해 InfeasibleError 로 *오표기*된다.
+    # solver 런타임 실패(time_limit)를 진짜 infeasible 로 오분류하지 않도록 capability 단계에서
+    # 사전 거부한다(정직성: capability 부재 ≠ 제약 infeasible).
+    if solver == "osqp":
+        raise FVAUnavailableError(
+            "community FVA 는 osqp 미지원 — osqp 는 QP-only approximate(§4.2)이며 FVA 반복 "
+            "재최적화에서 time_limit 으로 퇴화한다. --solver gurobi 를 사용하라."
+        )
     from cmig.core.single_model import set_model_solver
     set_model_solver(community, solver)
     rxn_list = (

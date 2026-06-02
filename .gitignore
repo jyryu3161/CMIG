@@ -22,6 +22,7 @@ dist/
 .Rlib/
 .bkit/runtime/
 Rplots.pdf
+temp_figures/
 
 # Large external GEM fixtures: keep local, not in source control.
 Recon3D.xml

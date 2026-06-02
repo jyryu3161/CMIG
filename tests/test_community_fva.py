@@ -93,3 +93,34 @@ def test_cli_fva_fills_profile_in_output(tmp_path):
     out2 = tmp_path / "nofva"
     main(["solve-fixture", "--solver", "gurobi", "--out", str(out2)])
     assert all(r["fva_lo"] is None for r in TidyBundle.read(out2).profile.to_pylist())
+
+
+def test_community_fva_osqp_rejected_as_capability_not_infeasible(community_and_bundle):
+    """AE-1: osqp+community FVA 는 capability 부재(FVAUnavailableError)로 *사전* 거부.
+
+    osqp 는 QP-only approximate(§4.2)라 FVA 반복 재최적화에서 time_limit 으로 퇴화 →
+    이전엔 FVAInfeasibleError 로 *오표기*. solver 런타임 실패를 진짜 infeasible 로
+    오분류하지 않아야 한다(정직성). 사전 거부이므로 즉시 raise(느린 solve 미진입).
+    """
+    from cmig.core.fva import FVAInfeasibleError, FVAUnavailableError
+
+    com, _ = community_and_bundle
+    with pytest.raises(FVAUnavailableError):
+        community_fva(com, fraction_of_optimum=TRADEOFF_F, solver="osqp")
+    # 오표기 회귀 가드: infeasible 로 raise 되면 안 됨
+    try:
+        community_fva(com, fraction_of_optimum=TRADEOFF_F, solver="osqp")
+    except FVAInfeasibleError:  # pragma: no cover
+        pytest.fail("osqp FVA 가 InfeasibleError 로 오표기됨 (AE-1 회귀)")
+    except FVAUnavailableError:
+        pass
+
+
+def test_cli_solve_fixture_osqp_fva_graceful_rc2(tmp_path, capsys):
+    """AE-1: `solve-fixture --solver osqp --fva` 는 traceback/rc1 아닌 rc2 + 명시 메시지."""
+    from cmig.cli.main import main
+
+    rc = main(["solve-fixture", "--solver", "osqp", "--fva", "--out", str(tmp_path)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "FVA" in err and "osqp" in err

@@ -83,6 +83,14 @@ def test_graph_payload_structure():
     assert "gate" not in payload                       # gate 미전달 시 없음
 
 
+def test_graph_style_has_readable_node_text_and_zoom_padding():
+    node_style = next(s["style"] for s in STYLESHEET if s["selector"] == "node")
+    assert node_style["font-size"] <= 12
+    assert node_style["text-wrap"] == "wrap"
+    assert node_style["text-max-width"] <= 120
+    assert graph_payload(_bundle())["layout"]["padding"] >= 80
+
+
 def test_graph_payload_with_gate():
     gate = evaluate_gate([
         NamespaceDecision("x", "s", "bigg:x", Confidence.HIGH, DecisionStatus.RESOLVED),

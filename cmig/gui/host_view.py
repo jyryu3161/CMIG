@@ -49,7 +49,7 @@ class HostImpactView(QWidget):
         """HostSolveResult → viability + 2-interface flux 표(interface/sign 색)."""
         if host_result.viable:
             self.viability_label.setText(
-                f"✅ viable · host biomass = {host_result.biomass:.4g}")
+                f"viable · host biomass = {host_result.biomass:.4g}")
             self.viability_label.setStyleSheet("color: #31a354;")
         else:
             self.viability_label.setText(

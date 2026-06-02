@@ -3,7 +3,7 @@
      graph_view.py 가 window.setGraph(payload) 를 호출해 graph_data.graph_payload 결과를 주입한다.
      cytoscape.js 는 로컬 번들(cytoscape.min.js, v3.30.2) — Design Ref(hardening track-A):
      CDN 의존 제거 → 오프라인 데스크톱 앱 + network-free offscreen 검증(결정성). -->
-<html lang="ko">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <title>CMIG Interaction Graph</title>
@@ -32,6 +32,16 @@
         elements: payload.elements || [],
         style: payload.style || [],
         layout: payload.layout || { name: 'cose' },
+        minZoom: 0.25,
+        maxZoom: 1.4,
+      });
+      cy.ready(() => {
+        cy.resize();
+        cy.fit(undefined, 80);
+      });
+      cy.on('layoutstop', () => {
+        cy.resize();
+        cy.fit(undefined, 80);
       });
       // 부호 범례 상시 (§11)
       const legend = document.getElementById('legend');

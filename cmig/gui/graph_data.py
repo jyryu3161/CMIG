@@ -21,22 +21,34 @@ SIGN_LEGEND: list[dict[str, str]] = [
 
 # Cytoscape.js stylesheet — node_type/edge_type 인코딩 (§11 노드/엣지 인코딩).
 STYLESHEET: list[dict[str, Any]] = [
+    {"selector": "node",
+     "style": {"font-size": 12, "min-zoomed-font-size": 8, "font-weight": 600,
+               "color": "#1f2933", "text-outline-width": 2, "text-outline-color": "#ffffff",
+               "text-wrap": "wrap", "text-max-width": 110, "text-valign": "bottom",
+               "text-halign": "center", "text-margin-y": 8, "width": 42, "height": 42}},
     {"selector": "node[ntype = 'member']",
      "style": {"background-color": "#2c7fb8", "shape": "ellipse", "label": "data(label)"}},
     {"selector": "node[ntype = 'environment_pool']",
-     "style": {"background-color": "#999999", "shape": "round-rectangle", "label": "data(label)"}},
+     "style": {"background-color": "#999999", "shape": "round-rectangle", "label": "data(label)",
+               "width": 58, "height": 42}},
+    {"selector": "edge",
+     "style": {"curve-style": "bezier", "opacity": 0.72, "target-arrow-shape": "triangle",
+               "arrow-scale": 0.75}},
     {"selector": "edge[etype = 'cross_feeding']",
      "style": {"line-color": "#d95f0e", "target-arrow-color": "#d95f0e",
-               "target-arrow-shape": "triangle", "width": "mapData(weight, 0, 10, 1, 8)"}},
+               "width": "mapData(weight, 0, 10, 1, 6)"}},
     {"selector": "edge[etype = 'secretion']",
-     "style": {"line-color": "#31a354", "target-arrow-shape": "triangle",
-               "line-style": "solid", "width": "mapData(weight, 0, 10, 1, 6)"}},
+     "style": {"line-color": "#31a354", "target-arrow-color": "#31a354",
+               "line-style": "solid", "width": "mapData(weight, 0, 10, 1, 4)"}},
     {"selector": "edge[etype = 'uptake']",
-     "style": {"line-color": "#756bb1", "target-arrow-shape": "triangle",
-               "line-style": "dashed", "width": "mapData(weight, 0, 10, 1, 6)"}},
+     "style": {"line-color": "#756bb1", "target-arrow-color": "#756bb1",
+               "line-style": "dashed", "width": "mapData(weight, 0, 10, 1, 4)"}},
+    {"selector": ".faded",
+     "style": {"opacity": 0.16, "text-opacity": 0.16}},
 ]
 
-DEFAULT_LAYOUT = {"name": "cose", "animate": False}   # 결정적 레이아웃 권장(§9 stress)
+# 결정적 레이아웃 권장(§9 stress); padding 은 dense graph 라벨 겹침을 줄인다.
+DEFAULT_LAYOUT = {"name": "cose", "animate": False, "padding": 100}
 
 
 def _node_element(row: dict[str, Any]) -> dict[str, Any]:

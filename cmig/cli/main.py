@@ -41,6 +41,7 @@ def _cmd_solve_fixture(args: argparse.Namespace) -> int:
     Design Ref: §2 (EngineService.solve_fixture 위임). run_hash 는 facade 가 manifest 에서
     read([HASH-SINGLE]) — CLI 는 더 이상 오케스트레이션하지 않는다.
     """
+    from cmig.core.fva import FVAUnavailableError
     from cmig.service import EngineService
 
     try:
@@ -49,6 +50,9 @@ def _cmd_solve_fixture(args: argparse.Namespace) -> int:
         )
     except ImportError:
         print("solve-fixture 는 엔진 stack 필요: uv sync --extra engine", file=sys.stderr)
+        return 2
+    except FVAUnavailableError as e:              # AE-1: FVA capability 부재 → 깔끔한 rc2
+        print(f"FVA 미지원: {e}", file=sys.stderr)
         return 2
     except ValueError as e:                       # F3: 미지 target preset
         print(str(e), file=sys.stderr)
@@ -75,6 +79,7 @@ def _cmd_solve(args: argparse.Namespace) -> int:
     try:
         import pandas as pd
 
+        from cmig.core.fva import FVAUnavailableError
         from cmig.core.namespace import GateBlockedError, load_namespace_decisions
         from cmig.service import EngineService
     except ImportError:
@@ -115,6 +120,9 @@ def _cmd_solve(args: argparse.Namespace) -> int:
         )
     except ImportError:
         print("solve 는 엔진 stack 필요: uv sync --extra engine", file=sys.stderr)
+        return 2
+    except FVAUnavailableError as e:              # AE-1: FVA capability 부재 → 깔끔한 rc2
+        print(f"FVA 미지원: {e}", file=sys.stderr)
         return 2
     except ValueError as e:                       # F3 미지 preset · medium 입력 오류
         print(str(e), file=sys.stderr)

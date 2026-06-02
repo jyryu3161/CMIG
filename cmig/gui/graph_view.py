@@ -15,12 +15,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from PySide6.QtGui import QColor
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from cmig.core.namespace import NamespaceGateResult
 from cmig.core.tidy import TidyBundle
-from cmig.gui.graph_data import gate_ui_data, graph_payload
+from cmig.gui.graph_data import filter_elements, gate_ui_data, graph_payload
 
 _ASSET = Path(__file__).parent / "assets" / "graph.html"
 
@@ -31,11 +41,32 @@ class InteractionGraphView(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pending: dict | None = None
+        self._base_payload: dict | None = None
         self._ready = False
         self._web = QWebEngineView(self)
+        self.cross_feeding_check = QCheckBox("Cross-feeding")
+        self.secretion_check = QCheckBox("+ secretion")
+        self.uptake_check = QCheckBox("− uptake")
+        for check in (self.cross_feeding_check, self.secretion_check, self.uptake_check):
+            check.toggled.connect(self._apply_filters)
+        self.edge_table = QTableWidget(0, 5)
+        self.edge_table.setHorizontalHeaderLabels(
+            ["Source", "Target", "Metabolite", "Type", "Flux"]
+        )
+        self.edge_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.edge_table.setMaximumHeight(190)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        controls = QHBoxLayout()
+        controls.setContentsMargins(8, 4, 8, 4)
+        controls.addWidget(QLabel("Edges"))
+        controls.addWidget(self.cross_feeding_check)
+        controls.addWidget(self.secretion_check)
+        controls.addWidget(self.uptake_check)
+        controls.addStretch(1)
+        layout.addLayout(controls)
         layout.addWidget(self._web)
+        layout.addWidget(self.edge_table)
         self._web.loadFinished.connect(self._on_load)
         self._web.load(self._asset_url())
 
@@ -54,15 +85,103 @@ class InteractionGraphView(QWidget):
     def _inject(self, payload: dict) -> None:
         self._web.page().runJavaScript(f"window.setGraph({json.dumps(payload)});")
 
+    def _filtered_payload(self) -> dict | None:
+        if self._base_payload is None:
+            return None
+        edge_types: set[str] = set()
+        if self.cross_feeding_check.isChecked():
+            edge_types.add("cross_feeding")
+        if self.secretion_check.isChecked():
+            edge_types.add("secretion")
+        if self.uptake_check.isChecked():
+            edge_types.add("uptake")
+        elements = filter_elements(
+            list(self._base_payload["elements"]),
+            edge_types=edge_types,
+        )
+        edges = [e for e in elements if "source" in e["data"]]
+        if edges:
+            connected = {
+                node_id
+                for edge in edges
+                for node_id in (edge["data"]["source"], edge["data"]["target"])
+            }
+            elements = [
+                e for e in elements
+                if "source" in e["data"] or e["data"]["id"] in connected
+            ]
+        payload = dict(self._base_payload)
+        payload["elements"] = elements
+        return payload
+
+    def _refresh_edge_table(self, elements: list[dict]) -> None:
+        edges = [e["data"] for e in elements if "source" in e["data"]]
+        edges.sort(
+            key=lambda e: (
+                e.get("etype") != "cross_feeding",
+                -float(e.get("weight") or 0.0),
+            )
+        )
+        rows = edges[:20]
+        self.edge_table.setRowCount(len(rows))
+        colors = {
+            "cross_feeding": "#d95f0e",
+            "secretion": "#31a354",
+            "uptake": "#756bb1",
+        }
+        for row, edge in enumerate(rows):
+            values = [
+                str(edge.get("source", "")),
+                str(edge.get("target", "")),
+                str(edge.get("metabolite", "")),
+                str(edge.get("etype", "")),
+                f"{float(edge.get('weight') or 0.0):.4g}",
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col == 3 and edge.get("etype") in colors:
+                    item.setForeground(QColor(colors[str(edge.get("etype"))]))
+                self.edge_table.setItem(row, col, item)
+
+    def _apply_filters(self) -> None:
+        payload = self._filtered_payload()
+        if payload is None:
+            return
+        self._refresh_edge_table(list(payload["elements"]))
+        if self._ready:
+            self._inject(payload)
+        else:
+            self._pending = payload
+
+    def set_edge_filters(
+        self, *, cross_feeding: bool, secretion: bool, uptake: bool
+    ) -> None:
+        """Set visible edge families. Used by UI controls and deterministic tests."""
+        for check, value in (
+            (self.cross_feeding_check, cross_feeding),
+            (self.secretion_check, secretion),
+            (self.uptake_check, uptake),
+        ):
+            check.blockSignals(True)
+            check.setChecked(value)
+            check.blockSignals(False)
+        self._apply_filters()
+
     def set_bundle(
         self, bundle: TidyBundle, gate: NamespaceGateResult | None = None
     ) -> None:
         """그래프 데이터 주입. 페이지 로드 전이면 큐잉 후 loadFinished 시 주입."""
         payload = graph_payload(bundle, gate)
-        if self._ready:
-            self._inject(payload)
-        else:
-            self._pending = payload
+        self._base_payload = payload
+        has_cross_feeding = any(
+            "source" in element["data"] and element["data"]["etype"] == "cross_feeding"
+            for element in payload["elements"]
+        )
+        self.set_edge_filters(
+            cross_feeding=has_cross_feeding,
+            secretion=not has_cross_feeding,
+            uptake=not has_cross_feeding,
+        )
 
     def highlight(self, node_id: str) -> None:
         """linked selection — 노드 인접 강조 (FR-1b.2)."""

@@ -86,7 +86,7 @@ def test_widget_constructs_and_renders_without_error(qapp):
 
 
 def test_cytoscape_receives_all_nodes(qapp):
-    """DOM 게이트(SC-H1): Cytoscape 가 tidy 노드를 전부 수신(payload 주입 계약)."""
+    """DOM gate: graph defaults to cross-feeding focus and can restore full graph."""
     bundle = _bundle()
     expected_nodes = bundle.nodes.num_rows  # A, B, medium = 3
 
@@ -97,10 +97,19 @@ def test_cytoscape_receives_all_nodes(qapp):
     # cytoscape 레이아웃은 동기 — 주입 직후 노드 수 조회.
     n = _run_js(view, "cy ? cy.nodes().length : -1")
     assert n is not None, "runJavaScript 무응답 — QWebEngine JS 실행 불가"
-    assert int(n) == expected_nodes, f"Cytoscape 노드 {n} != tidy 노드 {expected_nodes}"
+    assert int(n) == 2, "default cross-feeding view should hide isolated medium node"
 
     e = _run_js(view, "cy ? cy.edges().length : -1")
-    assert int(e) == bundle.edges.num_rows, "엣지 수 불일치(payload 주입 누락)"
+    assert int(e) == 1, "default graph should focus on cross-feeding edges"
+    assert view.edge_table.rowCount() == 1
+    assert view.edge_table.item(0, 3).text() == "cross_feeding"
+
+    view.set_edge_filters(cross_feeding=True, secretion=True, uptake=True)
+    n_all = _run_js(view, "cy ? cy.nodes().length : -1")
+    assert int(n_all) == expected_nodes, f"Cytoscape 노드 {n_all} != tidy 노드 {expected_nodes}"
+    e_all = _run_js(view, "cy ? cy.edges().length : -1")
+    assert int(e_all) == bundle.edges.num_rows, "edge filter did not restore all edges"
+    assert view.edge_table.rowCount() == bundle.edges.num_rows
 
 
 def test_gate_blocked_reflected_in_dom(qapp):
@@ -127,9 +136,25 @@ def test_grab_produces_nonempty_image(qapp):
     view.set_bundle(_bundle())
     img = view.grab().toImage()
     assert not img.isNull(), "grab 이미지 null"
-    assert img.width() == 320 and img.height() == 240
+    assert img.width() >= 320 and img.height() == 240
     # 픽셀 분산은 QWebEngine 비동기 paint 에 의존 → 결정적 게이트는
     # '크기 있는 non-null surface 산출'까지. 콘텐츠 검증은 DOM 게이트가 대체.
+
+
+def test_cytoscape_can_export_nonblank_png(qapp):
+    """Cytoscape renderer produces real graph pixels, independent of QWidget grab timing."""
+    view = InteractionGraphView()
+    view.resize(640, 480)
+    _wait_loaded(view)
+    view.set_bundle(_bundle())
+    data_uri = _run_js(
+        view,
+        "cy ? cy.png({full: true, scale: 1, bg: 'white'}) : ''",
+        timeout_ms=6000,
+    )
+    assert isinstance(data_uri, str)
+    assert data_uri.startswith("data:image/png;base64,")
+    assert len(data_uri) > 3000, "Cytoscape PNG export is unexpectedly small/blank"
 
 
 def test_gate_badge_widget_sync(qapp):
