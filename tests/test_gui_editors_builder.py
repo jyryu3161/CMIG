@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
@@ -128,7 +130,7 @@ def test_scenario_compare():
     assert "-0.1" in sc.growth_label.text()
 
 
-def test_search_view_loads_advanced_summary():
+def test_search_view_loads_advanced_summary(tmp_path):
     """SC-SR-GUI: advanced search summary → ranked table + Pareto badge."""
     _app()
     view = SearchView()
@@ -139,6 +141,8 @@ def test_search_view_loads_advanced_summary():
     assert view.min_size_spin.value() == 2
     assert view.max_size_spin.value() == 2
     assert view.robustness_check.text() == "FVA"
+    (tmp_path / "search_plot.svg").write_text("<svg>ranking</svg>")
+    (tmp_path / "search_scatter.svg").write_text("<svg>scatter</svg>")
     view.load_summary({
         "strategy": "exhaustive",
         "warnings": [],
@@ -157,11 +161,15 @@ def test_search_view_loads_advanced_summary():
             ]
         },
         "pareto_frontier": [{"members": ["A", "B"], "ac": 1.2, "but": 0.8}],
-    })
+    }, run_dir=Path(tmp_path))
     assert view.table.rowCount() == 1
     assert view.table.item(0, 0).text() == "A+B"
     assert view.table.item(0, 5).text() == "0..2"
     assert "Pareto" in view.pareto_label.text()
+    assert view.current_run_dir == tmp_path
+    assert view.selected_figure_artifact() == "search_plot.svg"
+    view.figure_mode_combo.setCurrentText("Scatter")
+    assert view.selected_figure_artifact() == "search_scatter.svg"
 
 
 # --- Journal presets ---

@@ -900,11 +900,13 @@ def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], ou
 
 
 def _write_search_svg(result: Any, path: Path) -> None:
-    width, height = 900, 420
-    margin_left, margin_top, margin_bottom = 90, 54, 95
+    rows = [r for r in result.ranks[:10] if math.isfinite(r.target_flux)]
+    labels = ["+".join(r.members) for r in rows]
+    width, height = 980, 420
+    margin_left = min(300, max(120, 7 * max([len(label) for label in labels] + [8]) + 32))
+    margin_top, margin_bottom = 54, 95
     plot_w = width - margin_left - 40
     plot_h = height - margin_top - margin_bottom
-    rows = [r for r in result.ranks[:10] if math.isfinite(r.target_flux)]
     max_flux = max([abs(r.target_flux) for r in rows] + [1.0])
     bar_gap = 8
     bar_h = max(12, int((plot_h - bar_gap * max(len(rows) - 1, 0)) / max(len(rows), 1)))
@@ -930,8 +932,8 @@ def _write_search_svg(result: Any, path: Path) -> None:
         label = html.escape("+".join(row.members))
         color = "#0b9e77" if row.target_flux >= 0 else "#d95f02"
         parts.extend([
-            f'<text x="12" y="{y + bar_h * 0.72:.1f}" font-family="Arial" '
-            f'font-size="13">{label}</text>',
+            f'<text x="{axis_x - 12}" y="{y + bar_h * 0.72:.1f}" font-family="Arial" '
+            f'font-size="13" text-anchor="end">{label}</text>',
             f'<rect x="{axis_x}" y="{y}" width="{bar_w}" height="{bar_h}" '
             f'fill="{color}" opacity="0.88"/>',
             f'<text x="{axis_x + bar_w + 8}" y="{y + bar_h * 0.72:.1f}" '

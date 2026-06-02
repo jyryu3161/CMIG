@@ -253,6 +253,8 @@ def test_search_button_uses_model_dir_product_command(monkeypatch, tmp_path):
         from pathlib import Path
         Path(out).mkdir(parents=True, exist_ok=True)
         (Path(out) / "search_summary.json").write_text(json.dumps(payload))
+        (Path(out) / "search_plot.svg").write_text("<svg>ranking</svg>")
+        (Path(out) / "search_scatter.svg").write_text("<svg>scatter</svg>")
         return 0
 
     monkeypatch.setattr(cmig.cli.main, "main", fake_main)
@@ -269,7 +271,32 @@ def test_search_button_uses_model_dir_product_command(monkeypatch, tmp_path):
     assert seen["argv"][seen["argv"].index("--model-dir") + 1] == str(tmp_path)
     assert "--robustness-fva" in seen["argv"]
     assert w.search_view.table.item(0, 1).text() == "but"
+    assert w.current_search_dir is not None
+    assert (w.current_search_dir / "search_plot.svg").exists()
+    assert w.search_view.current_run_dir == w.current_search_dir
+    assert w.search_view.run_btn.isEnabled()
     runner.shutdown()
+
+
+def test_search_figure_export_copies_selected_svg(monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+
+    _app()
+    run_dir = tmp_path / "search"
+    run_dir.mkdir()
+    (run_dir / "search_scatter.svg").write_text("<svg>scatter</svg>")
+    target = tmp_path / "export.svg"
+    w = build_main_window()
+    w.current_search_dir = run_dir
+    w.search_view.figure_mode_combo.setCurrentText("Scatter")
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(target), "SVG (*.svg)"),
+    )
+    w._export_search_figure()
+    assert target.read_text() == "<svg>scatter</svg>"
+    assert "Exported figure" in w.search_view.status.text()
 
 
 def test_host_microbe_run_button_uses_product_command(monkeypatch, tmp_path):

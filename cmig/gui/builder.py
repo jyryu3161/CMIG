@@ -9,7 +9,9 @@ DeltaTable=core.delta.DeltaResult 표시(significant 강조·실패 명시), Sce
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -21,6 +23,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSlider,
     QSpinBox,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -214,6 +217,10 @@ class SearchView(QWidget):
         self.top_k_spin.setValue(3)
         self.robustness_check = QCheckBox("FVA")
         self.run_btn = QPushButton("Run Search")
+        self.export_figure_btn = QPushButton("Export Figure")
+        self.figure_mode_combo = QComboBox()
+        self.figure_mode_combo.addItems(["Ranking", "Scatter"])
+        self.figure_mode_combo.currentTextChanged.connect(self.refresh_figure_mode)
         controls.addWidget(QLabel("Target"))
         controls.addWidget(self.targets_input)
         controls.addWidget(QLabel("Size"))
@@ -226,6 +233,9 @@ class SearchView(QWidget):
         controls.addWidget(self.top_k_spin)
         controls.addWidget(self.robustness_check)
         controls.addWidget(self.run_btn)
+        controls.addWidget(QLabel("Figure"))
+        controls.addWidget(self.figure_mode_combo)
+        controls.addWidget(self.export_figure_btn)
         self.status = QLabel("")
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
@@ -233,15 +243,49 @@ class SearchView(QWidget):
         )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.pareto_label = QLabel("")
+        self.current_run_dir: Path | None = None
+        try:
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+
+            self.figure_view: QWidget = QWebEngineView()
+        except ImportError:  # pragma: no cover - optional GUI extra
+            self.figure_view = QLabel("QtWebEngine is unavailable; figure preview disabled.")
+        self.figure_stack = QStackedWidget()
+        self.figure_stack.addWidget(self.figure_view)
         layout.addWidget(self.title)
         layout.addLayout(pool_row)
         layout.addLayout(controls)
         layout.addWidget(self.status)
         layout.addWidget(self.table)
         layout.addWidget(self.pareto_label)
+        layout.addWidget(self.figure_stack)
 
-    def load_summary(self, summary: dict[str, object]) -> None:
+    def selected_figure_artifact(self) -> str:
+        mapping = {"Ranking": "search_plot.svg", "Scatter": "search_scatter.svg"}
+        return mapping[self.figure_mode_combo.currentText()]
+
+    def refresh_figure_mode(self, _mode: str | None = None) -> None:
+        """Load the selected saved search SVG into the preview pane."""
+        if self.current_run_dir is None:
+            return
+        artifact = self.current_run_dir / self.selected_figure_artifact()
+        if not artifact.exists():
+            return
+        if hasattr(self.figure_view, "setHtml"):
+            uri = artifact.as_uri()
+            self.figure_view.setHtml(
+                "<!doctype html><html><head><style>"
+                "html,body{margin:0;width:100%;height:100%;overflow:hidden;background:white;}"
+                "img{width:100%;height:100%;object-fit:contain;display:block;}"
+                "</style></head><body>"
+                f"<img src='{uri}' alt='{artifact.name}'>"
+                "</body></html>",
+                QUrl.fromLocalFile(str(artifact.parent)),
+            )
+
+    def load_summary(self, summary: dict[str, object], *, run_dir: Path | None = None) -> None:
         """search_advanced_summary.json 형태를 표로 표시."""
+        self.current_run_dir = None if run_dir is None else run_dir.resolve()
         strategy = str(summary.get("strategy", ""))
         warnings = summary.get("warnings")
         warning_count = len(warnings) if isinstance(warnings, list) else 0
@@ -304,6 +348,7 @@ class SearchView(QWidget):
         self.pareto_label.setText(
             "" if not pareto_count else f"Pareto frontier candidates: {pareto_count}"
         )
+        self.refresh_figure_mode()
 
 
 def _float_value(value: object) -> float:

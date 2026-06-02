@@ -140,11 +140,12 @@ class CmigMainWindow(QMainWindow):
         self.jobs_panel = RuntimeJobsPanel(self.tr_map)
         self.bridge = JobsBridge(self.runner, self.jobs_panel)
         self._fixture_jobs: dict[str, Path] = {}
-        self._search_jobs: set[str] = set()
+        self._search_jobs: dict[str, Path] = {}
         self._host_microbe_jobs: dict[str, Path] = {}
         self.current_manifest: dict[str, Any] | None = None
         self.current_graph_payload: dict[str, Any] | None = None
         self.current_model_review: dict[str, Any] | None = None
+        self.current_search_dir: Path | None = None
         self.current_host_microbe_dir: Path | None = None
 
         center = QWidget()
@@ -207,6 +208,7 @@ class CmigMainWindow(QMainWindow):
         self.sandbox_view.commit_btn.clicked.connect(self._run_sandbox_commit)
         self.search_view.browse_pool_btn.clicked.connect(self._browse_search_model_dir)
         self.search_view.run_btn.clicked.connect(self.run_search_fixture)
+        self.search_view.export_figure_btn.clicked.connect(self._export_search_figure)
         self.host_view.browse_host_btn.clicked.connect(self._browse_host_model)
         self.host_view.browse_model_dir_btn.clicked.connect(self._browse_host_microbe_model_dir)
         self.host_view.browse_host_medium_btn.clicked.connect(self._browse_host_medium)
@@ -270,6 +272,26 @@ class CmigMainWindow(QMainWindow):
             return
         shutil.copyfile(src, target)
         self.host_view.run_status.setText(f"Exported figure: {target}")
+
+    def _export_search_figure(self) -> None:
+        if self.current_search_dir is None:
+            self.search_view.status.setText("No search result is loaded.")
+            return
+        artifact = self.search_view.selected_figure_artifact()
+        src = self.current_search_dir / artifact
+        if not src.exists():
+            self.search_view.status.setText(f"Search figure artifact not found: {artifact}")
+            return
+        target, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Search Figure",
+            artifact,
+            "SVG (*.svg);;All Files (*)",
+        )
+        if not target:
+            return
+        shutil.copyfile(src, target)
+        self.search_view.status.setText(f"Exported figure: {target}")
 
     def _import_model_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -510,42 +532,44 @@ class CmigMainWindow(QMainWindow):
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
-            with tempfile.TemporaryDirectory(prefix="cmig-search-") as td:
-                out_dir = Path(td)
-                if model_dir:
-                    argv = [
-                        "search",
-                        "--model-dir", model_dir,
-                        "--target", target,
-                        "--strategy", strategy,
-                        "--min-size", min_size,
-                        "--max-size", max_size,
-                        "--top-k", top_k,
-                        "--out", str(out_dir),
-                    ]
-                    if robustness_fva:
-                        argv.insert(-2, "--robustness-fva")
-                    output_name = "search_summary.json"
-                else:
-                    argv = [
-                        "search-advanced-fixture",
-                        "--metabolites", targets,
-                        "--strategy", strategy if strategy != "random" else "auto",
-                        "--top-k", top_k,
-                        "--out", str(out_dir),
-                    ]
-                    output_name = "search_advanced_summary.json"
-                rc = main(argv)
-                if rc != 0:
-                    raise RuntimeError(f"search failed with rc={rc}")
-                ctx.report_progress(1, 1)
-                payload = json.loads((out_dir / output_name).read_text())
+            if model_dir:
+                argv = [
+                    "search",
+                    "--model-dir", model_dir,
+                    "--target", target,
+                    "--strategy", strategy,
+                    "--min-size", min_size,
+                    "--max-size", max_size,
+                    "--top-k", top_k,
+                    "--out", str(out_dir),
+                ]
+                if robustness_fva:
+                    argv.insert(-2, "--robustness-fva")
+                output_name = "search_summary.json"
+            else:
+                argv = [
+                    "search-advanced-fixture",
+                    "--metabolites", targets,
+                    "--strategy", strategy if strategy != "random" else "auto",
+                    "--top-k", top_k,
+                    "--out", str(out_dir),
+                ]
+                output_name = "search_advanced_summary.json"
+            rc = main(argv)
+            if rc != 0:
+                raise RuntimeError(f"search failed with rc={rc}")
+            ctx.report_progress(1, 1)
+            payload = json.loads((out_dir / output_name).read_text())
             if not isinstance(payload, dict):
                 raise RuntimeError("search output is not a JSON object")
             return payload
 
+        search_root = Path(".run")
+        search_root.mkdir(exist_ok=True)
+        out_dir = Path(tempfile.mkdtemp(prefix="cmig-search-", dir=search_root)).resolve()
         jid = self.submit_job("search_fixture", _job)
-        self._search_jobs.add(jid)
+        self._search_jobs[jid] = out_dir
+        self.search_view.run_btn.setEnabled(False)
         self.search_view.status.setText(f"search started: {jid}")
         return jid
 
@@ -595,6 +619,7 @@ class CmigMainWindow(QMainWindow):
 
         jid = self.submit_job("host_microbe_bigg", _job)
         self._host_microbe_jobs[jid] = out_dir
+        self.host_view.run_btn.setEnabled(False)
         self.host_view.show_currency_metabolites = bool(request["include_currency_metabolites"])
         self.host_view.set_running(jid)
         self.statusBar().showMessage(f"Started host-microbe run: {jid}")
@@ -609,24 +634,29 @@ class CmigMainWindow(QMainWindow):
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._fixture_jobs.pop(jid, None)
                 self.statusBar().showMessage(f"Fixture job {job.status.value}: {jid}")
-        for jid in list(self._search_jobs):
+        for jid, out_dir in list(self._search_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
-                self._search_jobs.discard(jid)
-                self.search_view.load_summary(job.result)
+                self._search_jobs.pop(jid, None)
+                self.current_search_dir = out_dir
+                self.search_view.load_summary(job.result, run_dir=out_dir)
+                self.search_view.run_btn.setEnabled(True)
                 self.tabs.setCurrentWidget(self.search_view)
                 self.statusBar().showMessage(f"Search complete: {jid}")
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
-                self._search_jobs.discard(jid)
+                self._search_jobs.pop(jid, None)
+                self.search_view.run_btn.setEnabled(True)
                 self.search_view.status.setText(f"search {job.status.value}: {job.error or jid}")
         for jid, out_dir in list(self._host_microbe_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE:
                 self._host_microbe_jobs.pop(jid, None)
+                self.host_view.run_btn.setEnabled(True)
                 self.load_host_microbe_bigg_dir(out_dir)
                 self.statusBar().showMessage(f"Host-microbe complete: {jid}")
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._host_microbe_jobs.pop(jid, None)
+                self.host_view.run_btn.setEnabled(True)
                 self.host_view.run_status.setText(
                     f"host-microbe {job.status.value}: {job.error or jid}"
                 )
