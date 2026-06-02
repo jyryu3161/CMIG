@@ -10,9 +10,11 @@ import sys
 import threading
 import time
 
+import pytest
+
 from cmig.core.diagnostics import parse_diagnostic
 from cmig.service import JobRunner, JobStatus, make_sweep_job
-from cmig.service.jobrunner import JobContext
+from cmig.service.jobrunner import JobCancelled, JobContext, JobFailed
 
 
 def _runner() -> JobRunner:
@@ -36,7 +38,8 @@ def test_submit_failure_structured_diagnostic():
         raise RuntimeError("kaboom")
 
     jid = r.submit("boom", boom)
-    r.result(jid, timeout=5)
+    with pytest.raises(JobFailed):
+        r.result(jid, timeout=5)
     job = r.poll(jid)
     assert job.status is JobStatus.FAILED
     diag = parse_diagnostic(job.error)
@@ -59,7 +62,8 @@ def test_cooperative_cancel():
     jid = r.submit("loop", loop)
     started.wait(timeout=2)
     r.cancel(jid)
-    r.result(jid, timeout=5)
+    with pytest.raises(JobCancelled):
+        r.result(jid, timeout=5)
     assert r.poll(jid).status is JobStatus.CANCELLED
     r.shutdown()
 
@@ -93,7 +97,8 @@ def test_retry_failed_job():
         return 99
 
     jid = r.submit("flaky", flaky)
-    r.result(jid, timeout=5)
+    with pytest.raises(JobFailed):
+        r.result(jid, timeout=5)
     assert r.poll(jid).status is JobStatus.FAILED
     jid2 = r.retry(jid)
     assert jid2 != jid
@@ -158,7 +163,8 @@ def test_sweep_cooperative_cancel_partial():
     )
     started.wait(timeout=2)
     r.cancel(jid)
-    r.result(jid, timeout=5)
+    with pytest.raises(JobCancelled):
+        r.result(jid, timeout=5)
     assert r.poll(jid).status is JobStatus.CANCELLED
     r.shutdown()
 

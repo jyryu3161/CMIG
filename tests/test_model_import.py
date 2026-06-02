@@ -115,6 +115,17 @@ def test_model_pool_from_directory(tmp_path):
     assert all(Path(p).is_absolute() for p in taxonomy["file"])
 
 
+def test_model_pool_collision_ids_get_stable_digest_suffix(tmp_path):
+    """Punctuation-only filename collisions should not depend on discovery tie numbering."""
+    (tmp_path / "a-b.xml").write_text("<sbml/>")
+    (tmp_path / "a.b.xml").write_text("<sbml/>")
+    taxonomy = taxonomy_from_model_dir(tmp_path)
+    ids = list(taxonomy["id"])
+    assert len(ids) == len(set(ids)) == 2
+    assert all(x.startswith("a_b_") for x in ids)
+    assert ids == list(taxonomy_from_model_dir(tmp_path)["id"])
+
+
 def test_model_pool_diagnostics_detect_target_and_biomass():
     import pandas as pd
 

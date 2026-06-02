@@ -96,6 +96,7 @@ class HostImpactView(QWidget):
         self.cross_table.setHorizontalHeaderLabels(["Metabolite", "Flux (lumen transfer)"])
         self.cross_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.network_label = QLabel("Interaction Network")
+        self.show_currency_metabolites = False
         self.network_payload: dict[str, Any] | None = None
         try:
             from cmig.gui.graph_view import InteractionGraphView
@@ -173,12 +174,17 @@ class HostImpactView(QWidget):
             + ("" if run_dir is None else f": {run_dir}")
             + _warning_suffix(payload)
         )
-        self.network_payload = host_microbe_network_payload(payload)
+        self.network_payload = host_microbe_network_payload(
+            payload,
+            include_currency_metabolites=self.show_currency_metabolites,
+        )
         if hasattr(self.network_view, "set_payload"):
             self.network_view.set_payload(self.network_payload)
 
 
-def host_microbe_network_payload(summary: dict[str, Any]) -> dict[str, Any]:
+def host_microbe_network_payload(
+    summary: dict[str, Any], *, include_currency_metabolites: bool = False
+) -> dict[str, Any]:
     """Build a Cytoscape payload for one-way BiGG host-microbe transfers."""
     microbial = {
         str(met): float(value)
@@ -199,12 +205,22 @@ def host_microbe_network_payload(summary: dict[str, Any]) -> dict[str, Any]:
     visible_microbial = {
         met: flux
         for met, flux in microbial.items()
-        if met not in _HOST_NETWORK_CURRENCY_METABOLITES or met in transfer or met in host_uptake
+        if (
+            include_currency_metabolites
+            or met not in _HOST_NETWORK_CURRENCY_METABOLITES
+            or met in transfer
+            or met in host_uptake
+        )
     }
     visible_unused = {
         met: flux
         for met, flux in unused.items()
-        if met not in _HOST_NETWORK_CURRENCY_METABOLITES or met in transfer or met in host_uptake
+        if (
+            include_currency_metabolites
+            or met not in _HOST_NETWORK_CURRENCY_METABOLITES
+            or met in transfer
+            or met in host_uptake
+        )
     }
     metabolites = sorted(
         set(visible_microbial) | set(host_uptake) | set(transfer) | set(visible_unused)

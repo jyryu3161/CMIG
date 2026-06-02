@@ -22,10 +22,18 @@ from cmig import CMIG_CORE_VERSION
 from cmig.core.golden import DEFAULT_DECIMALS
 from cmig.core.manifest import RunHashComponents, RunManifest, canonical_json
 
+KNOWN_SOLVE_ARTIFACTS = frozenset({
+    "nodes.parquet",
+    "edges.parquet",
+    "profile.parquet",
+    "matrix.parquet",
+    "target_summary.json",
+})
+
 
 def file_checksum(path: str | Path) -> str:
     """파일 바이트의 결정적 체크섬 (model_checksum 등)."""
-    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()[:24]
+    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def build_run_components(
@@ -148,6 +156,10 @@ def write_solve_output(
         # manifest.json is the commit marker. Remove any stale marker before publishing artifacts.
         if manifest_path.exists():
             manifest_path.unlink()
+        for stale in KNOWN_SOLVE_ARTIFACTS - set(artifacts):
+            stale_path = out / stale
+            if stale_path.exists():
+                stale_path.unlink()
         for artifact in artifacts:
             os.replace(tmp / artifact, out / artifact)
         os.replace(tmp / "manifest.json", manifest_path)

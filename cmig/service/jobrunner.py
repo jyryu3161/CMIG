@@ -36,6 +36,10 @@ class JobCancelled(Exception):
     """job fn 이 협조적 취소를 감지하면 raise — JobRunner 가 CANCELLED 로 처리."""
 
 
+class JobFailed(RuntimeError):
+    """Raised by result() when a job finished in FAILED state."""
+
+
 @dataclass
 class JobContext:
     """job fn 에 주입 — 취소 확인·진행률 보고 채널."""
@@ -150,11 +154,16 @@ class JobRunner:
         event.set()
 
     def result(self, job_id: str, timeout: float | None = None) -> Any:
-        """job 완료 대기 후 result 반환(future.result)."""
+        """job 완료 대기 후 result 반환. FAILED/CANCELLED 는 명시 예외."""
         with self._lock:
             future = self._futures[job_id]
         future.result(timeout=timeout)
-        return self.poll(job_id).result
+        job = self.poll(job_id)
+        if job.status is JobStatus.FAILED:
+            raise JobFailed(job.error or f"job failed: {job_id}")
+        if job.status is JobStatus.CANCELLED:
+            raise JobCancelled(f"job cancelled: {job_id}")
+        return job.result
 
     def retry(self, job_id: str) -> str:
         """실패/취소 job 의 (kind, fn, on_progress) 재제출 → 새 job_id."""

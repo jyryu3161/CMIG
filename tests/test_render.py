@@ -1,6 +1,8 @@
 """R Render Service — FigureSpec + 실제 R 렌더(가용 시). FR-2.5 / §9."""
 
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -78,3 +80,30 @@ def test_render_client_available_reflects_env():
     assert RenderClient().available() == rscript_available()
     assert RenderClient(rscript="").available() is False          # 빈 경로 → fallback
     assert RenderClient(rscript="/usr/bin/Rscript").available() is True
+
+
+def test_matplotlib_fallback_uses_label_palette(tmp_path):
+    out = tmp_path / "profile.svg"
+    rows = [
+        {"metabolite": "zero-secreted", "net_flux": 0.0, "ui_flux": 0.0, "label": "secretion"},
+        {"metabolite": "positive-uptake-label", "net_flux": 5.0, "ui_flux": 5.0, "label": "uptake"},
+    ]
+    RenderClient(rscript="").render(rows, FigureSpec(format="svg"), out)
+    text = out.read_text(errors="ignore").lower()
+    assert "#d62728" in text
+    assert "#1f77b4" in text
+
+
+def test_render_client_passes_project_rlib(monkeypatch, tmp_path):
+    seen: dict[str, list[str]] = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        Path(cmd[cmd.index("--out") + 1]).write_text("<svg/>")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    out = tmp_path / "profile.svg"
+    RenderClient(rscript="/usr/bin/Rscript").render([], FigureSpec(format="svg"), out)
+    rlib = seen["cmd"][seen["cmd"].index("--rlib") + 1]
+    assert rlib.endswith("/CMIG/.Rlib")

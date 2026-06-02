@@ -98,6 +98,7 @@ def test_taxonomy_model_checksum_tracks_model_bytes(tmp_path):
     tax_path = tmp_path / "taxonomy.csv"
     taxonomy.to_csv(tax_path, index=False)
     first = _taxonomy_model_checksum(taxonomy, tax_path)
+    assert len(first.removeprefix("sha256:")) == 64
     model.write_text("<model>b</model>")
     assert _taxonomy_model_checksum(taxonomy, tax_path) != first
 

@@ -385,8 +385,9 @@ def solve_host(
         # lumen uptake 한계: 가용 대사체만 EX_<met>_lumen lower_bound = -available 개방.
         for met, avail in lumen_availability.items():
             ex = f"EX_{met}_lumen"
+            flux = _availability_flux(avail, label=f"lumen_availability[{met!r}]")
             if ex in ex_ids:
-                host.reactions.get_by_id(ex).lower_bound = -abs(avail)
+                host.reactions.get_by_id(ex).lower_bound = -flux
         # viability: ATP maintenance ≥ 임계 (명시 강제). upper < 임계면 동반 상향(bound 역전 방지).
         if maintenance_reaction in ex_ids:
             mr = host.reactions.get_by_id(maintenance_reaction)
@@ -423,7 +424,13 @@ def solve_host(
         from cobra.util.solver import linear_reaction_coefficients
         coeffs = linear_reaction_coefficients(host)
         biomass = sum(float(c) * fluxes.get(r.id, 0.0) for r, c in coeffs.items())
-        return HostSolveResult(True, status, biomass, interface, lumen_uptake)
+        return HostSolveResult(
+            biomass > 1e-9,
+            status,
+            biomass,
+            interface,
+            lumen_uptake,
+        )
 
 
 def run_host_microbe(

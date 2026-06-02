@@ -56,6 +56,7 @@ def test_medium_checksum_deterministic_and_distinct():
     assert medium_checksum(a) == medium_checksum(a)          # 결정적
     assert medium_checksum(a) != medium_checksum(b)          # 다른 medium → 다른 checksum
     assert medium_checksum(None) == "micom_default_medium"   # default sentinel
+    assert len(medium_checksum(a).removeprefix("medium:")) == 64
 
 
 # ── micom 통합 ───────────────────────────────────────────────────────────────

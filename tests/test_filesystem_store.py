@@ -48,6 +48,7 @@ def test_record_run_then_cache_lookup_hit(tmp_path):
     assert row["flux_solver"] == "gurobi"
     assert row["micom_version"] == "0.39.0"
     assert (tmp_path / "abc123").is_dir()
+    assert row["run_dir"] == str(tmp_path / "abc123")
 
 
 def test_cache_lookup_miss_returns_none(tmp_path):

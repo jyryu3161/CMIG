@@ -49,6 +49,26 @@ def _bigg_host_model():
     return model
 
 
+def _zero_biomass_maintenance_host():
+    from cobra import Metabolite, Model, Reaction
+
+    atp = Metabolite("atp_c", compartment="c")
+    biomass = Metabolite("biomass_c", compartment="c")
+    model = Model("zero_biomass_host")
+    src = Reaction("ATP_SRC")
+    src.add_metabolites({atp: 1})
+    src.bounds = (0, 1000)
+    atpm = Reaction("ATPM")
+    atpm.add_metabolites({atp: -1})
+    atpm.bounds = (0, 1000)
+    bio = Reaction("BIOMASS_host")
+    bio.add_metabolites({biomass: -1})
+    bio.bounds = (0, 1000)
+    model.add_reactions([src, atpm, bio])
+    model.objective = "BIOMASS_host"
+    return model
+
+
 def test_host_viable_on_microbial_scfa():
     """SC-HM1: 미생물 SCFA(lumen ac+but) → host viable + biomass>0 + SCFA 흡수."""
     r = solve_host(build_host_model(), lumen_availability_from_pair(),
@@ -94,6 +114,19 @@ def test_host_non_viable_explicit():
     r = solve_host(build_host_model(), {}, maintenance_flux=500.0, solver="gurobi")
     assert not r.viable and r.status == "infeasible"
     assert r.diagnostic is not None and "infeasible" in r.diagnostic
+
+
+def test_host_feasible_zero_objective_is_not_viable():
+    """Optimal but zero objective is non-viable across host solve paths."""
+    result = solve_host(_zero_biomass_maintenance_host(), {}, maintenance_flux=1.0)
+    assert result.status == "optimal"
+    assert result.biomass == 0.0
+    assert result.viable is False
+
+
+def test_host_rejects_negative_lumen_availability():
+    with pytest.raises(ValueError, match="non-negative"):
+        solve_host(build_host_model(), {"ac": -1.0}, solver="gurobi")
 
 
 def test_host_not_in_community_objective():

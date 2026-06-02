@@ -124,4 +124,4 @@ def medium_checksum(spec: MediumSpec | None) -> str:
         {k: round(float(v), _DECIMALS) for k, v in sorted(spec.uptake.items())},
         sort_keys=True, ensure_ascii=True, allow_nan=False,
     )
-    return "medium:" + hashlib.sha256(payload.encode()).hexdigest()[:24]
+    return "medium:" + hashlib.sha256(payload.encode()).hexdigest()

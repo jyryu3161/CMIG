@@ -306,6 +306,7 @@ def test_host_microbe_run_button_uses_product_command(monkeypatch, tmp_path):
     w.host_view.model_dir_input.setText(str(tmp_path / "models"))
     w.host_view.out_dir_input.setText(str(tmp_path / "out"))
     w.host_view.recursive_check.setChecked(True)
+    w.host_view.include_currency_check.setChecked(True)
     jid = w.run_host_microbe_bigg()
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
@@ -313,6 +314,7 @@ def test_host_microbe_run_button_uses_product_command(monkeypatch, tmp_path):
     assert seen["argv"][seen["argv"].index("--host") + 1].endswith("Recon3D.xml")
     assert seen["argv"][seen["argv"].index("--model-dir") + 1].endswith("models")
     assert "--recursive" in seen["argv"]
+    assert "--include-currency-metabolites" in seen["argv"]
     assert w.tabs.currentWidget() is w.host_view
     assert w.host_view.cross_table.rowCount() == 1
     assert w.host_view.network_payload is not None

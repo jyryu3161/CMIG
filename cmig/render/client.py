@@ -19,9 +19,14 @@ from typing import Any
 
 # cmig/render/client.py → cmig/render_r/figure.R
 R_SCRIPT = Path(__file__).resolve().parent.parent / "render_r" / "figure.R"
+_RLIB = Path(__file__).resolve().parents[2] / ".Rlib"
 
 PROFILE_COLUMNS = ("metabolite", "net_flux", "ui_flux", "label")
 SUPPORTED_FORMATS = frozenset({"svg", "tiff", "pdf", "eps"})
+PROFILE_LABEL_COLORS = {
+    "secretion": "#d62728",
+    "uptake": "#1f77b4",
+}
 
 
 class RenderError(RuntimeError):
@@ -83,7 +88,7 @@ class RenderClient:
                 "--data", str(data_csv), "--out", str(out), "--format", spec.format,
                 "--width", str(spec.width_in), "--height", str(spec.height_in),
                 "--dpi", str(spec.dpi), "--title", spec.title, "--seed", str(spec.seed),
-                "--rlib", str(Path(".Rlib").resolve()),
+                "--rlib", str(_RLIB),
             ]
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if proc.returncode != 0 or not out.exists():
@@ -104,7 +109,10 @@ class RenderClient:
         ordered = sorted(rows, key=lambda r: r.get("net_flux") or 0.0)
         labels = [r["metabolite"] for r in ordered]
         vals = [r.get("net_flux") or 0.0 for r in ordered]
-        colors = ["#31a354" if v > 0 else "#756bb1" for v in vals]
+        colors = []
+        for row in ordered:
+            label = _profile_label(row)
+            colors.append("#7f7f7f" if label is None else PROFILE_LABEL_COLORS[label])
         fig, ax = plt.subplots(figsize=(spec.width_in, spec.height_in), dpi=spec.dpi)
         ax.barh(labels, vals, color=colors)
         ax.set_title(spec.title)
@@ -115,6 +123,18 @@ class RenderClient:
         finally:
             plt.close(fig)
         return out
+
+
+def _profile_label(row: dict[str, Any], *, eps: float = 1e-12) -> str | None:
+    label = row.get("label")
+    if label in PROFILE_LABEL_COLORS:
+        return str(label)
+    flux = float(row.get("net_flux") or 0.0)
+    if flux > eps:
+        return "secretion"
+    if flux < -eps:
+        return "uptake"
+    return None
 
 
 _CSV_FLOAT_COLS = ("net_flux", "ui_flux")

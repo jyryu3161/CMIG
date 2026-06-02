@@ -7,6 +7,7 @@ not download or curate external models.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,14 +62,22 @@ def taxonomy_from_model_dir(model_dir: str | Path, *, recursive: bool = False) -
     import pandas as pd
 
     rows: list[dict[str, object]] = []
-    seen: dict[str, int] = {}
+    bases: dict[str, list[Path]] = {}
     for model_path in discover_model_files(model_dir, recursive=recursive):
-        base = member_id_from_path(model_path)
-        count = seen.get(base, 0)
-        seen[base] = count + 1
-        member_id = base if count == 0 else f"{base}_{count + 1}"
-        rows.append({"id": member_id, "file": str(model_path), "abundance": 1.0})
+        bases.setdefault(member_id_from_path(model_path), []).append(model_path)
+    for base in sorted(bases):
+        paths = bases[base]
+        for model_path in paths:
+            member_id = base
+            if len(paths) > 1:
+                member_id = f"{base}_{_path_digest(model_path)}"
+            rows.append({"id": member_id, "file": str(model_path), "abundance": 1.0})
     return pd.DataFrame.from_records(rows)
+
+
+def _path_digest(path: Path) -> str:
+    """Short stable suffix for filenames that sanitize to the same member id."""
+    return hashlib.sha1(path.name.encode("utf-8")).hexdigest()[:8]
 
 
 @dataclass(frozen=True)

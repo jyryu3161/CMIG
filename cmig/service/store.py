@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from cmig.core.engine import SolveResult
@@ -43,8 +44,9 @@ class FileSystemStore:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._db = self.root / "index.sqlite"
-        with self._connect() as cx:
-            cx.executescript(_SCHEMA)
+        with closing(self._connect()) as cx:
+            with cx:
+                cx.executescript(_SCHEMA)
 
     def _connect(self) -> sqlite3.Connection:
         cx = sqlite3.connect(self._db)
@@ -62,26 +64,27 @@ class FileSystemStore:
         run_dir = self.root / run_hash
         run_dir.mkdir(parents=True, exist_ok=True)
         obj = result.objective if result.objective == result.objective else None  # NaN→NULL
-        with self._connect() as cx:
-            cx.execute(
-                "INSERT OR IGNORE INTO runs(run_hash,created_utc,run_dir,status,objective,"
-                "growth_solver,flux_solver,micom_version,diagnostic) VALUES(?,?,?,?,?,?,?,?,?)",
-                (
-                    run_hash,
-                    datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    run_hash,
-                    result.status,
-                    obj,
-                    result.growth_solver,
-                    result.flux_solver,
-                    micom_version,
-                    result.diagnostic,
-                ),
-            )
+        with closing(self._connect()) as cx:
+            with cx:
+                cx.execute(
+                    "INSERT OR IGNORE INTO runs(run_hash,created_utc,run_dir,status,objective,"
+                    "growth_solver,flux_solver,micom_version,diagnostic) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (
+                        run_hash,
+                        datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        str(run_dir),
+                        result.status,
+                        obj,
+                        result.growth_solver,
+                        result.flux_solver,
+                        micom_version,
+                        result.diagnostic,
+                    ),
+                )
 
     def cache_lookup_by_run_hash(self, run_hash: str) -> dict[str, object] | None:
         """cross-session dedup probe — 기록된 meta row(dict) 또는 None. 재solve·재계산 없음."""
-        with self._connect() as cx:
+        with closing(self._connect()) as cx:
             cx.row_factory = sqlite3.Row
             row = cx.execute(
                 "SELECT * FROM runs WHERE run_hash=?", (run_hash,),

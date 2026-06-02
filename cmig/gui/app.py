@@ -429,6 +429,7 @@ class CmigMainWindow(QMainWindow):
         )
         self.host_view.load_host_result(host_result)
         self.host_view.load_impact(impact)
+        self.host_view.show_currency_metabolites = self.host_view.include_currency_check.isChecked()
         self.host_view.load_bigg_summary(payload, run_dir=run_dir)
         self.explorer.add_run(run_dir.name)
         self.tabs.setCurrentWidget(self.host_view)
@@ -570,6 +571,7 @@ class CmigMainWindow(QMainWindow):
 
         jid = self.submit_job("host_microbe_bigg", _job)
         self._host_microbe_jobs[jid] = out_dir
+        self.host_view.show_currency_metabolites = bool(request["include_currency_metabolites"])
         self.host_view.set_running(jid)
         self.statusBar().showMessage(f"Started host-microbe run: {jid}")
         return jid

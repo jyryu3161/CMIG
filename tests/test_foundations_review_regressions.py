@@ -70,6 +70,23 @@ def test_af1_artifacts_omit_matrix_when_absent(tmp_path):
     assert "matrix.parquet" not in json.loads(mp.read_text())["artifacts"]
 
 
+def test_write_solve_output_removes_stale_known_artifacts(tmp_path):
+    """Reusing an output directory must not leave artifacts from a previous run."""
+    from cmig.golden_fixture import _run_hash_components, solve
+    from cmig.io.solve_output import write_solve_output
+
+    result, bundle = solve("gurobi")
+    bundle.matrix = pa.table({"x": [1.0]})
+    write_solve_output(bundle, _run_hash_components(result), tmp_path)
+    assert (tmp_path / "matrix.parquet").exists()
+
+    result2, bundle2 = solve("gurobi")
+    write_solve_output(bundle2, _run_hash_components(result2), tmp_path)
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert "matrix.parquet" not in manifest["artifacts"]
+    assert not (tmp_path / "matrix.parquet").exists()
+
+
 def test_write_solve_output_manifest_is_publish_commit_marker(tmp_path, monkeypatch):
     pytest.importorskip("micom")
     import cmig.io.solve_output as solve_output

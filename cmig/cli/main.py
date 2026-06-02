@@ -1182,7 +1182,7 @@ def _taxonomy_model_checksum(taxonomy: Any, tax_path: Path) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _parse_member_sets(raw: str | None) -> list[str | None]:

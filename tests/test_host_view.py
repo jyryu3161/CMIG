@@ -87,3 +87,21 @@ def test_host_microbe_network_payload_has_transfer_edges():
     assert {"microbiome", "host", "met:ac"} <= ids
     assert "met:h2o" not in ids
     assert {"secretion", "uptake", "cross_feeding"} <= etypes
+
+
+def test_host_microbe_network_payload_can_include_currency_metabolites():
+    payload = host_microbe_network_payload(
+        {
+            "microbial_secretion": {"h2o": 3.0},
+            "host": {"lumen_uptake": {}},
+            "microbe_to_host": {},
+            "unused_secretion": {"h2o": 3.0},
+        },
+        include_currency_metabolites=True,
+    )
+    ids = {
+        element["data"]["id"]
+        for element in payload["elements"]
+        if "source" not in element["data"]
+    }
+    assert "met:h2o" in ids

@@ -66,7 +66,7 @@ def distribution_summary(groups: Mapping[str, Sequence[float]]) -> list[GroupSum
         out.append(GroupSummary(
             group=g, n=n, median=float(statistics.median(vals)), iqr=q3 - q1,
             mean=float(statistics.fmean(vals)),
-            sd=float(statistics.stdev(vals)) if n > 1 else 0.0,
+            sd=float(statistics.stdev(vals)) if n > 1 else float("nan"),
         ))
     return out
 

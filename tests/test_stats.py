@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 
@@ -34,6 +35,8 @@ def test_distribution_summary():
     by = {g.group: g for g in s}
     assert by["low"].n == 5 and abs(by["low"].median - 1.0) < 1e-9
     assert by["high"].mean > by["low"].mean
+    singleton = distribution_summary({"one": [1.0]})[0]
+    assert math.isnan(singleton.sd)
 
 
 def test_effect_sizes():
@@ -133,6 +136,17 @@ def test_pca_and_kmeans():
     assert len(labels) == 20 and len(set(labels)) == 2
 
 
+def test_embed_rejects_invalid_small_shapes():
+    pytest.importorskip("sklearn")
+    import numpy as np
+
+    from cmig.core.stats_embed import kmeans_cluster, pca_embed
+    with pytest.raises(ValueError, match="n_components"):
+        pca_embed(np.ones((1, 5)), n_components=2)
+    with pytest.raises(ValueError, match="KMeans k"):
+        kmeans_cluster(np.ones((2, 3)), k=3)
+
+
 def test_umap_embed():
     """SC-ST8 (5c): UMAP 임베딩 shape."""
     pytest.importorskip("umap")
@@ -143,3 +157,12 @@ def test_umap_embed():
     mat = np.vstack([rng.randn(15, 6), rng.randn(15, 6) + 6])
     emb = umap_embed(mat, n_components=2)
     assert emb.coords.shape == (30, 2)
+
+
+def test_umap_rejects_too_few_samples():
+    pytest.importorskip("umap")
+    import numpy as np
+
+    from cmig.core.stats_embed import umap_embed
+    with pytest.raises(ValueError, match="at least 3 samples"):
+        umap_embed(np.ones((2, 4)), n_components=2)
