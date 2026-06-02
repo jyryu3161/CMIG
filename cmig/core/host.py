@@ -13,6 +13,7 @@ sign 단일 진입점(sign.convert)으로 방향 라벨. cobra 위임(자체 LP 
 from __future__ import annotations
 
 import enum
+import math
 import time
 import tracemalloc
 from dataclasses import dataclass, field
@@ -129,6 +130,16 @@ def _met_from_bigg_exchange(exchange_id: str, *, suffix: str = "_e") -> str:
     return s
 
 
+def _availability_flux(value: float, *, label: str) -> float:
+    """Validate a non-negative finite uptake availability value."""
+    if isinstance(value, bool):
+        raise ValueError(f"{label} availability must be numeric, not bool")
+    flux = float(value)
+    if not math.isfinite(flux) or flux < 0.0:
+        raise ValueError(f"{label} availability must be finite and non-negative")
+    return flux
+
+
 def classify_host_exchanges(fluxes: dict[str, float]) -> list[InterfaceFlux]:
     """host exchange flux → 2-interface sign 분류(sign.convert 단일 진입점)."""
     out: list[InterfaceFlux] = []
@@ -243,22 +254,36 @@ def solve_bigg_host(
                 if str(reaction.id).startswith("EX_") and reaction.lower_bound < 0:
                     reaction.lower_bound = 0.0
 
-        def apply_availability(key: str, value: float) -> None:
+        exchange_availability: dict[str, float] = {}
+        microbial_caps: dict[str, float] = {}
+
+        def add_availability(key: str, value: float, *, label: str) -> tuple[str | None, float]:
             rid = key if key.startswith("EX_") else _bigg_exchange_id(key, suffix=exchange_suffix)
+            flux = _availability_flux(value, label=label)
             if rid in exchange_ids:
-                host.reactions.get_by_id(rid).lower_bound = -abs(float(value))
+                exchange_availability[rid] = (
+                    exchange_availability.get(rid, 0.0) + flux
+                )
+                return rid, flux
+            return None, flux
 
         for key, value in host_medium.items():
-            apply_availability(key, value)
+            add_availability(str(key), value, label=f"host_medium[{key!r}]")
         excluded = set(exclude_metabolites or set())
         matched: set[str] = set()
         for met, value in microbial_availability.items():
             if met in excluded:
                 continue
-            rid = _bigg_exchange_id(met, suffix=exchange_suffix)
-            if rid in exchange_ids:
-                host.reactions.get_by_id(rid).lower_bound = -abs(float(value))
+            rid, flux = add_availability(
+                met,
+                value,
+                label=f"microbial_availability[{met!r}]",
+            )
+            if rid is not None:
+                microbial_caps[met] = microbial_caps.get(met, 0.0) + flux
                 matched.add(met)
+        for rid, availability in exchange_availability.items():
+            host.reactions.get_by_id(rid).lower_bound = -availability
 
         sol = host.optimize()
         status = str(sol.status)
@@ -290,7 +315,10 @@ def solve_bigg_host(
                 label=signed.label.value,
             ))
             if met in matched and signed.label is Label.UPTAKE:
-                lumen_uptake[met] = -flux
+                microbial_cap = microbial_caps.get(met, 0.0)
+                transfer = min(-flux, microbial_cap)
+                if transfer > 1e-6:
+                    lumen_uptake[met] = transfer
         return HostSolveResult(
             viable=status == "optimal" and objective_value > 1e-9,
             status=status,

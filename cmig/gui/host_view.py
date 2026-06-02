@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-_IFACE_COLOR = {"lumen": "#2c7fb8", "blood": "#d95f0e"}
+_IFACE_COLOR = {"lumen": "#2c7fb8", "blood": "#d95f0e", "bigg_external": "#2b8cbe"}
 _LABEL_COLOR = {"secretion": "#31a354", "uptake": "#756bb1"}
 
 

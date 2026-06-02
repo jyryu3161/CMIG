@@ -127,6 +127,31 @@ def test_bigg_host_direct_coupling_uses_shared_ids():
     assert any(f.exchange_id == "EX_but_e" for f in res.interface_fluxes)
 
 
+def test_bigg_host_background_medium_does_not_inflate_microbe_transfer():
+    """Background host medium can add uptake capacity, but microbial transfer remains capped."""
+    res = solve_bigg_host(
+        _bigg_host_model(),
+        {"but": 4.0},
+        host_medium={"but": 10.0, "o2": 100.0},
+        solver="gurobi",
+    )
+    assert res.status == "optimal"
+    assert abs(res.lumen_uptake.get("but", 0.0) - 4.0) < 1e-6
+    total_but = next(f for f in res.interface_fluxes if f.exchange_id == "EX_but_e")
+    assert abs(total_but.flux + 14.0) < 1e-6
+
+
+def test_bigg_host_rejects_invalid_availability():
+    """Negative/NaN-style availability must fail instead of being abs() corrected."""
+    with pytest.raises(ValueError, match="non-negative"):
+        solve_bigg_host(
+            _bigg_host_model(),
+            {"but": -4.0},
+            host_medium={"o2": 20.0},
+            solver="gurobi",
+        )
+
+
 def test_run_host_microbe_end_to_end():
     """SC-HI2: end-to-end — 실 micom community(synthetic pair) 분비 → host (orphan 아님)."""
     pytest.importorskip("micom")

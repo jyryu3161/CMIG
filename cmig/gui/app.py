@@ -12,9 +12,11 @@ JobRunner.poll 로 실 job 상태를 표시.
 
 from __future__ import annotations
 
+import csv
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from PySide6.QtCore import QObject, Qt, QTimer
@@ -41,6 +43,7 @@ from cmig.gui.builder import (
     SearchView,
 )
 from cmig.gui.editors import MediumEditor, ModelManagerPanel
+from cmig.gui.host_view import HostImpactView
 from cmig.gui.views import ExternalProfileView, SweepView
 from cmig.service import JobRunner, JobStatus
 
@@ -153,6 +156,7 @@ class CmigMainWindow(QMainWindow):
         self.sandbox_view = ConstraintSandboxView()
         self.scenario_compare = ScenarioCompareView()
         self.search_view = SearchView()
+        self.host_view = HostImpactView()
         for label, widget in [
             ("Models", self.model_manager),
             ("Community", self.community_builder),
@@ -162,6 +166,7 @@ class CmigMainWindow(QMainWindow):
             ("Sandbox", self.sandbox_view),
             ("Compare", self.scenario_compare),
             ("Search", self.search_view),
+            ("Host", self.host_view),
         ]:
             self.tabs.addTab(widget, label)
         self.central_stack.addWidget(self.tabs)
@@ -301,6 +306,9 @@ class CmigMainWindow(QMainWindow):
         from cmig.gui.graph_data import graph_payload
 
         run_dir = Path(path)
+        if (run_dir / "host_microbe_bigg_summary.json").exists():
+            self.load_host_microbe_bigg_dir(run_dir)
+            return
         try:
             bundle = TidyBundle.read(run_dir)
         except Exception as e:
@@ -317,6 +325,71 @@ class CmigMainWindow(QMainWindow):
         run_hash = None if self.current_manifest is None else self.current_manifest.get("run_hash")
         suffix = "" if run_hash is None else f" (run_hash {str(run_hash)[:12]})"
         self.statusBar().showMessage(f"Loaded run: {run_dir}{suffix}")
+
+    def load_host_microbe_bigg_dir(self, path: str | Path) -> bool:
+        """Load `cmig host-microbe-bigg` outputs into the Host tab."""
+        from cmig.core.host import InterfaceFlux
+        from cmig.core.host_impact import HostImpact
+
+        run_dir = Path(path)
+        summary_path = run_dir / "host_microbe_bigg_summary.json"
+        if not summary_path.exists():
+            self.statusBar().showMessage(f"Host-microbe summary not found: {summary_path}")
+            return False
+        try:
+            payload = json.loads(summary_path.read_text())
+            host_payload = payload.get("host", {})
+            transfer = {
+                str(met): float(value)
+                for met, value in dict(payload.get("microbe_to_host", {})).items()
+            }
+            uptake_rows: list[InterfaceFlux] = []
+            uptake_path = run_dir / "host_uptake.csv"
+            if uptake_path.exists():
+                with open(uptake_path, newline="") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        met = str(row["metabolite"])
+                        uptake = float(row["uptake_flux"])
+                        uptake_rows.append(InterfaceFlux(
+                            exchange_id=f"EX_{met}_e",
+                            interface="bigg_external",
+                            metabolite=met,
+                            flux=-uptake,
+                            label="uptake",
+                        ))
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as e:
+            self.statusBar().showMessage(f"Host-microbe load failed: {e}")
+            return False
+
+        host_result = SimpleNamespace(
+            viable=bool(host_payload.get("viable", False)),
+            status=str(host_payload.get("status", "unknown")),
+            biomass=float(host_payload.get("objective_value") or 0.0),
+            interface_fluxes=uptake_rows,
+            lumen_uptake={
+                str(met): float(value)
+                for met, value in dict(host_payload.get("lumen_uptake", {})).items()
+            },
+        )
+        impact = HostImpact(
+            microbe_to_host=transfer,
+            unused_secretion={
+                str(met): float(value)
+                for met, value in dict(payload.get("unused_secretion", {})).items()
+            },
+            host_viable=host_result.viable,
+            host_biomass=host_result.biomass,
+        )
+        self.host_view.load_host_result(host_result)
+        self.host_view.load_impact(impact)
+        self.explorer.add_run(run_dir.name)
+        self.tabs.setCurrentWidget(self.host_view)
+        self.statusBar().showMessage(
+            f"Loaded host-microbe BiGG run: {run_dir} "
+            f"({len(transfer)} transferred metabolites)"
+        )
+        return True
 
     def run_fixture(self, out_dir: str | Path, *, solver: str = "gurobi") -> str:
         """GUI 버튼용 fixture solve. JobRunner 로 제출해 Qt main thread 를 막지 않는다."""

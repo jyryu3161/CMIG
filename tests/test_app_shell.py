@@ -78,6 +78,31 @@ def test_load_run_dir_updates_profile_and_explorer(tmp_path):
     assert w.tabs.currentWidget() is w.profile_view
 
 
+def test_load_host_microbe_bigg_dir_updates_host_tab(tmp_path):
+    """Open Run can load host-microbe BiGG outputs into the Host tab."""
+    import json
+
+    _app()
+    (tmp_path / "host_microbe_bigg_summary.json").write_text(json.dumps({
+        "host": {
+            "status": "optimal",
+            "viable": True,
+            "objective_value": 12.5,
+            "lumen_uptake": {"ac": 1.25},
+        },
+        "microbe_to_host": {"ac": 1.25},
+        "unused_secretion": {},
+    }))
+    (tmp_path / "host_uptake.csv").write_text("metabolite,uptake_flux\nac,1.25\n")
+    w = build_main_window()
+    assert w.load_host_microbe_bigg_dir(tmp_path) is True
+    assert w.tabs.currentWidget() is w.host_view
+    assert w.host_view.iface_table.rowCount() == 1
+    assert w.host_view.cross_table.rowCount() == 1
+    assert w.host_view.cross_table.item(0, 0).text() == "ac"
+    assert w.explorer.topLevelItem(2).child(0).text(0) == tmp_path.name
+
+
 def test_import_model_file_updates_model_manager(monkeypatch):
     from cmig.io.model_import import ModelSummary
 
