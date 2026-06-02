@@ -91,6 +91,7 @@ class EngineService:
         namespace_decisions: list[NamespaceDecision] | None = None,
         strict_medium: bool = True,
         fva: bool = False,
+        fva_metabolites: list[str] | None = None,
         targets: str | None = None,
         out_dir: str | Path,
         bounds: dict[str, list[float]] | None = None,
@@ -130,7 +131,16 @@ class EngineService:
             if fva:
                 from cmig.core.fva import attach_community_fva_to_bundle, community_fva
                 # AE-1: 실제 요청 solver 전달(미전달 시 community solver 불일치 → 오표기).
-                ranges = community_fva(community, fraction_of_optimum=tradeoff_f, solver=solver)
+                reactions = (
+                    None if fva_metabolites is None
+                    else [f"EX_{met}_m" for met in fva_metabolites]
+                )
+                ranges = community_fva(
+                    community,
+                    reactions=reactions,
+                    fraction_of_optimum=tradeoff_f,
+                    solver=solver,
+                )
                 attach_community_fva_to_bundle(bundle, ranges)
             tsum = self._target_summary_or_none(bundle, targets)
             components = build_run_components(

@@ -46,6 +46,26 @@ def _bundle():
     return build_tidy(r)
 
 
+def _multi_crossfeeding_bundle():
+    r = SolveResult(
+        objective=1.2,
+        member_growth={"A": 0.5, "B": 0.4, "C": 0.3},
+        abundances={"A": 0.34, "B": 0.33, "C": 0.33},
+        external_exchange={"ac": 1.0, "but": 2.0, "lac__L": 0.5},
+        member_exchange={
+            "A": {"ac": 4.0, "but": 3.0, "lac__L": -1.0},
+            "B": {"ac": -2.0, "but": -1.0, "lac__L": 2.5},
+            "C": {"ac": -1.0, "but": 2.0, "lac__L": -1.5},
+        },
+        status="optimal",
+        flux_report_status="full",
+        growth_solver="gurobi",
+        flux_solver="gurobi",
+        members=["A", "B", "C"],
+    )
+    return build_tidy(r)
+
+
 @pytest.fixture(scope="module")
 def qapp():
     app = QApplication.instance() or QApplication([])
@@ -110,6 +130,24 @@ def test_cytoscape_receives_all_nodes(qapp):
     e_all = _run_js(view, "cy ? cy.edges().length : -1")
     assert int(e_all) == bundle.edges.num_rows, "edge filter did not restore all edges"
     assert view.edge_table.rowCount() == bundle.edges.num_rows
+
+
+def test_graph_aggregates_parallel_crossfeeding_edges(qapp):
+    """Multi-member graph uses aggregate edges while the table keeps metabolite detail."""
+    bundle = _multi_crossfeeding_bundle()
+    detail_cf = [
+        r for r in bundle.edges.to_pylist()
+        if r["edge_type"] == "cross_feeding"
+    ]
+    assert len(detail_cf) > 3
+
+    view = InteractionGraphView()
+    view.resize(640, 480)
+    _wait_loaded(view)
+    view.set_bundle(bundle)
+    graph_edges = _run_js(view, "cy ? cy.edges().map(e => e.data()).length : -1")
+    assert int(graph_edges) < len(detail_cf)
+    assert view.edge_table.rowCount() == min(len(detail_cf), view.top_edges_spin.value())
 
 
 def test_gate_blocked_reflected_in_dom(qapp):

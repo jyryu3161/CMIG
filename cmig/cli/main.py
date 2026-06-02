@@ -113,7 +113,8 @@ def _cmd_solve(args: argparse.Namespace) -> int:
             medium_path=args.medium,
             namespace_decisions=namespace_decisions,
             strict_medium=not args.allow_unknown_medium,
-            fva=args.fva,
+            fva=args.fva or args.fva_metabolites is not None,
+            fva_metabolites=_parse_optional_csv_strings(args.fva_metabolites),
             targets=args.targets,
             out_dir=args.out,
             bounds=_load_bounds_json(args.bounds) if args.bounds else None,
@@ -663,6 +664,12 @@ def _parse_csv_strings(raw: str, *, flag: str) -> list[str]:
     return values
 
 
+def _parse_optional_csv_strings(raw: str | None) -> list[str] | None:
+    if raw is None:
+        return None
+    return _parse_csv_strings(raw, flag="comma-separated values")
+
+
 def _parse_optional_paths(raw: str | None, *, flag: str) -> list[str | None]:
     if raw is None:
         return [None]
@@ -864,6 +871,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     out = Path(args.out)
     run_root = out / "runs"
     rows: list[SweepRow] = []
+    profile_rows: list[dict[str, Any]] = []
     service = EngineService()
     try:
         namespace_decisions = (
@@ -893,6 +901,8 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
                 strict_medium=not args.allow_unknown_medium,
                 out_dir=cond_dir,
                 bounds=bounds,
+                fva=args.fva or args.fva_metabolites is not None,
+                fva_metabolites=_parse_optional_csv_strings(args.fva_metabolites),
             )
             status = "ok" if outcome.status == "ok" else "failed"
             rows.append(
@@ -907,22 +917,92 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
                     cache_hit=False,
                 )
             )
+            if outcome.bundle is not None:
+                for profile in outcome.bundle.profile.to_pylist():
+                    profile_rows.append({
+                        "condition_id": cond.condition_id,
+                        "axis_medium_variant": None if medium is None else str(medium),
+                        "axis_tradeoff_f": float(cond.axis_values["tradeoff_f"]),
+                        "axis_solver": solver,
+                        "run_hash": outcome.run_hash or "",
+                        "status": status,
+                        "metabolite": str(profile.get("metabolite", "")),
+                        "net_flux": profile.get("net_flux"),
+                        "ui_flux": profile.get("ui_flux"),
+                        "label": profile.get("label"),
+                        "fva_lo": profile.get("fva_lo"),
+                        "fva_hi": profile.get("fva_hi"),
+                    })
     except (ValueError, GateBlockedError, OSError) as e:
         print(str(e), file=sys.stderr)
         return 2
     out.mkdir(parents=True, exist_ok=True)
     write_sweep_parquet(rows, out / "sweep.parquet")
+    _write_sweep_profiles(profile_rows, out / "sweep_profiles.parquet")
+    _write_medium_summary(rows, out / "medium_summary.csv")
     _write_json_or_print(
         {
             "status": "ok",
             "n_runs": len(rows),
             "metric": args.metric,
-            "artifacts": ["sweep.parquet", "sweep_summary.json", "runs/"],
+            "fva": bool(args.fva or args.fva_metabolites is not None),
+            "artifacts": [
+                "sweep.parquet",
+                "sweep_profiles.parquet",
+                "medium_summary.csv",
+                "sweep_summary.json",
+                "runs/",
+            ],
         },
         args.out,
         "sweep_summary.json",
     )
     return 0
+
+
+def _write_sweep_profiles(rows: list[dict[str, Any]], path: Path) -> None:
+    """Condition-level profile long table for medium/diet sweep and FVA review."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    schema = pa.schema([
+        ("condition_id", pa.string()),
+        ("axis_medium_variant", pa.string()),
+        ("axis_tradeoff_f", pa.float64()),
+        ("axis_solver", pa.string()),
+        ("run_hash", pa.string()),
+        ("status", pa.string()),
+        ("metabolite", pa.string()),
+        ("net_flux", pa.float64()),
+        ("ui_flux", pa.float64()),
+        ("label", pa.string()),
+        ("fva_lo", pa.float64()),
+        ("fva_hi", pa.float64()),
+    ])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)  # type: ignore[no-untyped-call]
+
+
+def _write_medium_summary(rows: list[Any], path: Path) -> None:
+    """Small CSV index for quickly plotting medium/diet growth responses."""
+    import pandas as pd
+
+    records = [
+        {
+            "condition_id": row.condition_id,
+            "medium_variant": row.axis_values.get("medium_variant"),
+            "tradeoff_f": row.axis_values.get("tradeoff_f"),
+            "solver": row.axis_values.get("solver"),
+            "value": row.value,
+            "metric": row.metric,
+            "run_hash": row.run_hash,
+            "status": row.status,
+            "cache_hit": row.cache_hit,
+        }
+        for row in rows
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame.from_records(records).to_csv(path, index=False)
 
 
 def _cmd_sandbox_fixture(args: argparse.Namespace) -> int:
@@ -991,6 +1071,11 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f", help="0<f≤1")
     sv.add_argument("--targets", default=None, help="target preset(scfa) → target_summary.json")
     sv.add_argument("--fva", action="store_true", help="community FVA → fva_lo/hi(gurobi)")
+    sv.add_argument(
+        "--fva-metabolites",
+        default=None,
+        help="comma-separated metabolites for targeted FVA, e.g. ac,etoh,glc__D",
+    )
     sv.add_argument("--bounds", default=None, help="reaction bounds JSON {reaction_id: [lo, hi]}")
     sv.add_argument("--out", required=True, help="산출 디렉터리")
     sv.set_defaults(func=_cmd_solve)
@@ -1109,6 +1194,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     us.add_argument("--namespace-decisions", default=None)
     us.add_argument("--allow-unknown-medium", action="store_true")
+    us.add_argument("--fva", action="store_true", help="include community FVA for each condition")
+    us.add_argument(
+        "--fva-metabolites",
+        default=None,
+        help="comma-separated metabolites for targeted FVA, e.g. ac,etoh,glc__D",
+    )
     us.add_argument("--metric", default="growth")
     us.add_argument("--out", required=True, help="산출 디렉터리")
     us.set_defaults(func=_cmd_sweep)

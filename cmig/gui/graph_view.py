@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -47,8 +48,21 @@ class InteractionGraphView(QWidget):
         self.cross_feeding_check = QCheckBox("Cross-feeding")
         self.secretion_check = QCheckBox("+ secretion")
         self.uptake_check = QCheckBox("− uptake")
-        for check in (self.cross_feeding_check, self.secretion_check, self.uptake_check):
+        self.aggregate_check = QCheckBox("Aggregate pairs")
+        self.aggregate_check.setChecked(True)
+        self.top_edges_spin = QSpinBox()
+        self.top_edges_spin.setRange(1, 500)
+        self.top_edges_spin.setValue(20)
+        self.top_edges_spin.setPrefix("Top ")
+        self.top_edges_spin.setSuffix(" edges")
+        for check in (
+            self.cross_feeding_check,
+            self.secretion_check,
+            self.uptake_check,
+            self.aggregate_check,
+        ):
             check.toggled.connect(self._apply_filters)
+        self.top_edges_spin.valueChanged.connect(self._apply_filters)
         self.edge_table = QTableWidget(0, 5)
         self.edge_table.setHorizontalHeaderLabels(
             ["Source", "Target", "Metabolite", "Type", "Flux"]
@@ -63,6 +77,8 @@ class InteractionGraphView(QWidget):
         controls.addWidget(self.cross_feeding_check)
         controls.addWidget(self.secretion_check)
         controls.addWidget(self.uptake_check)
+        controls.addWidget(self.aggregate_check)
+        controls.addWidget(self.top_edges_spin)
         controls.addStretch(1)
         layout.addLayout(controls)
         layout.addWidget(self._web)
@@ -85,7 +101,7 @@ class InteractionGraphView(QWidget):
     def _inject(self, payload: dict) -> None:
         self._web.page().runJavaScript(f"window.setGraph({json.dumps(payload)});")
 
-    def _filtered_payload(self) -> dict | None:
+    def _filtered_elements(self) -> list[dict] | None:
         if self._base_payload is None:
             return None
         edge_types: set[str] = set()
@@ -110,19 +126,70 @@ class InteractionGraphView(QWidget):
                 e for e in elements
                 if "source" in e["data"] or e["data"]["id"] in connected
             ]
-        payload = dict(self._base_payload)
-        payload["elements"] = elements
-        return payload
+        return elements
+
+    @staticmethod
+    def _edge_sort_key(edge: dict) -> tuple[bool, float]:
+        return (
+            edge.get("etype") != "cross_feeding",
+            -float(edge.get("weight") or 0.0),
+        )
+
+    def _graph_elements(self, elements: list[dict]) -> list[dict]:
+        nodes = [e for e in elements if "source" not in e["data"]]
+        edges = [e["data"] for e in elements if "source" in e["data"]]
+        if self.aggregate_check.isChecked():
+            grouped: dict[tuple[str, str, str], dict] = {}
+            counts: dict[tuple[str, str, str], int] = {}
+            for edge in edges:
+                key = (
+                    str(edge.get("source", "")),
+                    str(edge.get("target", "")),
+                    str(edge.get("etype", "")),
+                )
+                item = grouped.setdefault(
+                    key,
+                    {
+                        "id": f"agg-{len(grouped)}",
+                        "source": key[0],
+                        "target": key[1],
+                        "etype": key[2],
+                        "metabolite": "multiple",
+                        "weight": 0.0,
+                        "label": key[2],
+                    },
+                )
+                item["weight"] = float(item["weight"]) + float(edge.get("weight") or 0.0)
+                counts[key] = counts.get(key, 0) + 1
+            edges = []
+            for key, edge in grouped.items():
+                n = counts[key]
+                if n == 1:
+                    matching = next(
+                        e for e in elements
+                        if "source" in e["data"]
+                        and e["data"]["source"] == key[0]
+                        and e["data"]["target"] == key[1]
+                        and e["data"]["etype"] == key[2]
+                    )
+                    edge["metabolite"] = matching["data"].get("metabolite", "multiple")
+                else:
+                    edge["metabolite"] = f"{n} metabolites"
+                edges.append(edge)
+        edges.sort(key=self._edge_sort_key)
+        edges = edges[: self.top_edges_spin.value()]
+        connected = {
+            node_id
+            for edge in edges
+            for node_id in (edge["source"], edge["target"])
+        }
+        graph_nodes = [node for node in nodes if node["data"]["id"] in connected]
+        return graph_nodes + [{"data": edge} for edge in edges]
 
     def _refresh_edge_table(self, elements: list[dict]) -> None:
         edges = [e["data"] for e in elements if "source" in e["data"]]
-        edges.sort(
-            key=lambda e: (
-                e.get("etype") != "cross_feeding",
-                -float(e.get("weight") or 0.0),
-            )
-        )
-        rows = edges[:20]
+        edges.sort(key=self._edge_sort_key)
+        rows = edges[: self.top_edges_spin.value()]
         self.edge_table.setRowCount(len(rows))
         colors = {
             "cross_feeding": "#d95f0e",
@@ -144,10 +211,12 @@ class InteractionGraphView(QWidget):
                 self.edge_table.setItem(row, col, item)
 
     def _apply_filters(self) -> None:
-        payload = self._filtered_payload()
-        if payload is None:
+        elements = self._filtered_elements()
+        if elements is None or self._base_payload is None:
             return
-        self._refresh_edge_table(list(payload["elements"]))
+        self._refresh_edge_table(elements)
+        payload = dict(self._base_payload)
+        payload["elements"] = self._graph_elements(elements)
         if self._ready:
             self._inject(payload)
         else:

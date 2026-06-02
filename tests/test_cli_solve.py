@@ -117,6 +117,8 @@ def test_sweep_user_taxonomy_writes_runs(tmp_path):
     ])
     assert rc == 0
     assert (out / "sweep.parquet").exists()
+    assert (out / "sweep_profiles.parquet").exists()
+    assert (out / "medium_summary.csv").exists()
     assert (out / "runs" / "cond-0000" / "manifest.json").exists()
     assert json.loads((out / "sweep_summary.json").read_text())["n_runs"] == 1
 
@@ -150,6 +152,30 @@ def test_sweep_user_taxonomy_records_member_abundance_and_bounds_axes(tmp_path):
     assert row["axis_member_set"] == member_set
     assert row["axis_abundance"] == str(abundance)
     assert row["axis_bounds"] == str(bounds)
+
+
+def test_sweep_user_taxonomy_fva_writes_profile_ranges(tmp_path):
+    import pyarrow.parquet as pq
+
+    from cmig.golden_fixture import build_taxonomy
+
+    taxonomy = tmp_path / "taxonomy.csv"
+    build_taxonomy().to_csv(taxonomy, index=False)
+    out = tmp_path / "sweep"
+    rc = main([
+        "sweep",
+        "--taxonomy", str(taxonomy),
+        "--tradeoff-fs", "0.5",
+        "--solvers", "gurobi",
+        "--fva-metabolites", "ac",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    summary = json.loads((out / "sweep_summary.json").read_text())
+    assert summary["fva"] is True
+    profile_rows = pq.read_table(out / "sweep_profiles.parquet").to_pylist()
+    assert profile_rows
+    assert any(row["fva_lo"] is not None and row["fva_hi"] is not None for row in profile_rows)
 
 
 def test_sandbox_fixture_preview_and_commit(tmp_path):
