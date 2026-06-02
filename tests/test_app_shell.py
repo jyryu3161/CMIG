@@ -261,7 +261,7 @@ def test_sandbox_rejects_multiple_bounds_before_silent_ignore(monkeypatch):
     assert "one bound" in w.sandbox_view.status.text()
 
 
-def test_search_button_runs_job_and_loads_summary(monkeypatch):
+def test_search_button_runs_job_and_loads_summary(monkeypatch, tmp_path):
     import json
 
     import cmig.cli.main
@@ -282,6 +282,7 @@ def test_search_button_runs_job_and_loads_summary(monkeypatch):
         return 0
 
     monkeypatch.setattr(cmig.cli.main, "main", fake_main)
+    monkeypatch.chdir(tmp_path)
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
@@ -290,6 +291,7 @@ def test_search_button_runs_job_and_loads_summary(monkeypatch):
     w._poll_completed_jobs()
     assert w.search_view.table.rowCount() == 1
     assert w.tabs.currentWidget() is w.search_view
+    assert not (tmp_path / ".run").exists()
     runner.shutdown()
 
 

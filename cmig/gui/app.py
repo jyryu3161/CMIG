@@ -20,7 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from PySide6.QtCore import QObject, Qt, QTimer
+from PySide6.QtCore import QObject, QStandardPaths, Qt, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -64,6 +64,26 @@ I18N: dict[str, dict[str, str]] = {
         "ready": "Ready",
     },
 }
+
+
+def _search_temp_root() -> Path:
+    """Return an OS-managed temp root for GUI search outputs."""
+    candidates: list[Path] = []
+    qt_temp = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation)
+    if qt_temp:
+        candidates.append(Path(qt_temp))
+    candidates.append(Path(tempfile.gettempdir()))
+
+    last_error: OSError | None = None
+    for base in candidates:
+        root = base / "cmig"
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            last_error = exc
+            continue
+        return root
+    raise RuntimeError("Unable to create CMIG search temp directory") from last_error
 
 
 class ProjectExplorer(QTreeWidget):
@@ -641,9 +661,7 @@ class CmigMainWindow(QMainWindow):
                 raise RuntimeError("search output is not a JSON object")
             return payload
 
-        search_root = Path(".run")
-        search_root.mkdir(exist_ok=True)
-        out_dir = Path(tempfile.mkdtemp(prefix="cmig-search-", dir=search_root)).resolve()
+        out_dir = Path(tempfile.mkdtemp(prefix="cmig-search-", dir=_search_temp_root())).resolve()
         jid = self.submit_job("search_fixture", _job)
         self._search_jobs[jid] = out_dir
         self.search_view.run_btn.setEnabled(False)
