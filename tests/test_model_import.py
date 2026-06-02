@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +13,12 @@ pytest.importorskip("micom")
 import cobra  # noqa: E402
 import micom  # noqa: E402
 
+from cmig.core.model_pool import (  # noqa: E402
+    diagnose_model_pool,
+    discover_model_files,
+    member_id_from_path,
+    taxonomy_from_model_dir,
+)
 from cmig.io.model_import import (  # noqa: E402
     ModelImportError,
     ModelSummary,
@@ -93,3 +100,28 @@ def test_parse_failure_explicit(tmp_path):
     corrupt.write_text("<not valid sbml>")
     with pytest.raises(ModelImportError):
         import_model(corrupt)
+
+
+def test_model_pool_from_directory(tmp_path):
+    """User model folder -> deterministic MICOM taxonomy pool."""
+    (tmp_path / "A model.xml").write_text("<sbml/>")
+    (tmp_path / "B-model.sbml").write_text("<sbml/>")
+    (tmp_path / "notes.txt").write_text("ignore")
+    files = discover_model_files(tmp_path)
+    assert len(files) == 2
+    assert member_id_from_path(tmp_path / "A model.xml") == "A_model"
+    taxonomy = taxonomy_from_model_dir(tmp_path)
+    assert list(taxonomy["id"]) == ["A_model", "B_model"]
+    assert all(Path(p).is_absolute() for p in taxonomy["file"])
+
+
+def test_model_pool_diagnostics_detect_target_and_biomass():
+    import pandas as pd
+
+    taxonomy = pd.DataFrame([{"id": "ecoli", "file": _SBML}])
+    diag = diagnose_model_pool(taxonomy, "ac")
+    assert len(diag) == 1
+    assert diag[0].readable is True
+    assert diag[0].has_target_exchange is True
+    assert diag[0].n_biomass == 1
+    assert "EX_ac_e" in diag[0].matching_exchanges

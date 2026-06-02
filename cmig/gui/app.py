@@ -197,7 +197,13 @@ class CmigMainWindow(QMainWindow):
     def _connect_view_actions(self) -> None:
         self.sandbox_view.preview_btn.clicked.connect(self._run_sandbox_preview)
         self.sandbox_view.commit_btn.clicked.connect(self._run_sandbox_commit)
+        self.search_view.browse_pool_btn.clicked.connect(self._browse_search_model_dir)
         self.search_view.run_btn.clicked.connect(self.run_search_fixture)
+
+    def _browse_search_model_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Model Pool Folder")
+        if path:
+            self.search_view.model_dir_input.setText(path)
 
     def _import_model_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -344,29 +350,51 @@ class CmigMainWindow(QMainWindow):
         return False
 
     def run_search_fixture(self) -> str:
-        """Search 탭 입력값으로 fixture advanced search 를 background job 으로 실행."""
+        """Run fixture search or user model-pool search from the Search tab."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        targets = self.search_view.targets_input.text().strip() or "ac"
+        targets = self.search_view.targets_input.text().strip() or "but"
+        target = targets.split(",", 1)[0].strip() or "but"
+        model_dir = self.search_view.model_dir_input.text().strip()
         strategy = self.search_view.strategy_combo.currentText()
+        min_size = str(self.search_view.min_size_spin.value())
+        max_size = str(self.search_view.max_size_spin.value())
         top_k = str(self.search_view.top_k_spin.value())
+        robustness_fva = self.search_view.robustness_check.isChecked()
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             with tempfile.TemporaryDirectory(prefix="cmig-search-") as td:
                 out_dir = Path(td)
-                rc = main([
-                    "search-advanced-fixture",
-                    "--metabolites", targets,
-                    "--strategy", strategy,
-                    "--top-k", top_k,
-                    "--out", str(out_dir),
-                ])
+                if model_dir:
+                    argv = [
+                        "search",
+                        "--model-dir", model_dir,
+                        "--target", target,
+                        "--strategy", strategy,
+                        "--min-size", min_size,
+                        "--max-size", max_size,
+                        "--top-k", top_k,
+                        "--out", str(out_dir),
+                    ]
+                    if robustness_fva:
+                        argv.insert(-2, "--robustness-fva")
+                    output_name = "search_summary.json"
+                else:
+                    argv = [
+                        "search-advanced-fixture",
+                        "--metabolites", targets,
+                        "--strategy", strategy if strategy != "random" else "auto",
+                        "--top-k", top_k,
+                        "--out", str(out_dir),
+                    ]
+                    output_name = "search_advanced_summary.json"
+                rc = main(argv)
                 if rc != 0:
                     raise RuntimeError(f"search failed with rc={rc}")
                 ctx.report_progress(1, 1)
-                payload = json.loads((out_dir / "search_advanced_summary.json").read_text())
+                payload = json.loads((out_dir / output_name).read_text())
             if not isinstance(payload, dict):
                 raise RuntimeError("search output is not a JSON object")
             return payload

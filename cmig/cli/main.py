@@ -7,7 +7,9 @@ solve --taxonomy --medium 은 P1(후속).
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
+import html
 import json
 import math
 import os
@@ -499,8 +501,337 @@ def _cmd_search_advanced_fixture(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_search(args: argparse.Namespace) -> int:
+    """User model-pool search for target metabolite production."""
+    try:
+        import pandas as pd
+
+        from cmig.core.engine import MicomEngine
+        from cmig.core.medium_spec import load_medium
+        from cmig.core.model_pool import diagnose_model_pool, taxonomy_from_model_dir
+        from cmig.core.search import Direction
+        from cmig.core.search_product import SearchConfig, search_model_pool
+    except ImportError:
+        print("search requires the engine stack: uv sync --extra engine", file=sys.stderr)
+        return 2
+    try:
+        if bool(args.taxonomy) == bool(args.model_dir):
+            raise ValueError("provide exactly one of --taxonomy or --model-dir")
+        if args.taxonomy:
+            tax_path = Path(args.taxonomy)
+            if not tax_path.exists():
+                raise ValueError(f"taxonomy file not found: {tax_path}")
+            taxonomy = pd.read_csv(tax_path)
+        else:
+            taxonomy = taxonomy_from_model_dir(args.model_dir, recursive=args.recursive)
+        missing_cols = {"id", "file"} - set(taxonomy.columns)
+        if missing_cols:
+            raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
+        medium_spec = load_medium(args.medium) if args.medium else None
+        diagnostics = diagnose_model_pool(taxonomy, args.target)
+        config = SearchConfig(
+            target=args.target,
+            direction=Direction(args.direction),
+            min_size=args.min_size,
+            max_size=args.max_size,
+            strategy=args.strategy,
+            n_samples=args.n_samples,
+            seed=args.seed,
+            top_k=args.top_k,
+            growth_fraction=args.growth_fraction,
+            solver=args.solver,
+            robustness_fva=args.robustness_fva,
+        )
+        result = search_model_pool(
+            MicomEngine(),
+            taxonomy,
+            config,
+            medium_spec=medium_spec,
+            strict_medium=not args.allow_unknown_medium,
+        )
+        out = Path(args.out)
+        _write_search_outputs(result, taxonomy, diagnostics, out)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"failed to write search outputs: {e}", file=sys.stderr)
+        return 2
+    print(f"search complete ({result.strategy}, target={result.target}) -> {out}")
+    print(f"  evaluated: {result.n_candidates_evaluated}/{result.n_candidates_total}")
+    if result.ranks:
+        best = result.ranks[0]
+        print(
+            f"  best: {'+'.join(best.members)} "
+            f"flux={best.target_flux:.4g} growth={best.community_growth:.4g}"
+        )
+    return 0
+
+
 def _finite_or_none(value: float) -> float | None:
     return value if math.isfinite(value) else None
+
+
+def _finite_csv(value: float) -> str:
+    return "" if not math.isfinite(value) else f"{value:.12g}"
+
+
+def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], out: Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    taxonomy.to_csv(out / "pool_taxonomy.csv", index=False)
+    with open(out / "pool_diagnostics.csv", "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "member_id",
+                "file",
+                "readable",
+                "model_id",
+                "n_reactions",
+                "n_exchanges",
+                "n_biomass",
+                "has_target_exchange",
+                "matching_exchanges",
+                "warnings",
+                "error",
+            ],
+        )
+        writer.writeheader()
+        for row in diagnostics:
+            writer.writerow({
+                "member_id": row.member_id,
+                "file": row.file,
+                "readable": row.readable,
+                "model_id": row.model_id or "",
+                "n_reactions": "" if row.n_reactions is None else row.n_reactions,
+                "n_exchanges": "" if row.n_exchanges is None else row.n_exchanges,
+                "n_biomass": "" if row.n_biomass is None else row.n_biomass,
+                "has_target_exchange": row.has_target_exchange,
+                "matching_exchanges": ";".join(row.matching_exchanges),
+                "warnings": ";".join(row.warnings),
+                "error": row.error or "",
+            })
+    ranking_path = out / "search_rankings.csv"
+    with open(ranking_path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "rank",
+                "members",
+                "score",
+                "target_flux",
+                "community_growth",
+                "robustness_fva_lo",
+                "robustness_fva_hi",
+                "robustness_width",
+                "robustness_status",
+                "status",
+                "diagnostic",
+            ],
+        )
+        writer.writeheader()
+        for row in result.ranks:
+            writer.writerow({
+                "rank": row.rank,
+                "members": "+".join(row.members),
+                "score": _finite_csv(row.score),
+                "target_flux": _finite_csv(row.target_flux),
+                "community_growth": _finite_csv(row.community_growth),
+                "robustness_fva_lo": (
+                    "" if row.robustness_fva_lo is None else _finite_csv(row.robustness_fva_lo)
+                ),
+                "robustness_fva_hi": (
+                    "" if row.robustness_fva_hi is None else _finite_csv(row.robustness_fva_hi)
+                ),
+                "robustness_width": (
+                    "" if row.robustness_width is None else _finite_csv(row.robustness_width)
+                ),
+                "robustness_status": row.robustness_status or "",
+                "status": row.status,
+                "diagnostic": row.diagnostic or "",
+            })
+    member_ids = [str(x) for x in taxonomy["id"]]
+    with open(out / "search_member_matrix.csv", "w", newline="") as f:
+        fieldnames = ["rank", "members", "target_flux", "community_growth"] + member_ids
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in result.ranks:
+            present = set(row.members)
+            record: dict[str, object] = {
+                "rank": row.rank,
+                "members": "+".join(row.members),
+                "target_flux": _finite_csv(row.target_flux),
+                "community_growth": _finite_csv(row.community_growth),
+            }
+            record.update({member_id: int(member_id in present) for member_id in member_ids})
+            writer.writerow(record)
+    search_warnings = list(result.warnings)
+    n_readable = sum(1 for row in diagnostics if row.readable)
+    n_with_target = sum(1 for row in diagnostics if row.has_target_exchange)
+    n_with_biomass = sum(1 for row in diagnostics if row.n_biomass and row.n_biomass > 0)
+    if n_readable != len(diagnostics):
+        search_warnings.append("one or more pool models failed import diagnostics")
+    if n_with_target == 0:
+        search_warnings.append("target exchange was not detected in any individual pool model")
+    if n_with_biomass != len(diagnostics):
+        search_warnings.append("one or more pool models have no detected biomass objective")
+    payload = {
+        "status": "ok",
+        "target": result.target,
+        "target_exchange": result.target_exchange,
+        "direction": result.direction,
+        "strategy": result.strategy,
+        "n_pool_members": result.n_pool_members,
+        "n_candidates_total": result.n_candidates_total,
+        "n_candidates_evaluated": result.n_candidates_evaluated,
+        "pool_diagnostics": {
+            "n_readable": n_readable,
+            "n_with_target_exchange": n_with_target,
+            "n_with_biomass": n_with_biomass,
+        },
+        "top_ranked": [
+            {
+                "rank": row.rank,
+                "members": list(row.members),
+                "score": _finite_or_none(row.score),
+                "target_flux": _finite_or_none(row.target_flux),
+                "community_growth": _finite_or_none(row.community_growth),
+                "robustness_fva_lo": (
+                    None if row.robustness_fva_lo is None
+                    else _finite_or_none(row.robustness_fva_lo)
+                ),
+                "robustness_fva_hi": (
+                    None if row.robustness_fva_hi is None
+                    else _finite_or_none(row.robustness_fva_hi)
+                ),
+                "robustness_width": (
+                    None if row.robustness_width is None else _finite_or_none(row.robustness_width)
+                ),
+                "robustness_status": row.robustness_status,
+                "status": row.status,
+                "diagnostic": row.diagnostic,
+            }
+            for row in result.ranks
+        ],
+        "warnings": search_warnings,
+        "artifacts": [
+            "pool_taxonomy.csv",
+            "pool_diagnostics.csv",
+            "search_rankings.csv",
+            "search_member_matrix.csv",
+            "search_plot.svg",
+            "search_scatter.svg",
+            "search_summary.json",
+        ],
+    }
+    (out / "search_summary.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    )
+    _write_search_svg(result, out / "search_plot.svg")
+    _write_search_scatter_svg(result, out / "search_scatter.svg")
+
+
+def _write_search_svg(result: Any, path: Path) -> None:
+    width, height = 900, 420
+    margin_left, margin_top, margin_bottom = 90, 54, 95
+    plot_w = width - margin_left - 40
+    plot_h = height - margin_top - margin_bottom
+    rows = [r for r in result.ranks[:10] if math.isfinite(r.target_flux)]
+    max_flux = max([abs(r.target_flux) for r in rows] + [1.0])
+    bar_gap = 8
+    bar_h = max(12, int((plot_h - bar_gap * max(len(rows) - 1, 0)) / max(len(rows), 1)))
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}">',
+        '<rect width="100%" height="100%" fill="#ffffff"/>',
+        f'<text x="{margin_left}" y="30" font-family="Arial" font-size="22" '
+        f'font-weight="700">Target production search: {html.escape(result.target)}</text>',
+        f'<text x="{margin_left}" y="52" font-family="Arial" font-size="13" fill="#555">'
+        f'{html.escape(result.strategy)} · evaluated {result.n_candidates_evaluated}/'
+        f'{result.n_candidates_total} candidates</text>',
+    ]
+    axis_x = margin_left
+    axis_y = margin_top + plot_h
+    parts.append(
+        f'<line x1="{axis_x}" y1="{axis_y}" x2="{axis_x + plot_w}" y2="{axis_y}" '
+        'stroke="#222" stroke-width="1"/>'
+    )
+    for i, row in enumerate(rows):
+        y = margin_top + i * (bar_h + bar_gap)
+        bar_w = int((abs(row.target_flux) / max_flux) * plot_w)
+        label = html.escape("+".join(row.members))
+        color = "#0b9e77" if row.target_flux >= 0 else "#d95f02"
+        parts.extend([
+            f'<text x="12" y="{y + bar_h * 0.72:.1f}" font-family="Arial" '
+            f'font-size="13">{label}</text>',
+            f'<rect x="{axis_x}" y="{y}" width="{bar_w}" height="{bar_h}" '
+            f'fill="{color}" opacity="0.88"/>',
+            f'<text x="{axis_x + bar_w + 8}" y="{y + bar_h * 0.72:.1f}" '
+            f'font-family="Arial" font-size="13">{row.target_flux:.3g}</text>',
+        ])
+    parts.append(
+        f'<text x="{axis_x}" y="{height - 28}" font-family="Arial" font-size="13" '
+        f'fill="#333">Target exchange flux ({html.escape(result.target_exchange)}), '
+        'larger is better for max secretion</text>'
+    )
+    parts.append("</svg>")
+    path.write_text("\n".join(parts) + "\n")
+
+
+def _write_search_scatter_svg(result: Any, path: Path) -> None:
+    width, height = 760, 520
+    left, top, right, bottom = 82, 50, 32, 78
+    plot_w = width - left - right
+    plot_h = height - top - bottom
+    rows = [
+        row for row in result.ranks
+        if math.isfinite(row.target_flux) and math.isfinite(row.community_growth)
+    ]
+    max_flux = float(max([row.target_flux for row in rows] + [1.0]))
+    min_flux = float(min([row.target_flux for row in rows] + [0.0]))
+    max_growth = float(max([row.community_growth for row in rows] + [1.0]))
+    min_growth = float(min([row.community_growth for row in rows] + [0.0]))
+    flux_span = max(max_flux - min_flux, 1e-9)
+    growth_span = max(max_growth - min_growth, 1e-9)
+
+    def x(value: float) -> float:
+        return left + ((value - min_growth) / growth_span) * plot_w
+
+    def y(value: float) -> float:
+        return top + plot_h - ((value - min_flux) / flux_span) * plot_h
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}">',
+        '<rect width="100%" height="100%" fill="#ffffff"/>',
+        f'<text x="{left}" y="30" font-family="Arial" font-size="22" '
+        f'font-weight="700">Growth-production tradeoff</text>',
+        f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" '
+        'stroke="#222"/>',
+        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="#222"/>',
+        f'<text x="{left + plot_w / 2:.1f}" y="{height - 25}" font-family="Arial" '
+        'font-size="14" text-anchor="middle">Community growth under target objective</text>',
+        f'<text x="20" y="{top + plot_h / 2:.1f}" font-family="Arial" font-size="14" '
+        'transform="rotate(-90 20 '
+        f'{top + plot_h / 2:.1f})" text-anchor="middle">Target exchange flux</text>',
+    ]
+    for row in rows:
+        px, py = x(row.community_growth), y(row.target_flux)
+        label = html.escape(str(row.rank))
+        title = html.escape("+".join(row.members))
+        parts.extend([
+            f'<circle cx="{px:.1f}" cy="{py:.1f}" r="7" fill="#2b8cbe" opacity="0.86"/>',
+            f'<text x="{px + 10:.1f}" y="{py + 4:.1f}" font-family="Arial" '
+            f'font-size="12">#{label}</text>',
+            f'<title>{title}: flux={row.target_flux:.4g}, '
+            f'growth={row.community_growth:.4g}</title>',
+        ])
+    parts.append(
+        f'<text x="{left}" y="{height - 8}" font-family="Arial" font-size="12" '
+        f'fill="#555">Target: {html.escape(result.target_exchange)}</text>'
+    )
+    parts.append("</svg>")
+    path.write_text("\n".join(parts) + "\n")
 
 
 def _cmd_stats_demo(args: argparse.Namespace) -> int:
@@ -1120,6 +1451,41 @@ def build_parser() -> argparse.ArgumentParser:
     df.add_argument("--glucose", type=float, default=10.0)
     df.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout summary)")
     df.set_defaults(func=_cmd_dfba_fixture)
+    sp = sub.add_parser(
+        "search",
+        help="user model-pool target production search -> rankings/plot/summary",
+    )
+    src = sp.add_mutually_exclusive_group(required=True)
+    src.add_argument("--taxonomy", default=None, help="MICOM-compatible pool taxonomy csv")
+    src.add_argument(
+        "--model-dir",
+        default=None,
+        help="directory containing SBML/JSON/MAT GEM files",
+    )
+    sp.add_argument("--recursive", action="store_true", help="scan --model-dir recursively")
+    sp.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
+    sp.add_argument("--target", default="but", help="target metabolite id, e.g. but")
+    sp.add_argument(
+        "--direction",
+        default="max_secretion",
+        choices=["max_secretion", "min_secretion", "max_uptake", "min_uptake"],
+    )
+    sp.add_argument("--growth-fraction", type=float, default=0.5, dest="growth_fraction")
+    sp.add_argument("--min-size", type=int, default=2, dest="min_size")
+    sp.add_argument("--max-size", type=int, default=2, dest="max_size")
+    sp.add_argument("--strategy", default="auto", choices=["auto", "exhaustive", "random", "ga"])
+    sp.add_argument("--n-samples", type=int, default=100, dest="n_samples")
+    sp.add_argument("--seed", type=int, default=0)
+    sp.add_argument("--top-k", type=int, default=10, dest="top_k")
+    sp.add_argument(
+        "--robustness-fva",
+        action="store_true",
+        help="add target FVA range for each evaluated candidate",
+    )
+    sp.add_argument("--medium", default=None, help="optional medium csv/json")
+    sp.add_argument("--allow-unknown-medium", action="store_true")
+    sp.add_argument("--out", required=True, help="output directory")
+    sp.set_defaults(func=_cmd_search)
     se = sub.add_parser("search-fixture", help="3-member target-max search → search_summary.json")
     se.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     se.add_argument("--metabolite", default="ac", help="target metabolite id")

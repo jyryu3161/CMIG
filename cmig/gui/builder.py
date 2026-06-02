@@ -12,6 +12,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -191,29 +192,49 @@ class SearchView(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         self.title = QLabel("Consortium Search")
+        pool_row = QHBoxLayout()
+        self.model_dir_input = QLineEdit("")
+        self.model_dir_input.setPlaceholderText("Model folder")
+        self.browse_pool_btn = QPushButton("Browse")
+        pool_row.addWidget(QLabel("Model Folder"))
+        pool_row.addWidget(self.model_dir_input)
+        pool_row.addWidget(self.browse_pool_btn)
         controls = QHBoxLayout()
-        self.targets_input = QLineEdit("ac,but")
+        self.targets_input = QLineEdit("but")
         self.strategy_combo = QComboBox()
-        self.strategy_combo.addItems(["auto", "exhaustive", "ga"])
+        self.strategy_combo.addItems(["auto", "exhaustive", "random", "ga"])
+        self.min_size_spin = QSpinBox()
+        self.min_size_spin.setRange(1, 20)
+        self.min_size_spin.setValue(2)
+        self.max_size_spin = QSpinBox()
+        self.max_size_spin.setRange(1, 20)
+        self.max_size_spin.setValue(2)
         self.top_k_spin = QSpinBox()
         self.top_k_spin.setRange(1, 100)
         self.top_k_spin.setValue(3)
+        self.robustness_check = QCheckBox("FVA")
         self.run_btn = QPushButton("Run Search")
-        controls.addWidget(QLabel("Targets"))
+        controls.addWidget(QLabel("Target"))
         controls.addWidget(self.targets_input)
+        controls.addWidget(QLabel("Size"))
+        controls.addWidget(self.min_size_spin)
+        controls.addWidget(QLabel("to"))
+        controls.addWidget(self.max_size_spin)
         controls.addWidget(QLabel("Strategy"))
         controls.addWidget(self.strategy_combo)
         controls.addWidget(QLabel("Top K"))
         controls.addWidget(self.top_k_spin)
+        controls.addWidget(self.robustness_check)
         controls.addWidget(self.run_btn)
         self.status = QLabel("")
-        self.table = QTableWidget(0, 5)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["Members", "Target", "Score", "Flux", "Status"]
+            ["Members", "Target", "Score", "Flux", "Growth", "FVA Range", "Status"]
         )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.pareto_label = QLabel("")
         layout.addWidget(self.title)
+        layout.addLayout(pool_row)
         layout.addLayout(controls)
         layout.addWidget(self.status)
         layout.addWidget(self.table)
@@ -228,7 +249,7 @@ class SearchView(QWidget):
             f"strategy: {strategy}" + (f" · warnings: {warning_count}" if warning_count else "")
         )
         ranked = summary.get("top_ranked", {})
-        rows: list[tuple[str, str, float | None, float | None, str]] = []
+        rows: list[tuple[str, str, float | None, float | None, float | None, str, str]] = []
         if isinstance(ranked, dict):
             for target, items in ranked.items():
                 if not isinstance(items, list):
@@ -239,24 +260,34 @@ class SearchView(QWidget):
                     members = item.get("members", [])
                     score = _optional_float(item.get("score"))
                     target_flux = _optional_float(item.get("target_flux"))
+                    growth = _optional_float(item.get("community_growth"))
+                    fva_range = _fva_range_text(item)
                     rows.append((
                         "+".join(str(x) for x in members) if isinstance(members, list) else "",
                         str(target),
                         score,
                         target_flux if target_flux is not None else score,
+                        growth,
+                        fva_range,
                         str(item.get("status", "ok")),
                     ))
         elif isinstance(ranked, list):
+            target = str(summary.get("target", ""))
             for item in ranked:
                 if not isinstance(item, dict):
                     continue
                 members = item.get("members", [])
                 score = _optional_float(item.get("score"))
+                target_flux = _optional_float(item.get("target_flux"))
+                growth = _optional_float(item.get("community_growth"))
+                fva_range = _fva_range_text(item)
                 rows.append((
                     "+".join(str(x) for x in members) if isinstance(members, list) else "",
-                    str(summary.get("target", "")),
+                    target,
                     score,
-                    score,
+                    target_flux if target_flux is not None else score,
+                    growth,
+                    fva_range,
                     str(item.get("status", "ok")),
                 ))
         self.table.setRowCount(len(rows))
@@ -287,3 +318,12 @@ def _optional_float(value: object) -> float | None:
     if isinstance(value, (int, float, str)):
         return float(value)
     return None
+
+
+def _fva_range_text(item: dict[object, object]) -> str:
+    lo = _optional_float(item.get("robustness_fva_lo"))
+    hi = _optional_float(item.get("robustness_fva_hi"))
+    status = item.get("robustness_status")
+    if lo is not None and hi is not None:
+        return f"{lo:.4g}..{hi:.4g}"
+    return "" if status is None else str(status)

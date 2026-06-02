@@ -200,6 +200,51 @@ def test_search_button_runs_job_and_loads_summary(monkeypatch):
     runner.shutdown()
 
 
+def test_search_button_uses_model_dir_product_command(monkeypatch, tmp_path):
+    import json
+
+    import cmig.cli.main
+
+    seen = {"argv": []}
+
+    def fake_main(argv):
+        seen["argv"] = list(argv)
+        out = argv[argv.index("--out") + 1]
+        payload = {
+            "strategy": "exhaustive",
+            "target": "but",
+            "top_ranked": [
+                {
+                    "members": ["A", "B"],
+                    "score": 2.0,
+                    "target_flux": 2.0,
+                    "status": "optimal",
+                }
+            ],
+            "warnings": [],
+        }
+        from pathlib import Path
+        Path(out).mkdir(parents=True, exist_ok=True)
+        (Path(out) / "search_summary.json").write_text(json.dumps(payload))
+        return 0
+
+    monkeypatch.setattr(cmig.cli.main, "main", fake_main)
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    w.search_view.model_dir_input.setText(str(tmp_path))
+    w.search_view.targets_input.setText("but")
+    w.search_view.robustness_check.setChecked(True)
+    jid = w.run_search_fixture()
+    runner.result(jid, timeout=5)
+    w._poll_completed_jobs()
+    assert seen["argv"][0] == "search"
+    assert seen["argv"][seen["argv"].index("--model-dir") + 1] == str(tmp_path)
+    assert "--robustness-fva" in seen["argv"]
+    assert w.search_view.table.item(0, 1).text() == "but"
+    runner.shutdown()
+
+
 def test_jobrunner_qt_bridge_reflects_job():
     """SC-AP4: JobRunner→Qt bridge 가 실 job 상태 표시(orphan UI 아님)."""
     _app()

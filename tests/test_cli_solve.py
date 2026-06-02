@@ -178,6 +178,36 @@ def test_sweep_user_taxonomy_fva_writes_profile_ranges(tmp_path):
     assert any(row["fva_lo"] is not None and row["fva_hi"] is not None for row in profile_rows)
 
 
+def test_search_user_taxonomy_ranks_target_pool(tmp_path):
+    from cmig.golden_fixture import build_taxonomy
+
+    taxonomy = tmp_path / "taxonomy.csv"
+    build_taxonomy().to_csv(taxonomy, index=False)
+    out = tmp_path / "search"
+    rc = main([
+        "search",
+        "--taxonomy", str(taxonomy),
+        "--target", "ac",
+        "--min-size", "2",
+        "--max-size", "2",
+        "--top-k", "2",
+        "--robustness-fva",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    payload = json.loads((out / "search_summary.json").read_text())
+    assert payload["target"] == "ac"
+    assert payload["n_candidates_total"] == 3
+    assert len(payload["top_ranked"]) == 2
+    assert payload["pool_diagnostics"]["n_readable"] == 3
+    assert "robustness_status" in payload["top_ranked"][0]
+    assert (out / "pool_diagnostics.csv").exists()
+    assert (out / "search_rankings.csv").exists()
+    assert (out / "search_member_matrix.csv").exists()
+    assert (out / "search_plot.svg").exists()
+    assert (out / "search_scatter.svg").exists()
+
+
 def test_sandbox_fixture_preview_and_commit(tmp_path):
     rxn = "EX_glc__D_e__Escherichia_coli_1"
     rc = main([

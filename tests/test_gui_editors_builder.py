@@ -132,9 +132,13 @@ def test_search_view_loads_advanced_summary():
     """SC-SR-GUI: advanced search summary → ranked table + Pareto badge."""
     _app()
     view = SearchView()
-    assert view.targets_input.text() == "ac,but"
+    assert view.targets_input.text() == "but"
     assert view.strategy_combo.currentText() == "auto"
     assert view.run_btn.text() == "Run Search"
+    assert view.model_dir_input.placeholderText() == "Model folder"
+    assert view.min_size_spin.value() == 2
+    assert view.max_size_spin.value() == 2
+    assert view.robustness_check.text() == "FVA"
     view.load_summary({
         "strategy": "exhaustive",
         "warnings": [],
@@ -144,6 +148,10 @@ def test_search_view_loads_advanced_summary():
                     "members": ["A", "B"],
                     "score": 1.2,
                     "target_flux": 1.2,
+                    "community_growth": 0.4,
+                    "robustness_fva_lo": 0.0,
+                    "robustness_fva_hi": 2.0,
+                    "robustness_status": "ok",
                     "status": "optimal",
                 }
             ]
@@ -152,6 +160,7 @@ def test_search_view_loads_advanced_summary():
     })
     assert view.table.rowCount() == 1
     assert view.table.item(0, 0).text() == "A+B"
+    assert view.table.item(0, 5).text() == "0..2"
     assert "Pareto" in view.pareto_label.text()
 
 
