@@ -66,11 +66,11 @@ class MediumEditor(QWidget):
             try:
                 uptake[ex] = float(lim_item.text()) if lim_item else 0.0
             except ValueError as e:
-                self.status.setText(f"잘못된 uptake_limit (행 {r + 1})")
-                raise ValueError(f"uptake_limit 숫자 아님 (행 {r + 1})") from e
+                self.status.setText(f"Invalid uptake_limit (row {r + 1})")
+                raise ValueError(f"uptake_limit is not numeric (row {r + 1})") from e
         spec = MediumSpec(uptake=uptake)
         spec.validate()
-        self.status.setText(f"{len(uptake)} exchange 유효")
+        self.status.setText(f"{len(uptake)} valid exchanges")
         return spec
 
 
@@ -80,7 +80,7 @@ class ModelManagerPanel(QWidget):
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
-        self.summary_label = QLabel("모델을 import 하세요.")
+        self.summary_label = QLabel("Import a model.")
         self.exchange_table = QTableWidget(0, 1)
         self.exchange_table.setHorizontalHeaderLabels(["Exchange reactions"])
         self.exchange_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -99,7 +99,7 @@ class ModelManagerPanel(QWidget):
         self.exchange_table.setRowCount(len(summary.exchanges))
         for i, ex in enumerate(summary.exchanges):
             self.exchange_table.setItem(i, 0, QTableWidgetItem(ex))
-        bio = ", ".join(summary.biomass_reactions) or "(미탐지)"
+        bio = ", ".join(summary.biomass_reactions) or "(not detected)"
         self.biomass_label.setText(f"Biomass: {bio}")
 
     def as_summary_dict(self, summary: ModelSummary) -> dict[str, Any]:

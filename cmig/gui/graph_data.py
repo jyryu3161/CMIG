@@ -14,9 +14,9 @@ from cmig.core.tidy import TidyBundle
 
 # 부호 범례 (상시 노출, §11·glossary §1.A)
 SIGN_LEGEND: list[dict[str, str]] = [
-    {"symbol": "+", "meaning": "secretion (분비) — 환경/pool 으로 분비"},
-    {"symbol": "−", "meaning": "uptake (흡수) — 환경/pool 에서 흡수"},
-    {"symbol": "→", "meaning": "cross-feeding (m 분비 → m′ 흡수, weight=min)"},
+    {"symbol": "+", "meaning": "secretion to the environment or pool"},
+    {"symbol": "−", "meaning": "uptake from the environment or pool"},
+    {"symbol": "→", "meaning": "cross-feeding from secretor to consumer, weight=min"},
 ]
 
 # Cytoscape.js stylesheet — node_type/edge_type 인코딩 (§11 노드/엣지 인코딩).
@@ -102,7 +102,7 @@ def gate_ui_data(gate: NamespaceGateResult) -> dict[str, Any]:
         "unresolved_high": [d.metabolite for d in gate.unresolved_high],
         "warned_low": [d.metabolite for d in gate.warned_low],
         "status_text": (
-            "BLOCKED — unresolved high-confidence mapping (solve 차단)"
+            "BLOCKED — unresolved high-confidence mapping blocks solve"
             if gate.blocked else f"OK — coverage {gate.coverage_pct:.0f}%"
         ),
     }

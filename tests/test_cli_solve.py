@@ -58,6 +58,20 @@ def test_solve_fixture_osqp_records_approximate_flux_solver(tmp_path):
     assert manifest["solver"]["flux_report_status"] == "qp_only_approximate"
 
 
+def test_solve_fixture_osqp_run_hash_matches_canonical_and_differs_from_gurobi(tmp_path):
+    """C-1: OSQP manifest run_hash 는 canonical hash 와 일치하고 solver provenance 로 분리된다."""
+    gurobi_out = tmp_path / "gurobi"
+    osqp_out = tmp_path / "osqp"
+    main(["solve-fixture", "--solver", "gurobi", "--out", str(gurobi_out)])
+    main(["solve-fixture", "--solver", "osqp", "--out", str(osqp_out)])
+
+    gurobi_manifest = json.loads((gurobi_out / "manifest.json").read_text())
+    osqp_manifest = json.loads((osqp_out / "manifest.json").read_text())
+    osqp_result, _ = solve("osqp")
+    assert osqp_manifest["run_hash"] == compute_run_hash(_run_hash_components(osqp_result))
+    assert osqp_manifest["run_hash"] != gurobi_manifest["run_hash"]
+
+
 def test_solve_subcommand_requires_taxonomy():
     """solve 는 C6 에서 구현됨(P1) — --taxonomy 필수(argparse 오류)."""
     with pytest.raises(SystemExit):

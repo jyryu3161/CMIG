@@ -34,11 +34,11 @@ def test_shell_constructs_offscreen():
 
 
 def test_i18n_ko_en():
-    """SC-AP2: i18n — 한/영 타이틀 상이."""
+    """SC-AP2: GUI surface defaults to English labels."""
     _app()
     ko = build_main_window(lang="ko").tr_map["explorer"]
     en = build_main_window(lang="en").tr_map["explorer"]
-    assert ko == "프로젝트 탐색기" and en == "Project Explorer"
+    assert ko == "Project Explorer" and en == "Project Explorer"
 
 
 def test_project_explorer_add_model():
@@ -227,5 +227,5 @@ def test_set_central_widget():
 def test_status_bar():
     """SC-AP6: 상태바 준비 메시지."""
     _app()
-    w = build_main_window(lang="en")
+    w = build_main_window()
     assert w.statusBar().currentMessage() == "Ready"

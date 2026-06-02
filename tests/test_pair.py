@@ -37,6 +37,38 @@ def test_pair_interaction_mutualism():
     assert _result().interaction == "mutualism"
 
 
+def test_pair_failed_co_culture_does_not_report_neutralism():
+    """D-3: co-culture 실패는 interaction='failed' 로 전파되고 neutralism 으로 위장되지 않는다."""
+    import pandas as pd
+
+    from cmig.core.engine import SolveResult
+
+    class _Engine:
+        def build_community(self, taxonomy, cmig_solver):
+            return object()
+
+        def cooperative_tradeoff(self, community, tradeoff_f, cmig_solver):
+            return SolveResult(
+                objective=float("nan"),
+                member_growth={"a": 0.0, "b": 0.0},
+                abundances={"a": 0.5, "b": 0.5},
+                external_exchange={},
+                member_exchange={},
+                status="infeasible",
+                flux_report_status="full",
+                growth_solver="gurobi",
+                flux_solver="gurobi",
+                diagnostic="forced infeasible",
+                members=["a", "b"],
+            )
+
+    tax = pd.DataFrame({"id": ["a", "b"], "file": ["unused-a.xml", "unused-b.xml"]})
+    r = analyze_pair(tax, engine=_Engine())
+    assert r.status == "failed"
+    assert r.interaction == "failed"
+    assert r.diagnostic == "forced infeasible"
+
+
 def test_pair_mro_mip():
     """SC-AP3: MRO=0(흡수 disjoint: glucose vs acetate), MIP=1(producer→consumer acetate)."""
     r = _result()

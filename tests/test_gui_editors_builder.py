@@ -54,7 +54,7 @@ def test_medium_editor_bad_number():
     ed.table.item(0, 1).setText("not_a_number")
     with pytest.raises(ValueError):
         ed.to_spec()
-    assert "잘못된" in ed.status.text()
+    assert "Invalid" in ed.status.text()
 
 
 # --- Model Manager ---
@@ -104,7 +104,7 @@ def test_sandbox_preview_and_commit():
     sb.add_bound("EX_glc__D_e", -5.0, 1000.0)
     assert len(sb.constraints()) == 1
     sb.show_preview(_delta())
-    assert "비기록" in sb.status.text()
+    assert "not recorded" in sb.status.text()
     assert sb.delta_view.rowCount() == 2
     sb.show_commit(_delta(), "abcdef123456")
     assert "committed" in sb.status.text()
@@ -115,7 +115,7 @@ def test_sandbox_preview_failed_explicit():
     _app()
     sb = ConstraintSandboxView()
     sb.show_preview(_delta(status="failed"))
-    assert "실패" in sb.status.text()
+    assert "failed" in sb.status.text()
 
 
 # --- Scenario Compare ---

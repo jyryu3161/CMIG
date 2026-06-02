@@ -46,11 +46,11 @@ from cmig.service import JobRunner, JobStatus
 
 I18N: dict[str, dict[str, str]] = {
     "ko": {
-        "title": "CMIG — 군집 대사 상호작용", "explorer": "프로젝트 탐색기",
-        "models": "모델", "scenarios": "시나리오", "runs": "실행 기록",
-        "jobs": "런타임 & 작업", "welcome": "프로젝트를 열거나 모델을 import 하세요.",
-        "col_job": "작업", "col_kind": "종류", "col_status": "상태", "col_progress": "진행률",
-        "ready": "준비됨",
+        "title": "CMIG — Community Metabolic Interaction", "explorer": "Project Explorer",
+        "models": "Models", "scenarios": "Scenarios", "runs": "Runs",
+        "jobs": "Runtime & Jobs", "welcome": "Open a project or import a model.",
+        "col_job": "Job", "col_kind": "Kind", "col_status": "Status", "col_progress": "Progress",
+        "ready": "Ready",
     },
     "en": {
         "title": "CMIG — Community Metabolic Interaction", "explorer": "Project Explorer",
@@ -225,7 +225,7 @@ class CmigMainWindow(QMainWindow):
     def _run_sandbox(self, *, commit: bool) -> None:
         constraints = self.sandbox_view.constraints()
         if not constraints:
-            self.sandbox_view.status.setText("bound constraint 를 먼저 추가하세요.")
+            self.sandbox_view.status.setText("Add a bound constraint first.")
             return
         out_dir = None
         if commit:
@@ -245,7 +245,7 @@ class CmigMainWindow(QMainWindow):
                 out_dir=out_dir,
             )
         except Exception as e:
-            self.sandbox_view.status.setText(f"sandbox 실패: {e}")
+            self.sandbox_view.status.setText(f"Sandbox failed: {e}")
             return
         if commit and result.run_hash:
             self.sandbox_view.show_commit(result.delta, result.run_hash)

@@ -141,6 +141,34 @@ def test_tc7_csv_nonfinite_becomes_na(tmp_path):
     assert any("-2.000000" in ln for ln in lines)
 
 
+def test_profile_render_passes_rlib_to_rscript(tmp_path, monkeypatch):
+    """C-3: profile R renderer 도 project-local .Rlib 를 subprocess 인자로 전달한다."""
+    import subprocess
+    from pathlib import Path
+
+    from cmig.render.client import FigureSpec, RenderClient
+
+    captured = {}
+
+    def fake_run(cmd, capture_output, text, check):
+        captured["cmd"] = cmd
+        out = Path(cmd[cmd.index("--out") + 1])
+        out.write_text("<svg></svg>\n")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("cmig.render.client.subprocess.run", fake_run)
+    out = RenderClient(rscript="Rscript").render(
+        [{"metabolite": "ac", "net_flux": 1.0, "ui_flux": 1.0, "label": "secretion"}],
+        FigureSpec(format="svg"),
+        tmp_path / "profile.svg",
+    )
+
+    cmd = captured["cmd"]
+    assert out.exists()
+    assert "--rlib" in cmd
+    assert Path(cmd[cmd.index("--rlib") + 1]).name == ".Rlib"
+
+
 # ── medium.py ────────────────────────────────────────────────────────────────
 
 def test_tc8_tc9_capability_absent_is_unavailable_not_infeasible():

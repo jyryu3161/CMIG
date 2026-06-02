@@ -116,7 +116,7 @@ class ConstraintSandboxView(QWidget):
         self.commit_btn = QPushButton("Apply / Commit")
         btn_row.addWidget(self.preview_btn)
         btn_row.addWidget(self.commit_btn)
-        self.status = QLabel("preview (비기록)")
+        self.status = QLabel("preview (not recorded)")
         layout.addWidget(self.title)
         layout.addWidget(self.bound_table)
         layout.addLayout(btn_row)
@@ -151,10 +151,10 @@ class ConstraintSandboxView(QWidget):
         """preview 결과 표시(비기록 — store/run_hash 없음, §8.5)."""
         self.delta_view.load_delta(delta)
         if delta.status == "failed":
-            self.status.setText(f"preview 실패: {delta.diagnostic}")
+            self.status.setText(f"preview failed: {delta.diagnostic}")
         else:
             n = len(delta.significant())
-            self.status.setText(f"preview (비기록) — 변화 대사체 {n}개")
+            self.status.setText(f"preview (not recorded) — changed metabolites: {n}")
 
     def show_commit(self, delta: DeltaResult, run_hash: str) -> None:
         """commit 결과(run_hash 승격 — artifact 기록)."""
@@ -179,7 +179,7 @@ class ScenarioCompareView(QWidget):
         """compute_delta(A, B) 결과 표시(동일조건 고정 비교)."""
         self.delta_view.load_delta(delta)
         added = ", ".join(delta.added_members) or "—"
-        status = "" if delta.status == "ok" else f" [실패: {delta.diagnostic}]"
+        status = "" if delta.status == "ok" else f" [failed: {delta.diagnostic}]"
         self.growth_label.setText(
             f"growth Δ: {delta.growth_delta:+.4g} · added: {added}{status}")
 

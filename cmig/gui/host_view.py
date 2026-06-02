@@ -39,7 +39,7 @@ class HostImpactView(QWidget):
         # microbe→host cross-feeding 표
         self.cross_label = QLabel("Microbe → Host cross-feeding")
         self.cross_table = QTableWidget(0, 2)
-        self.cross_table.setHorizontalHeaderLabels(["Metabolite", "Flux (lumen 횡단)"])
+        self.cross_table.setHorizontalHeaderLabels(["Metabolite", "Flux (lumen transfer)"])
         self.cross_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         for w in (self.title, self.viability_label, self.iface_table,
                   self.cross_label, self.cross_table):
@@ -53,7 +53,7 @@ class HostImpactView(QWidget):
             self.viability_label.setStyleSheet("color: #31a354;")
         else:
             self.viability_label.setText(
-                f"❌ non-viable (status={host_result.status}) — 미생물 의존 충족 실패")
+                f"non-viable (status={host_result.status}) — microbiome support insufficient")
             self.viability_label.setStyleSheet("color: #d62728;")
         rows = host_result.interface_fluxes
         self.iface_table.setRowCount(len(rows))
