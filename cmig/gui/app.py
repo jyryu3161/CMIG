@@ -81,8 +81,20 @@ class ProjectExplorer(QTreeWidget):
     def add_model(self, label: str) -> None:
         self._roots["models"].addChild(QTreeWidgetItem([label]))
 
-    def add_run(self, label: str) -> None:
-        self._roots["runs"].addChild(QTreeWidgetItem([label]))
+    def add_run(self, label: str, path: str | Path | None = None) -> None:
+        root = self._roots["runs"]
+        path_text = None if path is None else str(path)
+        for i in range(root.childCount()):
+            child = root.child(i)
+            if path_text is not None and child.data(0, Qt.ItemDataRole.UserRole) == path_text:
+                child.setText(0, label)
+                return
+            if path_text is None and child.text(0) == label:
+                return
+        item = QTreeWidgetItem([label])
+        if path is not None:
+            item.setData(0, Qt.ItemDataRole.UserRole, str(path))
+        root.addChild(item)
 
 
 class RuntimeJobsPanel(QTableWidget):
@@ -102,6 +114,13 @@ class RuntimeJobsPanel(QTableWidget):
             prog = f"{job.progress[0]}/{job.progress[1]}" if job.progress else "—"
             for col, text in enumerate([job.job_id, job.kind, job.status.value, prog]):
                 self.setItem(row, col, QTableWidgetItem(text))
+
+    def selected_job_id(self) -> str | None:
+        row = self.currentRow()
+        if row < 0:
+            return None
+        item = self.item(row, 0)
+        return None if item is None else item.text()
 
 
 class JobsBridge(QObject):
@@ -190,6 +209,7 @@ class CmigMainWindow(QMainWindow):
         self.statusBar().showMessage(self.tr_map["ready"])
         self._install_workflow_actions()
         self._connect_view_actions()
+        self.explorer.itemDoubleClicked.connect(self._open_explorer_item)
         self._completion_timer = QTimer(self)
         self._completion_timer.setInterval(500)
         self._completion_timer.timeout.connect(self._poll_completed_jobs)
@@ -204,12 +224,15 @@ class CmigMainWindow(QMainWindow):
         self.open_run_action.triggered.connect(self._open_run_dialog)
         self.run_fixture_action = QAction("Run Fixture", self)
         self.run_fixture_action.triggered.connect(self._run_fixture_dialog)
+        self.cancel_job_action = QAction("Cancel Selected Job", self)
+        self.cancel_job_action.triggered.connect(self._cancel_selected_job)
         self.advanced_tools_action = QAction("Show Advanced Tools", self)
         self.advanced_tools_action.setCheckable(True)
         self.advanced_tools_action.toggled.connect(self._set_advanced_tabs_visible)
         toolbar.addAction(self.import_model_action)
         toolbar.addAction(self.open_run_action)
         toolbar.addAction(self.run_fixture_action)
+        toolbar.addAction(self.cancel_job_action)
         toolbar.addAction(self.advanced_tools_action)
 
     def _set_advanced_tabs_visible(self, visible: bool) -> None:
@@ -243,6 +266,24 @@ class CmigMainWindow(QMainWindow):
         self.host_view.browse_out_dir_btn.clicked.connect(self._browse_host_microbe_out_dir)
         self.host_view.run_btn.clicked.connect(self.run_host_microbe_bigg)
         self.host_view.export_figure_btn.clicked.connect(self._export_host_figure)
+
+    def _cancel_selected_job(self) -> None:
+        job_id = self.jobs_panel.selected_job_id()
+        if not job_id:
+            self.statusBar().showMessage("Select a running job to cancel.")
+            return
+        job = self.runner.poll(job_id)
+        if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+            self.statusBar().showMessage(f"Job already {job.status.value}: {job_id}")
+            return
+        self.runner.cancel(job_id)
+        self.statusBar().showMessage(f"Cancel requested: {job_id}")
+
+    def _open_explorer_item(self, item: QTreeWidgetItem, _column: int) -> None:
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        if not path:
+            return
+        self.load_run_dir(str(path))
 
     def _browse_search_model_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Model Pool Folder")
@@ -355,6 +396,12 @@ class CmigMainWindow(QMainWindow):
                 return
             out_dir = selected
         c = constraints[0]
+        if len(constraints) > 1:
+            self.sandbox_view.status.setText(
+                "Sandbox fixture supports one bound at a time; "
+                "remove extra rows before preview or commit."
+            )
+            return
         try:
             from cmig.service import EngineService
 
@@ -430,7 +477,7 @@ class CmigMainWindow(QMainWindow):
         )
         self.current_graph_payload = graph_payload(bundle)
         self.profile_view.load_profile(bundle.profile.to_pylist())
-        self.explorer.add_run(run_dir.name)
+        self.explorer.add_run(run_dir.name, run_dir)
         self.tabs.setCurrentWidget(self.profile_view)
         run_hash = None if self.current_manifest is None else self.current_manifest.get("run_hash")
         suffix = "" if run_hash is None else f" (run_hash {str(run_hash)[:12]})"
@@ -504,7 +551,7 @@ class CmigMainWindow(QMainWindow):
         self.host_view.load_impact(impact)
         self.host_view.show_currency_metabolites = self.host_view.include_currency_check.isChecked()
         self.host_view.load_bigg_summary(payload, run_dir=run_dir)
-        self.explorer.add_run(run_dir.name)
+        self.explorer.add_run(run_dir.name, run_dir)
         self.tabs.setCurrentWidget(self.host_view)
         self.statusBar().showMessage(
             f"Loaded host-microbe BiGG run: {run_dir} "
@@ -522,6 +569,7 @@ class CmigMainWindow(QMainWindow):
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
             outcome = EngineService().solve_fixture(solver=solver, out_dir=run_dir)
+            ctx.raise_if_cancelled()
             ctx.report_progress(1, 1)
             return outcome
 
@@ -559,6 +607,7 @@ class CmigMainWindow(QMainWindow):
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
             if model_dir:
                 argv = [
                     "search",
@@ -585,6 +634,7 @@ class CmigMainWindow(QMainWindow):
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"search failed with rc={rc}")
+            ctx.raise_if_cancelled()
             ctx.report_progress(1, 1)
             payload = json.loads((out_dir / output_name).read_text())
             if not isinstance(payload, dict):
@@ -618,6 +668,7 @@ class CmigMainWindow(QMainWindow):
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
             argv = [
                 "host-microbe-bigg",
                 "--host", str(host),
@@ -638,6 +689,7 @@ class CmigMainWindow(QMainWindow):
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"host-microbe run failed with rc={rc}")
+            ctx.raise_if_cancelled()
             ctx.report_progress(1, 1)
             payload = json.loads((out_dir / "host_microbe_bigg_summary.json").read_text())
             if not isinstance(payload, dict):

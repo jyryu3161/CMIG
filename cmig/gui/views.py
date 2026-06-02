@@ -37,10 +37,12 @@ class SweepView(QWidget):
         self.runner = runner if runner is not None else JobRunner(max_workers=2)
         layout = QVBoxLayout(self)
         self.title = QLabel("Sweep")
+        self.status = QLabel("Advanced result view: configure product sweeps from the CLI.")
         self.table = QTableWidget(0, len(self._COLS))
         self.table.setHorizontalHeaderLabels(["Condition", "Value", "Status", "Cache"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.title)
+        layout.addWidget(self.status)
         layout.addWidget(self.table)
         self._job_id: str | None = None
 

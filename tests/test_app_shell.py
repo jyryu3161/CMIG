@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.gui.app import CmigMainWindow, build_main_window  # noqa: E402
 from cmig.service import JobRunner, JobStatus  # noqa: E402
+from cmig.service.jobrunner import JobCancelled  # noqa: E402
 
 
 def _app() -> QApplication:
@@ -79,6 +80,11 @@ def test_advanced_tabs_are_hidden_until_requested():
     labels = [w.tabs.tabText(i) for i in range(w.tabs.count())]
     assert {"Community", "Medium", "Sweep", "Sandbox", "Compare"} <= set(labels)
     assert w.advanced_tools_action.text() == "Hide Advanced Tools"
+    assert "Advanced preview" in w.community_builder.status.text()
+    assert "Advanced editor" in w.medium_editor.status.text()
+    assert "Advanced result view" in w.sweep_view.status.text()
+    assert "Advanced sandbox" in w.sandbox_view.status.text()
+    assert "Advanced preview" in w.scenario_compare.status.text()
     w.advanced_tools_action.setChecked(False)
     assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == [
         "Models", "Search", "Host", "Profile"
@@ -102,6 +108,22 @@ def test_load_run_dir_updates_profile_and_explorer(tmp_path):
     assert w.current_manifest["run_hash"] == "abc1234567890"
     assert "elements" in w.current_graph_payload
     assert w.tabs.currentWidget() is w.profile_view
+
+
+def test_project_explorer_run_double_click_reopens_run(tmp_path):
+    """Runs in Project Explorer should reopen their stored output directory."""
+    from cmig.core.tidy import empty_bundle
+
+    _app()
+    empty_bundle().write(tmp_path)
+    (tmp_path / "manifest.json").write_text('{"run_hash": "abc1234567890"}\n')
+    w = build_main_window()
+    w.load_run_dir(tmp_path)
+    w.tabs.setCurrentWidget(w.search_view)
+    item = w.explorer.topLevelItem(2).child(0)
+    w._open_explorer_item(item, 0)
+    assert w.tabs.currentWidget() is w.profile_view
+    assert w.explorer.topLevelItem(2).childCount() == 1
 
 
 def test_load_host_microbe_bigg_dir_updates_host_tab(tmp_path):
@@ -217,6 +239,26 @@ def test_sandbox_preview_button_runs_service(monkeypatch):
     w.sandbox_view.add_bound("EX_glc__D_e", -1.0, 1000.0)
     w.sandbox_view.preview_btn.click()
     assert "preview" in w.sandbox_view.status.text()
+
+
+def test_sandbox_rejects_multiple_bounds_before_silent_ignore(monkeypatch):
+    import cmig.service
+
+    called = {"value": False}
+
+    class FakeEngineService:
+        def sandbox_fixture(self, **kwargs):
+            called["value"] = True
+            raise AssertionError("should not run with multiple constraints")
+
+    monkeypatch.setattr(cmig.service, "EngineService", FakeEngineService)
+    _app()
+    w = build_main_window()
+    w.sandbox_view.add_bound("EX_a", -1.0, 1000.0)
+    w.sandbox_view.add_bound("EX_b", -2.0, 1000.0)
+    w.sandbox_view.preview_btn.click()
+    assert called["value"] is False
+    assert "one bound" in w.sandbox_view.status.text()
 
 
 def test_search_button_runs_job_and_loads_summary(monkeypatch):
@@ -404,6 +446,32 @@ def test_jobrunner_qt_bridge_reflects_job():
     assert w.jobs_panel.rowCount() == 1
     assert w.jobs_panel.item(0, 0).text() == jid
     assert w.jobs_panel.item(0, 2).text() == JobStatus.DONE.value
+    runner.shutdown()
+
+
+def test_cancel_selected_job_requests_jobrunner_cancel():
+    import threading
+    import time
+
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    started = threading.Event()
+
+    def wait_until_cancelled(ctx):
+        started.set()
+        while not ctx.cancelled:
+            time.sleep(0.01)
+        ctx.raise_if_cancelled()
+
+    jid = w.submit_job("wait", wait_until_cancelled)
+    started.wait(timeout=2)
+    w.bridge.refresh()
+    w.jobs_panel.selectRow(0)
+    w._cancel_selected_job()
+    with pytest.raises(JobCancelled):
+        runner.result(jid, timeout=5)
+    assert runner.poll(jid).status is JobStatus.CANCELLED
     runner.shutdown()
 
 

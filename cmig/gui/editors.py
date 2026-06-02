@@ -36,7 +36,7 @@ class MediumEditor(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.add_btn = QPushButton("Add row")
         self.add_btn.clicked.connect(lambda: self.add_row())
-        self.status = QLabel("")
+        self.status = QLabel("Advanced editor: save or apply medium through CLI/product workflows.")
         layout.addWidget(self.title)
         layout.addWidget(self.table)
         layout.addWidget(self.add_btn)
