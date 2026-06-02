@@ -258,6 +258,56 @@ def test_host_benchmark_cli_writes_measurement(tmp_path):
     assert payload["quantitative_coupling_ready"] is False
 
 
+def test_host_microbe_bigg_cli_writes_coupling_outputs(tmp_path):
+    import cobra
+    from cobra import Metabolite, Model, Reaction
+
+    from cmig.synthetic_pair import build_pair_taxonomy
+
+    def met(mid):
+        return Metabolite(mid, compartment="e" if mid.endswith("_e") else "c")
+
+    def rxn(rid, stoich, bounds):
+        r = Reaction(rid)
+        r.add_metabolites({met(mid): coef for mid, coef in stoich.items()})
+        r.bounds = bounds
+        return r
+
+    host = Model("bigg_style_host")
+    host.add_reactions([
+        rxn("EX_but_e", {"but_e": -1}, (0, 1000)),
+        rxn("EX_o2_e", {"o2_e": -1}, (0, 1000)),
+        rxn("EX_co2_e", {"co2_e": -1}, (0, 1000)),
+        rxn("BUTt", {"but_e": -1, "but_c": 1}, (-1000, 1000)),
+        rxn("O2t", {"o2_e": -1, "o2_c": 1}, (-1000, 1000)),
+        rxn("CO2t", {"co2_c": -1, "co2_e": 1}, (-1000, 1000)),
+        rxn("BUT_OX", {"but_c": -1, "o2_c": -2, "co2_c": 1, "atp_c": 4}, (0, 1000)),
+        rxn("BIOMASS_host", {"atp_c": -1}, (0, 1000)),
+    ])
+    host.objective = "BIOMASS_host"
+    host_path = tmp_path / "host.xml"
+    cobra.io.write_sbml_model(host, str(host_path))
+    taxonomy = tmp_path / "taxonomy.csv"
+    build_pair_taxonomy(tmp_path / "microbes").to_csv(taxonomy, index=False)
+    host_medium = tmp_path / "host_medium.json"
+    host_medium.write_text(json.dumps({"o2": 100.0}) + "\n")
+    out = tmp_path / "host_microbe"
+
+    rc = main([
+        "host-microbe-bigg",
+        "--host", str(host_path),
+        "--taxonomy", str(taxonomy),
+        "--host-medium", str(host_medium),
+        "--out", str(out),
+    ])
+    assert rc == 0
+    payload = json.loads((out / "host_microbe_bigg_summary.json").read_text())
+    assert payload["coupling"] == "bigg_direct_exchange"
+    assert payload["matched_exchanges"]["but"] == "EX_but_e"
+    assert payload["host"]["viable"] is True
+    assert (out / "microbe_to_host.csv").exists()
+
+
 def test_search_advanced_fixture_cli_writes_pareto(tmp_path):
     out = tmp_path / "search"
     rc = main([

@@ -14,10 +14,39 @@ from cmig.core.host import (  # noqa: E402
     InterfaceFlux,
     benchmark_generic_host,
     classify_host_exchanges,
+    run_bigg_host_microbe,
+    solve_bigg_host,
     solve_host,
 )
 from cmig.core.host_impact import host_impact  # noqa: E402
 from cmig.synthetic_host import build_host_model, lumen_availability_from_pair  # noqa: E402
+
+
+def _bigg_host_model():
+    from cobra import Metabolite, Model, Reaction
+
+    def met(mid):
+        return Metabolite(mid, compartment="e" if mid.endswith("_e") else "c")
+
+    def rxn(rid, stoich, bounds):
+        r = Reaction(rid)
+        r.add_metabolites({met(mid): coef for mid, coef in stoich.items()})
+        r.bounds = bounds
+        return r
+
+    model = Model("bigg_style_host")
+    model.add_reactions([
+        rxn("EX_but_e", {"but_e": -1}, (0, 1000)),
+        rxn("EX_o2_e", {"o2_e": -1}, (0, 1000)),
+        rxn("EX_co2_e", {"co2_e": -1}, (0, 1000)),
+        rxn("BUTt", {"but_e": -1, "but_c": 1}, (-1000, 1000)),
+        rxn("O2t", {"o2_e": -1, "o2_c": 1}, (-1000, 1000)),
+        rxn("CO2t", {"co2_c": -1, "co2_e": 1}, (-1000, 1000)),
+        rxn("BUT_OX", {"but_c": -1, "o2_c": -2, "co2_c": 1, "atp_c": 4}, (0, 1000)),
+        rxn("BIOMASS_host", {"atp_c": -1}, (0, 1000)),
+    ])
+    model.objective = "BIOMASS_host"
+    return model
 
 
 def test_host_viable_on_microbial_scfa():
@@ -85,6 +114,19 @@ def test_host_impact_decomposition():
     assert abs(impact.microbe_to_host.get("but", 0.0) - 4.0) < 1e-3  # butyrate 횡단
 
 
+def test_bigg_host_direct_coupling_uses_shared_ids():
+    """BiGG ids: microbial but -> host EX_but_e without a manual mapping table."""
+    res = solve_bigg_host(
+        _bigg_host_model(),
+        {"but": 4.0},
+        host_medium={"o2": 20.0},
+        solver="gurobi",
+    )
+    assert res.status == "optimal" and res.viable
+    assert abs(res.lumen_uptake.get("but", 0.0) - 4.0) < 1e-6
+    assert any(f.exchange_id == "EX_but_e" for f in res.interface_fluxes)
+
+
 def test_run_host_microbe_end_to_end():
     """SC-HI2: end-to-end — 실 micom community(synthetic pair) 분비 → host (orphan 아님)."""
     pytest.importorskip("micom")
@@ -100,6 +142,27 @@ def test_run_host_microbe_end_to_end():
     # 실 community 는 butyrate(6.25) 분비 → host 가 흡수해 viable
     assert host_res.viable
     assert impact.microbe_to_host.get("but", 0.0) > 1.0             # 미생물→host butyrate 횡단
+
+
+def test_run_bigg_host_microbe_end_to_end():
+    """실 MICOM pair secretion -> BiGG host EX_but_e direct coupling."""
+    pytest.importorskip("micom")
+    import tempfile
+
+    from cmig.synthetic_pair import build_pair_taxonomy
+
+    with tempfile.TemporaryDirectory() as td:
+        tax = build_pair_taxonomy(td)
+        result = run_bigg_host_microbe(
+            tax,
+            _bigg_host_model(),
+            solver="gurobi",
+            tradeoff_f=0.5,
+            host_medium={"o2": 100.0},
+        )
+    assert result.host_result.viable
+    assert result.matched_exchanges["but"] == "EX_but_e"
+    assert result.impact.microbe_to_host.get("but", 0.0) > 1.0
 
 
 def test_host_osqp_hybrid_restores_bounds():

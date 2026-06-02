@@ -283,6 +283,130 @@ def _cmd_host_benchmark(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
+    """BiGG direct host-microbe coupling: microbial secretion -> host EX_<met>_e."""
+    try:
+        import pandas as pd
+        from cobra.io import read_sbml_model
+
+        from cmig.core.host import run_bigg_host_microbe
+        from cmig.core.medium_spec import load_medium
+        from cmig.core.model_pool import taxonomy_from_model_dir
+    except ImportError:
+        print(
+            "host-microbe-bigg requires the engine stack: uv sync --extra engine",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        host_path = Path(args.host)
+        if not host_path.exists():
+            raise ValueError(f"host model file not found: {host_path}")
+        if bool(args.taxonomy) == bool(args.model_dir):
+            raise ValueError("provide exactly one of --taxonomy or --model-dir")
+        if args.taxonomy:
+            taxonomy_path = Path(args.taxonomy)
+            if not taxonomy_path.exists():
+                raise ValueError(f"taxonomy file not found: {taxonomy_path}")
+            taxonomy = pd.read_csv(taxonomy_path)
+        else:
+            taxonomy = taxonomy_from_model_dir(args.model_dir, recursive=args.recursive)
+        missing_cols = {"id", "file"} - set(taxonomy.columns)
+        if missing_cols:
+            raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
+        host = read_sbml_model(str(host_path))
+        microbe_medium = load_medium(args.microbe_medium) if args.microbe_medium else None
+        host_medium = load_medium(args.host_medium).uptake if args.host_medium else None
+        exclude = set() if args.include_currency_metabolites else {"h", "h2o", "co2"}
+        if args.exclude_metabolites:
+            exclude.update(
+                _parse_csv_strings(args.exclude_metabolites, flag="--exclude-metabolites")
+            )
+        result = run_bigg_host_microbe(
+            taxonomy,
+            host,
+            solver=args.solver,
+            tradeoff_f=args.tradeoff_f,
+            microbe_medium=microbe_medium,
+            host_medium=host_medium,
+            exchange_suffix=args.exchange_suffix,
+            exclude_metabolites=exclude,
+            close_unlisted_host_uptake=not args.keep_host_uptake,
+        )
+        out = Path(args.out)
+        _write_host_microbe_bigg_outputs(result, taxonomy, out)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"failed to write host-microbe outputs: {e}", file=sys.stderr)
+        return 2
+    print(f"host-microbe BiGG coupling complete -> {out}")
+    print(
+        f"  community_growth={result.community_growth:.4g} "
+        f"host_biomass={result.host_result.biomass:.4g} "
+        f"host_status={result.host_result.status}"
+    )
+    return 0
+
+
+def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    taxonomy.to_csv(out / "microbe_taxonomy.csv", index=False)
+    with open(out / "microbial_secretion.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["metabolite", "flux", "host_exchange", "matched"])
+        writer.writeheader()
+        for metabolite, flux in sorted(result.microbial_secretion.items()):
+            exchange = result.matched_exchanges.get(metabolite, "")
+            writer.writerow({
+                "metabolite": metabolite,
+                "flux": _finite_csv(float(flux)),
+                "host_exchange": exchange,
+                "matched": bool(exchange),
+            })
+    with open(out / "host_uptake.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["metabolite", "uptake_flux"])
+        writer.writeheader()
+        for metabolite, flux in sorted(result.host_result.lumen_uptake.items()):
+            writer.writerow({"metabolite": metabolite, "uptake_flux": _finite_csv(float(flux))})
+    with open(out / "microbe_to_host.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["metabolite", "transfer_flux"])
+        writer.writeheader()
+        for metabolite, flux in sorted(result.impact.microbe_to_host.items()):
+            writer.writerow({"metabolite": metabolite, "transfer_flux": _finite_csv(float(flux))})
+    payload = {
+        "status": "ok",
+        "coupling": "bigg_direct_exchange",
+        "community": {
+            "status": result.community_status,
+            "growth": _finite_or_none(float(result.community_growth)),
+            "n_members": int(len(taxonomy)),
+        },
+        "host": {
+            "status": result.host_result.status,
+            "viable": result.host_result.viable,
+            "objective_value": _finite_or_none(float(result.host_result.biomass)),
+            "diagnostic": result.host_result.diagnostic,
+            "lumen_uptake": result.host_result.lumen_uptake,
+        },
+        "matched_exchanges": result.matched_exchanges,
+        "unmatched_metabolites": result.unmatched_metabolites,
+        "microbe_to_host": result.impact.microbe_to_host,
+        "unused_secretion": result.impact.unused_secretion,
+        "warnings": result.warnings,
+        "artifacts": [
+            "microbe_taxonomy.csv",
+            "microbial_secretion.csv",
+            "host_uptake.csv",
+            "microbe_to_host.csv",
+            "host_microbe_bigg_summary.json",
+        ],
+    }
+    (out / "host_microbe_bigg_summary.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    )
+
+
 def _cmd_dfba_fixture(args: argparse.Namespace) -> int:
     """e_coli_core glucose-batch dFBA fixture → optional timecourse.parquet."""
     try:
@@ -1443,6 +1567,41 @@ def build_parser() -> argparse.ArgumentParser:
     hb.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     hb.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
     hb.set_defaults(func=_cmd_host_benchmark)
+    hmb = sub.add_parser(
+        "host-microbe-bigg",
+        help="BiGG direct host-microbe coupling -> host_microbe_bigg_summary.json",
+    )
+    hmb.add_argument("--host", required=True, help="host SBML/XML model path")
+    hmb_src = hmb.add_mutually_exclusive_group(required=True)
+    hmb_src.add_argument("--taxonomy", default=None, help="microbial MICOM taxonomy csv")
+    hmb_src.add_argument("--model-dir", default=None, help="directory containing microbial GEMs")
+    hmb.add_argument("--recursive", action="store_true", help="scan --model-dir recursively")
+    hmb.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
+    hmb.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f")
+    hmb.add_argument("--microbe-medium", default=None, help="optional microbial medium csv/json")
+    hmb.add_argument(
+        "--host-medium",
+        default=None,
+        help="optional host background medium csv/json; keys may be EX_*_e or BiGG ids",
+    )
+    hmb.add_argument("--exchange-suffix", default="_e", help="host BiGG exchange suffix")
+    hmb.add_argument(
+        "--exclude-metabolites",
+        default=None,
+        help="comma-separated BiGG metabolite ids to exclude from coupling",
+    )
+    hmb.add_argument(
+        "--include-currency-metabolites",
+        action="store_true",
+        help="allow h/h2o/co2 direct coupling; off by default",
+    )
+    hmb.add_argument(
+        "--keep-host-uptake",
+        action="store_true",
+        help="do not close pre-existing host exchange uptake bounds before coupling",
+    )
+    hmb.add_argument("--out", required=True, help="output directory")
+    hmb.set_defaults(func=_cmd_host_microbe_bigg)
     df = sub.add_parser("dfba-fixture", help="e_coli_core glucose dFBA → timecourse.parquet")
     df.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     df.add_argument("--t-end", type=float, default=1.0, dest="t_end")
