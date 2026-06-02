@@ -126,6 +126,19 @@ def test_model_pool_collision_ids_get_stable_digest_suffix(tmp_path):
     assert ids == list(taxonomy_from_model_dir(tmp_path)["id"])
 
 
+def test_model_pool_recursive_same_basename_gets_unique_path_digest(tmp_path):
+    """Recursive pools commonly use strain folders with the same model basename."""
+    (tmp_path / "strainA").mkdir()
+    (tmp_path / "strainB").mkdir()
+    (tmp_path / "strainA" / "model.xml").write_text("<sbml/>")
+    (tmp_path / "strainB" / "model.xml").write_text("<sbml/>")
+    taxonomy = taxonomy_from_model_dir(tmp_path, recursive=True)
+    ids = list(taxonomy["id"])
+    assert len(ids) == len(set(ids)) == 2
+    assert all(x.startswith("model_") for x in ids)
+    assert ids == list(taxonomy_from_model_dir(tmp_path, recursive=True)["id"])
+
+
 def test_model_pool_diagnostics_detect_target_and_biomass():
     import pandas as pd
 

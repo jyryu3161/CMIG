@@ -107,6 +107,26 @@ def test_retry_failed_job():
     r.shutdown()
 
 
+def test_retry_rejects_running_job():
+    """retry is limited to terminal failed/cancelled jobs to avoid duplicate writes."""
+    r = JobRunner(max_workers=1)
+    started = threading.Event()
+    release = threading.Event()
+
+    def wait(ctx: JobContext) -> str:
+        started.set()
+        release.wait(timeout=5)
+        return "done"
+
+    jid = r.submit("wait", wait)
+    started.wait(timeout=2)
+    with pytest.raises(ValueError, match="failed or cancelled"):
+        r.retry(jid)
+    release.set()
+    assert r.result(jid, timeout=5) == "done"
+    r.shutdown()
+
+
 def test_make_sweep_job_progress_and_cancel():
     """SC-J5: make_sweep_job 가 run_sweep 을 실제 구동 — 진행률 advance."""
     from cmig.core.sweep import SweepAxis

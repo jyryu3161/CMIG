@@ -61,6 +61,7 @@ def taxonomy_from_model_dir(model_dir: str | Path, *, recursive: bool = False) -
     """Build a MICOM-compatible taxonomy DataFrame from a directory of GEM files."""
     import pandas as pd
 
+    root = Path(model_dir).resolve()
     rows: list[dict[str, object]] = []
     bases: dict[str, list[Path]] = {}
     for model_path in discover_model_files(model_dir, recursive=recursive):
@@ -70,14 +71,18 @@ def taxonomy_from_model_dir(model_dir: str | Path, *, recursive: bool = False) -
         for model_path in paths:
             member_id = base
             if len(paths) > 1:
-                member_id = f"{base}_{_path_digest(model_path)}"
+                member_id = f"{base}_{_path_digest(model_path, root=root)}"
             rows.append({"id": member_id, "file": str(model_path), "abundance": 1.0})
     return pd.DataFrame.from_records(rows)
 
 
-def _path_digest(path: Path) -> str:
+def _path_digest(path: Path, *, root: Path) -> str:
     """Short stable suffix for filenames that sanitize to the same member id."""
-    return hashlib.sha1(path.name.encode("utf-8")).hexdigest()[:8]
+    try:
+        key = path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        key = path.resolve().as_posix()
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
 
 
 @dataclass(frozen=True)

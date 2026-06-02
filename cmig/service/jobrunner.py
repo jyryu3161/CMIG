@@ -168,6 +168,12 @@ class JobRunner:
     def retry(self, job_id: str) -> str:
         """실패/취소 job 의 (kind, fn, on_progress) 재제출 → 새 job_id."""
         with self._lock:
+            status = self._jobs[job_id].status
+            if status not in (JobStatus.FAILED, JobStatus.CANCELLED):
+                raise ValueError(
+                    f"only failed or cancelled jobs can be retried; "
+                    f"{job_id} is {status.value}"
+                )
             kind, fn, on_progress = self._specs[job_id]
         return self.submit(kind, fn, on_progress=on_progress)
 
