@@ -266,6 +266,11 @@ class SearchView(QWidget):
         layout.addWidget(self.figure_stack)
 
     def selected_figure_artifact(self) -> str:
+        if (
+            self.current_run_dir is not None
+            and (self.current_run_dir / "host_search_plot.svg").exists()
+        ):
+            return "host_search_plot.svg"
         mapping = {"Ranking": "search_plot.svg", "Scatter": "search_scatter.svg"}
         return mapping[self.figure_mode_combo.currentText()]
 

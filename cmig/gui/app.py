@@ -181,6 +181,7 @@ class CmigMainWindow(QMainWindow):
         self._fixture_jobs: dict[str, Path] = {}
         self._search_jobs: dict[str, Path] = {}
         self._host_microbe_jobs: dict[str, Path] = {}
+        self._host_search_jobs: dict[str, Path] = {}
         self.current_manifest: dict[str, Any] | None = None
         self.current_graph_payload: dict[str, Any] | None = None
         self.current_model_review: dict[str, Any] | None = None
@@ -285,6 +286,7 @@ class CmigMainWindow(QMainWindow):
         self.host_view.browse_microbe_medium_btn.clicked.connect(self._browse_microbe_medium)
         self.host_view.browse_out_dir_btn.clicked.connect(self._browse_host_microbe_out_dir)
         self.host_view.run_btn.clicked.connect(self.run_host_microbe_bigg)
+        self.host_view.run_search_btn.clicked.connect(self.run_host_search_bigg)
         self.host_view.export_figure_btn.clicked.connect(self._export_host_figure)
 
     def _cancel_selected_job(self) -> None:
@@ -699,6 +701,8 @@ class CmigMainWindow(QMainWindow):
                 argv.extend(["--host-medium", str(request["host_medium"])])
             if request["microbe_medium"]:
                 argv.extend(["--microbe-medium", str(request["microbe_medium"])])
+            if request["host_objective"]:
+                argv.extend(["--host-objective", str(request["host_objective"])])
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"host-microbe run failed with rc={rc}")
@@ -715,6 +719,69 @@ class CmigMainWindow(QMainWindow):
         self.host_view.show_currency_metabolites = bool(request["include_currency_metabolites"])
         self.host_view.set_running(jid)
         self.statusBar().showMessage(f"Started host-microbe run: {jid}")
+        return jid
+
+    def run_host_search_bigg(self) -> str:
+        """Rank microbial combinations by host objective/target transfer from the Host tab."""
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        request = self.host_view.request()
+        host = request["host"]
+        model_dir = request["model_dir"]
+        if not host or not model_dir:
+            self.host_view.run_status.setText(
+                "Host model and microbial model folder are required for ranking."
+            )
+            return ""
+        out_dir_text = request["out_dir"]
+        out_dir = (
+            Path(out_dir_text)
+            if out_dir_text
+            else Path(tempfile.mkdtemp(prefix="cmig-host-search-", dir=_search_temp_root()))
+        ).resolve()
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            argv = [
+                "host-search-bigg",
+                "--host", str(host),
+                "--model-dir", str(model_dir),
+                "--target", str(request["search_target"]),
+                "--metric", str(request["search_metric"]),
+                "--min-size", str(request["min_size"]),
+                "--max-size", str(request["max_size"]),
+                "--tradeoff-f", f"{float(request['tradeoff_f']):.6g}",
+                "--out", str(out_dir),
+            ]
+            if request["recursive"]:
+                argv.append("--recursive")
+            if request["keep_host_uptake"]:
+                argv.append("--keep-host-uptake")
+            if request["include_currency_metabolites"]:
+                argv.append("--include-currency-metabolites")
+            if request["host_medium"]:
+                argv.extend(["--host-medium", str(request["host_medium"])])
+            if request["microbe_medium"]:
+                argv.extend(["--microbe-medium", str(request["microbe_medium"])])
+            if request["host_objective"]:
+                argv.extend(["--host-objective", str(request["host_objective"])])
+            rc = main(argv)
+            if rc != 0:
+                raise RuntimeError(f"host-search run failed with rc={rc}")
+            ctx.raise_if_cancelled()
+            ctx.report_progress(1, 1)
+            payload = json.loads((out_dir / "host_search_summary.json").read_text())
+            if not isinstance(payload, dict):
+                raise RuntimeError("host-search output is not a JSON object")
+            return payload
+
+        jid = self.submit_job("host_search_bigg", _job)
+        self._host_search_jobs[jid] = out_dir
+        self.host_view.run_search_btn.setEnabled(False)
+        self.host_view.run_status.setText(f"host-search started: {jid}")
+        self.statusBar().showMessage(f"Started host-search run: {jid}")
         return jid
 
     def _poll_completed_jobs(self) -> None:
@@ -752,6 +819,46 @@ class CmigMainWindow(QMainWindow):
                 self.host_view.run_status.setText(
                     f"host-microbe {job.status.value}: {job.error or jid}"
                 )
+        for jid, out_dir in list(self._host_search_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE and isinstance(job.result, dict):
+                self._host_search_jobs.pop(jid, None)
+                self.host_view.run_search_btn.setEnabled(True)
+                self.current_search_dir = out_dir
+                summary = _host_search_summary_for_search_view(job.result)
+                self.search_view.figure_mode_combo.setCurrentText("Ranking")
+                self.search_view.load_summary(summary, run_dir=out_dir)
+                self.tabs.setCurrentWidget(self.search_view)
+                self.statusBar().showMessage(f"Host-search complete: {jid}")
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                self._host_search_jobs.pop(jid, None)
+                self.host_view.run_search_btn.setEnabled(True)
+                self.host_view.run_status.setText(
+                    f"host-search {job.status.value}: {job.error or jid}"
+                )
+
+
+def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:
+    """Adapt host-search output to the existing SearchView ranking table contract."""
+    target = str(payload.get("target", ""))
+    rows: list[dict[str, Any]] = []
+    for item in payload.get("top_ranked", []):
+        if not isinstance(item, dict):
+            continue
+        rows.append({
+            "members": item.get("members", []),
+            "score": item.get("score"),
+            "target_flux": item.get("target_transfer"),
+            "community_growth": item.get("community_growth"),
+            "status": item.get("evaluation_status", item.get("host_status", "")),
+            "diagnostic": item.get("diagnostic"),
+        })
+    return {
+        "target": target,
+        "strategy": f"host-search/{payload.get('metric', '')}",
+        "top_ranked": rows,
+        "warnings": [],
+    }
 
 
 def build_main_window(runner: JobRunner | None = None, lang: str = "ko") -> CmigMainWindow:

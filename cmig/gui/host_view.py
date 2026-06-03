@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QStackedWidget,
     QTableWidget,
@@ -48,12 +49,15 @@ class HostImpactView(QWidget):
         self.host_path_input = QLineEdit("")
         self.host_path_input.setPlaceholderText("Human/host SBML/XML model")
         self.browse_host_btn = QPushButton("Host")
+        self.host_objective_input = QLineEdit("")
+        self.host_objective_input.setPlaceholderText("Optional host objective reaction")
         self.model_dir_input = QLineEdit("")
         self.model_dir_input.setPlaceholderText("Folder of user-prepared microbial models")
         self.browse_model_dir_btn = QPushButton("Models")
         file_row.addWidget(QLabel("Input"))
         file_row.addWidget(self.host_path_input)
         file_row.addWidget(self.browse_host_btn)
+        file_row.addWidget(self.host_objective_input)
         file_row.addWidget(self.model_dir_input)
         file_row.addWidget(self.browse_model_dir_btn)
         medium_row = QHBoxLayout()
@@ -82,6 +86,7 @@ class HostImpactView(QWidget):
         self.keep_host_uptake_check = QCheckBox("Keep host uptake")
         self.include_currency_check = QCheckBox("Currency metabolites")
         self.run_btn = QPushButton("Run Host-Microbe")
+        self.run_search_btn = QPushButton("Rank Combinations")
         run_row.addWidget(QLabel("tradeoff f"))
         run_row.addWidget(self.tradeoff_spin)
         run_row.addWidget(self.recursive_check)
@@ -89,6 +94,27 @@ class HostImpactView(QWidget):
         run_row.addWidget(self.include_currency_check)
         run_row.addStretch(1)
         run_row.addWidget(self.run_btn)
+        run_row.addWidget(self.run_search_btn)
+        search_row = QHBoxLayout()
+        self.search_target_input = QLineEdit("ac")
+        self.search_target_input.setPlaceholderText("Target transferred metabolite")
+        self.search_metric_combo = QComboBox()
+        self.search_metric_combo.addItems(["target_transfer", "weighted", "objective_value"])
+        self.min_size_spin = QSpinBox()
+        self.min_size_spin.setRange(1, 20)
+        self.min_size_spin.setValue(2)
+        self.max_size_spin = QSpinBox()
+        self.max_size_spin.setRange(1, 20)
+        self.max_size_spin.setValue(2)
+        search_row.addWidget(QLabel("Host Search Target"))
+        search_row.addWidget(self.search_target_input)
+        search_row.addWidget(QLabel("Metric"))
+        search_row.addWidget(self.search_metric_combo)
+        search_row.addWidget(QLabel("Size"))
+        search_row.addWidget(self.min_size_spin)
+        search_row.addWidget(QLabel("to"))
+        search_row.addWidget(self.max_size_spin)
+        search_row.addStretch(1)
         figure_row = QHBoxLayout()
         self.figure_mode_combo = QComboBox()
         self.figure_mode_combo.addItems(["Network", "Circle", "Heatmap", "Bubble", "Contribution"])
@@ -141,6 +167,7 @@ class HostImpactView(QWidget):
         layout.addLayout(file_row)
         layout.addLayout(medium_row)
         layout.addLayout(run_row)
+        layout.addLayout(search_row)
         layout.addLayout(figure_row)
         layout.addWidget(self.run_status)
         layout.addWidget(splitter, 1)
@@ -149,11 +176,16 @@ class HostImpactView(QWidget):
         """Return the current host-microbe run request from GUI controls."""
         return {
             "host": self.host_path_input.text().strip(),
+            "host_objective": self.host_objective_input.text().strip(),
             "model_dir": self.model_dir_input.text().strip(),
             "host_medium": self.host_medium_input.text().strip(),
             "microbe_medium": self.microbe_medium_input.text().strip(),
             "out_dir": self.out_dir_input.text().strip(),
             "tradeoff_f": self.tradeoff_spin.value(),
+            "search_target": self.search_target_input.text().strip() or "ac",
+            "search_metric": self.search_metric_combo.currentText(),
+            "min_size": self.min_size_spin.value(),
+            "max_size": self.max_size_spin.value(),
             "recursive": self.recursive_check.isChecked(),
             "keep_host_uptake": self.keep_host_uptake_check.isChecked(),
             "include_currency_metabolites": self.include_currency_check.isChecked(),
