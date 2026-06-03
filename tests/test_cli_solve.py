@@ -206,7 +206,11 @@ def test_search_user_taxonomy_ranks_target_pool(tmp_path):
     assert (out / "search_rankings.csv").exists()
     assert (out / "search_member_matrix.csv").exists()
     assert (out / "search_plot.svg").exists()
+    assert (out / "search_plot.tiff").exists()
     assert (out / "search_scatter.svg").exists()
+    assert (out / "search_scatter.tiff").exists()
+    assert "search_plot.tiff" in payload["artifacts"]
+    assert "search_scatter.tiff" in payload["artifacts"]
 
 
 def test_sandbox_fixture_preview_and_commit(tmp_path):
@@ -299,6 +303,7 @@ def test_host_microbe_bigg_cli_writes_coupling_outputs(tmp_path):
         "--host", str(host_path),
         "--taxonomy", str(taxonomy),
         "--host-medium", str(host_medium),
+        "--host-objective", "BIOMASS_host",
         "--out", str(out),
     ])
     assert rc == 0
@@ -314,9 +319,13 @@ def test_host_microbe_bigg_cli_writes_coupling_outputs(tmp_path):
         "member_contribution.csv",
         "figure_manifest.json",
         "interaction_circle.svg",
+        "interaction_circle.tiff",
         "interaction_heatmap.svg",
+        "interaction_heatmap.tiff",
         "interaction_bubble.svg",
+        "interaction_bubble.tiff",
         "member_contribution.svg",
+        "member_contribution.tiff",
     ):
         assert (out / artifact).exists(), artifact
         assert artifact in payload["artifacts"]
@@ -330,6 +339,108 @@ def test_host_microbe_bigg_cli_writes_coupling_outputs(tmp_path):
         contribution_rows = list(csv.DictReader(f))
     assert contribution_rows
     assert {row["metabolite"] for row in contribution_rows} <= set(payload["microbe_to_host"])
+
+
+def test_host_search_bigg_cli_ranks_host_target_transfer(tmp_path):
+    import cobra
+    from cobra import Metabolite, Model, Reaction
+
+    from cmig.synthetic_pair import build_pair_taxonomy
+
+    def met(mid):
+        return Metabolite(mid, compartment="e" if mid.endswith("_e") else "c")
+
+    def rxn(rid, stoich, bounds):
+        r = Reaction(rid)
+        r.add_metabolites({met(mid): coef for mid, coef in stoich.items()})
+        r.bounds = bounds
+        return r
+
+    host = Model("bigg_style_host")
+    host.add_reactions([
+        rxn("EX_but_e", {"but_e": -1}, (0, 1000)),
+        rxn("EX_o2_e", {"o2_e": -1}, (0, 1000)),
+        rxn("BUTt", {"but_e": -1, "but_c": 1}, (-1000, 1000)),
+        rxn("O2t", {"o2_e": -1, "o2_c": 1}, (-1000, 1000)),
+        rxn("BUT_OX", {"but_c": -1, "o2_c": -2, "atp_c": 4}, (0, 1000)),
+        rxn("BIOMASS_host", {"atp_c": -1}, (0, 1000)),
+    ])
+    host.objective = "BIOMASS_host"
+    host_path = tmp_path / "host.xml"
+    cobra.io.write_sbml_model(host, str(host_path))
+    taxonomy = tmp_path / "taxonomy.csv"
+    build_pair_taxonomy(tmp_path / "microbes").to_csv(taxonomy, index=False)
+    host_medium = tmp_path / "host_medium.json"
+    host_medium.write_text(json.dumps({"o2": 100.0}) + "\n")
+    out = tmp_path / "host_search"
+
+    rc = main([
+        "host-search-bigg",
+        "--host", str(host_path),
+        "--taxonomy", str(taxonomy),
+        "--host-medium", str(host_medium),
+        "--host-objective", "BIOMASS_host",
+        "--target", "but",
+        "--metric", "target_transfer",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    payload = json.loads((out / "host_search_summary.json").read_text())
+    assert payload["metric"] == "target_transfer"
+    assert payload["target"] == "but"
+    assert payload["n_candidates_evaluated"] == 1
+    assert payload["top_ranked"][0]["target_transfer"] > 0.0
+    assert payload["top_ranked"][0]["host_objective_value"] > 0.0
+    assert (out / "host_search_rankings.csv").exists()
+    assert (out / "host_search_plot.svg").exists()
+    assert (out / "host_search_plot.tiff").exists()
+
+
+def test_gene_ko_search_cli_ranks_selected_member_genes(tmp_path):
+    import cobra
+    import pandas as pd
+
+    from cmig.synthetic_pair import build_pair_models
+
+    producer, consumer = build_pair_models()
+    producer.reactions.get_by_id("GLC2AC").gene_reaction_rule = "g_prod"
+    consumer.reactions.get_by_id("AC2BUT").gene_reaction_rule = "g_cons"
+    model_dir = tmp_path / "models"
+    model_dir.mkdir()
+    producer_path = model_dir / "producer.xml"
+    consumer_path = model_dir / "consumer.xml"
+    cobra.io.write_sbml_model(producer, str(producer_path))
+    cobra.io.write_sbml_model(consumer, str(consumer_path))
+    taxonomy = pd.DataFrame({
+        "id": ["producer", "consumer"],
+        "file": [str(producer_path), str(consumer_path)],
+        "abundance": [0.5, 0.5],
+    })
+    taxonomy_path = tmp_path / "taxonomy.csv"
+    taxonomy.to_csv(taxonomy_path, index=False)
+    out = tmp_path / "gene_ko"
+
+    rc = main([
+        "gene-ko-search",
+        "--taxonomy", str(taxonomy_path),
+        "--members", "producer,consumer",
+        "--member", "producer",
+        "--target", "but",
+        "--genes", "g_prod",
+        "--out", str(out),
+    ])
+
+    assert rc == 0
+    payload = json.loads((out / "gene_ko_summary.json").read_text())
+    assert payload["members"] == ["producer", "consumer"]
+    assert payload["member"] == "producer"
+    assert payload["target"] == "but"
+    assert payload["baseline"]["target_flux"] > 0.0
+    assert payload["top_ranked"][0]["gene"] == "g_prod"
+    assert payload["top_ranked"][0]["target_flux_delta"] < 0.0
+    assert (out / "gene_ko_rankings.csv").exists()
+    assert (out / "gene_ko_plot.svg").exists()
+    assert (out / "gene_ko_plot.tiff").exists()
 
 
 def test_search_advanced_fixture_cli_writes_pareto(tmp_path):

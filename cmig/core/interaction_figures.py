@@ -182,17 +182,23 @@ def write_interaction_artifacts(
 
 
 def render_interaction_figures(out_dir: str | Path, *, top_n: int = 20) -> list[str]:
-    """Render circle, heatmap, bubble, and contribution SVGs from saved CSV artifacts."""
+    """Render circle, heatmap, bubble, and contribution SVG/TIFF figures from saved CSV."""
     out = Path(out_dir)
     edges = _read_csv(out / "interaction_edges.csv")
     contributions = _read_csv(out / "member_contribution.csv")
-    artifacts = [
+    svg_artifacts = [
         _render_circle(edges, out / "interaction_circle.svg", top_n=top_n),
         _render_heatmap(edges, out / "interaction_heatmap.svg"),
         _render_bubble(edges, out / "interaction_bubble.svg", top_n=top_n),
         _render_contribution(contributions, out / "member_contribution.svg", top_n=top_n),
     ]
-    return [p.name for p in artifacts]
+    names: list[str] = []
+    for path in svg_artifacts:
+        names.append(path.name)
+        tiff = path.with_suffix(".tiff")
+        if tiff.exists():
+            names.append(tiff.name)
+    return names
 
 
 def _edge_row(
@@ -258,6 +264,11 @@ def _load_matplotlib() -> Any:
     return plt
 
 
+def _save_svg_and_tiff(fig: Any, path: Path) -> None:
+    fig.savefig(path, format="svg")
+    fig.savefig(path.with_suffix(".tiff"), format="tiff", dpi=300)
+
+
 def _polish_axes(ax: Any, *, grid_axis: str = "x") -> None:
     ax.grid(True, axis=grid_axis, color="#d9dee3", linewidth=0.7, alpha=0.8)
     ax.set_axisbelow(True)
@@ -284,7 +295,7 @@ def _render_circle(rows: list[dict[str, str]], path: Path, *, top_n: int) -> Pat
     ax.set_xlim(-1.62, 1.62)
     ax.set_ylim(-1.56, 1.72)
     if not nodes:
-        fig.savefig(path, format="svg")
+        _save_svg_and_tiff(fig, path)
         plt.close(fig)
         return path
     coords = {}
@@ -323,7 +334,7 @@ def _render_circle(rows: list[dict[str, str]], path: Path, *, top_n: int) -> Pat
         )
     fig.tight_layout()
     fig.subplots_adjust(top=0.9)
-    fig.savefig(path, format="svg")
+    _save_svg_and_tiff(fig, path)
     plt.close(fig)
     return path
 
@@ -360,7 +371,7 @@ def _render_heatmap(rows: list[dict[str, str]], path: Path) -> Path:
     ax.grid(which="minor", color="white", linewidth=0.6, alpha=0.55)
     fig.tight_layout()
     fig.subplots_adjust(bottom=0.28, left=0.18, right=0.88)
-    fig.savefig(path, format="svg")
+    _save_svg_and_tiff(fig, path)
     plt.close(fig)
     return path
 
@@ -393,7 +404,7 @@ def _render_bubble(rows: list[dict[str, str]], path: Path, *, top_n: int) -> Pat
     _polish_axes(ax, grid_axis="both")
     fig.tight_layout()
     fig.subplots_adjust(bottom=0.28, left=0.18)
-    fig.savefig(path, format="svg")
+    _save_svg_and_tiff(fig, path)
     plt.close(fig)
     return path
 
@@ -412,6 +423,6 @@ def _render_contribution(rows: list[dict[str, str]], path: Path, *, top_n: int) 
     ax.set_title("Member contribution to host transfer")
     _polish_axes(ax, grid_axis="x")
     fig.tight_layout()
-    fig.savefig(path, format="svg")
+    _save_svg_and_tiff(fig, path)
     plt.close(fig)
     return path

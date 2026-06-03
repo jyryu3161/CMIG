@@ -14,6 +14,7 @@ import json
 import math
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -283,6 +284,14 @@ def _cmd_host_benchmark(args: argparse.Namespace) -> int:
     return 0
 
 
+def _apply_host_objective(host: Any, reaction_id: str | None) -> None:
+    if not reaction_id:
+        return
+    if reaction_id not in host.reactions:
+        raise ValueError(f"host objective reaction not found: {reaction_id}")
+    host.objective = reaction_id
+
+
 def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
     """BiGG direct host-microbe coupling: microbial secretion -> host EX_<met>_e."""
     try:
@@ -315,6 +324,7 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
         if missing_cols:
             raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
         host = read_sbml_model(str(host_path))
+        _apply_host_objective(host, args.host_objective)
         microbe_medium = load_medium(args.microbe_medium) if args.microbe_medium else None
         host_medium = load_medium(args.host_medium).uptake if args.host_medium else None
         exclude = set() if args.include_currency_metabolites else {"h", "h2o", "co2"}
@@ -344,10 +354,448 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
     print(f"host-microbe BiGG coupling complete -> {out}")
     print(
         f"  community_growth={result.community_growth:.4g} "
-        f"host_biomass={result.host_result.biomass:.4g} "
+        f"host_objective={result.host_result.biomass:.4g} "
         f"host_status={result.host_result.status}"
     )
     return 0
+
+
+def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
+    """Rank microbial combinations by host objective and/or target transfer."""
+    try:
+        import pandas as pd
+        from cobra.io import read_sbml_model
+
+        from cmig.core.host import run_bigg_host_microbe
+        from cmig.core.medium_spec import load_medium
+        from cmig.core.model_pool import taxonomy_from_model_dir
+        from cmig.core.search_product import candidate_combinations
+    except ImportError:
+        print(
+            "host-search-bigg requires the engine stack: uv sync --extra engine",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        host_path = Path(args.host)
+        if not host_path.exists():
+            raise ValueError(f"host model file not found: {host_path}")
+        if bool(args.taxonomy) == bool(args.model_dir):
+            raise ValueError("provide exactly one of --taxonomy or --model-dir")
+        if args.taxonomy:
+            taxonomy_path = Path(args.taxonomy)
+            if not taxonomy_path.exists():
+                raise ValueError(f"taxonomy file not found: {taxonomy_path}")
+            taxonomy = pd.read_csv(taxonomy_path)
+        else:
+            taxonomy = taxonomy_from_model_dir(args.model_dir, recursive=args.recursive)
+        missing_cols = {"id", "file"} - set(taxonomy.columns)
+        if missing_cols:
+            raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
+        ids = [str(x) for x in taxonomy["id"]]
+        candidates = candidate_combinations(ids, args.min_size, args.max_size)
+        if not candidates:
+            raise ValueError("no candidate combinations generated")
+        host_model = read_sbml_model(str(host_path))
+        _apply_host_objective(host_model, args.host_objective)
+        microbe_medium = load_medium(args.microbe_medium) if args.microbe_medium else None
+        host_medium = load_medium(args.host_medium).uptake if args.host_medium else None
+        exclude = set() if args.include_currency_metabolites else {"h", "h2o", "co2"}
+        if args.exclude_metabolites:
+            exclude.update(
+                _parse_csv_strings(args.exclude_metabolites, flag="--exclude-metabolites")
+            )
+        rows: list[dict[str, Any]] = []
+        for members in candidates:
+            sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
+            try:
+                result = run_bigg_host_microbe(
+                    sub,
+                    host_model.copy(),
+                    solver=args.solver,
+                    tradeoff_f=args.tradeoff_f,
+                    microbe_medium=microbe_medium,
+                    host_medium=host_medium,
+                    exchange_suffix=args.exchange_suffix,
+                    exclude_metabolites=exclude,
+                    close_unlisted_host_uptake=not args.keep_host_uptake,
+                )
+                host_objective = float(result.host_result.biomass)
+                target_transfer = float(result.impact.microbe_to_host.get(args.target, 0.0))
+                if args.metric == "objective_value":
+                    score = host_objective
+                elif args.metric == "target_transfer":
+                    score = target_transfer
+                else:
+                    score = (
+                        args.host_weight * host_objective
+                        + args.target_weight * target_transfer
+                    )
+                rows.append({
+                    "members": members,
+                    "evaluation_status": "ok",
+                    "score": score,
+                    "host_objective_value": host_objective,
+                    "host_status": result.host_result.status,
+                    "host_viable": result.host_result.viable,
+                    "target": args.target,
+                    "target_transfer": target_transfer,
+                    "community_growth": float(result.community_growth),
+                    "community_status": result.community_status,
+                    "warnings": result.warnings,
+                    "diagnostic": None,
+                })
+            except Exception as e:
+                rows.append({
+                    "members": members,
+                    "evaluation_status": "failed",
+                    "score": 0.0,
+                    "host_objective_value": 0.0,
+                    "host_status": "failed",
+                    "host_viable": False,
+                    "target": args.target,
+                    "target_transfer": 0.0,
+                    "community_growth": 0.0,
+                    "community_status": "failed",
+                    "warnings": [],
+                    "diagnostic": str(e),
+                })
+        rows.sort(key=lambda row: (
+            row["evaluation_status"] != "ok",
+            -float(row["score"]),
+            tuple(row["members"]),
+        ))
+        out = Path(args.out)
+        _write_host_search_bigg_outputs(
+            rows[: args.top_k],
+            out,
+            target=args.target,
+            metric=args.metric,
+            n_candidates_total=len(candidates),
+            n_candidates_evaluated=len(candidates),
+        )
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"failed to write host-search outputs: {e}", file=sys.stderr)
+        return 2
+    print(f"host-search BiGG complete ({args.metric}, target={args.target}) -> {out}")
+    if rows:
+        best = rows[0]
+        print(
+            f"  best: {'+'.join(best['members'])} score={float(best['score']):.4g} "
+            f"host_objective={float(best['host_objective_value']):.4g} "
+            f"target_transfer={float(best['target_transfer']):.4g}"
+        )
+    return 0
+
+
+def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
+    """Rank single-gene knockouts in one member for a selected consortium."""
+    try:
+        import pandas as pd
+        from cobra.io import read_sbml_model, write_sbml_model
+
+        from cmig.core.engine import MicomEngine
+        from cmig.core.model_pool import taxonomy_from_model_dir
+        from cmig.core.search import Direction
+        from cmig.core.search_product import SearchConfig, search_model_pool
+    except ImportError:
+        print("gene-ko-search requires the engine stack: uv sync --extra engine", file=sys.stderr)
+        return 2
+    try:
+        if bool(args.taxonomy) == bool(args.model_dir):
+            raise ValueError("provide exactly one of --taxonomy or --model-dir")
+        if args.taxonomy:
+            taxonomy_path = Path(args.taxonomy)
+            if not taxonomy_path.exists():
+                raise ValueError(f"taxonomy file not found: {taxonomy_path}")
+            taxonomy = pd.read_csv(taxonomy_path)
+        else:
+            taxonomy = taxonomy_from_model_dir(args.model_dir, recursive=args.recursive)
+        missing_cols = {"id", "file"} - set(taxonomy.columns)
+        if missing_cols:
+            raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
+        members = tuple(_parse_csv_strings(args.members, flag="--members"))
+        if args.member not in members:
+            raise ValueError("--member must be one of --members")
+        member_files = {
+            str(row["id"]): str(row["file"])
+            for row in taxonomy.to_dict("records")
+        }
+        missing_members = [member for member in members if member not in member_files]
+        if missing_members:
+            raise ValueError(f"--members not found in taxonomy: {missing_members}")
+        member_model = read_sbml_model(member_files[args.member])
+        if args.genes:
+            genes = _parse_csv_strings(args.genes, flag="--genes")
+        else:
+            genes = sorted(str(g.id) for g in member_model.genes)
+            if args.max_genes > 0:
+                genes = genes[: args.max_genes]
+        if not genes:
+            raise ValueError(f"no genes selected for member {args.member}")
+
+        sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
+        config = SearchConfig(
+            target=args.target,
+            direction=Direction(args.direction),
+            min_size=len(members),
+            max_size=len(members),
+            strategy="exhaustive",
+            top_k=1,
+            growth_fraction=args.growth_fraction,
+            solver=args.solver,
+        )
+        baseline = search_model_pool(MicomEngine(), sub, config).ranks[0]
+        rows: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory(prefix="cmig-gene-ko-") as tmp:
+            tmp_dir = Path(tmp)
+            for gene in genes:
+                try:
+                    ko_model = member_model.copy()
+                    ko_model.genes.get_by_id(gene).knock_out()
+                    safe_gene = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in gene)
+                    ko_file = tmp_dir / f"{args.member}_{safe_gene}.xml"
+                    write_sbml_model(ko_model, str(ko_file))
+                    ko_taxonomy = sub.copy()
+                    ko_taxonomy.loc[
+                        ko_taxonomy["id"].astype(str) == args.member,
+                        "file",
+                    ] = str(ko_file)
+                    rank = search_model_pool(MicomEngine(), ko_taxonomy, config).ranks[0]
+                    rows.append({
+                        "gene": gene,
+                        "member": args.member,
+                        "evaluation_status": "ok",
+                        "score": rank.score,
+                        "score_delta": rank.score - baseline.score,
+                        "target_flux": rank.target_flux,
+                        "target_flux_delta": rank.target_flux - baseline.target_flux,
+                        "community_growth": rank.community_growth,
+                        "community_growth_delta": (
+                            rank.community_growth - baseline.community_growth
+                        ),
+                        "status": rank.status,
+                        "diagnostic": rank.diagnostic,
+                    })
+                except Exception as e:
+                    rows.append({
+                        "gene": gene,
+                        "member": args.member,
+                        "evaluation_status": "failed",
+                        "score": 0.0,
+                        "score_delta": -baseline.score,
+                        "target_flux": 0.0,
+                        "target_flux_delta": -baseline.target_flux,
+                        "community_growth": 0.0,
+                        "community_growth_delta": -baseline.community_growth,
+                        "status": "failed",
+                        "diagnostic": str(e),
+                    })
+        rows.sort(key=lambda row: (
+            row["evaluation_status"] != "ok",
+            -float(row["score_delta"]),
+            str(row["gene"]),
+        ))
+        out = Path(args.out)
+        _write_gene_ko_search_outputs(
+            rows[: args.top_k],
+            out,
+            baseline=baseline,
+            members=members,
+            target=args.target,
+            member=args.member,
+            n_genes_evaluated=len(rows),
+        )
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"failed to write gene KO outputs: {e}", file=sys.stderr)
+        return 2
+    print(f"gene KO search complete (member={args.member}, target={args.target}) -> {out}")
+    if rows:
+        best = rows[0]
+        print(
+            f"  best: {best['member']}:{best['gene']} "
+            f"delta={float(best['score_delta']):.4g} score={float(best['score']):.4g}"
+        )
+    return 0
+
+
+def _write_gene_ko_search_outputs(
+    rows: list[dict[str, Any]],
+    out: Path,
+    *,
+    baseline: Any,
+    members: tuple[str, ...],
+    target: str,
+    member: str,
+    n_genes_evaluated: int,
+) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "gene_ko_rankings.csv", "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "rank",
+                "member",
+                "gene",
+                "score",
+                "score_delta",
+                "target_flux",
+                "target_flux_delta",
+                "community_growth",
+                "community_growth_delta",
+                "status",
+                "evaluation_status",
+                "diagnostic",
+            ],
+        )
+        writer.writeheader()
+        for rank, row in enumerate(rows, start=1):
+            writer.writerow({
+                "rank": rank,
+                "member": row["member"],
+                "gene": row["gene"],
+                "score": _finite_csv(float(row["score"])),
+                "score_delta": _finite_csv(float(row["score_delta"])),
+                "target_flux": _finite_csv(float(row["target_flux"])),
+                "target_flux_delta": _finite_csv(float(row["target_flux_delta"])),
+                "community_growth": _finite_csv(float(row["community_growth"])),
+                "community_growth_delta": _finite_csv(float(row["community_growth_delta"])),
+                "status": row["status"],
+                "evaluation_status": row["evaluation_status"],
+                "diagnostic": row["diagnostic"] or "",
+            })
+    payload = {
+        "status": "ok",
+        "members": list(members),
+        "member": member,
+        "target": target,
+        "baseline": {
+            "score": _finite_or_none(float(baseline.score)),
+            "target_flux": _finite_or_none(float(baseline.target_flux)),
+            "community_growth": _finite_or_none(float(baseline.community_growth)),
+            "status": baseline.status,
+            "diagnostic": baseline.diagnostic,
+        },
+        "n_genes_evaluated": n_genes_evaluated,
+        "top_ranked": [
+            {
+                "rank": rank,
+                "member": row["member"],
+                "gene": row["gene"],
+                "score": _finite_or_none(float(row["score"])),
+                "score_delta": _finite_or_none(float(row["score_delta"])),
+                "target_flux": _finite_or_none(float(row["target_flux"])),
+                "target_flux_delta": _finite_or_none(float(row["target_flux_delta"])),
+                "community_growth": _finite_or_none(float(row["community_growth"])),
+                "community_growth_delta": _finite_or_none(
+                    float(row["community_growth_delta"])
+                ),
+                "status": row["status"],
+                "evaluation_status": row["evaluation_status"],
+                "diagnostic": row["diagnostic"],
+            }
+            for rank, row in enumerate(rows, start=1)
+        ],
+        "artifacts": [
+            "gene_ko_rankings.csv",
+            "gene_ko_summary.json",
+            "gene_ko_plot.svg",
+            "gene_ko_plot.tiff",
+        ],
+    }
+    (out / "gene_ko_summary.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    )
+    _write_gene_ko_figures(rows, out, target=target)
+
+
+def _write_host_search_bigg_outputs(
+    rows: list[dict[str, Any]],
+    out: Path,
+    *,
+    target: str,
+    metric: str,
+    n_candidates_total: int,
+    n_candidates_evaluated: int,
+) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "host_search_rankings.csv", "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "rank",
+                "members",
+                "score",
+                "host_objective_value",
+                "host_status",
+                "host_viable",
+                "target",
+                "target_transfer",
+                "community_growth",
+                "community_status",
+                "warnings",
+                "evaluation_status",
+                "diagnostic",
+            ],
+        )
+        writer.writeheader()
+        for rank, row in enumerate(rows, start=1):
+            writer.writerow({
+                "rank": rank,
+                "members": "+".join(row["members"]),
+                "score": _finite_csv(float(row["score"])),
+                "host_objective_value": _finite_csv(float(row["host_objective_value"])),
+                "host_status": row["host_status"],
+                "host_viable": row["host_viable"],
+                "target": row["target"],
+                "target_transfer": _finite_csv(float(row["target_transfer"])),
+                "community_growth": _finite_csv(float(row["community_growth"])),
+                "community_status": row["community_status"],
+                "warnings": ";".join(str(x) for x in row["warnings"]),
+                "evaluation_status": row["evaluation_status"],
+                "diagnostic": row["diagnostic"] or "",
+            })
+    payload = {
+        "status": "ok",
+        "metric": metric,
+        "target": target,
+        "n_candidates_total": n_candidates_total,
+        "n_candidates_evaluated": n_candidates_evaluated,
+        "top_ranked": [
+            {
+                "rank": rank,
+                "members": list(row["members"]),
+                "score": _finite_or_none(float(row["score"])),
+                "host_objective_value": _finite_or_none(float(row["host_objective_value"])),
+                "host_status": row["host_status"],
+                "host_viable": row["host_viable"],
+                "target": row["target"],
+                "target_transfer": _finite_or_none(float(row["target_transfer"])),
+                "community_growth": _finite_or_none(float(row["community_growth"])),
+                "community_status": row["community_status"],
+                "warnings": row["warnings"],
+                "evaluation_status": row["evaluation_status"],
+                "diagnostic": row["diagnostic"],
+            }
+            for rank, row in enumerate(rows, start=1)
+        ],
+        "artifacts": [
+            "host_search_rankings.csv",
+            "host_search_summary.json",
+            "host_search_plot.svg",
+            "host_search_plot.tiff",
+        ],
+    }
+    (out / "host_search_summary.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    )
+    _write_host_search_figures(rows, out, target=target, metric=metric)
 
 
 def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> None:
@@ -403,9 +851,13 @@ def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> N
             "member_contribution.csv",
             "figure_manifest.json",
             "interaction_circle.svg",
+            "interaction_circle.tiff",
             "interaction_heatmap.svg",
+            "interaction_heatmap.tiff",
             "interaction_bubble.svg",
+            "interaction_bubble.tiff",
             "member_contribution.svg",
+            "member_contribution.tiff",
         ],
     }
     interaction_artifacts = write_interaction_artifacts(
@@ -888,7 +1340,9 @@ def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], ou
             "search_rankings.csv",
             "search_member_matrix.csv",
             "search_plot.svg",
+            "search_plot.tiff",
             "search_scatter.svg",
+            "search_scatter.tiff",
             "search_summary.json",
         ],
     }
@@ -897,6 +1351,160 @@ def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], ou
     )
     _write_search_svg(result, out / "search_plot.svg")
     _write_search_scatter_svg(result, out / "search_scatter.svg")
+    _write_search_tiff(result, out / "search_plot.tiff")
+    _write_search_scatter_tiff(result, out / "search_scatter.tiff")
+
+
+def _load_matplotlib_pyplot() -> Any:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.rcParams.update({
+        "font.family": "Arial",
+        "axes.titlesize": 14,
+        "axes.labelsize": 11,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+    })
+    return plt
+
+
+def _polish_matplotlib_axes(ax: Any, *, grid_axis: str = "x") -> None:
+    ax.grid(True, axis=grid_axis, color="#d9dee3", linewidth=0.7, alpha=0.85)
+    ax.set_axisbelow(True)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+
+def _save_screening_figure(fig: Any, out_svg: Path, out_tiff: Path) -> None:
+    fig.tight_layout()
+    fig.savefig(out_svg, format="svg")
+    fig.savefig(out_tiff, format="tiff", dpi=300)
+
+
+def _write_host_search_figures(
+    rows: list[dict[str, Any]], out: Path, *, target: str, metric: str
+) -> None:
+    plt = _load_matplotlib_pyplot()
+    top = rows[:10]
+    labels = ["+".join(str(x) for x in row["members"]) for row in top]
+    values = [float(row["score"]) for row in top]
+    height = max(3.4, 0.45 * max(len(top), 1) + 1.8)
+    fig, ax = plt.subplots(figsize=(7.4, height), dpi=300)
+    if top:
+        colors = [
+            "#3182bd" if row["evaluation_status"] == "ok" else "#bdbdbd"
+            for row in top
+        ]
+        ax.barh(labels[::-1], values[::-1], color=colors[::-1], height=0.56)
+        for idx, value in enumerate(values[::-1]):
+            if abs(value) > 1e-12:
+                ax.text(value, idx, f" {value:.3g}", va="center", fontsize=10)
+    ax.set_title(f"Host-microbe combination ranking: {target}", loc="left", pad=12)
+    ax.set_xlabel(metric.replace("_", " "))
+    ax.margins(x=0.06)
+    _polish_matplotlib_axes(ax, grid_axis="x")
+    _save_screening_figure(fig, out / "host_search_plot.svg", out / "host_search_plot.tiff")
+    plt.close(fig)
+
+
+def _write_gene_ko_figures(rows: list[dict[str, Any]], out: Path, *, target: str) -> None:
+    plt = _load_matplotlib_pyplot()
+    top = rows[:12]
+    labels = [f"{row['member']}:{row['gene']}" for row in top]
+    values = [float(row["target_flux_delta"]) for row in top]
+    height = max(3.4, 0.43 * max(len(top), 1) + 1.8)
+    fig, ax = plt.subplots(figsize=(7.6, height), dpi=300)
+    if top:
+        colors = ["#2ca25f" if value > 0 else "#e6550d" if value < 0 else "#969696"
+                  for value in values]
+        ax.barh(labels[::-1], values[::-1], color=colors[::-1], height=0.54)
+        ax.axvline(0.0, color="#333333", linewidth=0.9)
+        for idx, value in enumerate(values[::-1]):
+            if abs(value) <= 1e-12:
+                continue
+            ha = "left"
+            dx = 0.01 * max([abs(v) for v in values] + [1.0])
+            ax.text(value + dx, idx, f"{value:.3g}", va="center", ha=ha, fontsize=10)
+    ax.set_title(f"Single-gene KO effect on {target} flux", loc="left", pad=12)
+    ax.set_xlabel("Target flux delta versus baseline")
+    ax.margins(x=0.08)
+    _polish_matplotlib_axes(ax, grid_axis="x")
+    _save_screening_figure(fig, out / "gene_ko_plot.svg", out / "gene_ko_plot.tiff")
+    plt.close(fig)
+
+
+def _write_search_tiff(result: Any, path: Path) -> None:
+    plt = _load_matplotlib_pyplot()
+    rows = [row for row in result.ranks[:10] if math.isfinite(row.target_flux)]
+    labels = ["+".join(row.members) for row in rows]
+    values = [row.target_flux for row in rows]
+    height = max(3.4, 0.45 * max(len(rows), 1) + 1.7)
+    fig, ax = plt.subplots(figsize=(7.2, height), dpi=300)
+    if rows:
+        colors = ["#2ca25f" if value >= 0 else "#e6550d" for value in values]
+        ax.barh(labels[::-1], values[::-1], color=colors[::-1], height=0.56)
+        for idx, value in enumerate(values[::-1]):
+            ax.text(value, idx, f" {value:.3g}", va="center", fontsize=10)
+    ax.set_title(f"Target production search: {result.target}")
+    ax.set_xlabel(f"Target exchange flux ({result.target_exchange})")
+    ax.text(
+        0.0,
+        1.01,
+        f"{result.strategy} · evaluated {result.n_candidates_evaluated}/"
+        f"{result.n_candidates_total} candidates",
+        transform=ax.transAxes,
+        fontsize=10,
+        color="#555555",
+    )
+    if len(rows) == 1:
+        ax.text(1.0, 1.01, "single candidate", transform=ax.transAxes, ha="right",
+                fontsize=10, color="#555555")
+    _polish_matplotlib_axes(ax, grid_axis="x")
+    fig.tight_layout()
+    fig.savefig(path, format="tiff", dpi=300)
+    plt.close(fig)
+
+
+def _write_search_scatter_tiff(result: Any, path: Path) -> None:
+    plt = _load_matplotlib_pyplot()
+    rows = [
+        row for row in result.ranks
+        if math.isfinite(row.target_flux) and math.isfinite(row.community_growth)
+    ]
+    fig, ax = plt.subplots(figsize=(6.8, 4.8), dpi=300)
+    if rows:
+        ax.scatter(
+            [row.community_growth for row in rows],
+            [row.target_flux for row in rows],
+            s=56,
+            color="#3182bd",
+            alpha=0.9,
+            edgecolor="white",
+            linewidth=0.8,
+        )
+        for row in rows:
+            ax.annotate(
+                f"#{row.rank}",
+                (row.community_growth, row.target_flux),
+                xytext=(6, 4),
+                textcoords="offset points",
+                fontsize=9,
+            )
+    ax.set_title("Growth-production tradeoff")
+    ax.set_xlabel("Community growth under target objective")
+    ax.set_ylabel("Target exchange flux")
+    ax.text(0.0, -0.18, f"Target: {result.target_exchange}", transform=ax.transAxes,
+            fontsize=9, color="#555555")
+    if len(rows) == 1:
+        ax.text(1.0, 1.02, "single candidate", transform=ax.transAxes, ha="right",
+                fontsize=10, color="#555555")
+    _polish_matplotlib_axes(ax, grid_axis="both")
+    fig.tight_layout()
+    fig.savefig(path, format="tiff", dpi=300)
+    plt.close(fig)
 
 
 def _write_search_svg(result: Any, path: Path) -> None:
@@ -1654,6 +2262,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hmb.add_argument("--exchange-suffix", default="_e", help="host BiGG exchange suffix")
     hmb.add_argument(
+        "--host-objective",
+        default=None,
+        help="optional host reaction id to use as the host objective for this run",
+    )
+    hmb.add_argument(
         "--exclude-metabolites",
         default=None,
         help="comma-separated BiGG metabolite ids to exclude from coupling",
@@ -1670,6 +2283,79 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hmb.add_argument("--out", required=True, help="output directory")
     hmb.set_defaults(func=_cmd_host_microbe_bigg)
+    hs = sub.add_parser(
+        "host-search-bigg",
+        help="rank microbial combinations by host objective and target transfer",
+    )
+    hs.add_argument("--host", required=True, help="host SBML/XML model path")
+    hs_src = hs.add_mutually_exclusive_group(required=True)
+    hs_src.add_argument("--taxonomy", default=None, help="microbial MICOM taxonomy csv")
+    hs_src.add_argument("--model-dir", default=None, help="directory containing microbial GEMs")
+    hs.add_argument("--recursive", action="store_true", help="scan --model-dir recursively")
+    hs.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
+    hs.add_argument("--min-size", type=int, default=2, dest="min_size")
+    hs.add_argument("--max-size", type=int, default=2, dest="max_size")
+    hs.add_argument("--top-k", type=int, default=10, dest="top_k")
+    hs.add_argument("--target", default="ac", help="target transferred metabolite id")
+    hs.add_argument(
+        "--metric",
+        default="weighted",
+        choices=["weighted", "objective_value", "target_transfer"],
+        help="ranking metric",
+    )
+    hs.add_argument("--host-weight", type=float, default=1.0, dest="host_weight")
+    hs.add_argument("--target-weight", type=float, default=1.0, dest="target_weight")
+    hs.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f")
+    hs.add_argument("--microbe-medium", default=None, help="optional microbial medium csv/json")
+    hs.add_argument("--host-medium", default=None, help="optional host background medium csv/json")
+    hs.add_argument("--exchange-suffix", default="_e", help="host BiGG exchange suffix")
+    hs.add_argument(
+        "--host-objective",
+        default=None,
+        help="optional host reaction id to use as the host objective for this run",
+    )
+    hs.add_argument("--exclude-metabolites", default=None)
+    hs.add_argument("--include-currency-metabolites", action="store_true")
+    hs.add_argument("--keep-host-uptake", action="store_true")
+    hs.add_argument("--out", required=True, help="output directory")
+    hs.set_defaults(func=_cmd_host_search_bigg)
+    gk = sub.add_parser(
+        "gene-ko-search",
+        help="rank single-gene knockouts for a selected microbial combination",
+    )
+    gk_src = gk.add_mutually_exclusive_group(required=True)
+    gk_src.add_argument("--taxonomy", default=None, help="MICOM-compatible pool taxonomy csv")
+    gk_src.add_argument("--model-dir", default=None, help="directory containing microbial GEMs")
+    gk.add_argument("--recursive", action="store_true", help="scan --model-dir recursively")
+    gk.add_argument(
+        "--members",
+        required=True,
+        help="comma-separated member ids in the fixed consortium to test",
+    )
+    gk.add_argument("--member", required=True, help="member id whose genes will be knocked out")
+    gk.add_argument("--target", default="ac", help="target metabolite id")
+    gk.add_argument(
+        "--direction",
+        default="max_secretion",
+        choices=["max_secretion", "min_secretion", "max_uptake", "min_uptake"],
+    )
+    gk.add_argument("--growth-fraction", type=float, default=0.5, dest="growth_fraction")
+    gk.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
+    gk.add_argument(
+        "--genes",
+        default=None,
+        help="comma-separated gene ids to evaluate; omitted means first --max-genes genes",
+    )
+    gk.add_argument(
+        "--max-genes",
+        type=int,
+        default=20,
+        dest="max_genes",
+        help="maximum genes to evaluate when --genes is omitted; 0 means all genes",
+    )
+    gk.add_argument("--top-k", type=int, default=20, dest="top_k")
+    gk.add_argument("--out", required=True, help="output directory")
+    gk.set_defaults(func=_cmd_gene_ko_search)
     df = sub.add_parser("dfba-fixture", help="e_coli_core glucose dFBA → timecourse.parquet")
     df.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     df.add_argument("--t-end", type=float, default=1.0, dest="t_end")
