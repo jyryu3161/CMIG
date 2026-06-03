@@ -182,6 +182,7 @@ class CmigMainWindow(QMainWindow):
         self._search_jobs: dict[str, Path] = {}
         self._host_microbe_jobs: dict[str, Path] = {}
         self._host_search_jobs: dict[str, Path] = {}
+        self._gene_ko_jobs: dict[str, Path] = {}
         self.current_manifest: dict[str, Any] | None = None
         self.current_graph_payload: dict[str, Any] | None = None
         self.current_model_review: dict[str, Any] | None = None
@@ -279,6 +280,7 @@ class CmigMainWindow(QMainWindow):
         self.sandbox_view.commit_btn.clicked.connect(self._run_sandbox_commit)
         self.search_view.browse_pool_btn.clicked.connect(self._browse_search_model_dir)
         self.search_view.run_btn.clicked.connect(self.run_search_fixture)
+        self.search_view.run_ko_btn.clicked.connect(self.run_gene_ko_search)
         self.search_view.export_figure_btn.clicked.connect(self._export_search_figure)
         self.host_view.browse_host_btn.clicked.connect(self._browse_host_model)
         self.host_view.browse_model_dir_btn.clicked.connect(self._browse_host_microbe_model_dir)
@@ -784,6 +786,61 @@ class CmigMainWindow(QMainWindow):
         self.statusBar().showMessage(f"Started host-search run: {jid}")
         return jid
 
+    def run_gene_ko_search(self) -> str:
+        """Run fixed-combination single-gene KO screening from the Search tab."""
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        model_dir = self.search_view.model_dir_input.text().strip()
+        members = self.search_view.ko_members_input.text().strip()
+        member = self.search_view.ko_member_input.text().strip()
+        genes = self.search_view.ko_genes_input.text().strip()
+        target_text = self.search_view.targets_input.text().strip() or "ac"
+        target = target_text.split(",", 1)[0].strip() or "ac"
+        if not model_dir or not members or not member:
+            self.search_view.status.setText(
+                "Model folder, KO members, and edited member are required."
+            )
+            return ""
+        if not genes:
+            self.search_view.status.setText(
+                "Enter gene ids to screen; broad all-gene GUI runs are intentionally disabled."
+            )
+            return ""
+        out_dir = Path(
+            tempfile.mkdtemp(prefix="cmig-gene-ko-", dir=_search_temp_root())
+        ).resolve()
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            argv = [
+                "gene-ko-search",
+                "--model-dir", model_dir,
+                "--members", members,
+                "--member", member,
+                "--target", target,
+                "--genes", genes,
+                "--top-k", str(self.search_view.top_k_spin.value()),
+                "--out", str(out_dir),
+            ]
+            rc = main(argv)
+            if rc != 0:
+                raise RuntimeError(f"gene KO search failed with rc={rc}")
+            ctx.raise_if_cancelled()
+            ctx.report_progress(1, 1)
+            payload = json.loads((out_dir / "gene_ko_summary.json").read_text())
+            if not isinstance(payload, dict):
+                raise RuntimeError("gene KO output is not a JSON object")
+            return payload
+
+        jid = self.submit_job("gene_ko_search", _job)
+        self._gene_ko_jobs[jid] = out_dir
+        self.search_view.run_ko_btn.setEnabled(False)
+        self.search_view.status.setText(f"gene KO search started: {jid}")
+        self.statusBar().showMessage(f"Started gene KO search: {jid}")
+        return jid
+
     def _poll_completed_jobs(self) -> None:
         for jid in list(self._fixture_jobs):
             job = self.runner.poll(jid)
@@ -836,6 +893,23 @@ class CmigMainWindow(QMainWindow):
                 self.host_view.run_status.setText(
                     f"host-search {job.status.value}: {job.error or jid}"
                 )
+        for jid, out_dir in list(self._gene_ko_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE and isinstance(job.result, dict):
+                self._gene_ko_jobs.pop(jid, None)
+                self.search_view.run_ko_btn.setEnabled(True)
+                self.current_search_dir = out_dir
+                summary = _gene_ko_summary_for_search_view(job.result)
+                self.search_view.figure_mode_combo.setCurrentText("Ranking")
+                self.search_view.load_summary(summary, run_dir=out_dir)
+                self.tabs.setCurrentWidget(self.search_view)
+                self.statusBar().showMessage(f"Gene KO search complete: {jid}")
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                self._gene_ko_jobs.pop(jid, None)
+                self.search_view.run_ko_btn.setEnabled(True)
+                self.search_view.status.setText(
+                    f"gene KO search {job.status.value}: {job.error or jid}"
+                )
 
 
 def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:
@@ -856,6 +930,29 @@ def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, A
     return {
         "target": target,
         "strategy": f"host-search/{payload.get('metric', '')}",
+        "top_ranked": rows,
+        "warnings": [],
+    }
+
+
+def _gene_ko_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:
+    """Adapt gene KO output to the existing SearchView ranking table contract."""
+    target = str(payload.get("target", ""))
+    rows: list[dict[str, Any]] = []
+    for item in payload.get("top_ranked", []):
+        if not isinstance(item, dict):
+            continue
+        rows.append({
+            "members": [f"{item.get('member', '')}:{item.get('gene', '')}"],
+            "score": item.get("score_delta"),
+            "target_flux": item.get("target_flux_delta"),
+            "community_growth": item.get("community_growth_delta"),
+            "status": item.get("evaluation_status", item.get("status", "")),
+            "diagnostic": item.get("diagnostic"),
+        })
+    return {
+        "target": target,
+        "strategy": "gene-ko",
         "top_ranked": rows,
         "warnings": [],
     }

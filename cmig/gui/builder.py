@@ -241,6 +241,19 @@ class SearchView(QWidget):
         controls.addWidget(QLabel("Figure"))
         controls.addWidget(self.figure_mode_combo)
         controls.addWidget(self.export_figure_btn)
+        ko_row = QHBoxLayout()
+        self.ko_members_input = QLineEdit("")
+        self.ko_members_input.setPlaceholderText("Fixed combo for KO, e.g. iHN637,iSFV_1184")
+        self.ko_member_input = QLineEdit("")
+        self.ko_member_input.setPlaceholderText("Member to edit")
+        self.ko_genes_input = QLineEdit("")
+        self.ko_genes_input.setPlaceholderText("Gene ids, comma-separated")
+        self.run_ko_btn = QPushButton("Rank Gene KOs")
+        ko_row.addWidget(QLabel("Gene KO"))
+        ko_row.addWidget(self.ko_members_input)
+        ko_row.addWidget(self.ko_member_input)
+        ko_row.addWidget(self.ko_genes_input)
+        ko_row.addWidget(self.run_ko_btn)
         self.status = QLabel("")
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
@@ -260,6 +273,7 @@ class SearchView(QWidget):
         layout.addWidget(self.title)
         layout.addLayout(pool_row)
         layout.addLayout(controls)
+        layout.addLayout(ko_row)
         layout.addWidget(self.status)
         layout.addWidget(self.table)
         layout.addWidget(self.pareto_label)
@@ -271,6 +285,11 @@ class SearchView(QWidget):
             and (self.current_run_dir / "host_search_plot.svg").exists()
         ):
             return "host_search_plot.svg"
+        if (
+            self.current_run_dir is not None
+            and (self.current_run_dir / "gene_ko_plot.svg").exists()
+        ):
+            return "gene_ko_plot.svg"
         mapping = {"Ranking": "search_plot.svg", "Scatter": "search_scatter.svg"}
         return mapping[self.figure_mode_combo.currentText()]
 
