@@ -443,6 +443,49 @@ def test_gene_ko_search_cli_ranks_selected_member_genes(tmp_path):
     assert (out / "gene_ko_plot.tiff").exists()
 
 
+def test_gene_ko_search_cli_auto_screens_all_members(tmp_path):
+    import cobra
+    import pandas as pd
+
+    from cmig.synthetic_pair import build_pair_models
+
+    producer, consumer = build_pair_models()
+    producer.reactions.get_by_id("GLC2AC").gene_reaction_rule = "g_prod"
+    consumer.reactions.get_by_id("AC2BUT").gene_reaction_rule = "g_cons"
+    model_dir = tmp_path / "models"
+    model_dir.mkdir()
+    producer_path = model_dir / "producer.xml"
+    consumer_path = model_dir / "consumer.xml"
+    cobra.io.write_sbml_model(producer, str(producer_path))
+    cobra.io.write_sbml_model(consumer, str(consumer_path))
+    taxonomy = pd.DataFrame({
+        "id": ["producer", "consumer"],
+        "file": [str(producer_path), str(consumer_path)],
+        "abundance": [0.5, 0.5],
+    })
+    taxonomy_path = tmp_path / "taxonomy.csv"
+    taxonomy.to_csv(taxonomy_path, index=False)
+    out = tmp_path / "gene_ko_all"
+
+    rc = main([
+        "gene-ko-search",
+        "--taxonomy", str(taxonomy_path),
+        "--members", "producer,consumer",
+        "--target", "but",
+        "--max-genes", "0",
+        "--top-k", "10",
+        "--out", str(out),
+    ])
+
+    assert rc == 0
+    payload = json.loads((out / "gene_ko_summary.json").read_text())
+    assert payload["screening_scope"] == "all_members"
+    assert payload["member"] is None
+    assert payload["n_genes_evaluated"] == 2
+    observed = {(row["member"], row["gene"]) for row in payload["top_ranked"]}
+    assert observed == {("producer", "g_prod"), ("consumer", "g_cons")}
+
+
 def test_search_advanced_fixture_cli_writes_pareto(tmp_path):
     out = tmp_path / "search"
     rc = main([

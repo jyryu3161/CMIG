@@ -797,15 +797,13 @@ class CmigMainWindow(QMainWindow):
         genes = self.search_view.ko_genes_input.text().strip()
         target_text = self.search_view.targets_input.text().strip() or "ac"
         target = target_text.split(",", 1)[0].strip() or "ac"
-        if not model_dir or not members or not member:
+        if not model_dir or not members:
             self.search_view.status.setText(
-                "Model folder, KO members, and edited member are required."
+                "Model folder and KO members are required."
             )
             return ""
-        if not genes:
-            self.search_view.status.setText(
-                "Enter gene ids to screen; broad all-gene GUI runs are intentionally disabled."
-            )
+        if genes and not member:
+            self.search_view.status.setText("Gene ids require a specific edited member.")
             return ""
         out_dir = Path(
             tempfile.mkdtemp(prefix="cmig-gene-ko-", dir=_search_temp_root())
@@ -818,12 +816,15 @@ class CmigMainWindow(QMainWindow):
                 "gene-ko-search",
                 "--model-dir", model_dir,
                 "--members", members,
-                "--member", member,
                 "--target", target,
-                "--genes", genes,
+                "--max-genes", str(self.search_view.ko_max_genes_spin.value()),
                 "--top-k", str(self.search_view.top_k_spin.value()),
                 "--out", str(out_dir),
             ]
+            if member:
+                argv.extend(["--member", member])
+            if genes:
+                argv.extend(["--genes", genes])
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"gene KO search failed with rc={rc}")

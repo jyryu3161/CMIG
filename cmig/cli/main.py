@@ -492,7 +492,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
 
 
 def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
-    """Rank single-gene knockouts in one member for a selected consortium."""
+    """Rank single-gene knockouts in one or more members for a selected consortium."""
     try:
         import pandas as pd
         from cobra.io import read_sbml_model, write_sbml_model
@@ -518,7 +518,7 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         if missing_cols:
             raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
         members = tuple(_parse_csv_strings(args.members, flag="--members"))
-        if args.member not in members:
+        if args.member and args.member not in members:
             raise ValueError("--member must be one of --members")
         member_files = {
             str(row["id"]): str(row["file"])
@@ -527,15 +527,23 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         missing_members = [member for member in members if member not in member_files]
         if missing_members:
             raise ValueError(f"--members not found in taxonomy: {missing_members}")
-        member_model = read_sbml_model(member_files[args.member])
-        if args.genes:
-            genes = _parse_csv_strings(args.genes, flag="--genes")
-        else:
-            genes = sorted(str(g.id) for g in member_model.genes)
-            if args.max_genes > 0:
-                genes = genes[: args.max_genes]
-        if not genes:
-            raise ValueError(f"no genes selected for member {args.member}")
+        target_members = (args.member,) if args.member else members
+        if args.genes and len(target_members) != 1:
+            raise ValueError("--genes requires --member so gene ids are unambiguous")
+        member_gene_sets: dict[str, list[str]] = {}
+        member_models: dict[str, Any] = {}
+        for member_id in target_members:
+            model = read_sbml_model(member_files[member_id])
+            member_models[member_id] = model
+            if args.genes:
+                genes = _parse_csv_strings(args.genes, flag="--genes")
+            else:
+                genes = sorted(str(g.id) for g in model.genes)
+                if args.max_genes > 0:
+                    genes = genes[: args.max_genes]
+            if not genes:
+                raise ValueError(f"no genes selected for member {member_id}")
+            member_gene_sets[member_id] = genes
 
         sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
         config = SearchConfig(
@@ -552,48 +560,52 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         rows: list[dict[str, Any]] = []
         with tempfile.TemporaryDirectory(prefix="cmig-gene-ko-") as tmp:
             tmp_dir = Path(tmp)
-            for gene in genes:
-                try:
-                    ko_model = member_model.copy()
-                    ko_model.genes.get_by_id(gene).knock_out()
-                    safe_gene = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in gene)
-                    ko_file = tmp_dir / f"{args.member}_{safe_gene}.xml"
-                    write_sbml_model(ko_model, str(ko_file))
-                    ko_taxonomy = sub.copy()
-                    ko_taxonomy.loc[
-                        ko_taxonomy["id"].astype(str) == args.member,
-                        "file",
-                    ] = str(ko_file)
-                    rank = search_model_pool(MicomEngine(), ko_taxonomy, config).ranks[0]
-                    rows.append({
-                        "gene": gene,
-                        "member": args.member,
-                        "evaluation_status": "ok",
-                        "score": rank.score,
-                        "score_delta": rank.score - baseline.score,
-                        "target_flux": rank.target_flux,
-                        "target_flux_delta": rank.target_flux - baseline.target_flux,
-                        "community_growth": rank.community_growth,
-                        "community_growth_delta": (
-                            rank.community_growth - baseline.community_growth
-                        ),
-                        "status": rank.status,
-                        "diagnostic": rank.diagnostic,
-                    })
-                except Exception as e:
-                    rows.append({
-                        "gene": gene,
-                        "member": args.member,
-                        "evaluation_status": "failed",
-                        "score": 0.0,
-                        "score_delta": -baseline.score,
-                        "target_flux": 0.0,
-                        "target_flux_delta": -baseline.target_flux,
-                        "community_growth": 0.0,
-                        "community_growth_delta": -baseline.community_growth,
-                        "status": "failed",
-                        "diagnostic": str(e),
-                    })
+            for member_id, genes in member_gene_sets.items():
+                member_model = member_models[member_id]
+                for gene in genes:
+                    try:
+                        ko_model = member_model.copy()
+                        ko_model.genes.get_by_id(gene).knock_out()
+                        safe_gene = "".join(
+                            ch if ch.isalnum() or ch in "._-" else "_" for ch in gene
+                        )
+                        ko_file = tmp_dir / f"{member_id}_{safe_gene}.xml"
+                        write_sbml_model(ko_model, str(ko_file))
+                        ko_taxonomy = sub.copy()
+                        ko_taxonomy.loc[
+                            ko_taxonomy["id"].astype(str) == member_id,
+                            "file",
+                        ] = str(ko_file)
+                        rank = search_model_pool(MicomEngine(), ko_taxonomy, config).ranks[0]
+                        rows.append({
+                            "gene": gene,
+                            "member": member_id,
+                            "evaluation_status": "ok",
+                            "score": rank.score,
+                            "score_delta": rank.score - baseline.score,
+                            "target_flux": rank.target_flux,
+                            "target_flux_delta": rank.target_flux - baseline.target_flux,
+                            "community_growth": rank.community_growth,
+                            "community_growth_delta": (
+                                rank.community_growth - baseline.community_growth
+                            ),
+                            "status": rank.status,
+                            "diagnostic": rank.diagnostic,
+                        })
+                    except Exception as e:
+                        rows.append({
+                            "gene": gene,
+                            "member": member_id,
+                            "evaluation_status": "failed",
+                            "score": 0.0,
+                            "score_delta": -baseline.score,
+                            "target_flux": 0.0,
+                            "target_flux_delta": -baseline.target_flux,
+                            "community_growth": 0.0,
+                            "community_growth_delta": -baseline.community_growth,
+                            "status": "failed",
+                            "diagnostic": str(e),
+                        })
         rows.sort(key=lambda row: (
             row["evaluation_status"] != "ok",
             -float(row["score_delta"]),
@@ -615,7 +627,8 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
     except OSError as e:
         print(f"failed to write gene KO outputs: {e}", file=sys.stderr)
         return 2
-    print(f"gene KO search complete (member={args.member}, target={args.target}) -> {out}")
+    member_label = args.member if args.member else "all members"
+    print(f"gene KO search complete (member={member_label}, target={args.target}) -> {out}")
     if rows:
         best = rows[0]
         print(
@@ -632,7 +645,7 @@ def _write_gene_ko_search_outputs(
     baseline: Any,
     members: tuple[str, ...],
     target: str,
-    member: str,
+    member: str | None,
     n_genes_evaluated: int,
 ) -> None:
     out.mkdir(parents=True, exist_ok=True)
@@ -674,6 +687,7 @@ def _write_gene_ko_search_outputs(
         "status": "ok",
         "members": list(members),
         "member": member,
+        "screening_scope": "single_member" if member else "all_members",
         "target": target,
         "baseline": {
             "score": _finite_or_none(float(baseline.score)),
@@ -2332,7 +2346,11 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="comma-separated member ids in the fixed consortium to test",
     )
-    gk.add_argument("--member", required=True, help="member id whose genes will be knocked out")
+    gk.add_argument(
+        "--member",
+        default=None,
+        help="member id whose genes will be knocked out; omitted screens every --members model",
+    )
     gk.add_argument("--target", default="ac", help="target metabolite id")
     gk.add_argument(
         "--direction",
@@ -2344,7 +2362,7 @@ def build_parser() -> argparse.ArgumentParser:
     gk.add_argument(
         "--genes",
         default=None,
-        help="comma-separated gene ids to evaluate; omitted means first --max-genes genes",
+        help="comma-separated gene ids to evaluate; requires --member",
     )
     gk.add_argument(
         "--max-genes",
