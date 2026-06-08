@@ -6,6 +6,7 @@ e_coli_core glucose-batch: biomass 성장 + glucose 고갈 + non-negativity. 고
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -141,3 +142,87 @@ def test_dfba_osqp_hybrid_restores_model_bounds():
     result = simulate_dfba(model, _glucose_cfg(0.5), solver="osqp")
     assert result.status in ("completed", "stalled")
     assert model.reactions.get_by_id("EX_glc__D_e").bounds == before
+
+
+def test_dfba_cli_user_model_writes_figures(tmp_path):
+    """User-model dFBA CLI should produce analysis-ready tables and figures."""
+    from cmig.cli.main import main
+
+    out = tmp_path / "dfba"
+    rc = main([
+        "dfba",
+        "--model", _MODEL,
+        "--t-end", "0.3",
+        "--dt", "0.1",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    assert (out / "dfba_summary.json").exists()
+    assert (out / "timecourse.parquet").exists()
+    assert (out / "dfba_timecourse.csv").exists()
+    assert (out / "dfba_timecourse.svg").exists()
+    assert (out / "dfba_timecourse.tiff").exists()
+    series = (out / "dfba_timecourse.csv").read_text()
+    assert "EX_glc__D_e" in series
+    assert "EX_o2_e" in series
+    assert "EX_ac_e" in series
+    assert "EX_lac__D_e" in series
+
+
+def test_dfba_cli_default_analysis_preset_tracks_key_exchanges(tmp_path):
+    """Default user-model dFBA should be long enough for analysis previews."""
+    from cmig.cli.main import main
+
+    out = tmp_path / "dfba_default"
+    rc = main([
+        "dfba",
+        "--model", _MODEL,
+        "--dt", "1.0",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    payload = json.loads((out / "dfba_summary.json").read_text())
+    assert payload["config"]["t_end"] == 5.0
+    assert payload["config"]["default_initial_preset"] is True
+    assert set(payload["managed_exchanges"]) == {
+        "EX_ac_e",
+        "EX_glc__D_e",
+        "EX_lac__D_e",
+        "EX_o2_e",
+    }
+    assert payload["status"] == "completed"
+    assert payload["n_timepoints"] == 6
+
+
+def test_dfba_cli_explicit_missing_exchange_fails(tmp_path):
+    from cmig.cli.main import main
+
+    rc = main([
+        "dfba",
+        "--model", _MODEL,
+        "--initial", "EX_not_a_real_exchange=1",
+        "--out", str(tmp_path / "bad"),
+    ])
+    assert rc == 2
+
+
+def test_spatial_preview_cli_writes_heatmap(tmp_path):
+    """COMETS-inspired spatial preview CLI should stay dependency-light and write figures."""
+    from cmig.cli.main import main
+
+    out = tmp_path / "spatial"
+    rc = main([
+        "spatial-preview",
+        "--metabolite", "EX_glc__D_e",
+        "--width", "10",
+        "--height", "8",
+        "--steps", "5",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    assert (out / "spatial_summary.json").exists()
+    assert (out / "spatial_frames.csv").exists()
+    assert (out / "spatial_heatmap.svg").exists()
+    assert (out / "spatial_heatmap.tiff").exists()
+    assert (out / "spatial_snapshots.svg").exists()
+    assert (out / "spatial_snapshots.tiff").exists()

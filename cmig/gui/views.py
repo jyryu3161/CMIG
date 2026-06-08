@@ -11,10 +11,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QComboBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
+    QPushButton,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -110,3 +118,216 @@ class ExternalProfileView(QWidget):
         parts = [f"{t.get('metabolite')}={t.get('ui_flux', t.get('value', 0)):.3g}"
                  for t in target_summary]
         self.target_label.setText("Targets: " + ", ".join(parts))
+
+
+class DfbaSpatialView(QWidget):
+    """Dynamics tab — user-model dFBA plus lightweight spatial medium preview."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+        self.title = QLabel("Dynamics")
+
+        model_row = QHBoxLayout()
+        self.model_path_input = QLineEdit("")
+        self.model_path_input.setPlaceholderText("SBML model for well-mixed dFBA")
+        self.browse_model_btn = QPushButton("Model")
+        self.out_dir_input = QLineEdit("")
+        self.out_dir_input.setPlaceholderText("Optional output folder")
+        self.browse_out_btn = QPushButton("Output")
+        model_row.addWidget(QLabel("dFBA"))
+        model_row.addWidget(self.model_path_input)
+        model_row.addWidget(self.browse_model_btn)
+        model_row.addWidget(self.out_dir_input)
+        model_row.addWidget(self.browse_out_btn)
+
+        dfba_row = QHBoxLayout()
+        self.initial_input = QLineEdit("EX_glc__D_e=10,EX_o2_e=20,EX_ac_e=0,EX_lac__D_e=0")
+        self.initial_input.setPlaceholderText("EX_glc__D_e=10,EX_o2_e=20,EX_ac_e=0")
+        self.t_end_spin = QDoubleSpinBox()
+        self.t_end_spin.setRange(0.01, 10000.0)
+        self.t_end_spin.setValue(5.0)
+        self.t_end_spin.setDecimals(3)
+        self.dt_spin = QDoubleSpinBox()
+        self.dt_spin.setRange(1e-5, 1000.0)
+        self.dt_spin.setValue(0.1)
+        self.dt_spin.setDecimals(5)
+        self.biomass_spin = QDoubleSpinBox()
+        self.biomass_spin.setRange(1e-9, 1000.0)
+        self.biomass_spin.setValue(0.01)
+        self.biomass_spin.setDecimals(6)
+        self.run_dfba_btn = QPushButton("Run dFBA")
+        dfba_row.addWidget(QLabel("Initial"))
+        dfba_row.addWidget(self.initial_input)
+        dfba_row.addWidget(QLabel("T end"))
+        dfba_row.addWidget(self.t_end_spin)
+        dfba_row.addWidget(QLabel("dt"))
+        dfba_row.addWidget(self.dt_spin)
+        dfba_row.addWidget(QLabel("Biomass"))
+        dfba_row.addWidget(self.biomass_spin)
+        dfba_row.addWidget(self.run_dfba_btn)
+
+        spatial_row = QHBoxLayout()
+        self.spatial_metabolite_input = QLineEdit("EX_glc__D_e")
+        self.spatial_metabolite_input.setPlaceholderText("Metabolite")
+        self.grid_size_spin = QSpinBox()
+        self.grid_size_spin.setRange(8, 256)
+        self.grid_size_spin.setValue(32)
+        self.steps_spin = QSpinBox()
+        self.steps_spin.setRange(1, 10000)
+        self.steps_spin.setValue(80)
+        self.spatial_dt_spin = QDoubleSpinBox()
+        self.spatial_dt_spin.setRange(1e-5, 1000.0)
+        self.spatial_dt_spin.setValue(0.1)
+        self.spatial_dt_spin.setDecimals(5)
+        self.diffusion_spin = QDoubleSpinBox()
+        self.diffusion_spin.setRange(0.0, 1000.0)
+        self.diffusion_spin.setValue(0.15)
+        self.diffusion_spin.setDecimals(5)
+        self.source_combo = QComboBox()
+        self.source_combo.addItems(["left", "right", "top", "bottom", "center", "none"])
+        self.sink_combo = QComboBox()
+        self.sink_combo.addItems(["right", "left", "top", "bottom", "center", "none"])
+        self.run_spatial_btn = QPushButton("Preview Spatial Medium")
+        spatial_row.addWidget(QLabel("Spatial"))
+        spatial_row.addWidget(self.spatial_metabolite_input)
+        spatial_row.addWidget(QLabel("Grid"))
+        spatial_row.addWidget(self.grid_size_spin)
+        spatial_row.addWidget(QLabel("Steps"))
+        spatial_row.addWidget(self.steps_spin)
+        spatial_row.addWidget(QLabel("dt"))
+        spatial_row.addWidget(self.spatial_dt_spin)
+        spatial_row.addWidget(QLabel("Diffusion"))
+        spatial_row.addWidget(self.diffusion_spin)
+        spatial_row.addWidget(QLabel("Source"))
+        spatial_row.addWidget(self.source_combo)
+        spatial_row.addWidget(QLabel("Sink"))
+        spatial_row.addWidget(self.sink_combo)
+        spatial_row.addWidget(self.run_spatial_btn)
+
+        self.status = QLabel("")
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Run", "Status", "Final time", "Readout"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setMaximumHeight(130)
+        self.figure_label = QLabel("No dynamics figure loaded.")
+        self.figure_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.figure_label.setMinimumHeight(460)
+        self.figure_label.setStyleSheet("background: white; border: 1px solid #d9dee3;")
+
+        layout.addWidget(self.title)
+        layout.addLayout(model_row)
+        layout.addLayout(dfba_row)
+        layout.addLayout(spatial_row)
+        layout.addWidget(self.status)
+        layout.addWidget(self.table)
+        layout.addWidget(self.figure_label)
+
+    def browse_model(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select dFBA Model", "", "Models (*.xml *.sbml *.xml.gz *.sbml.gz)"
+        )
+        if path:
+            self.model_path_input.setText(path)
+
+    def browse_out(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Dynamics Output Folder")
+        if path:
+            self.out_dir_input.setText(path)
+
+    def dfba_request(self) -> dict[str, Any]:
+        return {
+            "model": self.model_path_input.text().strip(),
+            "out_dir": self.out_dir_input.text().strip(),
+            "initial": self.initial_input.text().strip(),
+            "t_end": self.t_end_spin.value(),
+            "dt": self.dt_spin.value(),
+            "initial_biomass": self.biomass_spin.value(),
+        }
+
+    def spatial_request(self) -> dict[str, Any]:
+        size = self.grid_size_spin.value()
+        return {
+            "metabolite": self.spatial_metabolite_input.text().strip() or "EX_glc__D_e",
+            "out_dir": self.out_dir_input.text().strip(),
+            "width": size,
+            "height": size,
+            "steps": self.steps_spin.value(),
+            "dt": self.spatial_dt_spin.value(),
+            "diffusion": self.diffusion_spin.value(),
+            "source_edge": self.source_combo.currentText(),
+            "sink_edge": self.sink_combo.currentText(),
+        }
+
+    def load_dfba_summary(self, payload: dict[str, Any], *, run_dir: Any) -> None:
+        final_conc = payload.get("final_concentrations", {})
+        readout = ", ".join(f"{k}={float(v):.3g}" for k, v in dict(final_conc).items())
+        self._set_single_row(
+            "dFBA",
+            str(payload.get("status", "")),
+            float(payload.get("final_t", 0.0)),
+            f"biomass={float(payload.get('final_biomass', 0.0)):.3g}"
+            + (f"; {readout}" if readout else ""),
+        )
+        self.status.setText(f"dFBA loaded: {run_dir}")
+        self._load_figure(run_dir, "dfba_timecourse.svg")
+
+    def load_spatial_summary(self, payload: dict[str, Any], *, run_dir: Any) -> None:
+        self._set_single_row(
+            "Spatial",
+            str(payload.get("status", "")),
+            float(payload.get("final_t", 0.0)),
+            f"range={float(payload.get('final_min', 0.0)):.3g}.."
+            f"{float(payload.get('final_max', 0.0)):.3g}",
+        )
+        self.status.setText(f"Spatial preview loaded: {run_dir}")
+        self._load_figure(run_dir, "spatial_snapshots.svg")
+
+    def _set_single_row(self, run_type: str, status: str, final_t: float, readout: str) -> None:
+        self.table.setRowCount(1)
+        values = [run_type, status, f"{final_t:.4g}", readout]
+        for idx, value in enumerate(values):
+            self.table.setItem(0, idx, QTableWidgetItem(value))
+
+    def _load_figure(self, run_dir: Any, artifact: str) -> None:
+        path = run_dir / artifact
+        tiff = path.with_suffix(".tiff")
+        if tiff.exists():
+            path = tiff
+        if not path.exists():
+            return
+        pixmap = _load_pixmap(path)
+        if pixmap.isNull():
+            self.figure_label.setText(f"Could not load figure: {path.name}")
+            return
+        target_width = max(600, self.figure_label.width() - 20)
+        target_height = max(280, self.figure_label.height() - 20)
+        self.figure_label.setPixmap(
+            pixmap.scaled(
+                target_width,
+                target_height,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+
+def _load_pixmap(path: Any) -> QPixmap:
+    if str(path).lower().endswith(".svg"):
+        try:
+            from PySide6.QtSvg import QSvgRenderer
+        except ImportError:
+            return QPixmap(str(path))
+        renderer = QSvgRenderer(str(path))
+        if not renderer.isValid():
+            return QPixmap()
+        size = renderer.defaultSize()
+        if size.isEmpty():
+            size = QSize(1000, 700)
+        pixmap = QPixmap(size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        renderer.render(painter)
+        painter.end()
+        return pixmap
+    return QPixmap(str(path))

@@ -259,6 +259,18 @@ class SearchView(QWidget):
         ko_row.addWidget(QLabel("Max genes/member"))
         ko_row.addWidget(self.ko_max_genes_spin)
         ko_row.addWidget(self.run_ko_btn)
+        growth_row = QHBoxLayout()
+        self.growth_member_input = QLineEdit("")
+        self.growth_member_input.setPlaceholderText("Member for ratio sweep, e.g. iML1515")
+        self.abundance_fractions_input = QLineEdit("0.1,0.25,0.5,0.75")
+        self.abundance_fractions_input.setPlaceholderText("Fractions, e.g. 0.1,0.25,0.5,0.75")
+        self.run_growth_btn = QPushButton("Strain Growth")
+        self.run_abundance_btn = QPushButton("Ratio Impact")
+        growth_row.addWidget(QLabel("Growth/Ratio"))
+        growth_row.addWidget(self.growth_member_input)
+        growth_row.addWidget(self.abundance_fractions_input)
+        growth_row.addWidget(self.run_growth_btn)
+        growth_row.addWidget(self.run_abundance_btn)
         self.status = QLabel("")
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
@@ -268,17 +280,24 @@ class SearchView(QWidget):
         self.pareto_label = QLabel("")
         self.current_run_dir: Path | None = None
         try:
-            from PySide6.QtWebEngineWidgets import QWebEngineView
+            from PySide6.QtSvgWidgets import QSvgWidget
 
-            self.figure_view: QWidget = QWebEngineView()
+            self.figure_view: QWidget = QSvgWidget()
         except ImportError:  # pragma: no cover - optional GUI extra
-            self.figure_view = QLabel("QtWebEngine is unavailable; figure preview disabled.")
+            try:
+                from PySide6.QtWebEngineWidgets import QWebEngineView
+
+                self.figure_view = QWebEngineView()
+            except ImportError:
+                self.figure_view = QLabel("SVG preview is unavailable.")
         self.figure_stack = QStackedWidget()
+        self.figure_stack.setMinimumHeight(320)
         self.figure_stack.addWidget(self.figure_view)
         layout.addWidget(self.title)
         layout.addLayout(pool_row)
         layout.addLayout(controls)
         layout.addLayout(ko_row)
+        layout.addLayout(growth_row)
         layout.addWidget(self.status)
         layout.addWidget(self.table)
         layout.addWidget(self.pareto_label)
@@ -295,6 +314,16 @@ class SearchView(QWidget):
             and (self.current_run_dir / "gene_ko_plot.svg").exists()
         ):
             return "gene_ko_plot.svg"
+        if (
+            self.current_run_dir is not None
+            and (self.current_run_dir / "strain_growth_plot.svg").exists()
+        ):
+            return "strain_growth_plot.svg"
+        if (
+            self.current_run_dir is not None
+            and (self.current_run_dir / "abundance_impact_plot.svg").exists()
+        ):
+            return "abundance_impact_plot.svg"
         mapping = {"Ranking": "search_plot.svg", "Scatter": "search_scatter.svg"}
         return mapping[self.figure_mode_combo.currentText()]
 
@@ -304,6 +333,9 @@ class SearchView(QWidget):
             return
         artifact = self.current_run_dir / self.selected_figure_artifact()
         if not artifact.exists():
+            return
+        if hasattr(self.figure_view, "load"):
+            self.figure_view.load(str(artifact))
             return
         if hasattr(self.figure_view, "setHtml"):
             uri = artifact.as_uri()

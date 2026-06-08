@@ -141,6 +141,9 @@ def test_search_view_loads_advanced_summary(tmp_path):
     assert view.min_size_spin.value() == 2
     assert view.max_size_spin.value() == 2
     assert view.robustness_check.text() == "FVA"
+    assert view.run_growth_btn.text() == "Strain Growth"
+    assert view.run_abundance_btn.text() == "Ratio Impact"
+    assert view.abundance_fractions_input.text() == "0.1,0.25,0.5,0.75"
     (tmp_path / "search_plot.svg").write_text("<svg>ranking</svg>")
     (tmp_path / "search_scatter.svg").write_text("<svg>scatter</svg>")
     view.load_summary({

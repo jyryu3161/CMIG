@@ -21,6 +21,282 @@ from typing import Any
 from cmig import CMIG_CORE_VERSION
 from cmig.core.solver import capability_matrix
 
+DEFAULT_DFBA_INITIAL_CONCENTRATIONS = {
+    "EX_glc__D_e": 10.0,
+    "EX_o2_e": 20.0,
+    "EX_ac_e": 0.0,
+    "EX_lac__D_e": 0.0,
+}
+
+GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
+    {
+        "gui_surface": "Models / Import Model",
+        "cli_command": "cmig model-review",
+        "purpose": "Review a user-provided GEM and generate namespace/import diagnostics.",
+        "required_args": ["--model", "--out"],
+        "common_options": ["--known-targets", "--source-namespace", "--target-namespace"],
+        "key_outputs": ["model_review.json"],
+        "example": "uv run cmig model-review --model models/iML1515.xml --out runs/model_review",
+    },
+    {
+        "gui_surface": "Toolbar / Run Fixture",
+        "cli_command": "cmig solve-fixture",
+        "purpose": "Run the bundled fixture community solve used by the GUI smoke workflow.",
+        "required_args": ["--out"],
+        "common_options": ["--solver", "--targets", "--fva"],
+        "key_outputs": ["manifest.json", "nodes.parquet", "edges.parquet", "profile.parquet"],
+        "example": "uv run cmig solve-fixture --solver gurobi --out runs/solve_fixture",
+    },
+    {
+        "gui_surface": "Community / MICOM Taxonomy Solve",
+        "cli_command": "cmig solve",
+        "purpose": "Run a user-provided MICOM taxonomy community solve.",
+        "required_args": ["--taxonomy", "--out"],
+        "common_options": [
+            "--medium",
+            "--namespace-decisions",
+            "--allow-unknown-medium",
+            "--solver",
+            "--tradeoff-f",
+            "--targets",
+            "--fva",
+            "--fva-metabolites",
+            "--bounds",
+        ],
+        "key_outputs": ["manifest.json", "nodes.parquet", "edges.parquet", "profile.parquet"],
+        "example": (
+            "uv run cmig solve --taxonomy taxonomy.csv --medium medium_presets/western_diet.csv "
+            "--solver gurobi --tradeoff-f 0.5 --out runs/solve"
+        ),
+    },
+    {
+        "gui_surface": "Search / Find Best Model Combination",
+        "cli_command": "cmig search",
+        "purpose": "Rank microbial model combinations by target exchange production or uptake.",
+        "required_args": ["--model-dir or --taxonomy", "--target", "--out"],
+        "common_options": [
+            "--min-size",
+            "--max-size",
+            "--strategy",
+            "--n-samples",
+            "--seed",
+            "--top-k",
+            "--robustness-fva",
+            "--medium",
+            "--recursive",
+        ],
+        "key_outputs": [
+            "search_summary.json",
+            "search_rankings.csv",
+            "search_member_matrix.csv",
+            "pool_diagnostics.csv",
+            "search_plot.svg",
+            "search_scatter.svg",
+        ],
+        "example": (
+            "uv run cmig search --model-dir models --target but --min-size 2 "
+            "--max-size 2 --top-k 10 --out runs/search_but"
+        ),
+    },
+    {
+        "gui_surface": "Search / Strain Growth",
+        "cli_command": "cmig strain-growth",
+        "purpose": "Compare each strain's single-model growth with its community growth.",
+        "required_args": ["--model-dir or --taxonomy", "--out"],
+        "common_options": ["--medium", "--tradeoff-f", "--recursive"],
+        "key_outputs": [
+            "strain_growth_summary.json",
+            "strain_growth.csv",
+            "strain_growth_plot.svg",
+        ],
+        "example": "uv run cmig strain-growth --model-dir models --out runs/strain_growth",
+    },
+    {
+        "gui_surface": "Search / Ratio Impact",
+        "cli_command": "cmig abundance-impact",
+        "purpose": "Sweep one member abundance and quantify growth and target flux changes.",
+        "required_args": ["--model-dir or --taxonomy", "--member", "--out"],
+        "common_options": ["--fractions", "--target", "--medium", "--tradeoff-f", "--recursive"],
+        "key_outputs": [
+            "abundance_impact_summary.json",
+            "abundance_impact.csv",
+            "member_growth_by_abundance.csv",
+            "abundance_impact_plot.svg",
+        ],
+        "example": (
+            "uv run cmig abundance-impact --model-dir models --member iML1515 "
+            "--fractions 0.1,0.25,0.5,0.75 --target ac --out runs/iML1515_ac_ratio"
+        ),
+    },
+    {
+        "gui_surface": "Search / Rank Gene KOs",
+        "cli_command": "cmig gene-ko-search",
+        "purpose": "Rank single-gene knockout targets for a fixed microbial combination.",
+        "required_args": ["--model-dir or --taxonomy", "--members", "--target", "--out"],
+        "common_options": [
+            "--member",
+            "--genes",
+            "--max-genes",
+            "--direction",
+            "--growth-fraction",
+            "--top-k",
+            "--recursive",
+        ],
+        "key_outputs": ["gene_ko_summary.json", "gene_ko_rankings.csv", "gene_ko_plot.svg"],
+        "example": (
+            "uv run cmig gene-ko-search --model-dir models --members iML1515,iHN637 "
+            "--target but --max-genes 0 --top-k 20 --out runs/gene_ko_but"
+        ),
+    },
+    {
+        "gui_surface": "Host / Run Host-Microbe",
+        "cli_command": "cmig host-microbe-bigg",
+        "purpose": "Run direct BiGG-style host-microbe exchange coupling.",
+        "required_args": ["--host", "--model-dir or --taxonomy", "--out"],
+        "common_options": [
+            "--host-objective",
+            "--microbe-medium",
+            "--host-medium",
+            "--exclude-metabolites",
+            "--include-currency-metabolites",
+            "--recursive",
+        ],
+        "key_outputs": [
+            "host_microbe_bigg_summary.json",
+            "interaction_edges.csv",
+            "interaction_matrix.csv",
+            "interaction_circle.svg",
+            "interaction_heatmap.svg",
+            "interaction_bubble.svg",
+        ],
+        "example": (
+            "uv run cmig host-microbe-bigg --host models_human/Recon3D.xml "
+            "--model-dir models --recursive --out runs/host_microbe"
+        ),
+    },
+    {
+        "gui_surface": "Host / Rank Combinations",
+        "cli_command": "cmig host-search-bigg",
+        "purpose": "Rank microbial combinations by host objective and target transfer.",
+        "required_args": ["--host", "--model-dir or --taxonomy", "--out"],
+        "common_options": [
+            "--min-size",
+            "--max-size",
+            "--target",
+            "--metric",
+            "--host-weight",
+            "--target-weight",
+            "--host-objective",
+            "--recursive",
+        ],
+        "key_outputs": [
+            "host_search_summary.json",
+            "host_search_rankings.csv",
+            "host_search_plot.svg",
+        ],
+        "example": (
+            "uv run cmig host-search-bigg --host models_human/Recon3D.xml "
+            "--model-dir models --target ac --out runs/host_search"
+        ),
+    },
+    {
+        "gui_surface": "Dynamics / Run dFBA",
+        "cli_command": "cmig dfba",
+        "purpose": "Run well-mixed single-model dynamic FBA.",
+        "required_args": ["--model", "--out"],
+        "common_options": ["--initial", "--t-end", "--dt", "--initial-biomass", "--vmax", "--km"],
+        "key_outputs": ["dfba_summary.json", "timecourse.parquet", "dfba_timecourse.svg"],
+        "example": "uv run cmig dfba --model models/iML1515.xml --dt 0.1 --out runs/dfba_iML1515",
+    },
+    {
+        "gui_surface": "Dynamics / Preview Spatial Medium",
+        "cli_command": "cmig spatial-preview",
+        "purpose": "Preview a 2D source/sink diffusion medium gradient.",
+        "required_args": ["--out"],
+        "common_options": [
+            "--metabolite",
+            "--width",
+            "--height",
+            "--steps",
+            "--dt",
+            "--diffusion",
+            "--source-edge",
+            "--sink-edge",
+        ],
+        "key_outputs": ["spatial_summary.json", "spatial_frames.csv", "spatial_heatmap.svg"],
+        "example": (
+            "uv run cmig spatial-preview --metabolite EX_glc__D_e --width 48 "
+            "--height 48 --source-edge left --sink-edge right --out runs/spatial_glucose"
+        ),
+    },
+    {
+        "gui_surface": "Profile / Open Run",
+        "cli_command": "cmig inspect-run",
+        "purpose": "Inspect a completed CMIG run directory and report its summary/artifacts.",
+        "required_args": ["--run-dir"],
+        "common_options": ["--format json", "--format text"],
+        "key_outputs": ["stdout JSON or text"],
+        "example": "uv run cmig inspect-run --run-dir runs/search_but --format json",
+    },
+    {
+        "gui_surface": "Advanced / Sweep",
+        "cli_command": "cmig sweep",
+        "purpose": (
+            "Run taxonomy-based parameter sweeps over solver, medium, members, "
+            "abundance, and bounds."
+        ),
+        "required_args": ["--taxonomy", "--out"],
+        "common_options": [
+            "--tradeoff-fs",
+            "--solvers",
+            "--mediums",
+            "--member-sets",
+            "--abundance-variants",
+            "--bounds-variants",
+            "--fva",
+            "--fva-metabolites",
+        ],
+        "key_outputs": ["sweep_summary.json", "sweep.parquet", "sweep_profiles.parquet", "runs/"],
+        "example": (
+            "uv run cmig sweep --taxonomy taxonomy.csv --tradeoff-fs 0.3,0.5 "
+            "--mediums medium_presets/western_diet.csv --out runs/sweep"
+        ),
+    },
+    {
+        "gui_surface": "Advanced / Sandbox Fixture",
+        "cli_command": "cmig sandbox-fixture",
+        "purpose": "Preview or commit a reaction bound edit on the bundled fixture community.",
+        "required_args": ["--reaction", "--lower", "--upper"],
+        "common_options": ["--commit", "--solver", "--out"],
+        "key_outputs": ["sandbox_summary.json", "manifest.json when committed"],
+        "example": (
+            "uv run cmig sandbox-fixture --reaction EX_glc__D_e__Escherichia_coli_1 "
+            "--lower -1 --upper 1000 --out runs/sandbox_preview"
+        ),
+    },
+]
+
+RUN_SUMMARY_FILES: list[tuple[str, str]] = [
+    ("manifest.json", "community_solve"),
+    ("search_summary.json", "model_pool_search"),
+    ("host_microbe_bigg_summary.json", "host_microbe_bigg"),
+    ("host_search_summary.json", "host_search_bigg"),
+    ("strain_growth_summary.json", "strain_growth"),
+    ("abundance_impact_summary.json", "abundance_impact"),
+    ("gene_ko_summary.json", "gene_ko_search"),
+    ("dfba_summary.json", "dfba"),
+    ("spatial_summary.json", "spatial_preview"),
+    ("model_review.json", "model_review"),
+    ("sweep_summary.json", "sweep"),
+    ("stats_summary.json", "stats_demo"),
+    ("stats_sweep_summary.json", "stats_sweep"),
+    ("sandbox_summary.json", "sandbox_fixture"),
+    ("host_summary.json", "host_fixture"),
+    ("host_generic_summary.json", "host_generic"),
+    ("host_benchmark.json", "host_benchmark"),
+    ("search_advanced_summary.json", "advanced_search_fixture"),
+]
+
 
 def _cmd_version(_: argparse.Namespace) -> int:
     print(f"cmig {CMIG_CORE_VERSION}")
@@ -36,6 +312,128 @@ def _cmd_solvers(_: argparse.Namespace) -> int:
             f"{str(cap.milp):>5} {str(cap.available):>10}"
         )
     return 0
+
+
+def _cmd_workflows(args: argparse.Namespace) -> int:
+    """Print the GUI-to-CLI workflow map for LLM agents and automation."""
+    payload = {
+        "schema_version": "1.0",
+        "purpose": "Map CMIG GUI analysis surfaces to equivalent CLI workflows.",
+        "workflows": GUI_CLI_WORKFLOWS,
+    }
+    if args.format == "json":
+        print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False))
+        return 0
+    print("CMIG GUI-to-CLI workflow map")
+    for item in GUI_CLI_WORKFLOWS:
+        print(f"\n[{item['gui_surface']}]")
+        print(f"  command: {item['cli_command']}")
+        print(f"  purpose: {item['purpose']}")
+        print(f"  required: {', '.join(item['required_args'])}")
+        print(f"  outputs: {', '.join(item['key_outputs'])}")
+        print(f"  example: {item['example']}")
+    return 0
+
+
+def _cmd_inspect_run(args: argparse.Namespace) -> int:
+    """Inspect a completed CMIG run directory in a machine-readable form."""
+    run_dir = Path(args.run_dir).resolve()
+    if not run_dir.exists() or not run_dir.is_dir():
+        print(f"run directory not found: {run_dir}", file=sys.stderr)
+        return 2
+    payload = _inspect_run_dir(run_dir)
+    if args.format == "json":
+        print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False))
+        return 0
+    print(f"run_dir: {payload['run_dir']}")
+    print(f"kind: {payload['kind']}")
+    print(f"status: {payload['status']}")
+    if payload["summary_file"]:
+        print(f"summary_file: {payload['summary_file']}")
+    if payload["run_hash"]:
+        print(f"run_hash: {payload['run_hash']}")
+    print("artifacts:")
+    for artifact in payload["artifacts"]:
+        print(f"  - {artifact}")
+    return 0
+
+
+def _inspect_run_dir(run_dir: Path) -> dict[str, Any]:
+    kind = "unknown"
+    summary_file: str | None = None
+    summary: dict[str, Any] = {}
+    for filename, candidate_kind in RUN_SUMMARY_FILES:
+        path = run_dir / filename
+        if not path.exists():
+            continue
+        loaded = _load_json_object(path)
+        if loaded is None:
+            continue
+        kind = candidate_kind
+        summary_file = filename
+        summary = loaded
+        break
+
+    manifest = _load_json_object(run_dir / "manifest.json") or {}
+    status = _string_or_none(summary.get("status")) or _string_or_none(manifest.get("status"))
+    run_hash = _string_or_none(summary.get("run_hash")) or _string_or_none(manifest.get("run_hash"))
+    return {
+        "schema_version": "1.0",
+        "run_dir": str(run_dir),
+        "kind": kind,
+        "status": status or "unknown",
+        "summary_file": summary_file,
+        "run_hash": run_hash,
+        "artifacts": _list_run_artifacts(run_dir),
+        "manifest": _compact_manifest(manifest),
+        "summary_keys": sorted(str(key) for key in summary.keys()),
+    }
+
+
+def _load_json_object(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        loaded = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _list_run_artifacts(run_dir: Path, *, limit: int = 200) -> list[str]:
+    artifacts: list[str] = []
+    for path in sorted(run_dir.rglob("*")):
+        if path == run_dir:
+            continue
+        rel = path.relative_to(run_dir).as_posix()
+        artifacts.append(rel + "/" if path.is_dir() else rel)
+        if len(artifacts) >= limit:
+            artifacts.append(f"... truncated after {limit} entries")
+            break
+    return artifacts
+
+
+def _compact_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    keys = [
+        "manifest_schema_version",
+        "run_hash",
+        "status",
+        "artifacts",
+        "inputs",
+        "solver",
+        "software",
+    ]
+    return {key: manifest[key] for key in keys if key in manifest}
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    return None
 
 
 def _cmd_solve_fixture(args: argparse.Namespace) -> int:
@@ -638,6 +1036,185 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_strain_growth(args: argparse.Namespace) -> int:
+    """Estimate per-strain growth alone and inside the full community."""
+    try:
+        import pandas as pd
+        from cobra.io import read_sbml_model
+
+        from cmig.core.engine import MicomEngine
+        from cmig.core.medium_spec import apply_medium_checked, load_medium
+        from cmig.core.model_pool import taxonomy_from_model_dir
+        from cmig.core.single_model import solve_single_model
+    except ImportError:
+        print("strain-growth requires the engine stack: uv sync --extra engine", file=sys.stderr)
+        return 2
+    try:
+        taxonomy = _load_pool_taxonomy(
+            taxonomy_path=args.taxonomy,
+            model_dir=args.model_dir,
+            recursive=args.recursive,
+            pd=pd,
+            taxonomy_from_model_dir=taxonomy_from_model_dir,
+        )
+        medium_spec = load_medium(args.medium) if args.medium else None
+        engine = MicomEngine()
+        community = engine.build_community(taxonomy, cmig_solver=args.solver)
+        if medium_spec is not None:
+            apply_medium_checked(community, medium_spec, strict=not args.allow_unknown_medium)
+        community_result = engine.cooperative_tradeoff(
+            community, args.tradeoff_f, cmig_solver=args.solver
+        )
+        rows: list[dict[str, Any]] = []
+        for record in taxonomy.to_dict("records"):
+            member_id = str(record["id"])
+            model_file = str(record["file"])
+            single_growth: float | None = None
+            single_status = "not_run"
+            single_diag = None
+            try:
+                model = read_sbml_model(model_file)
+                single = solve_single_model(model, solver=args.solver)
+                single_growth = float(single.objective)
+                single_status = single.status
+                single_diag = single.diagnostic
+            except Exception as e:
+                single_status = "failed"
+                single_diag = str(e)
+            rows.append({
+                "member": member_id,
+                "file": model_file,
+                "abundance": community_result.abundances.get(member_id),
+                "single_growth": single_growth,
+                "single_status": single_status,
+                "community_member_growth": community_result.member_growth.get(member_id),
+                "community_status": community_result.status,
+                "community_growth": community_result.objective,
+                "diagnostic": single_diag,
+            })
+        out = Path(args.out)
+        _write_strain_growth_outputs(
+            rows,
+            out,
+            solver=args.solver,
+            tradeoff_f=args.tradeoff_f,
+            community_growth=community_result.objective,
+            community_status=community_result.status,
+            community_diagnostic=community_result.diagnostic,
+        )
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"failed to write strain-growth outputs: {e}", file=sys.stderr)
+        return 2
+    print(f"strain-growth complete ({len(rows)} members) -> {out}")
+    return 0
+
+
+def _cmd_abundance_impact(args: argparse.Namespace) -> int:
+    """Sweep one strain's abundance and report community/member/target impacts."""
+    try:
+        import pandas as pd
+
+        from cmig.core.engine import MicomEngine
+        from cmig.core.medium_spec import apply_medium_checked, load_medium
+        from cmig.core.model_pool import taxonomy_from_model_dir
+    except ImportError:
+        print("abundance-impact requires the engine stack: uv sync --extra engine", file=sys.stderr)
+        return 2
+    try:
+        taxonomy = _load_pool_taxonomy(
+            taxonomy_path=args.taxonomy,
+            model_dir=args.model_dir,
+            recursive=args.recursive,
+            pd=pd,
+            taxonomy_from_model_dir=taxonomy_from_model_dir,
+        )
+        ids = [str(x) for x in taxonomy["id"]]
+        if args.member not in ids:
+            raise ValueError(f"--member not found in taxonomy: {args.member}")
+        fractions = _parse_csv_floats(args.fractions, flag="--fractions")
+        if len(ids) > 1 and any(v <= 0.0 or v >= 1.0 for v in fractions):
+            raise ValueError("--fractions must satisfy 0<f<1 for multi-member communities")
+        medium_spec = load_medium(args.medium) if args.medium else None
+        engine = MicomEngine()
+        rows: list[dict[str, Any]] = []
+        member_growth_rows: list[dict[str, Any]] = []
+        for fraction in fractions:
+            variant = _taxonomy_with_member_fraction(taxonomy, args.member, fraction)
+            community = engine.build_community(variant, cmig_solver=args.solver)
+            if medium_spec is not None:
+                apply_medium_checked(community, medium_spec, strict=not args.allow_unknown_medium)
+            try:
+                result = engine.cooperative_tradeoff(
+                    community, args.tradeoff_f, cmig_solver=args.solver
+                )
+                target_member_exchange = float(
+                    result.member_exchange.get(args.member, {}).get(args.target, 0.0)
+                )
+                total_member_abs = sum(
+                    abs(float(exchanges.get(args.target, 0.0)))
+                    for exchanges in result.member_exchange.values()
+                )
+                influence_share = (
+                    abs(target_member_exchange) / total_member_abs
+                    if total_member_abs > 1e-12 else 0.0
+                )
+                rows.append({
+                    "target_member": args.member,
+                    "target_abundance": fraction,
+                    "target": args.target,
+                    "community_growth": result.objective,
+                    "target_member_growth": result.member_growth.get(args.member),
+                    "target_member_exchange": target_member_exchange,
+                    "community_target_exchange": float(
+                        result.external_exchange.get(args.target, 0.0)
+                    ),
+                    "target_influence_share": influence_share,
+                    "status": result.status,
+                    "diagnostic": result.diagnostic,
+                })
+                for member_id in ids:
+                    member_growth_rows.append({
+                        "target_abundance": fraction,
+                        "member": member_id,
+                        "abundance": result.abundances.get(member_id),
+                        "growth": result.member_growth.get(member_id),
+                    })
+            except Exception as e:
+                rows.append({
+                    "target_member": args.member,
+                    "target_abundance": fraction,
+                    "target": args.target,
+                    "community_growth": 0.0,
+                    "target_member_growth": None,
+                    "target_member_exchange": 0.0,
+                    "community_target_exchange": 0.0,
+                    "target_influence_share": 0.0,
+                    "status": "failed",
+                    "diagnostic": str(e),
+                })
+        out = Path(args.out)
+        _write_abundance_impact_outputs(
+            rows,
+            member_growth_rows,
+            out,
+            target_member=args.member,
+            target=args.target,
+            solver=args.solver,
+            tradeoff_f=args.tradeoff_f,
+        )
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"failed to write abundance-impact outputs: {e}", file=sys.stderr)
+        return 2
+    print(f"abundance-impact complete ({args.member}, target={args.target}) -> {out}")
+    return 0
+
+
 def _write_gene_ko_search_outputs(
     rows: list[dict[str, Any]],
     out: Path,
@@ -727,6 +1304,196 @@ def _write_gene_ko_search_outputs(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_gene_ko_figures(rows, out, target=target)
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return _finite_or_none(number)
+
+
+def _csv_float_or_blank(value: Any) -> str:
+    number = _optional_float(value)
+    return "" if number is None else _finite_csv(number)
+
+
+def _write_strain_growth_outputs(
+    rows: list[dict[str, Any]],
+    out: Path,
+    *,
+    solver: str,
+    tradeoff_f: float,
+    community_growth: float,
+    community_status: str,
+    community_diagnostic: str | None,
+) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "strain_growth.csv", "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "member",
+                "file",
+                "abundance",
+                "single_growth",
+                "single_status",
+                "community_member_growth",
+                "community_status",
+                "community_growth",
+                "diagnostic",
+            ],
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({
+                "member": row["member"],
+                "file": row["file"],
+                "abundance": _csv_float_or_blank(row.get("abundance")),
+                "single_growth": _csv_float_or_blank(row.get("single_growth")),
+                "single_status": row["single_status"],
+                "community_member_growth": _csv_float_or_blank(
+                    row.get("community_member_growth")
+                ),
+                "community_status": row["community_status"],
+                "community_growth": _csv_float_or_blank(row.get("community_growth")),
+                "diagnostic": row.get("diagnostic") or "",
+            })
+    payload = {
+        "status": community_status,
+        "diagnostic": community_diagnostic,
+        "solver": solver,
+        "tradeoff_f": tradeoff_f,
+        "community_growth": _finite_or_none(float(community_growth)),
+        "members": [
+            {
+                "member": row["member"],
+                "file": row["file"],
+                "abundance": _optional_float(row.get("abundance")),
+                "single_growth": _optional_float(row.get("single_growth")),
+                "single_status": row["single_status"],
+                "community_member_growth": _optional_float(
+                    row.get("community_member_growth")
+                ),
+                "community_status": row["community_status"],
+                "community_growth": _optional_float(row.get("community_growth")),
+                "diagnostic": row.get("diagnostic"),
+            }
+            for row in rows
+        ],
+        "artifacts": [
+            "strain_growth.csv",
+            "strain_growth_summary.json",
+            "strain_growth_plot.svg",
+            "strain_growth_plot.tiff",
+        ],
+    }
+    (out / "strain_growth_summary.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    )
+    _write_strain_growth_figures(rows, out)
+
+
+def _write_abundance_impact_outputs(
+    rows: list[dict[str, Any]],
+    member_growth_rows: list[dict[str, Any]],
+    out: Path,
+    *,
+    target_member: str,
+    target: str,
+    solver: str,
+    tradeoff_f: float,
+) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "abundance_impact.csv", "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "target_member",
+                "target_abundance",
+                "target",
+                "community_growth",
+                "target_member_growth",
+                "target_member_exchange",
+                "community_target_exchange",
+                "target_influence_share",
+                "status",
+                "diagnostic",
+            ],
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({
+                "target_member": row["target_member"],
+                "target_abundance": _csv_float_or_blank(row.get("target_abundance")),
+                "target": row["target"],
+                "community_growth": _csv_float_or_blank(row.get("community_growth")),
+                "target_member_growth": _csv_float_or_blank(
+                    row.get("target_member_growth")
+                ),
+                "target_member_exchange": _csv_float_or_blank(
+                    row.get("target_member_exchange")
+                ),
+                "community_target_exchange": _csv_float_or_blank(
+                    row.get("community_target_exchange")
+                ),
+                "target_influence_share": _csv_float_or_blank(
+                    row.get("target_influence_share")
+                ),
+                "status": row["status"],
+                "diagnostic": row.get("diagnostic") or "",
+            })
+    with open(out / "member_growth_by_abundance.csv", "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["target_abundance", "member", "abundance", "growth"],
+        )
+        writer.writeheader()
+        for row in member_growth_rows:
+            writer.writerow({
+                "target_abundance": _csv_float_or_blank(row.get("target_abundance")),
+                "member": row["member"],
+                "abundance": _csv_float_or_blank(row.get("abundance")),
+                "growth": _csv_float_or_blank(row.get("growth")),
+            })
+    payload = {
+        "status": "ok" if any(row["status"] == "optimal" for row in rows) else "failed",
+        "target_member": target_member,
+        "target": target,
+        "solver": solver,
+        "tradeoff_f": tradeoff_f,
+        "rows": [
+            {
+                key: _optional_float(value) if key not in {"target_member", "target", "status",
+                                                           "diagnostic"} else value
+                for key, value in row.items()
+            }
+            for row in rows
+        ],
+        "member_growth_rows": [
+            {
+                "target_abundance": _optional_float(row.get("target_abundance")),
+                "member": row["member"],
+                "abundance": _optional_float(row.get("abundance")),
+                "growth": _optional_float(row.get("growth")),
+            }
+            for row in member_growth_rows
+        ],
+        "artifacts": [
+            "abundance_impact.csv",
+            "member_growth_by_abundance.csv",
+            "abundance_impact_summary.json",
+            "abundance_impact_plot.svg",
+            "abundance_impact_plot.tiff",
+        ],
+    }
+    (out / "abundance_impact_summary.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    )
+    _write_abundance_impact_figures(rows, out, target_member=target_member, target=target)
 
 
 def _write_host_search_bigg_outputs(
@@ -955,6 +1722,102 @@ def _cmd_dfba_fixture(args: argparse.Namespace) -> int:
         "diagnostic": result.diagnostic,
     }
     _write_json_or_print(payload, args.out, "dfba_summary.json")
+    return 0
+
+
+def _cmd_dfba(args: argparse.Namespace) -> int:
+    """Run well-mixed dFBA on a user-supplied SBML model."""
+    try:
+        import cobra
+
+        from cmig.core.dfba import DfbaConfig, simulate_dfba
+    except ImportError:
+        print("dfba requires the engine stack: uv sync --extra engine", file=sys.stderr)
+        return 2
+    model_path = Path(args.model)
+    if not model_path.exists():
+        print(f"model file not found: {model_path}", file=sys.stderr)
+        return 2
+    try:
+        model = cobra.io.read_sbml_model(str(model_path))
+        concentrations = _dfba_initial_concentrations(
+            model,
+            args.initial_concentrations,
+        )
+        vmax = (
+            _parse_key_float_map(args.vmax, flag="--vmax")
+            if args.vmax is not None else None
+        )
+        _require_model_exchanges(model, concentrations, flag="--initial")
+        if vmax is not None:
+            _require_model_exchanges(model, vmax, flag="--vmax")
+        result = simulate_dfba(
+            model,
+            DfbaConfig(
+                t_end=args.t_end,
+                dt=args.dt,
+                initial_biomass=args.initial_biomass,
+                initial_concentrations=concentrations,
+                km=args.km,
+                vmax=vmax,
+                min_dt=args.min_dt,
+                growth_floor=args.growth_floor,
+            ),
+            solver=args.solver,
+        )
+    except (KeyError, ValueError, OSError) as e:
+        print(f"dfba input error: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:
+        print(f"dfba failed: {e}", file=sys.stderr)
+        return 1
+    _write_dfba_outputs(
+        result,
+        Path(args.out),
+        model_path=model_path,
+        solver=args.solver,
+        config={
+            "t_end": args.t_end,
+            "dt": args.dt,
+            "initial_biomass": args.initial_biomass,
+            "initial_concentrations": concentrations,
+            "km": args.km,
+            "vmax": vmax,
+            "min_dt": args.min_dt,
+            "growth_floor": args.growth_floor,
+            "default_initial_preset": args.initial_concentrations is None,
+        },
+    )
+    print(f"dfba complete ({result.status}) -> {args.out}")
+    return 0
+
+
+def _cmd_spatial_preview(args: argparse.Namespace) -> int:
+    """Run a lightweight 2D medium diffusion/source-sink preview."""
+    from cmig.core.spatial import SpatialPreviewConfig, run_spatial_preview
+
+    try:
+        config = SpatialPreviewConfig(
+            width=args.width,
+            height=args.height,
+            steps=args.steps,
+            dt=args.dt,
+            diffusion=args.diffusion,
+            initial_value=args.initial_value,
+            source_edge=args.source_edge,
+            source_value=args.source_value,
+            sink_edge=args.sink_edge,
+            sink_value=args.sink_value,
+            store_every=args.store_every,
+        )
+        result = run_spatial_preview(config)
+    except ValueError as e:
+        print(f"spatial-preview input error: {e}", file=sys.stderr)
+        return 2
+    _write_spatial_preview_outputs(
+        result, Path(args.out), metabolite=args.metabolite, config=config
+    )
+    print(f"spatial-preview complete ({args.metabolite}) -> {args.out}")
     return 0
 
 
@@ -1398,6 +2261,356 @@ def _save_screening_figure(fig: Any, out_svg: Path, out_tiff: Path) -> None:
     fig.savefig(out_tiff, format="tiff", dpi=300)
 
 
+def _write_dfba_outputs(
+    result: Any,
+    out: Path,
+    *,
+    model_path: Path,
+    solver: str,
+    config: dict[str, Any],
+) -> None:
+    from cmig.core.dfba import build_timecourse, timecourse_rows, write_timecourse
+
+    out.mkdir(parents=True, exist_ok=True)
+    table = build_timecourse(result)
+    write_timecourse(table, out / "timecourse.parquet")
+    rows = timecourse_rows(result)
+    with open(out / "dfba_timecourse.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["t", "series", "value"])
+        writer.writeheader()
+        writer.writerows(rows)
+    final = result.timecourse[-1]
+    payload = {
+        "status": result.status,
+        "diagnostic": result.diagnostic,
+        "model": str(model_path),
+        "solver": solver,
+        "config": config,
+        "managed_exchanges": result.managed_exchanges,
+        "n_timepoints": len(result.timecourse),
+        "final_t": final.t,
+        "final_biomass": final.biomass,
+        "final_growth_rate": final.growth_rate,
+        "final_concentrations": final.concentrations,
+        "artifacts": [
+            "timecourse.parquet",
+            "dfba_timecourse.csv",
+            "dfba_timecourse.svg",
+            "dfba_timecourse.tiff",
+            "dfba_summary.json",
+        ],
+    }
+    (out / "dfba_summary.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    )
+    _write_dfba_figure(rows, out / "dfba_timecourse.svg", out / "dfba_timecourse.tiff")
+
+
+def _write_dfba_figure(rows: list[dict[str, Any]], out_svg: Path, out_tiff: Path) -> None:
+    plt = _load_matplotlib_pyplot()
+    series: dict[str, list[tuple[float, float]]] = {}
+    for row in rows:
+        series.setdefault(str(row["series"]), []).append((float(row["t"]), float(row["value"])))
+    fig, axes = plt.subplots(
+        3, 1, figsize=(7.4, 7.2), dpi=300, sharex=True,
+        gridspec_kw={"height_ratios": [1.1, 0.8, 1.1]},
+    )
+    biomass = series.get("biomass", [])
+    if biomass:
+        axes[0].plot([x for x, _ in biomass], [y for _, y in biomass], color="#2b8cbe", linewidth=2)
+        final_t, final_biomass = biomass[-1]
+        axes[0].text(
+            final_t,
+            final_biomass,
+            f" final {final_biomass:.3g}",
+            va="center",
+            ha="left",
+            fontsize=9,
+            color="#2b8cbe",
+        )
+    axes[0].set_title("Dynamic FBA time course", loc="left", pad=10)
+    axes[0].set_ylabel("Biomass")
+    _polish_matplotlib_axes(axes[0], grid_axis="y")
+    growth = series.get("growth_rate", [])
+    if growth:
+        growth_plot = [(x, y) for x, y in growth if x > 0.0]
+        if not growth_plot:
+            growth_plot = growth
+        axes[1].plot(
+            [x for x, _ in growth_plot],
+            [y for _, y in growth_plot],
+            color="#636363",
+            linewidth=1.8,
+            marker="o",
+            markersize=3.8,
+        )
+        axes[1].ticklabel_format(axis="y", style="plain", useOffset=False)
+    axes[1].set_ylabel("Growth rate")
+    _polish_matplotlib_axes(axes[1], grid_axis="y")
+    palette = ["#d95f0e", "#31a354", "#756bb1", "#636363", "#e7298a", "#1b9e77"]
+    metabolites = [name for name in series if name not in {"biomass", "growth_rate"}]
+    for idx, name in enumerate(metabolites):
+        values = series[name]
+        axes[2].plot(
+            [x for x, _ in values],
+            [y for _, y in values],
+            label=name,
+            color=palette[idx % len(palette)],
+            linewidth=1.8,
+        )
+        final_t, final_value = values[-1]
+        axes[2].text(
+            final_t,
+            final_value,
+            f" {final_value:.3g}",
+            va="center",
+            ha="left",
+            fontsize=9,
+            color=palette[idx % len(palette)],
+        )
+    axes[2].set_xlabel("Time")
+    axes[2].set_ylabel("Concentration")
+    if metabolites:
+        axes[2].legend(loc="best", frameon=False, fontsize=9)
+    _polish_matplotlib_axes(axes[2], grid_axis="y")
+    _save_screening_figure(fig, out_svg, out_tiff)
+    plt.close(fig)
+
+
+def _write_strain_growth_figures(rows: list[dict[str, Any]], out: Path) -> None:
+    plt = _load_matplotlib_pyplot()
+    labels = [str(row["member"]) for row in rows]
+    single = [_optional_float(row.get("single_growth")) or 0.0 for row in rows]
+    community = [_optional_float(row.get("community_member_growth")) or 0.0 for row in rows]
+    height = max(3.4, 1.4 + 0.48 * max(len(rows), 1))
+    fig, ax = plt.subplots(figsize=(7.2, height), dpi=300)
+    positions = list(range(len(labels)))
+    offset = 0.18
+    ax.barh(
+        [y + offset for y in positions],
+        single,
+        height=0.32,
+        color="#2b8cbe",
+        label="Single model",
+    )
+    ax.barh(
+        [y - offset for y in positions],
+        community,
+        height=0.32,
+        color="#31a354",
+        label="Community",
+    )
+    ax.set_yticks(positions)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("Growth rate")
+    ax.set_title("Strain growth profile", loc="left", pad=10)
+    max_value = max(single + community, default=0.0)
+    if max_value > 0.0:
+        ax.set_xlim(right=max_value * 1.08)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.12), ncol=2, frameon=False)
+    _polish_matplotlib_axes(ax, grid_axis="x")
+    _save_screening_figure(
+        fig,
+        out / "strain_growth_plot.svg",
+        out / "strain_growth_plot.tiff",
+    )
+    plt.close(fig)
+
+
+def _write_abundance_impact_figures(
+    rows: list[dict[str, Any]],
+    out: Path,
+    *,
+    target_member: str,
+    target: str,
+) -> None:
+    plt = _load_matplotlib_pyplot()
+    valid_rows = sorted(
+        (row for row in rows if _optional_float(row.get("target_abundance")) is not None),
+        key=lambda row: float(row["target_abundance"]),
+    )
+    x = [float(row["target_abundance"]) for row in valid_rows]
+    community_growth = [_optional_float(row.get("community_growth")) or 0.0 for row in valid_rows]
+    member_growth = [
+        _optional_float(row.get("target_member_growth")) or 0.0 for row in valid_rows
+    ]
+    member_flux = [
+        _optional_float(row.get("target_member_exchange")) or 0.0 for row in valid_rows
+    ]
+    community_flux = [
+        _optional_float(row.get("community_target_exchange")) or 0.0 for row in valid_rows
+    ]
+    influence = [
+        _optional_float(row.get("target_influence_share")) or 0.0 for row in valid_rows
+    ]
+    fig, axes = plt.subplots(3, 1, figsize=(7.2, 7.4), dpi=300, sharex=True)
+    axes[0].plot(x, community_growth, color="#2b8cbe", marker="o", label="Community")
+    axes[0].plot(x, member_growth, color="#31a354", marker="o", label=target_member)
+    axes[0].set_ylabel("Growth")
+    axes[0].set_title(
+        f"Abundance sensitivity: {target_member}",
+        loc="left",
+        pad=10,
+    )
+    axes[0].legend(frameon=False, loc="best")
+    _polish_matplotlib_axes(axes[0], grid_axis="y")
+    axes[1].plot(x, member_flux, color="#756bb1", marker="o", label=f"{target_member} {target}")
+    axes[1].plot(x, community_flux, color="#d95f0e", marker="o", label=f"Community {target}")
+    axes[1].set_ylabel("Exchange flux")
+    axes[1].legend(frameon=False, loc="best")
+    _polish_matplotlib_axes(axes[1], grid_axis="y")
+    axes[2].plot(x, influence, color="#636363", marker="o")
+    axes[2].set_xlabel(f"{target_member} abundance")
+    axes[2].set_ylabel("Target share")
+    axes[2].set_ylim(bottom=0.0, top=min(1.0, max(0.1, max(influence, default=0.0) * 1.25)))
+    _polish_matplotlib_axes(axes[2], grid_axis="y")
+    _save_screening_figure(
+        fig,
+        out / "abundance_impact_plot.svg",
+        out / "abundance_impact_plot.tiff",
+    )
+    plt.close(fig)
+
+
+def _write_spatial_preview_outputs(
+    result: Any,
+    out: Path,
+    *,
+    metabolite: str,
+    config: Any,
+) -> None:
+    from cmig.core.spatial import spatial_rows
+
+    out.mkdir(parents=True, exist_ok=True)
+    rows = spatial_rows(result)
+    with open(out / "spatial_frames.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["step", "t", "x", "y", "value"])
+        writer.writeheader()
+        writer.writerows(rows)
+    final = result.final
+    payload = {
+        "status": result.status,
+        "diagnostic": result.diagnostic,
+        "metabolite": metabolite,
+        "config": {
+            "width": config.width,
+            "height": config.height,
+            "steps": config.steps,
+            "dt": config.dt,
+            "diffusion": config.diffusion,
+            "initial_value": config.initial_value,
+            "source_edge": config.source_edge,
+            "source_value": config.source_value,
+            "sink_edge": config.sink_edge,
+            "sink_value": config.sink_value,
+            "store_every": config.store_every,
+        },
+        "n_frames": len(result.frames),
+        "final_step": final.step,
+        "final_t": final.t,
+        "final_min": min(min(row) for row in final.values),
+        "final_max": max(max(row) for row in final.values),
+        "artifacts": [
+            "spatial_frames.csv",
+            "spatial_heatmap.svg",
+            "spatial_heatmap.tiff",
+            "spatial_snapshots.svg",
+            "spatial_snapshots.tiff",
+            "spatial_summary.json",
+        ],
+    }
+    (out / "spatial_summary.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    )
+    _write_spatial_heatmap(
+        final.values,
+        out / "spatial_heatmap.svg",
+        out / "spatial_heatmap.tiff",
+        metabolite=metabolite,
+        step=final.step,
+    )
+    _write_spatial_snapshots(
+        result.frames,
+        out / "spatial_snapshots.svg",
+        out / "spatial_snapshots.tiff",
+        metabolite=metabolite,
+    )
+
+
+def _write_spatial_heatmap(
+    values: list[list[float]],
+    out_svg: Path,
+    out_tiff: Path,
+    *,
+    metabolite: str,
+    step: int,
+) -> None:
+    plt = _load_matplotlib_pyplot()
+    fig, ax = plt.subplots(figsize=(6.2, 5.4), dpi=300)
+    image = ax.imshow(values, cmap="viridis", origin="lower", interpolation="nearest")
+    ax.set_title(f"Spatial medium preview: {metabolite}", loc="left", pad=10, fontsize=14)
+    ax.set_xlabel("x grid")
+    ax.set_ylabel("y grid")
+    ax.text(0.99, 0.99, f"step {step}", transform=ax.transAxes, va="top", ha="right",
+            fontsize=9, color="#222222",
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 3})
+    cbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Concentration")
+    _save_screening_figure(fig, out_svg, out_tiff)
+    plt.close(fig)
+
+
+def _write_spatial_snapshots(
+    frames: list[Any],
+    out_svg: Path,
+    out_tiff: Path,
+    *,
+    metabolite: str,
+) -> None:
+    plt = _load_matplotlib_pyplot()
+    selected = _select_spatial_frames(frames)
+    vmax = max(max(max(row) for row in frame.values) for frame in selected)
+    vmin = min(min(min(row) for row in frame.values) for frame in selected)
+    fig, axes = plt.subplots(
+        1, len(selected) + 1, figsize=(10.2, 3.4), dpi=300, constrained_layout=True
+    )
+    image = None
+    for ax, frame in zip(axes[:-1], selected, strict=False):
+        image = ax.imshow(
+            frame.values,
+            cmap="viridis",
+            origin="lower",
+            interpolation="nearest",
+            vmin=vmin,
+            vmax=vmax,
+        )
+        ax.set_title(f"t={frame.t:.3g}", fontsize=11)
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+    final = selected[-1]
+    mid_y = len(final.values) // 2
+    profile = final.values[mid_y]
+    axes[-1].plot(range(len(profile)), profile, color="#2b8cbe", linewidth=2)
+    axes[-1].set_title("Final centerline concentration", fontsize=11)
+    axes[-1].set_xlabel("x")
+    axes[-1].set_ylabel("")
+    _polish_matplotlib_axes(axes[-1], grid_axis="y")
+    fig.suptitle(f"Spatial medium dynamics: {metabolite}", x=0.02, ha="left", fontsize=14)
+    if image is not None:
+        cbar = fig.colorbar(image, ax=list(axes[:-1]), fraction=0.035, pad=0.02)
+        cbar.set_label("Grid concentration")
+    fig.savefig(out_svg, format="svg", bbox_inches="tight")
+    fig.savefig(out_tiff, format="tiff", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _select_spatial_frames(frames: list[Any]) -> list[Any]:
+    if len(frames) <= 3:
+        return frames
+    return [frames[0], frames[len(frames) // 2], frames[-1]]
+
+
 def _write_host_search_figures(
     rows: list[dict[str, Any]], out: Path, *, target: str, metric: str
 ) -> None:
@@ -1809,6 +3022,98 @@ def _parse_csv_strings(raw: str, *, flag: str) -> list[str]:
     return values
 
 
+def _load_pool_taxonomy(
+    *,
+    taxonomy_path: str | None,
+    model_dir: str | None,
+    recursive: bool,
+    pd: Any,
+    taxonomy_from_model_dir: Any,
+) -> Any:
+    if bool(taxonomy_path) == bool(model_dir):
+        raise ValueError("provide exactly one of --taxonomy or --model-dir")
+    if taxonomy_path:
+        path = Path(taxonomy_path)
+        if not path.exists():
+            raise ValueError(f"taxonomy file not found: {path}")
+        taxonomy = pd.read_csv(path)
+    else:
+        taxonomy = taxonomy_from_model_dir(model_dir, recursive=recursive)
+    missing_cols = {"id", "file"} - set(taxonomy.columns)
+    if missing_cols:
+        raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
+    ids = [str(x) for x in taxonomy["id"]]
+    if len(ids) != len(set(ids)):
+        raise ValueError("taxonomy id values must be unique")
+    return taxonomy
+
+
+def _taxonomy_with_member_fraction(taxonomy: Any, member_id: str, fraction: float) -> Any:
+    variant = taxonomy.copy()
+    ids = [str(x) for x in variant["id"]]
+    if len(ids) == 1:
+        variant["abundance"] = 1.0
+        return variant
+    if "abundance" in variant.columns:
+        base = [max(float(v), 0.0) for v in variant["abundance"]]
+    else:
+        base = [1.0 for _ in ids]
+    other_total = sum(value for mid, value in zip(ids, base, strict=False) if mid != member_id)
+    if other_total <= 0.0:
+        other_total = float(len(ids) - 1)
+        base = [1.0 for _ in ids]
+    abundances = []
+    for mid, value in zip(ids, base, strict=False):
+        if mid == member_id:
+            abundances.append(fraction)
+        else:
+            abundances.append((1.0 - fraction) * value / other_total)
+    variant["abundance"] = abundances
+    return variant
+
+
+def _parse_key_float_map(raw: str, *, flag: str) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for item in _parse_csv_strings(raw, flag=flag):
+        if "=" not in item:
+            raise ValueError(f"{flag} entries must be key=value, got {item!r}")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError(f"{flag} contains an empty key")
+        try:
+            number = float(value)
+        except ValueError as e:
+            raise ValueError(f"{flag} value for {key!r} is not numeric: {value!r}") from e
+        if number < 0.0 or not math.isfinite(number):
+            raise ValueError(f"{flag} value for {key!r} must be finite and non-negative")
+        values[key] = number
+    return values
+
+
+def _dfba_initial_concentrations(model: Any, raw: str | None) -> dict[str, float]:
+    if raw is not None:
+        return _parse_key_float_map(raw, flag="--initial")
+    concentrations = {
+        rid: value
+        for rid, value in DEFAULT_DFBA_INITIAL_CONCENTRATIONS.items()
+        if rid in model.reactions
+    }
+    if not concentrations:
+        defaults = ", ".join(DEFAULT_DFBA_INITIAL_CONCENTRATIONS)
+        raise ValueError(
+            "no default dFBA exchange ids were found in the model; "
+            f"provide --initial explicitly (default candidates: {defaults})"
+        )
+    return concentrations
+
+
+def _require_model_exchanges(model: Any, values: dict[str, float], *, flag: str) -> None:
+    missing = [rid for rid in values if rid not in model.reactions]
+    if missing:
+        raise ValueError(f"{flag} exchange ids not found in model: {missing}")
+
+
 def _parse_optional_csv_strings(raw: str | None) -> list[str] | None:
     if raw is None:
         return None
@@ -2187,6 +3492,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("version", help="버전 출력").set_defaults(func=_cmd_version)
     sub.add_parser("solvers", help="solver capability matrix").set_defaults(func=_cmd_solvers)
+    wf = sub.add_parser("workflows", help="print GUI-to-CLI workflow map for LLM/automation")
+    wf.add_argument("--format", default="json", choices=["json", "text"])
+    wf.set_defaults(func=_cmd_workflows)
+    ir = sub.add_parser("inspect-run", help="inspect a completed CMIG run directory")
+    ir.add_argument("--run-dir", required=True, help="completed CMIG run directory")
+    ir.add_argument("--format", default="json", choices=["json", "text"])
+    ir.set_defaults(func=_cmd_inspect_run)
     sf = sub.add_parser("solve-fixture", help="fixture community solve → parquet+manifest (C7/P0)")
     sf.add_argument(
         "--solver", default="gurobi",
@@ -2333,6 +3645,49 @@ def build_parser() -> argparse.ArgumentParser:
     hs.add_argument("--keep-host-uptake", action="store_true")
     hs.add_argument("--out", required=True, help="output directory")
     hs.set_defaults(func=_cmd_host_search_bigg)
+    sg = sub.add_parser(
+        "strain-growth",
+        help="estimate per-strain growth alone and inside the full community",
+    )
+    sg_src = sg.add_mutually_exclusive_group(required=True)
+    sg_src.add_argument("--taxonomy", default=None, help="MICOM-compatible pool taxonomy csv")
+    sg_src.add_argument("--model-dir", default=None, help="directory containing microbial GEMs")
+    sg.add_argument("--recursive", action="store_true", help="scan --model-dir recursively")
+    sg.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
+    sg.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f")
+    sg.add_argument("--medium", default=None, help="optional community medium csv/json")
+    sg.add_argument(
+        "--allow-unknown-medium",
+        action="store_true",
+        help="record medium ids absent from the community and continue",
+    )
+    sg.add_argument("--out", required=True, help="output directory")
+    sg.set_defaults(func=_cmd_strain_growth)
+    ai = sub.add_parser(
+        "abundance-impact",
+        help="sweep one strain abundance and quantify growth/target exchange impact",
+    )
+    ai_src = ai.add_mutually_exclusive_group(required=True)
+    ai_src.add_argument("--taxonomy", default=None, help="MICOM-compatible pool taxonomy csv")
+    ai_src.add_argument("--model-dir", default=None, help="directory containing microbial GEMs")
+    ai.add_argument("--recursive", action="store_true", help="scan --model-dir recursively")
+    ai.add_argument("--member", required=True, help="member id whose abundance is swept")
+    ai.add_argument(
+        "--fractions",
+        default="0.1,0.25,0.5,0.75",
+        help="comma-separated target-member abundances",
+    )
+    ai.add_argument("--target", default="ac", help="target metabolite id")
+    ai.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
+    ai.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f")
+    ai.add_argument("--medium", default=None, help="optional community medium csv/json")
+    ai.add_argument(
+        "--allow-unknown-medium",
+        action="store_true",
+        help="record medium ids absent from the community and continue",
+    )
+    ai.add_argument("--out", required=True, help="output directory")
+    ai.set_defaults(func=_cmd_abundance_impact)
     gk = sub.add_parser(
         "gene-ko-search",
         help="rank single-gene knockouts for a selected microbial combination",
@@ -2382,6 +3737,62 @@ def build_parser() -> argparse.ArgumentParser:
     df.add_argument("--glucose", type=float, default=10.0)
     df.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout summary)")
     df.set_defaults(func=_cmd_dfba_fixture)
+    df_user = sub.add_parser(
+        "dfba",
+        help="run well-mixed dFBA on a user SBML model -> timecourse/figure/summary",
+    )
+    df_user.add_argument("--model", required=True, help="SBML model file")
+    df_user.add_argument("--solver", default="gurobi", choices=["gurobi", "osqp"], help="LP solver")
+    df_user.add_argument("--t-end", type=float, default=5.0, dest="t_end")
+    df_user.add_argument("--dt", type=float, default=0.1)
+    df_user.add_argument("--initial-biomass", type=float, default=0.01, dest="initial_biomass")
+    df_user.add_argument(
+        "--initial",
+        default=None,
+        dest="initial_concentrations",
+        help=(
+            "comma-separated exchange concentrations, e.g. EX_glc__D_e=10,EX_o2_e=20; "
+            "default tracks glucose, oxygen, acetate, and D-lactate when present"
+        ),
+    )
+    df_user.add_argument(
+        "--vmax",
+        default=None,
+        help="optional comma-separated uptake maxima, e.g. EX_glc__D_e=10",
+    )
+    df_user.add_argument("--km", type=float, default=0.01)
+    df_user.add_argument("--min-dt", type=float, default=1e-4, dest="min_dt")
+    df_user.add_argument("--growth-floor", type=float, default=1e-6, dest="growth_floor")
+    df_user.add_argument("--out", required=True, help="output directory")
+    df_user.set_defaults(func=_cmd_dfba)
+    spatial = sub.add_parser(
+        "spatial-preview",
+        help="COMETS-inspired 2D medium source/sink diffusion preview -> heatmap",
+    )
+    spatial.add_argument("--metabolite", default="EX_glc__D_e")
+    spatial.add_argument("--width", type=int, default=32)
+    spatial.add_argument("--height", type=int, default=32)
+    spatial.add_argument("--steps", type=int, default=80)
+    spatial.add_argument("--dt", type=float, default=0.1)
+    spatial.add_argument("--diffusion", type=float, default=0.15)
+    spatial.add_argument("--initial-value", type=float, default=0.0, dest="initial_value")
+    spatial.add_argument(
+        "--source-edge",
+        default="left",
+        choices=["left", "right", "top", "bottom", "center", "none"],
+        dest="source_edge",
+    )
+    spatial.add_argument("--source-value", type=float, default=10.0, dest="source_value")
+    spatial.add_argument(
+        "--sink-edge",
+        default="right",
+        choices=["left", "right", "top", "bottom", "center", "none"],
+        dest="sink_edge",
+    )
+    spatial.add_argument("--sink-value", type=float, default=0.0, dest="sink_value")
+    spatial.add_argument("--store-every", type=int, default=10, dest="store_every")
+    spatial.add_argument("--out", required=True, help="output directory")
+    spatial.set_defaults(func=_cmd_spatial_preview)
     sp = sub.add_parser(
         "search",
         help="user model-pool target production search -> rankings/plot/summary",

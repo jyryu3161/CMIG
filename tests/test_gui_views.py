@@ -5,6 +5,8 @@ QT offscreen(conftest)에서 위젯 생성·실 backend 소비. offscreen=실행
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
@@ -12,7 +14,7 @@ pytest.importorskip("PySide6.QtWidgets")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.core.sweep import SweepAxis  # noqa: E402
-from cmig.gui.views import ExternalProfileView, SweepView  # noqa: E402
+from cmig.gui.views import DfbaSpatialView, ExternalProfileView, SweepView  # noqa: E402
 from cmig.service import JobRunner, JobStatus  # noqa: E402
 
 
@@ -93,3 +95,46 @@ def test_profile_view_empty():
     view = ExternalProfileView()
     view.load_profile([])
     assert view.table.rowCount() == 0
+
+
+def test_dynamics_view_requests_and_summaries():
+    """Dynamics view exposes runnable dFBA/spatial requests and result summaries."""
+    _app()
+    view = DfbaSpatialView()
+    view.model_path_input.setText("/tmp/model.xml")
+    assert view.dfba_request()["model"] == "/tmp/model.xml"
+    assert view.spatial_request()["width"] == view.spatial_request()["height"]
+    view.spatial_dt_spin.setValue(0.25)
+    assert view.spatial_request()["dt"] == 0.25
+    view.load_dfba_summary(
+        {
+            "status": "completed",
+            "final_t": 0.5,
+            "final_biomass": 0.011,
+            "final_concentrations": {"EX_glc__D_e": 9.9},
+        },
+        run_dir=Path("/tmp"),
+    )
+    assert view.table.item(0, 0).text() == "dFBA"
+    view.load_spatial_summary(
+        {"status": "completed", "final_t": 8.0, "final_min": 0.0, "final_max": 10.0},
+        run_dir=Path("/tmp"),
+    )
+    assert view.table.item(0, 0).text() == "Spatial"
+
+
+def test_dynamics_view_loads_svg_without_tiff(tmp_path):
+    pytest.importorskip("PySide6.QtSvg")
+
+    _app()
+    view = DfbaSpatialView()
+    (tmp_path / "figure.svg").write_text(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='120' height='80'>"
+        "<rect width='120' height='80' fill='white'/>"
+        "<circle cx='60' cy='40' r='20' fill='#2b8cbe'/>"
+        "</svg>"
+    )
+    view._load_figure(tmp_path, "figure.svg")
+    pixmap = view.figure_label.pixmap()
+    assert pixmap is not None
+    assert not pixmap.isNull()

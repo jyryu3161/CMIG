@@ -31,7 +31,7 @@ def test_shell_constructs_offscreen():
     assert w.explorer.topLevelItemCount() == 3        # 모델·시나리오·실행
     assert w.jobs_panel.columnCount() == 4
     assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == [
-        "Models", "Search", "Host", "Profile"
+        "Models", "Search", "Host", "Dynamics", "Profile"
     ]
     assert w.tabs.currentWidget() is w.search_view
     assert w.sweep_view.runner is w.runner
@@ -87,7 +87,7 @@ def test_advanced_tabs_are_hidden_until_requested():
     assert "Advanced preview" in w.scenario_compare.status.text()
     w.advanced_tools_action.setChecked(False)
     assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == [
-        "Models", "Search", "Host", "Profile"
+        "Models", "Search", "Host", "Dynamics", "Profile"
     ]
     assert w.advanced_tools_action.text() == "Show Advanced Tools"
 
@@ -149,6 +149,74 @@ def test_load_host_microbe_bigg_dir_updates_host_tab(tmp_path):
     assert w.host_view.cross_table.rowCount() == 1
     assert w.host_view.cross_table.item(0, 0).text() == "ac"
     assert w.explorer.topLevelItem(2).child(0).text(0) == tmp_path.name
+
+
+def test_load_dfba_dir_updates_dynamics_tab(tmp_path):
+    import json
+
+    _app()
+    (tmp_path / "dfba_summary.json").write_text(json.dumps({
+        "status": "completed",
+        "final_t": 1.0,
+        "final_biomass": 0.02,
+        "final_concentrations": {"EX_glc__D_e": 9.5},
+    }))
+    w = build_main_window()
+    assert w.load_dfba_dir(tmp_path) is True
+    assert w.tabs.currentWidget() is w.dynamics_view
+    assert w.dynamics_view.table.item(0, 0).text() == "dFBA"
+    assert "biomass=0.02" in w.dynamics_view.table.item(0, 3).text()
+
+
+def test_load_spatial_dir_updates_dynamics_tab(tmp_path):
+    import json
+
+    _app()
+    (tmp_path / "spatial_summary.json").write_text(json.dumps({
+        "status": "completed",
+        "final_t": 8.0,
+        "final_min": 0.0,
+        "final_max": 10.0,
+    }))
+    w = build_main_window()
+    assert w.load_spatial_dir(tmp_path) is True
+    assert w.tabs.currentWidget() is w.dynamics_view
+    assert w.dynamics_view.table.item(0, 0).text() == "Spatial"
+    assert "range=0..10" in w.dynamics_view.table.item(0, 3).text()
+
+
+def test_run_spatial_preview_passes_dt_to_cli(monkeypatch, tmp_path):
+    import json
+
+    import cmig.cli.main
+
+    seen = {"argv": []}
+
+    def fake_main(argv):
+        seen["argv"] = list(argv)
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "spatial_summary.json").write_text(json.dumps({
+            "status": "completed",
+            "final_t": 1.0,
+            "final_min": 0.0,
+            "final_max": 10.0,
+        }))
+        (out / "spatial_snapshots.svg").write_text("<svg/>")
+        return 0
+
+    monkeypatch.setattr(cmig.cli.main, "main", fake_main)
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    w.dynamics_view.spatial_dt_spin.setValue(0.25)
+    jid = w.run_spatial_preview()
+    runner.result(jid, timeout=5)
+    w._poll_completed_jobs()
+    assert seen["argv"][0] == "spatial-preview"
+    assert seen["argv"][seen["argv"].index("--dt") + 1] == "0.25"
+    assert w.dynamics_view.run_spatial_btn.isEnabled()
+    runner.shutdown()
 
 
 def test_import_model_file_updates_model_manager(monkeypatch):
@@ -321,6 +389,100 @@ def test_search_button_uses_model_dir_product_command(monkeypatch, tmp_path):
     assert (w.current_search_dir / "search_plot.svg").exists()
     assert w.search_view.current_run_dir == w.current_search_dir
     assert w.search_view.run_btn.isEnabled()
+    runner.shutdown()
+
+
+def test_strain_growth_button_uses_model_dir_command(monkeypatch, tmp_path):
+    import json
+
+    import cmig.cli.main
+
+    seen = {"argv": []}
+
+    def fake_main(argv):
+        seen["argv"] = list(argv)
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "status": "optimal",
+            "members": [
+                {
+                    "member": "producer",
+                    "single_growth": 1.0,
+                    "community_member_growth": 0.5,
+                    "community_growth": 0.5,
+                    "community_status": "optimal",
+                }
+            ],
+            "artifacts": ["strain_growth_plot.svg"],
+        }
+        (out / "strain_growth_summary.json").write_text(json.dumps(payload))
+        (out / "strain_growth_plot.svg").write_text("<svg>growth</svg>")
+        return 0
+
+    monkeypatch.setattr(cmig.cli.main, "main", fake_main)
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    w.search_view.model_dir_input.setText(str(tmp_path))
+    jid = w.run_strain_growth_report()
+    runner.result(jid, timeout=5)
+    w._poll_completed_jobs()
+    assert seen["argv"][0] == "strain-growth"
+    assert seen["argv"][seen["argv"].index("--model-dir") + 1] == str(tmp_path)
+    assert w.search_view.table.item(0, 0).text() == "producer"
+    assert w.search_view.table.item(0, 1).text() == "growth"
+    assert w.search_view.run_growth_btn.isEnabled()
+    runner.shutdown()
+
+
+def test_abundance_impact_button_uses_member_and_fractions(monkeypatch, tmp_path):
+    import json
+
+    import cmig.cli.main
+
+    seen = {"argv": []}
+
+    def fake_main(argv):
+        seen["argv"] = list(argv)
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "status": "ok",
+            "target_member": "producer",
+            "target": "ac",
+            "rows": [
+                {
+                    "target_abundance": 0.2,
+                    "target_influence_share": 0.7,
+                    "target_member_exchange": 1.2,
+                    "community_growth": 0.5,
+                    "status": "optimal",
+                }
+            ],
+            "artifacts": ["abundance_impact_plot.svg"],
+        }
+        (out / "abundance_impact_summary.json").write_text(json.dumps(payload))
+        (out / "abundance_impact_plot.svg").write_text("<svg>impact</svg>")
+        return 0
+
+    monkeypatch.setattr(cmig.cli.main, "main", fake_main)
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    w.search_view.model_dir_input.setText(str(tmp_path))
+    w.search_view.growth_member_input.setText("producer")
+    w.search_view.abundance_fractions_input.setText("0.2,0.8")
+    w.search_view.targets_input.setText("ac")
+    jid = w.run_abundance_impact()
+    runner.result(jid, timeout=5)
+    w._poll_completed_jobs()
+    assert seen["argv"][0] == "abundance-impact"
+    assert seen["argv"][seen["argv"].index("--member") + 1] == "producer"
+    assert seen["argv"][seen["argv"].index("--fractions") + 1] == "0.2,0.8"
+    assert w.search_view.table.item(0, 0).text() == "producer@0.2"
+    assert w.search_view.table.item(0, 1).text() == "ac"
+    assert w.search_view.run_abundance_btn.isEnabled()
     runner.shutdown()
 
 

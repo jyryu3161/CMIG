@@ -396,6 +396,56 @@ def test_host_search_bigg_cli_ranks_host_target_transfer(tmp_path):
     assert (out / "host_search_plot.tiff").exists()
 
 
+def test_strain_growth_cli_writes_member_growth_report(tmp_path):
+    from cmig.synthetic_pair import build_pair_taxonomy
+
+    taxonomy = tmp_path / "taxonomy.csv"
+    build_pair_taxonomy(tmp_path / "microbes").to_csv(taxonomy, index=False)
+    out = tmp_path / "strain_growth"
+
+    rc = main(["strain-growth", "--taxonomy", str(taxonomy), "--out", str(out)])
+    assert rc == 0
+    payload = json.loads((out / "strain_growth_summary.json").read_text())
+    assert payload["status"] == "optimal"
+    assert {row["member"] for row in payload["members"]} == {"producer", "consumer"}
+    assert all(row["community_member_growth"] is not None for row in payload["members"])
+    assert (out / "strain_growth.csv").exists()
+    assert (out / "strain_growth_plot.svg").exists()
+    assert (out / "strain_growth_plot.tiff").exists()
+
+
+def test_abundance_impact_cli_sweeps_target_member_fraction(tmp_path):
+    from cmig.synthetic_pair import build_pair_taxonomy
+
+    taxonomy = tmp_path / "taxonomy.csv"
+    build_pair_taxonomy(tmp_path / "microbes").to_csv(taxonomy, index=False)
+    out = tmp_path / "abundance_impact"
+
+    rc = main([
+        "abundance-impact",
+        "--taxonomy", str(taxonomy),
+        "--member", "producer",
+        "--fractions", "0.2,0.8",
+        "--target", "ac",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    payload = json.loads((out / "abundance_impact_summary.json").read_text())
+    assert payload["target_member"] == "producer"
+    assert [row["target_abundance"] for row in payload["rows"]] == [0.2, 0.8]
+    assert all(row["status"] == "optimal" for row in payload["rows"])
+    growth_rows = payload["member_growth_rows"]
+    assert {row["member"] for row in growth_rows} == {"producer", "consumer"}
+    producer_abundance = [
+        row["abundance"] for row in growth_rows if row["member"] == "producer"
+    ]
+    assert producer_abundance == [0.2, 0.8]
+    assert (out / "abundance_impact.csv").exists()
+    assert (out / "member_growth_by_abundance.csv").exists()
+    assert (out / "abundance_impact_plot.svg").exists()
+    assert (out / "abundance_impact_plot.tiff").exists()
+
+
 def test_gene_ko_search_cli_ranks_selected_member_genes(tmp_path):
     import cobra
     import pandas as pd

@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CMIG Workflow Tutorial</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1f2933;
+      --muted: #52606d;
+      --line: #d9e2ec;
+      --panel: #f5f7fa;
+      --accent: #0f609b;
+      --accent-2: #2f855a;
+    }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      color: var(--ink);
+      background: white;
+      line-height: 1.55;
+    }
+    header {
+      padding: 48px 32px 30px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #eef6fc 0%, #ffffff 100%);
+    }
+    main {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 28px 32px 56px;
+    }
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin: 0 0 14px;
+    }
+    h1 {
+      font-size: 34px;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin-top: 34px;
+      padding-top: 8px;
+      font-size: 24px;
+      border-top: 1px solid var(--line);
+    }
+    h3 {
+      margin-top: 24px;
+      font-size: 18px;
+    }
+    p {
+      margin: 0 0 14px;
+    }
+    ul, ol {
+      margin-top: 8px;
+      padding-left: 24px;
+    }
+    li {
+      margin: 6px 0;
+    }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.95em;
+      background: #eef2f7;
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+    pre {
+      overflow-x: auto;
+      padding: 14px 16px;
+      background: #111827;
+      color: #f9fafb;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    pre code {
+      color: inherit;
+      background: transparent;
+      padding: 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 18px;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      border: 1px solid var(--line);
+      padding: 9px 10px;
+    }
+    th {
+      background: var(--panel);
+    }
+    .note {
+      padding: 13px 15px;
+      border-left: 4px solid var(--accent);
+      background: #f0f7ff;
+      margin: 14px 0;
+    }
+    .ok {
+      border-left-color: var(--accent-2);
+      background: #f0fff4;
+    }
+    .muted {
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CMIG Workflow Tutorial</h1>
+    <p class="muted">
+      Installation and scenario-based guide for model-pool search, strain growth
+      profiling, abundance impact sweeps, host-microbe coupling, and dynamics.
+    </p>
+  </header>
+  <main>
+    <h2>1. Installation</h2>
+    <p>CMIG expects user-prepared GEM files. It does not download or curate AGORA,
+    VMH, Recon, Human-GEM, or BiGG model collections.</p>
+    <pre><code>git clone https://github.com/jyryu3161/CMIG.git
+cd CMIG
+uv sync --extra engine --extra gui --extra render --extra stats</code></pre>
+    <p>Verify the environment:</p>
+    <pre><code>uv run cmig version
+uv run cmig solvers
+uv run ruff check cmig tests
+uv run mypy cmig
+uv run pytest -q</code></pre>
+    <div class="note">
+      The current product workflows assume Gurobi for full LP/QP community
+      analysis, host-microbe coupling, search, and FVA-oriented tasks.
+    </div>
+
+    <h2>2. Launch The GUI</h2>
+    <pre><code>uv run python - &lt;&lt;'PY'
+from PySide6.QtWidgets import QApplication
+from cmig.gui.app import build_main_window
+
+app = QApplication([])
+window = build_main_window(lang="en")
+window.resize(1500, 950)
+window.show()
+app.exec()
+PY</code></pre>
+    <p>The default GUI tabs are focused on working workflows:</p>
+    <table>
+      <thead>
+        <tr><th>Tab</th><th>Use</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Search</td><td>Model-pool search, strain growth report, ratio impact sweep, and gene-KO ranking.</td></tr>
+        <tr><td>Host</td><td>BiGG-style direct host-microbe coupling and host-aware model-pool search.</td></tr>
+        <tr><td>Dynamics</td><td>Single-model well-mixed dFBA and lightweight spatial medium preview.</td></tr>
+        <tr><td>Profile</td><td>Open completed CMIG run directories and inspect result tables.</td></tr>
+        <tr><td>Models</td><td>Import and review a user-provided GEM.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>3. Prepare Model Folders</h2>
+    <p>Place microbial SBML/XML models in one folder:</p>
+    <pre><code>models/
+  iHN637.xml
+  iML1515.xml
+  other_strain.xml</code></pre>
+    <p>If each strain has its own subfolder, pass <code>--recursive</code> in the CLI.
+    The GUI product search currently uses the selected folder directly.</p>
+
+    <h2>4. Scenario A: Find The Best Model Combination</h2>
+    <p>Question: which 2-member combination produces the most butyrate?</p>
+    <pre><code>uv run cmig search \
+  --model-dir models \
+  --target but \
+  --min-size 2 \
+  --max-size 2 \
+  --top-k 10 \
+  --strategy auto \
+  --out runs/search_butyrate</code></pre>
+    <p>Review <code>search_rankings.csv</code>, <code>search_member_matrix.csv</code>,
+    <code>search_plot.svg</code>, and <code>search_scatter.svg</code>.</p>
+
+    <h2>5. Scenario B: Estimate Strain-Specific Growth</h2>
+    <p>Question: how does each model grow alone, and how does it grow after being
+    placed in the full community?</p>
+    <pre><code>uv run cmig strain-growth \
+  --model-dir models \
+  --out runs/strain_growth</code></pre>
+    <table>
+      <thead>
+        <tr><th>Field</th><th>Meaning</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>single_growth</code></td><td>FBA growth of the individual GEM.</td></tr>
+        <tr><td><code>community_member_growth</code></td><td>Member growth after MICOM community construction and cooperative tradeoff.</td></tr>
+        <tr><td><code>abundance</code></td><td>Community abundance used for that member.</td></tr>
+      </tbody>
+    </table>
+    <p>In the GUI, open the <strong>Search</strong> tab, choose the model folder, and
+    click <strong>Strain Growth</strong>.</p>
+
+    <h2>6. Scenario C: Increase One Strain Ratio</h2>
+    <p>Question: if one strain becomes more abundant, does it have more influence
+    on acetate exchange or community growth?</p>
+    <pre><code>uv run cmig abundance-impact \
+  --model-dir models \
+  --member iML1515 \
+  --fractions 0.1,0.25,0.5,0.75 \
+  --target ac \
+  --out runs/iML1515_ac_ratio</code></pre>
+    <p>CMIG sets the selected member to each requested fraction and rescales the
+    other members to fill the remaining abundance. MICOM then recomputes growth
+    and fluxes for each condition.</p>
+    <table>
+      <thead>
+        <tr><th>Output</th><th>Use</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>abundance_impact.csv</code></td><td>Main sweep table for growth, target flux, and influence share.</td></tr>
+        <tr><td><code>member_growth_by_abundance.csv</code></td><td>Member-level growth and realized abundance per sweep point.</td></tr>
+        <tr><td><code>abundance_impact_plot.svg</code></td><td>Quick visual check of growth, exchange flux, and target share.</td></tr>
+      </tbody>
+    </table>
+    <div class="note ok">
+      Interpret this as a controlled sensitivity analysis. A higher abundance can
+      increase a member's contribution to a target flux, but the result still
+      depends on medium, objective, model constraints, and cross-feeding.
+    </div>
+    <p>In the GUI, open the <strong>Search</strong> tab, enter a member id in the
+    <strong>Growth/Ratio</strong> member box, set fractions, and click
+    <strong>Ratio Impact</strong>.</p>
+
+    <h2>7. Scenario D: Host-Microbe Coupling</h2>
+    <p>Question: which microbial secretion can be directly consumed by a
+    Recon/Human-GEM style host model?</p>
+    <pre><code>uv run cmig host-microbe-bigg \
+  --host models_human/Recon3D.xml \
+  --model-dir models \
+  --out runs/host_microbe</code></pre>
+    <p>This workflow assumes compatible BiGG-style exchange identifiers. CMIG does
+    not perform Recon-specific curation or automatic host interface mapping.</p>
+
+    <h2>8. Scenario E: Dynamics</h2>
+    <p>Run single-model well-mixed dFBA with the default aerobic preset:</p>
+    <pre><code>uv run cmig dfba \
+  --model models/iML1515.xml \
+  --dt 0.1 \
+  --out runs/dfba_iML1515</code></pre>
+    <p>The default tracked exchanges are glucose, oxygen, acetate, and D-lactate
+    when present in the model.</p>
+
+    <h2>9. LLM and Automation Entry Point</h2>
+    <p>Agents that need to run CMIG without the desktop GUI should first request
+    the workflow map:</p>
+    <pre><code>uv run cmig workflows --format json</code></pre>
+    <p>The JSON maps each working GUI surface to the equivalent CLI command,
+    required arguments, common options, key output files, and a copyable example.
+    After a run completes, inspect the output directory with:</p>
+    <pre><code>uv run cmig inspect-run --run-dir runs/search_butyrate --format json</code></pre>
+    <p>This reports the detected run kind, status, run hash when available,
+    summary keys, and artifacts. It is the CLI counterpart to opening a run in
+    the GUI Profile/Open Run view.</p>
+
+    <h2>10. Recommended Review Checklist</h2>
+    <ol>
+      <li>Confirm every model imports cleanly in <code>pool_diagnostics.csv</code>.</li>
+      <li>Check whether the target exchange exists in candidate models.</li>
+      <li>Compare <code>single_growth</code> and <code>community_member_growth</code>.</li>
+      <li>For ratio sweeps, inspect both <code>target_influence_share</code> and
+      <code>community_growth</code>; do not optimize influence alone.</li>
+      <li>Export SVG figures for inspection, then use the CSV files for final
+      manuscript plotting if journal-specific styling is required.</li>
+    </ol>
+  </main>
+</body>
+</html>

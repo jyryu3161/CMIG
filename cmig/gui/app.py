@@ -45,7 +45,7 @@ from cmig.gui.builder import (
 )
 from cmig.gui.editors import MediumEditor, ModelManagerPanel
 from cmig.gui.host_view import HostImpactView
-from cmig.gui.views import ExternalProfileView, SweepView
+from cmig.gui.views import DfbaSpatialView, ExternalProfileView, SweepView
 from cmig.service import JobRunner, JobStatus
 
 I18N: dict[str, dict[str, str]] = {
@@ -183,6 +183,10 @@ class CmigMainWindow(QMainWindow):
         self._host_microbe_jobs: dict[str, Path] = {}
         self._host_search_jobs: dict[str, Path] = {}
         self._gene_ko_jobs: dict[str, Path] = {}
+        self._strain_growth_jobs: dict[str, Path] = {}
+        self._abundance_impact_jobs: dict[str, Path] = {}
+        self._dfba_jobs: dict[str, Path] = {}
+        self._spatial_jobs: dict[str, Path] = {}
         self.current_manifest: dict[str, Any] | None = None
         self.current_graph_payload: dict[str, Any] | None = None
         self.current_model_review: dict[str, Any] | None = None
@@ -202,10 +206,12 @@ class CmigMainWindow(QMainWindow):
         self.scenario_compare = ScenarioCompareView()
         self.search_view = SearchView()
         self.host_view = HostImpactView()
+        self.dynamics_view = DfbaSpatialView()
         self._primary_tabs = [
             ("Models", self.model_manager),
             ("Search", self.search_view),
             ("Host", self.host_view),
+            ("Dynamics", self.dynamics_view),
             ("Profile", self.profile_view),
         ]
         self._advanced_tabs = [
@@ -281,6 +287,8 @@ class CmigMainWindow(QMainWindow):
         self.search_view.browse_pool_btn.clicked.connect(self._browse_search_model_dir)
         self.search_view.run_btn.clicked.connect(self.run_search_fixture)
         self.search_view.run_ko_btn.clicked.connect(self.run_gene_ko_search)
+        self.search_view.run_growth_btn.clicked.connect(self.run_strain_growth_report)
+        self.search_view.run_abundance_btn.clicked.connect(self.run_abundance_impact)
         self.search_view.export_figure_btn.clicked.connect(self._export_search_figure)
         self.host_view.browse_host_btn.clicked.connect(self._browse_host_model)
         self.host_view.browse_model_dir_btn.clicked.connect(self._browse_host_microbe_model_dir)
@@ -290,6 +298,10 @@ class CmigMainWindow(QMainWindow):
         self.host_view.run_btn.clicked.connect(self.run_host_microbe_bigg)
         self.host_view.run_search_btn.clicked.connect(self.run_host_search_bigg)
         self.host_view.export_figure_btn.clicked.connect(self._export_host_figure)
+        self.dynamics_view.browse_model_btn.clicked.connect(self.dynamics_view.browse_model)
+        self.dynamics_view.browse_out_btn.clicked.connect(self.dynamics_view.browse_out)
+        self.dynamics_view.run_dfba_btn.clicked.connect(self.run_dfba)
+        self.dynamics_view.run_spatial_btn.clicked.connect(self.run_spatial_preview)
 
     def _cancel_selected_job(self) -> None:
         job_id = self.jobs_panel.selected_job_id()
@@ -487,6 +499,12 @@ class CmigMainWindow(QMainWindow):
         from cmig.gui.graph_data import graph_payload
 
         run_dir = Path(path).resolve()
+        if (run_dir / "dfba_summary.json").exists():
+            self.load_dfba_dir(run_dir)
+            return
+        if (run_dir / "spatial_summary.json").exists():
+            self.load_spatial_dir(run_dir)
+            return
         if (run_dir / "host_microbe_bigg_summary.json").exists():
             self.load_host_microbe_bigg_dir(run_dir)
             return
@@ -583,6 +601,44 @@ class CmigMainWindow(QMainWindow):
         )
         return True
 
+    def load_dfba_dir(self, path: str | Path) -> bool:
+        run_dir = Path(path).resolve()
+        summary_path = run_dir / "dfba_summary.json"
+        if not summary_path.exists():
+            self.statusBar().showMessage(f"dFBA summary not found: {summary_path}")
+            return False
+        try:
+            payload = json.loads(summary_path.read_text())
+            if not isinstance(payload, dict):
+                raise ValueError("dfba_summary.json is not a JSON object")
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            self.statusBar().showMessage(f"dFBA load failed: {e}")
+            return False
+        self.dynamics_view.load_dfba_summary(payload, run_dir=run_dir)
+        self.explorer.add_run(run_dir.name, run_dir)
+        self.tabs.setCurrentWidget(self.dynamics_view)
+        self.statusBar().showMessage(f"Loaded dFBA run: {run_dir}")
+        return True
+
+    def load_spatial_dir(self, path: str | Path) -> bool:
+        run_dir = Path(path).resolve()
+        summary_path = run_dir / "spatial_summary.json"
+        if not summary_path.exists():
+            self.statusBar().showMessage(f"Spatial summary not found: {summary_path}")
+            return False
+        try:
+            payload = json.loads(summary_path.read_text())
+            if not isinstance(payload, dict):
+                raise ValueError("spatial_summary.json is not a JSON object")
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            self.statusBar().showMessage(f"Spatial load failed: {e}")
+            return False
+        self.dynamics_view.load_spatial_summary(payload, run_dir=run_dir)
+        self.explorer.add_run(run_dir.name, run_dir)
+        self.tabs.setCurrentWidget(self.dynamics_view)
+        self.statusBar().showMessage(f"Loaded spatial preview: {run_dir}")
+        return True
+
     def run_fixture(self, out_dir: str | Path, *, solver: str = "gurobi") -> str:
         """GUI 버튼용 fixture solve. JobRunner 로 제출해 Qt main thread 를 막지 않는다."""
         from cmig.service import EngineService, JobContext
@@ -645,10 +701,10 @@ class CmigMainWindow(QMainWindow):
                 "--min-size", min_size,
                 "--max-size", max_size,
                 "--top-k", top_k,
-                "--out", str(out_dir),
             ]
             if robustness_fva:
-                argv.insert(-2, "--robustness-fva")
+                argv.append("--robustness-fva")
+            argv.extend(["--out", str(out_dir)])
             output_name = "search_summary.json"
             rc = main(argv)
             if rc != 0:
@@ -842,6 +898,182 @@ class CmigMainWindow(QMainWindow):
         self.statusBar().showMessage(f"Started gene KO search: {jid}")
         return jid
 
+    def run_strain_growth_report(self) -> str:
+        """Run per-strain single/community growth profiling from the Search tab."""
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        model_dir = self.search_view.model_dir_input.text().strip()
+        if not model_dir:
+            self.search_view.status.setText("Select a model folder before strain growth.")
+            return ""
+        out_dir = Path(
+            tempfile.mkdtemp(prefix="cmig-strain-growth-", dir=_search_temp_root())
+        ).resolve()
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            argv = [
+                "strain-growth",
+                "--model-dir", model_dir,
+                "--out", str(out_dir),
+            ]
+            rc = main(argv)
+            if rc != 0:
+                raise RuntimeError(f"strain growth failed with rc={rc}")
+            ctx.raise_if_cancelled()
+            ctx.report_progress(1, 1)
+            payload = json.loads((out_dir / "strain_growth_summary.json").read_text())
+            if not isinstance(payload, dict):
+                raise RuntimeError("strain growth output is not a JSON object")
+            return payload
+
+        jid = self.submit_job("strain_growth", _job)
+        self._strain_growth_jobs[jid] = out_dir
+        self.search_view.run_growth_btn.setEnabled(False)
+        self.search_view.status.setText(f"strain growth started: {jid}")
+        self.statusBar().showMessage(f"Started strain growth report: {jid}")
+        return jid
+
+    def run_abundance_impact(self) -> str:
+        """Run one-member abundance sweep from the Search tab."""
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        model_dir = self.search_view.model_dir_input.text().strip()
+        member = self.search_view.growth_member_input.text().strip()
+        fractions = self.search_view.abundance_fractions_input.text().strip()
+        target_text = self.search_view.targets_input.text().strip() or "ac"
+        target = target_text.split(",", 1)[0].strip() or "ac"
+        if not model_dir or not member:
+            self.search_view.status.setText(
+                "Model folder and target member are required for ratio impact."
+            )
+            return ""
+        out_dir = Path(
+            tempfile.mkdtemp(prefix="cmig-abundance-impact-", dir=_search_temp_root())
+        ).resolve()
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            argv = [
+                "abundance-impact",
+                "--model-dir", model_dir,
+                "--member", member,
+                "--fractions", fractions or "0.1,0.25,0.5,0.75",
+                "--target", target,
+                "--out", str(out_dir),
+            ]
+            rc = main(argv)
+            if rc != 0:
+                raise RuntimeError(f"abundance impact failed with rc={rc}")
+            ctx.raise_if_cancelled()
+            ctx.report_progress(1, 1)
+            payload = json.loads((out_dir / "abundance_impact_summary.json").read_text())
+            if not isinstance(payload, dict):
+                raise RuntimeError("abundance impact output is not a JSON object")
+            return payload
+
+        jid = self.submit_job("abundance_impact", _job)
+        self._abundance_impact_jobs[jid] = out_dir
+        self.search_view.run_abundance_btn.setEnabled(False)
+        self.search_view.status.setText(f"ratio impact started: {jid}")
+        self.statusBar().showMessage(f"Started ratio impact sweep: {jid}")
+        return jid
+
+    def run_dfba(self) -> str:
+        """Run user-model dFBA from the Dynamics tab."""
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        request = self.dynamics_view.dfba_request()
+        model = str(request["model"])
+        if not model:
+            self.dynamics_view.status.setText("Select a model before running dFBA.")
+            return ""
+        out_text = str(request["out_dir"])
+        out_dir = (
+            Path(out_text)
+            if out_text
+            else Path(tempfile.mkdtemp(prefix="cmig-dfba-", dir=_search_temp_root()))
+        ).resolve()
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            argv = [
+                "dfba",
+                "--model", model,
+                "--initial", str(request["initial"]),
+                "--t-end", f"{float(request['t_end']):.6g}",
+                "--dt", f"{float(request['dt']):.6g}",
+                "--initial-biomass", f"{float(request['initial_biomass']):.6g}",
+                "--out", str(out_dir),
+            ]
+            rc = main(argv)
+            if rc != 0:
+                raise RuntimeError(f"dFBA failed with rc={rc}")
+            ctx.raise_if_cancelled()
+            ctx.report_progress(1, 1)
+            payload = json.loads((out_dir / "dfba_summary.json").read_text())
+            if not isinstance(payload, dict):
+                raise RuntimeError("dFBA output is not a JSON object")
+            return payload
+
+        jid = self.submit_job("dfba", _job)
+        self._dfba_jobs[jid] = out_dir
+        self.dynamics_view.run_dfba_btn.setEnabled(False)
+        self.dynamics_view.status.setText(f"dFBA started: {jid}")
+        self.statusBar().showMessage(f"Started dFBA: {jid}")
+        return jid
+
+    def run_spatial_preview(self) -> str:
+        """Run COMETS-inspired spatial medium preview from the Dynamics tab."""
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        request = self.dynamics_view.spatial_request()
+        out_text = str(request["out_dir"])
+        out_dir = (
+            Path(out_text)
+            if out_text
+            else Path(tempfile.mkdtemp(prefix="cmig-spatial-", dir=_search_temp_root()))
+        ).resolve()
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            argv = [
+                "spatial-preview",
+                "--metabolite", str(request["metabolite"]),
+                "--width", str(request["width"]),
+                "--height", str(request["height"]),
+                "--steps", str(request["steps"]),
+                "--dt", f"{float(request['dt']):.6g}",
+                "--diffusion", f"{float(request['diffusion']):.6g}",
+                "--source-edge", str(request["source_edge"]),
+                "--sink-edge", str(request["sink_edge"]),
+                "--out", str(out_dir),
+            ]
+            rc = main(argv)
+            if rc != 0:
+                raise RuntimeError(f"spatial preview failed with rc={rc}")
+            ctx.raise_if_cancelled()
+            ctx.report_progress(1, 1)
+            payload = json.loads((out_dir / "spatial_summary.json").read_text())
+            if not isinstance(payload, dict):
+                raise RuntimeError("spatial output is not a JSON object")
+            return payload
+
+        jid = self.submit_job("spatial_preview", _job)
+        self._spatial_jobs[jid] = out_dir
+        self.dynamics_view.run_spatial_btn.setEnabled(False)
+        self.dynamics_view.status.setText(f"spatial preview started: {jid}")
+        self.statusBar().showMessage(f"Started spatial preview: {jid}")
+        return jid
+
     def _poll_completed_jobs(self) -> None:
         for jid in list(self._fixture_jobs):
             job = self.runner.poll(jid)
@@ -911,6 +1143,64 @@ class CmigMainWindow(QMainWindow):
                 self.search_view.status.setText(
                     f"gene KO search {job.status.value}: {job.error or jid}"
                 )
+        for jid, out_dir in list(self._strain_growth_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE and isinstance(job.result, dict):
+                self._strain_growth_jobs.pop(jid, None)
+                self.search_view.run_growth_btn.setEnabled(True)
+                self.current_search_dir = out_dir
+                summary = _strain_growth_summary_for_search_view(job.result)
+                self.search_view.figure_mode_combo.setCurrentText("Ranking")
+                self.search_view.load_summary(summary, run_dir=out_dir)
+                self.tabs.setCurrentWidget(self.search_view)
+                self.statusBar().showMessage(f"Strain growth complete: {jid}")
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                self._strain_growth_jobs.pop(jid, None)
+                self.search_view.run_growth_btn.setEnabled(True)
+                self.search_view.status.setText(
+                    f"strain growth {job.status.value}: {job.error or jid}"
+                )
+        for jid, out_dir in list(self._abundance_impact_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE and isinstance(job.result, dict):
+                self._abundance_impact_jobs.pop(jid, None)
+                self.search_view.run_abundance_btn.setEnabled(True)
+                self.current_search_dir = out_dir
+                summary = _abundance_impact_summary_for_search_view(job.result)
+                self.search_view.figure_mode_combo.setCurrentText("Ranking")
+                self.search_view.load_summary(summary, run_dir=out_dir)
+                self.tabs.setCurrentWidget(self.search_view)
+                self.statusBar().showMessage(f"Ratio impact complete: {jid}")
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                self._abundance_impact_jobs.pop(jid, None)
+                self.search_view.run_abundance_btn.setEnabled(True)
+                self.search_view.status.setText(
+                    f"ratio impact {job.status.value}: {job.error or jid}"
+                )
+        for jid, out_dir in list(self._dfba_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE:
+                self._dfba_jobs.pop(jid, None)
+                self.dynamics_view.run_dfba_btn.setEnabled(True)
+                self.load_dfba_dir(out_dir)
+                self.statusBar().showMessage(f"dFBA complete: {jid}")
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                self._dfba_jobs.pop(jid, None)
+                self.dynamics_view.run_dfba_btn.setEnabled(True)
+                self.dynamics_view.status.setText(f"dFBA {job.status.value}: {job.error or jid}")
+        for jid, out_dir in list(self._spatial_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE:
+                self._spatial_jobs.pop(jid, None)
+                self.dynamics_view.run_spatial_btn.setEnabled(True)
+                self.load_spatial_dir(out_dir)
+                self.statusBar().showMessage(f"Spatial preview complete: {jid}")
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                self._spatial_jobs.pop(jid, None)
+                self.dynamics_view.run_spatial_btn.setEnabled(True)
+                self.dynamics_view.status.setText(
+                    f"spatial preview {job.status.value}: {job.error or jid}"
+                )
 
 
 def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:
@@ -954,6 +1244,56 @@ def _gene_ko_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "target": target,
         "strategy": "gene-ko",
+        "top_ranked": rows,
+        "warnings": [],
+    }
+
+
+def _strain_growth_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:
+    """Adapt strain-growth output to the existing SearchView ranking table contract."""
+    rows: list[dict[str, Any]] = []
+    for item in payload.get("members", []):
+        if not isinstance(item, dict):
+            continue
+        rows.append({
+            "members": [item.get("member", "")],
+            "score": item.get("community_member_growth"),
+            "target_flux": item.get("single_growth"),
+            "community_growth": item.get("community_growth"),
+            "status": item.get("community_status", item.get("single_status", "")),
+            "diagnostic": item.get("diagnostic"),
+        })
+    return {
+        "target": "growth",
+        "strategy": "strain-growth",
+        "top_ranked": rows,
+        "warnings": [],
+    }
+
+
+def _abundance_impact_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:
+    """Adapt abundance-impact output to the existing SearchView ranking table contract."""
+    target = str(payload.get("target", ""))
+    target_member = str(payload.get("target_member", ""))
+    rows: list[dict[str, Any]] = []
+    for item in payload.get("rows", []):
+        if not isinstance(item, dict):
+            continue
+        abundance = item.get("target_abundance")
+        label = f"{target_member}@{abundance:.3g}" if isinstance(abundance, (int, float)) else (
+            f"{target_member}@{abundance}"
+        )
+        rows.append({
+            "members": [label],
+            "score": item.get("target_influence_share"),
+            "target_flux": item.get("target_member_exchange"),
+            "community_growth": item.get("community_growth"),
+            "status": item.get("status", ""),
+            "diagnostic": item.get("diagnostic"),
+        })
+    return {
+        "target": target,
+        "strategy": "abundance-impact",
         "top_ranked": rows,
         "warnings": [],
     }
