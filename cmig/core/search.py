@@ -13,6 +13,7 @@ target-max 재solve 가능(spike 결과 status=optimal). gurobi 전제(LP).
 from __future__ import annotations
 
 import enum
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -60,7 +61,10 @@ def _community_growth_star(community: Any) -> float:
     """μ_c* = 최대 community growth. target-max growth floor 의 기준값."""
     sol = community.cooperative_tradeoff(fraction=1.0, fluxes=False)
     gr = sol.growth_rate
-    return float(gr.iloc[0]) if hasattr(gr, "iloc") else float(gr)
+    value = float(gr.iloc[0]) if hasattr(gr, "iloc") else float(gr)
+    # 비유한 μ_c*(infeasible/unbounded community)는 growth-floor lb 를 NaN/inf 로 만들어
+    # solver 거동을 미정의로 만든다 → 0.0 으로 가드(하한 비활성, fail-safe).
+    return value if math.isfinite(value) else 0.0
 
 
 def target_max_solve(
@@ -72,9 +76,9 @@ def target_max_solve(
     mu_community 는 μ_c* 값이다. None 이면 cooperative_tradeoff(fraction=1.0) 로 μ_c*를 먼저
     산출한다. gurobi(LP) 전제.
     """
-    from cmig.core.single_model import _require_lp
+    from cmig.core.single_model import _require_lp, set_model_solver
     _require_lp(solver)
-    community.solver = solver
+    set_model_solver(community, solver)
     if mu_community is None:
         mu_community = _community_growth_star(community)
 

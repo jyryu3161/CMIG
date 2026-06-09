@@ -173,6 +173,53 @@ Useful outputs:
 Use `--recursive` if your model pool is organized as subfolders, for example
 `strainA/model.xml`, `strainB/model.xml`.
 
+### 2b. Rank gene or reaction knockouts in a model combination
+
+Screen single-gene (or single-reaction) knockouts in a fixed consortium and rank
+them by their effect on target production, relative to the un-knocked baseline.
+
+```bash
+uv run cmig gene-ko-search \
+  --model-dir /path/to/microbial_models \
+  --members iML1515,iHN637 \
+  --target but \
+  --max-genes 0 \
+  --top-k 20 \
+  --out runs/gene_ko_but
+```
+
+Key options:
+
+- `--member`: knock out genes in one named member only. Omit it to screen every
+  `--members` model (`screening_scope: all_members`).
+- `--ko-level gene|reaction`: knock out genes through their GPR (default), or
+  knock out reactions directly. Use `--reactions` with `--ko-level reaction` (and
+  `--genes` with the gene level) to evaluate an explicit id list; both require
+  `--member`. Automatic reaction enumeration skips exchange reactions and the
+  objective/biomass reaction (knocking those out is not an informative metabolic
+  perturbation); list them with `--reactions` if you want them included.
+- `--gene-selection id|random` and `--seed`: when targets are not listed
+  explicitly, pick them in id order (default) or as a deterministic random
+  sample. Either way, if `--max-genes` truncates the set, the run records an
+  explicit `warnings` entry and `n_genes_total` so a screen never silently
+  inspects an arbitrary subset. `--max-genes 0` evaluates every target.
+- `--jobs N`: evaluate knockouts with `N` worker threads (default `1`). Results
+  are independent of `--jobs`; the speedup depends on your solver's thread
+  safety, so validate on your environment before relying on `--jobs > 1`.
+
+Useful outputs:
+
+- `gene_ko_summary.json` (baseline, `warnings`, `ko_level`, `gene_selection`,
+  `seed`, `n_genes_total`, ranked knockouts)
+- `gene_ko_rankings.csv`
+- `gene_ko_plot.svg`
+- `gene_ko_plot.tiff`
+
+The figure shows each knockout's target-flux delta versus baseline, colored by
+whether the knockout improves or reduces the target, with failed evaluations
+marked and the baseline flux, evaluated-of-total count, and selection method in
+the subtitle.
+
 ### 3. Estimate strain-specific growth
 
 Use this when you want to check expected growth for each microbial model, both

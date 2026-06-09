@@ -1243,9 +1243,11 @@ def _gene_ko_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:
         })
     return {
         "target": target,
-        "strategy": "gene-ko",
+        "strategy": f"{payload.get('ko_level', 'gene')}-ko",
         "top_ranked": rows,
-        "warnings": [],
+        # Forward CLI warnings (truncation / random selection) so the GUI status bar surfaces
+        # them too — never silently drop them (the honesty fix must hold on the GUI path).
+        "warnings": list(payload.get("warnings") or []),
     }
 
 

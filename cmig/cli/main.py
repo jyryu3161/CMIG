@@ -13,8 +13,10 @@ import html
 import json
 import math
 import os
+import random
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -135,8 +137,13 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         "required_args": ["--model-dir or --taxonomy", "--members", "--target", "--out"],
         "common_options": [
             "--member",
+            "--ko-level",
             "--genes",
+            "--reactions",
+            "--gene-selection",
+            "--seed",
             "--max-genes",
+            "--jobs",
             "--direction",
             "--growth-fraction",
             "--top-k",
@@ -889,8 +896,144 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
     return 0
 
 
+def _select_ko_targets(
+    model: Any,
+    *,
+    ko_level: str,
+    explicit: list[str] | None,
+    max_n: int,
+    selection: str,
+    seed: int,
+) -> tuple[list[str], int, str]:
+    """Resolve knockout-target ids for one member.
+
+    Returns ``(selected_ids, total_available, method_label)``. Explicit ids are used verbatim
+    (method ``explicit``). Otherwise all gene/reaction ids are enumerated, optionally sampled
+    (``selection="random"``, deterministic by ``seed``) or kept in id order (``"id"``), then
+    capped to ``max_n`` (0 = no cap). Truncation is surfaced by the caller as an explicit
+    warning so a screen never silently inspects an arbitrary subset.
+    """
+    if explicit is not None:
+        return list(explicit), len(explicit), "explicit"
+    if ko_level == "reaction":
+        # Auto-enumeration skips exchange reactions (closing an exchange is not a metabolic
+        # perturbation) and the objective/biomass reaction (its KO trivially zeroes growth and
+        # would dominate the ranking with a non-informative result). Use --reactions to target
+        # them explicitly.
+        all_ids = sorted(
+            str(r.id)
+            for r in model.reactions
+            if not str(r.id).startswith("EX_") and r.objective_coefficient == 0
+        )
+    else:
+        all_ids = sorted(str(g.id) for g in model.genes)
+    total = len(all_ids)
+    if selection == "random":
+        pool = list(all_ids)
+        random.Random(seed).shuffle(pool)
+        chosen = pool if max_n <= 0 else pool[:max_n]
+        return sorted(chosen), total, f"random(seed={seed})"
+    chosen = all_ids if max_n <= 0 else all_ids[:max_n]
+    return chosen, total, "id"
+
+
+def _evaluate_ko_target(
+    item: tuple[int, str, str],
+    *,
+    ko_level: str,
+    base_models: dict[str, Any],
+    sub_taxonomy: Any,
+    config: Any,
+    baseline: Any,
+    tmp_dir: Path,
+    write_sbml_model: Any,
+    search_model_pool: Any,
+    engine_factory: Callable[[], Any],
+) -> dict[str, Any]:
+    """Knock out one gene/reaction in one member, re-rank the fixed consortium, return a row.
+
+    Safe to map across a thread pool: reads (never mutates) ``base_models``, writes a uniquely
+    named SBML into ``tmp_dir``, and builds a fresh engine per call.
+    """
+    index, member_id, ko_id = item
+    try:
+        ko_model = base_models[member_id].copy()
+        if ko_level == "reaction":
+            ko_model.reactions.get_by_id(ko_id).knock_out()
+        else:
+            ko_model.genes.get_by_id(ko_id).knock_out()
+        safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in ko_id)
+        ko_file = tmp_dir / f"{member_id}_{index}_{safe}.xml"
+        write_sbml_model(ko_model, str(ko_file))
+        ko_taxonomy = sub_taxonomy.copy()
+        ko_taxonomy.loc[ko_taxonomy["id"].astype(str) == member_id, "file"] = str(ko_file)
+        rank = search_model_pool(engine_factory(), ko_taxonomy, config).ranks[0]
+        return {
+            "gene": ko_id,
+            "member": member_id,
+            "evaluation_status": "ok",
+            "score": rank.score,
+            "score_delta": rank.score - baseline.score,
+            "target_flux": rank.target_flux,
+            "target_flux_delta": rank.target_flux - baseline.target_flux,
+            "community_growth": rank.community_growth,
+            "community_growth_delta": rank.community_growth - baseline.community_growth,
+            "status": rank.status,
+            "diagnostic": rank.diagnostic,
+        }
+    except Exception as e:
+        return {
+            "gene": ko_id,
+            "member": member_id,
+            "evaluation_status": "failed",
+            "score": 0.0,
+            "score_delta": -baseline.score,
+            "target_flux": 0.0,
+            "target_flux_delta": -baseline.target_flux,
+            "community_growth": 0.0,
+            "community_growth_delta": -baseline.community_growth,
+            "status": "failed",
+            "diagnostic": str(e),
+        }
+
+
+def _map_ko_evaluations(
+    items: list[Any],
+    evaluate: Callable[[Any], dict[str, Any]],
+    *,
+    jobs: int,
+) -> list[dict[str, Any]]:
+    """Map KO evaluations serially (``jobs<=1``) or via a thread pool, preserving input order.
+
+    Solver work releases the GIL, so a thread pool can overlap MICOM solves; ``executor.map``
+    keeps input order so ranking is independent of ``--jobs``.
+    """
+    if jobs <= 1:
+        return [evaluate(item) for item in items]
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        return list(executor.map(evaluate, items))
+
+
+def _ko_sort_key(row: dict[str, Any]) -> tuple[int, int, float, str]:
+    """Deterministic, NaN-safe ranking key.
+
+    ok before failed, finite delta before non-finite, larger ``score_delta`` first, then
+    ``member:gene`` tiebreak so a baseline-infeasible run (all-NaN deltas) stays stable.
+    """
+    delta = float(row["score_delta"])
+    finite = math.isfinite(delta)
+    return (
+        0 if row["evaluation_status"] == "ok" else 1,
+        0 if finite else 1,
+        -delta if finite else 0.0,
+        f"{row['member']}:{row['gene']}",
+    )
+
+
 def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
-    """Rank single-gene knockouts in one or more members for a selected consortium."""
+    """Rank single gene/reaction knockouts in one or more members for a selected consortium."""
     try:
         import pandas as pd
         from cobra.io import read_sbml_model, write_sbml_model
@@ -903,6 +1046,8 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         print("gene-ko-search requires the engine stack: uv sync --extra engine", file=sys.stderr)
         return 2
     try:
+        if args.jobs < 1:
+            raise ValueError("--jobs must be >= 1")
         if bool(args.taxonomy) == bool(args.model_dir):
             raise ValueError("provide exactly one of --taxonomy or --model-dir")
         if args.taxonomy:
@@ -926,22 +1071,38 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         if missing_members:
             raise ValueError(f"--members not found in taxonomy: {missing_members}")
         target_members = (args.member,) if args.member else members
-        if args.genes and len(target_members) != 1:
-            raise ValueError("--genes requires --member so gene ids are unambiguous")
-        member_gene_sets: dict[str, list[str]] = {}
+
+        ko_level = args.ko_level
+        if ko_level == "reaction" and args.genes:
+            raise ValueError("--genes pairs with --ko-level gene; use --reactions for reactions")
+        if ko_level == "gene" and args.reactions:
+            raise ValueError("--reactions pairs with --ko-level reaction; use --genes for genes")
+        explicit_raw = args.reactions if ko_level == "reaction" else args.genes
+        explicit_flag = "--reactions" if ko_level == "reaction" else "--genes"
+        if explicit_raw and len(target_members) != 1:
+            raise ValueError(f"{explicit_flag} requires --member so ids are unambiguous")
+        explicit = _parse_csv_strings(explicit_raw, flag=explicit_flag) if explicit_raw else None
+
         member_models: dict[str, Any] = {}
+        member_target_sets: dict[str, list[str]] = {}
+        member_totals: dict[str, int] = {}
+        member_methods: dict[str, str] = {}
         for member_id in target_members:
             model = read_sbml_model(member_files[member_id])
             member_models[member_id] = model
-            if args.genes:
-                genes = _parse_csv_strings(args.genes, flag="--genes")
-            else:
-                genes = sorted(str(g.id) for g in model.genes)
-                if args.max_genes > 0:
-                    genes = genes[: args.max_genes]
-            if not genes:
-                raise ValueError(f"no genes selected for member {member_id}")
-            member_gene_sets[member_id] = genes
+            selected, total, method = _select_ko_targets(
+                model,
+                ko_level=ko_level,
+                explicit=explicit,
+                max_n=args.max_genes,
+                selection=args.gene_selection,
+                seed=args.seed,
+            )
+            if not selected:
+                raise ValueError(f"no {ko_level}s selected for member {member_id}")
+            member_target_sets[member_id] = selected
+            member_totals[member_id] = total
+            member_methods[member_id] = method
 
         sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
         config = SearchConfig(
@@ -955,60 +1116,49 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             solver=args.solver,
         )
         baseline = search_model_pool(MicomEngine(), sub, config).ranks[0]
-        rows: list[dict[str, Any]] = []
+
+        warnings: list[str] = []
+        for member_id in target_members:
+            selected = member_target_sets[member_id]
+            total = member_totals[member_id]
+            method = member_methods[member_id]
+            if total > len(selected):
+                warnings.append(
+                    f"{member_id}: evaluated {len(selected)} of {total} {ko_level}s "
+                    f"(selection={method}); raise --max-genes (0=all) for full coverage"
+                )
+            elif method.startswith("random"):
+                warnings.append(
+                    f"{member_id}: {ko_level} set sampled deterministically ({method})"
+                )
+
+        pairs = [
+            (member_id, ko_id)
+            for member_id in target_members
+            for ko_id in member_target_sets[member_id]
+        ]
+        items: list[tuple[int, str, str]] = [
+            (index, member_id, ko_id) for index, (member_id, ko_id) in enumerate(pairs)
+        ]
         with tempfile.TemporaryDirectory(prefix="cmig-gene-ko-") as tmp:
             tmp_dir = Path(tmp)
-            for member_id, genes in member_gene_sets.items():
-                member_model = member_models[member_id]
-                for gene in genes:
-                    try:
-                        ko_model = member_model.copy()
-                        ko_model.genes.get_by_id(gene).knock_out()
-                        safe_gene = "".join(
-                            ch if ch.isalnum() or ch in "._-" else "_" for ch in gene
-                        )
-                        ko_file = tmp_dir / f"{member_id}_{safe_gene}.xml"
-                        write_sbml_model(ko_model, str(ko_file))
-                        ko_taxonomy = sub.copy()
-                        ko_taxonomy.loc[
-                            ko_taxonomy["id"].astype(str) == member_id,
-                            "file",
-                        ] = str(ko_file)
-                        rank = search_model_pool(MicomEngine(), ko_taxonomy, config).ranks[0]
-                        rows.append({
-                            "gene": gene,
-                            "member": member_id,
-                            "evaluation_status": "ok",
-                            "score": rank.score,
-                            "score_delta": rank.score - baseline.score,
-                            "target_flux": rank.target_flux,
-                            "target_flux_delta": rank.target_flux - baseline.target_flux,
-                            "community_growth": rank.community_growth,
-                            "community_growth_delta": (
-                                rank.community_growth - baseline.community_growth
-                            ),
-                            "status": rank.status,
-                            "diagnostic": rank.diagnostic,
-                        })
-                    except Exception as e:
-                        rows.append({
-                            "gene": gene,
-                            "member": member_id,
-                            "evaluation_status": "failed",
-                            "score": 0.0,
-                            "score_delta": -baseline.score,
-                            "target_flux": 0.0,
-                            "target_flux_delta": -baseline.target_flux,
-                            "community_growth": 0.0,
-                            "community_growth_delta": -baseline.community_growth,
-                            "status": "failed",
-                            "diagnostic": str(e),
-                        })
-        rows.sort(key=lambda row: (
-            row["evaluation_status"] != "ok",
-            -float(row["score_delta"]),
-            str(row["gene"]),
-        ))
+
+            def _evaluate(item: tuple[int, str, str]) -> dict[str, Any]:
+                return _evaluate_ko_target(
+                    item,
+                    ko_level=ko_level,
+                    base_models=member_models,
+                    sub_taxonomy=sub,
+                    config=config,
+                    baseline=baseline,
+                    tmp_dir=tmp_dir,
+                    write_sbml_model=write_sbml_model,
+                    search_model_pool=search_model_pool,
+                    engine_factory=MicomEngine,
+                )
+
+            rows = _map_ko_evaluations(items, _evaluate, jobs=args.jobs)
+        rows.sort(key=_ko_sort_key)
         out = Path(args.out)
         _write_gene_ko_search_outputs(
             rows[: args.top_k],
@@ -1018,6 +1168,12 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             target=args.target,
             member=args.member,
             n_genes_evaluated=len(rows),
+            n_genes_total=sum(member_totals.values()),
+            ko_level=ko_level,
+            gene_selection=args.gene_selection,
+            seed=args.seed,
+            direction=args.direction,
+            warnings=warnings,
         )
     except ValueError as e:
         print(str(e), file=sys.stderr)
@@ -1026,7 +1182,12 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         print(f"failed to write gene KO outputs: {e}", file=sys.stderr)
         return 2
     member_label = args.member if args.member else "all members"
-    print(f"gene KO search complete (member={member_label}, target={args.target}) -> {out}")
+    print(
+        f"gene KO search complete (level={ko_level}, member={member_label}, "
+        f"target={args.target}) -> {out}"
+    )
+    for warning in warnings:
+        print(f"  warning: {warning}")
     if rows:
         best = rows[0]
         print(
@@ -1224,6 +1385,12 @@ def _write_gene_ko_search_outputs(
     target: str,
     member: str | None,
     n_genes_evaluated: int,
+    n_genes_total: int,
+    ko_level: str,
+    gene_selection: str,
+    seed: int,
+    direction: str,
+    warnings: list[str],
 ) -> None:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "gene_ko_rankings.csv", "w", newline="") as f:
@@ -1274,6 +1441,12 @@ def _write_gene_ko_search_outputs(
             "diagnostic": baseline.diagnostic,
         },
         "n_genes_evaluated": n_genes_evaluated,
+        "n_genes_total": n_genes_total,
+        "ko_level": ko_level,
+        "gene_selection": gene_selection,
+        "seed": seed,
+        "direction": direction,
+        "warnings": list(warnings),
         "top_ranked": [
             {
                 "rank": rank,
@@ -1303,7 +1476,17 @@ def _write_gene_ko_search_outputs(
     (out / "gene_ko_summary.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
-    _write_gene_ko_figures(rows, out, target=target)
+    _write_gene_ko_figures(
+        rows,
+        out,
+        target=target,
+        ko_level=ko_level,
+        direction=direction,
+        baseline=baseline,
+        n_evaluated=n_genes_evaluated,
+        n_total=n_genes_total,
+        selection=gene_selection,
+    )
 
 
 def _optional_float(value: Any) -> float | None:
@@ -2637,28 +2820,81 @@ def _write_host_search_figures(
     plt.close(fig)
 
 
-def _write_gene_ko_figures(rows: list[dict[str, Any]], out: Path, *, target: str) -> None:
+def _write_gene_ko_figures(
+    rows: list[dict[str, Any]],
+    out: Path,
+    *,
+    target: str,
+    ko_level: str,
+    direction: str,
+    baseline: Any,
+    n_evaluated: int,
+    n_total: int,
+    selection: str,
+) -> None:
     plt = _load_matplotlib_pyplot()
+    from matplotlib.patches import Patch
+
+    improve, worsen, neutral, failed = "#2ca25f", "#e6550d", "#969696", "#cfcfcf"
+    direction_word = "secretion" if "secretion" in direction else "uptake"
+
     top = rows[:12]
-    labels = [f"{row['member']}:{row['gene']}" for row in top]
-    values = [float(row["target_flux_delta"]) for row in top]
-    height = max(3.4, 0.43 * max(len(top), 1) + 1.8)
-    fig, ax = plt.subplots(figsize=(7.6, height), dpi=300)
-    if top:
-        colors = ["#2ca25f" if value > 0 else "#e6550d" if value < 0 else "#969696"
-                  for value in values]
-        ax.barh(labels[::-1], values[::-1], color=colors[::-1], height=0.54)
+    # barh draws bottom-to-top, so reverse to keep rank #1 at the top.
+    plot = list(reversed(top))
+    labels = [f"{row['member']}:{row['gene']}" for row in plot]
+    deltas = [_optional_float(row.get("target_flux_delta")) for row in plot]
+    statuses = [str(row.get("evaluation_status", "ok")) for row in plot]
+
+    def _classify(delta: float | None, status: str) -> tuple[float, str, bool]:
+        """Return (bar_value, color, is_real). Failed/non-finite render as a zero-width marker."""
+        if status != "ok" or delta is None or not math.isfinite(delta):
+            return 0.0, failed, False
+        if delta > 0:
+            return delta, improve, True
+        if delta < 0:
+            return delta, worsen, True
+        return 0.0, neutral, True
+
+    classified = [_classify(d, s) for d, s in zip(deltas, statuses, strict=False)]
+    bar_values = [c[0] for c in classified]
+
+    height = max(3.4, 0.46 * max(len(plot), 1) + 2.1)
+    fig, ax = plt.subplots(figsize=(7.8, height), dpi=300)
+    if plot:
+        ax.barh(labels, bar_values, color=[c[1] for c in classified], height=0.56)
         ax.axvline(0.0, color="#333333", linewidth=0.9)
-        for idx, value in enumerate(values[::-1]):
-            if abs(value) <= 1e-12:
-                continue
-            ha = "left"
-            dx = 0.01 * max([abs(v) for v in values] + [1.0])
-            ax.text(value + dx, idx, f"{value:.3g}", va="center", ha=ha, fontsize=10)
-    ax.set_title(f"Single-gene KO effect on {target} flux", loc="left", pad=12)
-    ax.set_xlabel("Target flux delta versus baseline")
-    ax.margins(x=0.08)
+        span = max([abs(v) for v in bar_values] + [1.0])
+        for idx, (value, _color, is_real) in enumerate(classified):
+            if not is_real:
+                ax.text(0.0, idx, "  failed", va="center", ha="left",
+                        fontsize=9, color="#737373", style="italic")
+            elif abs(value) > 1e-12:
+                offset = 0.01 * span * (1 if value >= 0 else -1)
+                ax.text(value + offset, idx, f"{value:.3g}", va="center",
+                        ha="left" if value >= 0 else "right", fontsize=10)
+
+    base_flux = _optional_float(getattr(baseline, "target_flux", None))
+    base_txt = "n/a" if base_flux is None else f"{base_flux:.3g}"
+    ax.set_title(
+        f"Single-{ko_level} KO effect on {target} {direction_word}", loc="left", pad=24
+    )
+    ax.text(
+        0.0, 1.02,
+        f"baseline {target} flux {base_txt} · evaluated {n_evaluated}/{n_total} "
+        f"{ko_level}s · selection {selection}",
+        transform=ax.transAxes, fontsize=9.5, color="#555555",
+    )
+    ax.set_xlabel(f"{target} flux delta vs baseline (positive = more {direction_word})")
+    ax.margins(x=0.12)
     _polish_matplotlib_axes(ax, grid_axis="x")
+    ax.legend(
+        handles=[
+            Patch(facecolor=improve, label="improves target"),
+            Patch(facecolor=worsen, label="reduces target"),
+            Patch(facecolor=failed, label="failed / no change"),
+        ],
+        loc="lower right", frameon=False, fontsize=9,
+    )
     _save_screening_figure(fig, out / "gene_ko_plot.svg", out / "gene_ko_plot.tiff")
     plt.close(fig)
 
@@ -3715,16 +3951,43 @@ def build_parser() -> argparse.ArgumentParser:
     gk.add_argument("--growth-fraction", type=float, default=0.5, dest="growth_fraction")
     gk.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     gk.add_argument(
+        "--ko-level",
+        default="gene",
+        choices=["gene", "reaction"],
+        dest="ko_level",
+        help="knock out genes via GPR (default) or reactions directly",
+    )
+    gk.add_argument(
         "--genes",
         default=None,
-        help="comma-separated gene ids to evaluate; requires --member",
+        help="comma-separated gene ids to evaluate; requires --member and --ko-level gene",
     )
+    gk.add_argument(
+        "--reactions",
+        default=None,
+        help="comma-separated reaction ids to evaluate; requires --member and --ko-level reaction",
+    )
+    gk.add_argument(
+        "--gene-selection",
+        default="id",
+        choices=["id", "random"],
+        dest="gene_selection",
+        help="how to pick targets when not listed: id order (default) or deterministic random",
+    )
+    gk.add_argument("--seed", type=int, default=0, help="seed for --gene-selection random")
     gk.add_argument(
         "--max-genes",
         type=int,
         default=20,
         dest="max_genes",
-        help="maximum genes to evaluate when --genes is omitted; 0 means all genes",
+        help="max knockout targets per member when not listed explicitly; 0 means all "
+        "(truncation is reported as a warning, never silent)",
+    )
+    gk.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="parallel evaluation workers (default 1; >1 speedup depends on solver thread-safety)",
     )
     gk.add_argument("--top-k", type=int, default=20, dest="top_k")
     gk.add_argument("--out", required=True, help="output directory")
