@@ -86,12 +86,15 @@ def test_select_ko_targets_random_is_deterministic_per_seed():
     assert selected == sorted(selected)
 
 
-def test_select_ko_targets_reaction_excludes_exchanges_and_objective():
-    model = _FakeModel([], ["EX_glc__D_e", "PGI", "ENO", "EX_ac_e", ("BIOMASS", 1.0)])
+def test_select_ko_targets_reaction_excludes_boundary_and_objective():
+    model = _FakeModel(
+        [],
+        ["EX_glc__D_e", "DM_atp_c", "SK_h_c", "PGI", "ENO", "EX_ac_e", ("BIOMASS", 1.0)],
+    )
     selected, total, method = _select_ko_targets(
         model, ko_level="reaction", explicit=None, max_n=0, selection="id", seed=0
     )
-    # exchange reactions and the objective/biomass reaction are skipped in auto-enumeration.
+    # EX_/DM_/SK_ boundary pseudo-reactions and the objective/biomass reaction are skipped.
     assert selected == ["ENO", "PGI"]
     assert total == 2
     assert method == "id"
@@ -132,6 +135,29 @@ def test_ko_sort_key_is_stable_when_all_deltas_nan():
     ]
     rows.sort(key=_ko_sort_key)
     assert [row["gene"] for row in rows] == ["g1", "g2", "g3"]
+
+
+# ── direction-aware figure coloring (C1: must track objective, not raw flux sign) ────────
+
+def test_ko_effect_category_is_direction_aware():
+    from cmig.cli.main import _ko_effect_category
+
+    # Color must follow the OBJECTIVE (score_delta, already normalized so larger=better for every
+    # --direction), NOT the raw target_flux_delta sign — else min_secretion/max_uptake invert.
+    # max_secretion: a KO raising secretion improves the goal (delta>0, score_delta>0).
+    assert _ko_effect_category("ok", 2.0, 1.5) == "improve"
+    # min_secretion / max_uptake: best KO LOWERS the flux (delta<0) yet score_delta>0 -> improve.
+    assert _ko_effect_category("ok", -2.0, 1.5) == "improve"
+    # a KO that worsens the objective, regardless of the flux-delta sign.
+    assert _ko_effect_category("ok", 2.0, -1.5) == "worsen"
+    assert _ko_effect_category("ok", -0.4, -0.4) == "worsen"
+    # a KO that makes the consortium infeasible (score_delta -inf) worsens the objective.
+    assert _ko_effect_category("ok", -1.0, float("-inf")) == "worsen"
+    # no measurable / unknown effect, and failure handling.
+    assert _ko_effect_category("ok", 0.0, 0.0) == "neutral"
+    assert _ko_effect_category("ok", 1.0, float("nan")) == "neutral"
+    assert _ko_effect_category("failed", 0.0, 0.0) == "failed"
+    assert _ko_effect_category("ok", float("nan"), 1.0) == "failed"
 
 
 # ── figure (US-005): failure/NaN safe ─────────────────────────────────────────

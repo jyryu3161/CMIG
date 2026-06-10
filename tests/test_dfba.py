@@ -60,6 +60,7 @@ def test_dfba_glucose_depletes_and_nonnegative():
     assert final_glc < 0.01
     for tp in r.timecourse:
         assert tp.concentrations["EX_glc__D_e"] >= -1e-9     # non-negativity 불변
+        assert tp.t <= 10.0 + 1e-9                           # C3: no timepoint exceeds t_end
 
 
 def test_dfba_emergency_clamp_scales_growth_with_substrate(monkeypatch):
@@ -116,6 +117,63 @@ def test_dfba_emergency_clamp_scales_growth_with_substrate(monkeypatch):
     assert r.timecourse[-1].concentrations["EX_s"] == pytest.approx(0.0)
     assert r.timecourse[-1].growth_rate == pytest.approx(0.2)
     assert r.timecourse[-1].biomass == pytest.approx(1.02)
+
+
+def test_dfba_emergency_clamp_does_not_overshoot_t_end(monkeypatch):
+    """C3: when the substrate-limited step is forced at min_dt but the remaining horizon is
+    smaller than min_dt, the integrator must clamp to t_end (no out-of-range timepoint).
+
+    With t_end=0.15, dt=min_dt=0.1 the pre-fix code stepped min_dt twice and landed at t=0.2.
+    """
+    import cmig.core.dfba as dfba
+    import cmig.core.single_model as single_model
+
+    monkeypatch.setattr(single_model, "_require_lp", lambda solver: None)
+    monkeypatch.setattr(single_model, "set_model_solver", lambda model, solver: None)
+    monkeypatch.setattr(dfba, "_growth_of", lambda model, sol: 2.0)
+
+    class _Reaction:
+        lower_bound = -1000.0
+
+    class _Reactions:
+        def __init__(self) -> None:
+            self._rxn = _Reaction()
+
+        def get_by_id(self, rid):
+            return self._rxn
+
+    class _Solution:
+        status = "optimal"
+        fluxes = {"EX_s": -100.0}
+
+    class _Model:
+        def __init__(self) -> None:
+            self.reactions = _Reactions()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def optimize(self):
+            return _Solution()
+
+    r = simulate_dfba(
+        _Model(),
+        DfbaConfig(
+            t_end=0.15,
+            dt=0.1,
+            min_dt=0.1,
+            initial_biomass=1.0,
+            initial_concentrations={"EX_s": 1.0},
+            vmax={"EX_s": 100.0},
+            growth_floor=0.0,
+        ),
+        solver="gurobi",
+    )
+
+    assert all(tp.t <= 0.15 + 1e-9 for tp in r.timecourse)
 
 
 def test_dfba_infeasible_after_depletion_is_explicit():

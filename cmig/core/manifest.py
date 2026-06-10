@@ -70,7 +70,9 @@ def _round_floats(obj: Any, decimals: int) -> Any:
             return "NaN"
         if math.isinf(obj):
             return "Infinity" if obj > 0 else "-Infinity"
-        return round(obj, decimals)
+        # `+ 0.0` collapses -0.0 → 0.0 so semantically identical near-zero fluxes that round to
+        # opposite signed zeros do not serialize differently (run_hash determinism).
+        return round(obj, decimals) + 0.0
     if isinstance(obj, dict):
         return {k: _round_floats(v, decimals) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):

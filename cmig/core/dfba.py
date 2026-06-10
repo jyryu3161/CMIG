@@ -113,7 +113,8 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
                 step_dt /= 2.0                                  # 적응: 농도 음수 방지
             else:
                 # min_dt 에서도 음수 → 가용 기질 이하로 flux/growth를 함께 스케일.
-                step_dt = config.min_dt
+                # 잔여 시간이 min_dt 미만이면 t_end 초과(범위 밖 timepoint) 방지로 잔여로 클램프.
+                step_dt = min(config.min_dt, config.t_end - t)
                 fractions = []
                 for ex in managed:
                     flux = float(sol.fluxes[ex])

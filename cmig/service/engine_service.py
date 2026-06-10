@@ -222,6 +222,10 @@ class EngineService:
 
         baseline fixture를 풀고, 지정 reaction bound를 preview/commit으로 재solve한다.
         commit+out_dir이면 constrained tidy 산출과 manifest를 쓴다.
+
+        [provenance] commit 의 run_hash 와 provenance 는 manifest.json 으로 영속된다. 이 facade
+        seam 은 durable RunStore(sqlite) 인덱스에 등록하지 않는다(evaluate_sandbox store=None) —
+        쿼리 가능한 store 인덱싱은 RunStore 통합 시점의 별도 작업이다(과대표기 방지).
         """
         from dataclasses import replace
 

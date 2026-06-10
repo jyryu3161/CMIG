@@ -26,7 +26,9 @@ def _round(v: Any, decimals: int) -> Any:
             return "NaN"
         if math.isinf(v):
             return "Infinity" if v > 0 else "-Infinity"
-        return round(v, decimals)
+        # `+ 0.0` collapses -0.0 → 0.0 so signed-zero noise does not diverge the normalized hash
+        # (kept consistent with manifest._round_floats).
+        return round(v, decimals) + 0.0
     return v
 
 

@@ -916,14 +916,15 @@ def _select_ko_targets(
     if explicit is not None:
         return list(explicit), len(explicit), "explicit"
     if ko_level == "reaction":
-        # Auto-enumeration skips exchange reactions (closing an exchange is not a metabolic
-        # perturbation) and the objective/biomass reaction (its KO trivially zeroes growth and
-        # would dominate the ranking with a non-informative result). Use --reactions to target
-        # them explicitly.
+        # Auto-enumeration skips boundary pseudo-reactions (EX_ exchange, DM_ demand, SK_ sink —
+        # closing these is not a metabolic perturbation) and the objective/biomass reaction (its
+        # KO trivially zeroes growth and would dominate the ranking with a non-informative
+        # result). Use --reactions to target any of them explicitly.
         all_ids = sorted(
             str(r.id)
             for r in model.reactions
-            if not str(r.id).startswith("EX_") and r.objective_coefficient == 0
+            if not str(r.id).startswith(("EX_", "DM_", "SK_"))
+            and r.objective_coefficient == 0
         )
     else:
         all_ids = sorted(str(g.id) for g in model.genes)
@@ -1048,6 +1049,8 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
     try:
         if args.jobs < 1:
             raise ValueError("--jobs must be >= 1")
+        if args.top_k < 0:
+            raise ValueError("--top-k must be >= 0")
         if bool(args.taxonomy) == bool(args.model_dir):
             raise ValueError("provide exactly one of --taxonomy or --model-dir")
         if args.taxonomy:
@@ -2820,6 +2823,31 @@ def _write_host_search_figures(
     plt.close(fig)
 
 
+_KO_EFFECT_COLORS = {
+    "improve": "#2ca25f",
+    "worsen": "#e6550d",
+    "neutral": "#969696",
+    "failed": "#cfcfcf",
+}
+
+
+def _ko_effect_category(status: str, delta: float | None, score_delta: float | None) -> str:
+    """Classify a KO row by its effect on the *objective* (direction-aware).
+
+    The bar magnitude is the physical target-flux change, but desirability is direction-aware:
+    `score_delta = rank.score - baseline.score` and `score` is already normalized so larger is
+    better for every --direction (see score_target_result). So `score_delta > 0` means the
+    knockout improves the objective whether the goal is to maximize OR minimize the target
+    exchange — coloring by the raw flux-delta sign would invert min_secretion/max_uptake.
+    Returns one of: improve | worsen | neutral | failed.
+    """
+    if status != "ok" or delta is None or not math.isfinite(delta):
+        return "failed"
+    if score_delta is None or math.isnan(score_delta) or abs(score_delta) <= 1e-12:
+        return "neutral"
+    return "improve" if score_delta > 0 else "worsen"
+
+
 def _write_gene_ko_figures(
     rows: list[dict[str, Any]],
     out: Path,
@@ -2835,37 +2863,35 @@ def _write_gene_ko_figures(
     plt = _load_matplotlib_pyplot()
     from matplotlib.patches import Patch
 
-    improve, worsen, neutral, failed = "#2ca25f", "#e6550d", "#969696", "#cfcfcf"
     direction_word = "secretion" if "secretion" in direction else "uptake"
+    goal_word = "less" if direction.startswith("min_") else "more"
 
     top = rows[:12]
     # barh draws bottom-to-top, so reverse to keep rank #1 at the top.
     plot = list(reversed(top))
     labels = [f"{row['member']}:{row['gene']}" for row in plot]
     deltas = [_optional_float(row.get("target_flux_delta")) for row in plot]
+    scores = [_optional_float(row.get("score_delta")) for row in plot]
     statuses = [str(row.get("evaluation_status", "ok")) for row in plot]
 
-    def _classify(delta: float | None, status: str) -> tuple[float, str, bool]:
-        """Return (bar_value, color, is_real). Failed/non-finite render as a zero-width marker."""
-        if status != "ok" or delta is None or not math.isfinite(delta):
-            return 0.0, failed, False
-        if delta > 0:
-            return delta, improve, True
-        if delta < 0:
-            return delta, worsen, True
-        return 0.0, neutral, True
-
-    classified = [_classify(d, s) for d, s in zip(deltas, statuses, strict=False)]
-    bar_values = [c[0] for c in classified]
+    categories = [
+        _ko_effect_category(s, d, sc)
+        for d, sc, s in zip(deltas, scores, statuses, strict=False)
+    ]
+    bar_values = [
+        (d if (cat != "failed" and d is not None) else 0.0)
+        for d, cat in zip(deltas, categories, strict=False)
+    ]
+    colors = [_KO_EFFECT_COLORS[cat] for cat in categories]
 
     height = max(3.4, 0.46 * max(len(plot), 1) + 2.1)
     fig, ax = plt.subplots(figsize=(7.8, height), dpi=300)
     if plot:
-        ax.barh(labels, bar_values, color=[c[1] for c in classified], height=0.56)
+        ax.barh(labels, bar_values, color=colors, height=0.56)
         ax.axvline(0.0, color="#333333", linewidth=0.9)
         span = max([abs(v) for v in bar_values] + [1.0])
-        for idx, (value, _color, is_real) in enumerate(classified):
-            if not is_real:
+        for idx, (value, cat) in enumerate(zip(bar_values, categories, strict=False)):
+            if cat == "failed":
                 ax.text(0.0, idx, "  failed", va="center", ha="left",
                         fontsize=9, color="#737373", style="italic")
             elif abs(value) > 1e-12:
@@ -2881,19 +2907,22 @@ def _write_gene_ko_figures(
     ax.text(
         0.0, 1.02,
         f"baseline {target} flux {base_txt} · evaluated {n_evaluated}/{n_total} "
-        f"{ko_level}s · selection {selection}",
+        f"{ko_level}s · selection {selection} · goal: {direction}",
         transform=ax.transAxes, fontsize=9.5, color="#555555",
     )
-    ax.set_xlabel(f"{target} flux delta vs baseline (positive = more {direction_word})")
+    # Bar = physical flux change; color = effect on the objective (direction-aware).
+    ax.set_xlabel(f"{target} {direction_word} flux delta vs baseline (bar) — color = objective")
     ax.margins(x=0.12)
     _polish_matplotlib_axes(ax, grid_axis="x")
     ax.legend(
         handles=[
-            Patch(facecolor=improve, label="improves target"),
-            Patch(facecolor=worsen, label="reduces target"),
-            Patch(facecolor=failed, label="failed / no change"),
+            Patch(facecolor=_KO_EFFECT_COLORS["improve"],
+                  label=f"improves objective ({goal_word} {direction_word})"),
+            Patch(facecolor=_KO_EFFECT_COLORS["worsen"], label="worsens objective"),
+            Patch(facecolor=_KO_EFFECT_COLORS["neutral"], label="no change"),
+            Patch(facecolor=_KO_EFFECT_COLORS["failed"], label="failed"),
         ],
-        loc="lower right", frameon=False, fontsize=9,
+        loc="lower right", frameon=False, fontsize=8.5,
     )
     _save_screening_figure(fig, out / "gene_ko_plot.svg", out / "gene_ko_plot.tiff")
     plt.close(fig)
@@ -3565,60 +3594,86 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
             if args.namespace_decisions else None
         )
         for cond in enumerate_conditions(axes):
-            cond_dir = run_root / cond.condition_id
-            solver = str(cond.axis_values["solver"])
-            medium = cond.axis_values.get("medium_variant")
-            member_set = cond.axis_values.get("member_set")
-            abundance = cond.axis_values.get("abundance")
-            bounds_variant = cond.axis_values.get("bounds")
-            medium_path = None if medium is None else str(medium)
-            taxonomy_variant = _apply_abundance_variant(
-                _apply_member_set(taxonomy, None if member_set is None else str(member_set)),
-                None if abundance is None else str(abundance),
-            )
-            bounds = None if bounds_variant is None else _load_bounds_json(str(bounds_variant))
-            outcome = service.solve_community(
-                taxonomy=taxonomy_variant,
-                model_checksum=_taxonomy_model_checksum(taxonomy_variant, tax_path),
-                solver=solver,
-                tradeoff_f=float(cond.axis_values["tradeoff_f"]),
-                medium_path=medium_path,
-                namespace_decisions=namespace_decisions,
-                strict_medium=not args.allow_unknown_medium,
-                out_dir=cond_dir,
-                bounds=bounds,
-                fva=args.fva or args.fva_metabolites is not None,
-                fva_metabolites=_parse_optional_csv_strings(args.fva_metabolites),
-            )
-            status = "ok" if outcome.status == "ok" else "failed"
-            rows.append(
-                SweepRow(
-                    condition_id=cond.condition_id,
-                    axis_values=cond.axis_values,
-                    metric=args.metric,
-                    value=None if outcome.result is None else float(outcome.result.objective),
-                    run_hash=outcome.run_hash or "",
-                    status=status,
-                    diagnostic=outcome.diagnostic,
-                    cache_hit=False,
+            # Per-condition failure isolation (sweep.py contract: a failed run is recorded with a
+            # diagnostic, never dropped, and does not abort the batch). A solver failure on one
+            # condition must not lose every other condition's results. Gate/OS errors stay fatal.
+            try:
+                cond_dir = run_root / cond.condition_id
+                solver = str(cond.axis_values["solver"])
+                medium = cond.axis_values.get("medium_variant")
+                member_set = cond.axis_values.get("member_set")
+                abundance = cond.axis_values.get("abundance")
+                bounds_variant = cond.axis_values.get("bounds")
+                medium_path = None if medium is None else str(medium)
+                taxonomy_variant = _apply_abundance_variant(
+                    _apply_member_set(taxonomy, None if member_set is None else str(member_set)),
+                    None if abundance is None else str(abundance),
                 )
-            )
-            if outcome.bundle is not None:
-                for profile in outcome.bundle.profile.to_pylist():
-                    profile_rows.append({
-                        "condition_id": cond.condition_id,
-                        "axis_medium_variant": None if medium is None else str(medium),
-                        "axis_tradeoff_f": float(cond.axis_values["tradeoff_f"]),
-                        "axis_solver": solver,
-                        "run_hash": outcome.run_hash or "",
-                        "status": status,
-                        "metabolite": str(profile.get("metabolite", "")),
-                        "net_flux": profile.get("net_flux"),
-                        "ui_flux": profile.get("ui_flux"),
-                        "label": profile.get("label"),
-                        "fva_lo": profile.get("fva_lo"),
-                        "fva_hi": profile.get("fva_hi"),
-                    })
+                bounds = (
+                    None if bounds_variant is None else _load_bounds_json(str(bounds_variant))
+                )
+                outcome = service.solve_community(
+                    taxonomy=taxonomy_variant,
+                    model_checksum=_taxonomy_model_checksum(taxonomy_variant, tax_path),
+                    solver=solver,
+                    tradeoff_f=float(cond.axis_values["tradeoff_f"]),
+                    medium_path=medium_path,
+                    namespace_decisions=namespace_decisions,
+                    strict_medium=not args.allow_unknown_medium,
+                    out_dir=cond_dir,
+                    bounds=bounds,
+                    fva=args.fva or args.fva_metabolites is not None,
+                    fva_metabolites=_parse_optional_csv_strings(args.fva_metabolites),
+                )
+                status = "ok" if outcome.status == "ok" else "failed"
+                rows.append(
+                    SweepRow(
+                        condition_id=cond.condition_id,
+                        axis_values=cond.axis_values,
+                        metric=args.metric,
+                        value=(
+                            None if outcome.result is None
+                            else float(outcome.result.objective)
+                        ),
+                        run_hash=outcome.run_hash or "",
+                        status=status,
+                        diagnostic=outcome.diagnostic,
+                        cache_hit=False,
+                    )
+                )
+                if outcome.bundle is not None:
+                    for profile in outcome.bundle.profile.to_pylist():
+                        profile_rows.append({
+                            "condition_id": cond.condition_id,
+                            "axis_medium_variant": None if medium is None else str(medium),
+                            "axis_tradeoff_f": float(cond.axis_values["tradeoff_f"]),
+                            "axis_solver": solver,
+                            "run_hash": outcome.run_hash or "",
+                            "status": status,
+                            "metabolite": str(profile.get("metabolite", "")),
+                            "net_flux": profile.get("net_flux"),
+                            "ui_flux": profile.get("ui_flux"),
+                            "label": profile.get("label"),
+                            "fva_lo": profile.get("fva_lo"),
+                            "fva_hi": profile.get("fva_hi"),
+                        })
+            except (GateBlockedError, OSError):
+                raise  # cross-condition / fatal -> abort the whole sweep
+            except Exception as e:  # per-condition solve/data failure -> record and continue
+                from cmig.core.diagnostics import Diagnostic
+
+                rows.append(
+                    SweepRow(
+                        condition_id=cond.condition_id,
+                        axis_values=cond.axis_values,
+                        metric=args.metric,
+                        value=None,
+                        run_hash="",
+                        status="failed",
+                        diagnostic=Diagnostic.from_exception(e).to_json(),
+                        cache_hit=False,
+                    )
+                )
     except (ValueError, GateBlockedError, OSError) as e:
         print(str(e), file=sys.stderr)
         return 2

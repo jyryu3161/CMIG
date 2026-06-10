@@ -1235,9 +1235,11 @@ def _gene_ko_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         rows.append({
             "members": [f"{item.get('member', '')}:{item.get('gene', '')}"],
-            "score": item.get("score_delta"),
-            "target_flux": item.get("target_flux_delta"),
-            "community_growth": item.get("community_growth_delta"),
+            # SearchView columns are absolute Score/Flux/Growth; feed the absolute fields (deltas
+            # live in the figure + CSV/JSON) so the headers match the values shown.
+            "score": item.get("score"),
+            "target_flux": item.get("target_flux"),
+            "community_growth": item.get("community_growth"),
             "status": item.get("evaluation_status", item.get("status", "")),
             "diagnostic": item.get("diagnostic"),
         })

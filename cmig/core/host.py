@@ -272,13 +272,20 @@ def solve_bigg_host(
             add_availability(str(key), value, label=f"host_medium[{key!r}]")
         excluded = set(exclude_metabolites or set())
         matched: set[str] = set()
-        for met, value in microbial_availability.items():
+        for raw_met, value in microbial_availability.items():
+            # Normalize to the bare metabolite id so callers may pass either bare ids or EX_ ids
+            # without diverging from the bare-id keys used by the output/transfer loop below.
+            met = (
+                _met_from_bigg_exchange(str(raw_met), suffix=exchange_suffix)
+                if str(raw_met).startswith("EX_")
+                else str(raw_met)
+            )
             if met in excluded:
                 continue
             rid, flux = add_availability(
-                met,
+                raw_met,
                 value,
-                label=f"microbial_availability[{met!r}]",
+                label=f"microbial_availability[{raw_met!r}]",
             )
             if rid is not None:
                 microbial_caps[met] = microbial_caps.get(met, 0.0) + flux

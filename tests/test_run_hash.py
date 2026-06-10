@@ -108,3 +108,34 @@ def test_non_finite_floats_deterministic():
     assert compute_run_hash(nan_b()) == compute_run_hash(nan_b())
     # inf != finite
     assert compute_run_hash(inf_b()) != compute_run_hash(_components(bounds={"EX_x": [-1.0, 1.0]}))
+
+
+def test_round_floats_normalizes_negative_zero():
+    """C4: round(-1e-9, 6) == -0.0 must normalize to +0.0 so a near-zero flux cannot diverge a
+    run_hash depending on the sign of its rounded zero."""
+    import math
+
+    from cmig.core.manifest import _round_floats
+
+    nz = _round_floats(-1e-9, 6)
+    assert nz == 0.0
+    assert math.copysign(1.0, nz) == 1.0  # +0.0, not -0.0
+    # normal values are untouched by the `+ 0.0` normalization
+    assert _round_floats(1.234567, 6) == 1.234567
+    assert _round_floats(-2.5, 6) == -2.5
+    # a structure containing -0.0 hashes identically to one containing +0.0
+    a = _components(bounds={"EX_x": [-1e-9, 1.0]})
+    b = _components(bounds={"EX_x": [0.0, 1.0]})
+    assert compute_run_hash(a) == compute_run_hash(b)
+
+
+def test_golden_round_normalizes_negative_zero():
+    """C4: golden._round mirrors manifest — signed-zero noise must not diverge the golden hash."""
+    import math
+
+    from cmig.core.golden import _round
+
+    nz = _round(-1e-9, 6)
+    assert nz == 0.0
+    assert math.copysign(1.0, nz) == 1.0
+    assert _round(1.234567, 6) == 1.234567
