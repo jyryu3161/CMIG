@@ -47,6 +47,7 @@ dev = [
 
 [project.scripts]
 cmig = "cmig.cli.main:main"
+cmig-gui = "cmig.gui.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

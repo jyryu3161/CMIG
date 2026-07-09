@@ -108,3 +108,54 @@ def test_robustness_fva_fixture():
     r = robustness_fva(comm, TargetSpec("ac"), growth_fraction=0.5, solver="gurobi")
     assert r.status == "ok"
     assert r.fva_lo <= r.fva_hi and r.range_width >= 0
+
+
+def test_rank_multi_target_weighted_normalized_and_pareto():
+    """Rec-5: 다중 타깃 랭킹 = 관측범위 정규화 weighted 합 + Pareto flag (순수, solver 불요)."""
+    from cmig.core.search_product import _ComboEval, rank_multi_target
+
+    specs = [
+        TargetSpec("ac", Direction.MAX_SECRETION, 1.0),
+        TargetSpec("but", Direction.MAX_SECRETION, 1.0),
+    ]
+    evals = [
+        _ComboEval(("A", "B"), "optimal", 0.5, {"ac": 10.0, "but": 2.0},
+                   {"ac": 10.0, "but": 2.0}),
+        _ComboEval(("A", "C"), "optimal", 0.5, {"ac": 2.0, "but": 10.0},
+                   {"ac": 2.0, "but": 10.0}),
+        _ComboEval(("B", "C"), "optimal", 0.5, {"ac": 6.0, "but": 6.0},
+                   {"ac": 6.0, "but": 6.0}),
+        _ComboEval(("A", "D"), "missing", 0.0, {"ac": 0.0}, {}, "target exchange 부재"),
+    ]
+    ranked, normalizer = rank_multi_target(evals, specs)
+    assert normalizer == "observed_range"
+    assert [r.rank for r in ranked] == [1, 2, 3, 4]
+    # failed combo excluded from ranking (weighted -inf), sorted last, never Pareto
+    failed = ranked[-1]
+    assert failed.status == "missing" and failed.weighted_score == float("-inf")
+    assert failed.pareto is False
+    # all three non-dominated optimal combos are Pareto-flagged
+    pareto = {r.members for r in ranked if r.pareto}
+    assert pareto == {("A", "B"), ("A", "C"), ("B", "C")}
+    # normalized scores are in [0,1]
+    for r in ranked[:3]:
+        assert all(0.0 <= v <= 1.0 for v in r.target_scores.values())
+
+
+def test_search_model_pool_multi_requires_two_targets():
+    from cmig.core.search_product import MultiTargetConfig, search_model_pool_multi
+
+    cfg = MultiTargetConfig(
+        targets=["ac"], directions={"ac": Direction.MAX_SECRETION}, weights={"ac": 1.0},
+    )
+    with pytest.raises(ValueError, match=">= 2 targets"):
+        search_model_pool_multi(object(), _FakeTaxo(["A", "B"]), cfg)
+
+
+class _FakeTaxo:
+    def __init__(self, ids):
+        self._ids = ids
+
+    def __getitem__(self, key):
+        assert key == "id"
+        return self._ids

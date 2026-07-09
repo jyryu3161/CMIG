@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import itertools
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from cmig.core.search import Direction, TargetSpec, score_target_result, target_max_solve
@@ -247,5 +247,207 @@ def search_model_pool(
         n_candidates_total=len(candidates),
         n_candidates_evaluated=len(cache),
         ranks=ranked,
+        warnings=warnings,
+    )
+
+
+# ── Multi-target search (§14 다중 타깃) ─────────────────────────────────────────
+# Users can rank model-pool combinations against several targets at once, combined
+# by a weighted sum of per-target scores normalized into [0,1] over the observed
+# range, plus (for exactly two targets) a Pareto non-dominated flag.
+
+
+@dataclass(frozen=True)
+class MultiTargetConfig:
+    targets: list[str]
+    directions: dict[str, Direction]
+    weights: dict[str, float]
+    min_size: int = 2
+    max_size: int = 2
+    growth_fraction: float = 0.5
+    solver: str = "gurobi"
+    top_k: int = 10
+    exhaustive_max: int = 100
+
+
+@dataclass(frozen=True)
+class MultiTargetRank:
+    rank: int
+    members: tuple[str, ...]
+    weighted_score: float               # Σ weight·normalized ([0,1]); -inf if not evaluable
+    target_fluxes: dict[str, float]     # metabolite → raw exchange flux
+    target_scores: dict[str, float]     # metabolite → normalized [0,1]
+    community_growth: float
+    status: str
+    pareto: bool = False
+    diagnostic: str | None = None
+
+
+@dataclass(frozen=True)
+class MultiTargetSearchResult:
+    targets: list[str]
+    target_exchanges: dict[str, str]
+    directions: dict[str, str]
+    weights: dict[str, float]
+    strategy: str
+    normalizer: str
+    n_pool_members: int
+    n_candidates_total: int
+    n_candidates_evaluated: int
+    ranks: list[MultiTargetRank]
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class _ComboEval:
+    members: tuple[str, ...]
+    status: str
+    community_growth: float
+    fluxes: dict[str, float]
+    signed: dict[str, float]            # direction-adjusted raw (larger = better), no weight
+    diagnostic: str | None = None
+
+
+def _signed_raw(result: Any, spec: TargetSpec) -> float:
+    """Direction-adjusted raw target value (larger = better), without the weight."""
+    if result.status != "optimal":
+        return float("-inf")
+    match spec.direction:
+        case Direction.MAX_SECRETION | Direction.MIN_UPTAKE:
+            return float(result.target_flux)
+        case _:  # MIN_SECRETION, MAX_UPTAKE
+            return -float(result.target_flux)
+
+
+def rank_multi_target(
+    evals: list[_ComboEval], specs: list[TargetSpec]
+) -> tuple[list[MultiTargetRank], str]:
+    """Pure ranking: normalize per-target over observed range, weight, Pareto-flag (2 targets).
+
+    Returns (ranked_rows, normalizer_name). Testable without a solver.
+    """
+    from cmig.core.search_advanced import (
+        normalize_score,
+        pareto_frontier,
+        weighted_multi_target,
+    )
+
+    mets = [s.metabolite for s in specs]
+    ok = [e for e in evals if e.status == "optimal"]
+    ranges: dict[str, tuple[float, float]] = {}
+    for m in mets:
+        vals = [e.signed[m] for e in ok if m in e.signed]
+        ranges[m] = (min(vals), max(vals)) if vals else (0.0, 1.0)
+
+    rows: list[MultiTargetRank] = []
+    normalizer = "observed_range"
+    for e in evals:
+        if e.status != "optimal":
+            rows.append(MultiTargetRank(
+                0, e.members, float("-inf"), e.fluxes, {}, e.community_growth,
+                e.status, False, e.diagnostic))
+            continue
+        normalized: dict[str, float] = {}
+        for m in mets:
+            lo, hi = ranges[m]
+            normalized[m] = normalize_score(
+                e.signed[m], observed_min=lo, observed_max=hi).value
+        ws = weighted_multi_target(normalized, specs)
+        rows.append(MultiTargetRank(
+            0, e.members, ws, e.fluxes, normalized, e.community_growth, "optimal", False, None))
+
+    if len(mets) == 2:
+        ok_idx = [i for i, r in enumerate(rows) if r.status == "optimal"]
+        pts = [(evals[i].signed[mets[0]], evals[i].signed[mets[1]]) for i in ok_idx]
+        keep = {ok_idx[k] for k in pareto_frontier(pts)}
+        rows = [replace(r, pareto=(i in keep)) for i, r in enumerate(rows)]
+
+    rows.sort(key=lambda r: (-r.weighted_score, r.members))
+    return [replace(r, rank=i + 1) for i, r in enumerate(rows)], normalizer
+
+
+def _evaluate_members_multi(
+    engine: Any, taxonomy: Any, members: tuple[str, ...], specs: list[TargetSpec], *,
+    growth_fraction: float, solver: str, medium_spec: Any | None, strict_medium: bool,
+) -> _ComboEval:
+    sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
+    try:
+        community = engine.build_community(sub, cmig_solver=solver)
+        if medium_spec is not None:
+            from cmig.core.medium_spec import apply_medium_checked
+
+            apply_medium_checked(community, medium_spec, strict=strict_medium)
+        fluxes: dict[str, float] = {}
+        signed: dict[str, float] = {}
+        status = "optimal"
+        growth = 0.0
+        diag: str | None = None
+        for spec in specs:
+            res = target_max_solve(
+                community, spec, growth_fraction=growth_fraction, solver=solver)
+            fluxes[spec.metabolite] = float(res.target_flux)
+            signed[spec.metabolite] = _signed_raw(res, spec)
+            growth = float(res.community_growth)
+            if res.status != "optimal":       # any target unevaluable → combo not rankable
+                status = res.status
+                diag = res.diagnostic
+        return _ComboEval(members, status, growth, fluxes, signed, diag)
+    except Exception as e:  # noqa: BLE001 - per-combo isolation
+        return _ComboEval(members, "failed", 0.0, {}, {}, str(e))
+
+
+def search_model_pool_multi(
+    engine: Any, taxonomy: Any, config: MultiTargetConfig, *,
+    medium_spec: Any | None = None, strict_medium: bool = True,
+) -> MultiTargetSearchResult:
+    """Rank model-pool combinations against multiple targets (weighted-normalized + Pareto)."""
+    if len(config.targets) < 2:
+        raise ValueError("multi-target search needs >= 2 targets; use single --target otherwise")
+    if config.min_size <= 0 or config.max_size < config.min_size:
+        raise ValueError("require 0 < --min-size <= --max-size")
+    if config.top_k <= 0:
+        raise ValueError("--top-k must be > 0")
+    if not (0.0 < config.growth_fraction <= 1.0):
+        raise ValueError("--growth-fraction must satisfy 0<f<=1")
+
+    ids = [str(x) for x in taxonomy["id"]]
+    if len(set(ids)) != len(ids):
+        raise ValueError("taxonomy id values must be unique")
+    specs = [
+        TargetSpec(t, config.directions[t], config.weights[t]) for t in config.targets
+    ]
+    candidates = candidate_combinations(ids, config.min_size, config.max_size)
+    if not candidates:
+        raise ValueError("no candidate combinations generated")
+    if len(candidates) > config.exhaustive_max:
+        raise ValueError(
+            f"{len(candidates)} candidates > exhaustive_max={config.exhaustive_max}; "
+            "narrow --min-size/--max-size (multi-target search is exhaustive-only, no silent "
+            "truncation)")
+
+    evals = [
+        _evaluate_members_multi(
+            engine, taxonomy, members, specs,
+            growth_fraction=config.growth_fraction, solver=config.solver,
+            medium_spec=medium_spec, strict_medium=strict_medium)
+        for members in candidates
+    ]
+    ranked, normalizer = rank_multi_target(evals, specs)
+    warnings: list[str] = []
+    if any(r.status != "optimal" for r in ranked):
+        warnings.append(
+            "some combinations were not evaluable on every target (missing exchange or "
+            "non-optimal solve); those are excluded from ranking with a diagnostic")
+    return MultiTargetSearchResult(
+        targets=list(config.targets),
+        target_exchanges={s.metabolite: s.exchange_id() for s in specs},
+        directions={t: config.directions[t].value for t in config.targets},
+        weights=dict(config.weights),
+        strategy="exhaustive",
+        normalizer=normalizer,
+        n_pool_members=len(ids),
+        n_candidates_total=len(candidates),
+        n_candidates_evaluated=len(evals),
+        ranks=ranked[: config.top_k],
         warnings=warnings,
     )

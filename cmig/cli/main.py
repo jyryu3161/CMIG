@@ -2211,6 +2211,8 @@ def _cmd_search(args: argparse.Namespace) -> int:
         if missing_cols:
             raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
         medium_spec = load_medium(args.medium) if args.medium else None
+        if args.targets:                          # multi-target path (§14 다중 타깃)
+            return _run_multi_target_search(args, taxonomy, medium_spec)
         diagnostics = diagnose_model_pool(taxonomy, args.target)
         config = SearchConfig(
             target=args.target,
@@ -2249,6 +2251,113 @@ def _cmd_search(args: argparse.Namespace) -> int:
             f"flux={best.target_flux:.4g} growth={best.community_growth:.4g}"
         )
     return 0
+
+
+def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spec: Any) -> int:
+    """Multi-target model-pool search (§14). Raises ValueError on bad args (caught by caller)."""
+    from cmig.core.engine import MicomEngine
+    from cmig.core.search import Direction
+    from cmig.core.search_product import MultiTargetConfig, search_model_pool_multi
+
+    targets = [t.strip() for t in str(args.targets).split(",") if t.strip()]
+    if len(targets) < 2:
+        raise ValueError("--targets needs >= 2 comma-separated metabolites (use --target for one)")
+    if len(set(targets)) != len(targets):
+        raise ValueError(f"--targets has duplicates: {targets}")
+    if args.target_weights:
+        try:
+            weights = [float(x) for x in str(args.target_weights).split(",")]
+        except ValueError as e:
+            raise ValueError("--target-weights must be comma-separated numbers") from e
+        if len(weights) != len(targets):
+            raise ValueError("--target-weights count must match --targets count")
+    else:
+        weights = [1.0] * len(targets)
+    direction = Direction(args.direction)
+    config = MultiTargetConfig(
+        targets=targets,
+        directions={t: direction for t in targets},
+        weights=dict(zip(targets, weights, strict=True)),
+        min_size=args.min_size,
+        max_size=args.max_size,
+        growth_fraction=args.growth_fraction,
+        solver=args.solver,
+        top_k=args.top_k,
+    )
+    result = search_model_pool_multi(
+        MicomEngine(), taxonomy, config,
+        medium_spec=medium_spec, strict_medium=not args.allow_unknown_medium,
+    )
+    out = Path(args.out)
+    _write_multi_target_outputs(result, taxonomy, out)
+    print(f"multi-target search complete (targets={','.join(targets)}) -> {out}")
+    print(f"  evaluated: {result.n_candidates_evaluated}/{result.n_candidates_total}")
+    if result.ranks:
+        best = result.ranks[0]
+        flux_str = ", ".join(f"{m}={best.target_fluxes.get(m, 0.0):.4g}" for m in targets)
+        print(
+            f"  best: {'+'.join(best.members)} score={best.weighted_score:.4g} "
+            f"pareto={best.pareto} ({flux_str})"
+        )
+    return 0
+
+
+def _write_multi_target_outputs(result: Any, taxonomy: Any, out: Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    taxonomy.to_csv(out / "pool_taxonomy.csv", index=False)
+    targets = list(result.targets)
+    fieldnames = (
+        ["rank", "members", "weighted_score", "pareto", "community_growth", "status"]
+        + [f"flux_{t}" for t in targets]
+        + [f"score_{t}" for t in targets]
+        + ["diagnostic"]
+    )
+    with open(out / "search_rankings.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in result.ranks:
+            record = {
+                "rank": row.rank,
+                "members": "+".join(row.members),
+                "weighted_score": _finite_csv(row.weighted_score),
+                "pareto": row.pareto,
+                "community_growth": _finite_csv(row.community_growth),
+                "status": row.status,
+                "diagnostic": row.diagnostic or "",
+            }
+            for t in targets:
+                record[f"flux_{t}"] = _finite_csv(row.target_fluxes.get(t, float("nan")))
+                record[f"score_{t}"] = _finite_csv(row.target_scores.get(t, float("nan")))
+            writer.writerow(record)
+    summary = {
+        "kind": "multi_target_model_pool_search",
+        "targets": targets,
+        "target_exchanges": result.target_exchanges,
+        "directions": result.directions,
+        "weights": result.weights,
+        "strategy": result.strategy,
+        "normalizer": result.normalizer,
+        "n_pool_members": result.n_pool_members,
+        "n_candidates_total": result.n_candidates_total,
+        "n_candidates_evaluated": result.n_candidates_evaluated,
+        "top_ranked": [
+            {
+                "rank": r.rank,
+                "members": list(r.members),
+                "weighted_score": _finite_or_none(r.weighted_score),
+                "pareto": r.pareto,
+                "community_growth": _finite_or_none(r.community_growth),
+                "status": r.status,
+                "target_fluxes": {k: _finite_or_none(v) for k, v in r.target_fluxes.items()},
+                "target_scores": {k: _finite_or_none(v) for k, v in r.target_scores.items()},
+                "diagnostic": r.diagnostic,
+            }
+            for r in result.ranks
+        ],
+        "warnings": result.warnings,
+    }
+    with open(out / "search_summary.json", "w") as f:
+        json.dump(summary, f, indent=2, allow_nan=False)
 
 
 def _finite_or_none(value: float) -> float | None:
@@ -3444,6 +3553,50 @@ def _taxonomy_model_checksum(taxonomy: Any, tax_path: Path) -> str:
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _sweep_condition_content_key(
+    *,
+    model_checksum: str,
+    taxonomy_variant: Any,
+    solver: str,
+    tradeoff_f: float,
+    medium_path: str | None,
+    bounds: dict[str, list[float]] | None,
+    fva: bool,
+    fva_metabolites: list[str] | None,
+    namespace_decisions: Any,
+) -> str:
+    """Deterministic content signature for sweep-cache dedup (§10 G4 "동일 run_hash → 캐시 hit").
+
+    Built from the same resolved inputs that determine the solve's run_hash: model bytes
+    (`model_checksum` = member set + GEM files), abundance vector, solver, tradeoff_f, medium
+    *content* (checksum, so two different paths with identical bytes collide), resolved bounds,
+    and the fva flags (which change the recorded profile). Because this is a faithful superset
+    of the run_hash components, two conditions sharing this key are guaranteed to produce an
+    identical solve, so replaying the cached result is exact rather than an approximation.
+    """
+    from cmig.io.solve_output import file_checksum
+
+    abundance = None
+    if "abundance" in getattr(taxonomy_variant, "columns", []):
+        abundance = sorted(
+            (str(r["id"]), round(float(r["abundance"]), 9))
+            for r in taxonomy_variant.to_dict("records")
+        )
+    parts = {
+        "model_checksum": model_checksum,
+        "abundance": abundance,
+        "solver": solver,
+        "tradeoff_f": round(float(tradeoff_f), 6),
+        "medium": None if medium_path is None else file_checksum(Path(medium_path)),
+        "bounds": None if bounds is None else json.dumps(bounds, sort_keys=True),
+        "fva": bool(fva),
+        "fva_metabolites": None if fva_metabolites is None else sorted(fva_metabolites),
+        "namespace": None if namespace_decisions is None else repr(namespace_decisions),
+    }
+    payload = json.dumps(parts, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _parse_member_sets(raw: str | None) -> list[str | None]:
     if raw is None:
         return [None]
@@ -3588,18 +3741,47 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     rows: list[SweepRow] = []
     profile_rows: list[dict[str, Any]] = []
     service = EngineService()
+    # §10 G4 run-hash cache: content-identical conditions replay instead of re-solving.
+    # Keyed by a faithful pre-solve signature of the run_hash components (see helper), so a
+    # cache hit is an exact replay. Deterministic failures are cached too (누락 금지 계약 유지).
+    cache: dict[str, dict[str, Any]] = {}
+
+    def _emit_profiles(
+        cond_id: str, medium_val: Any, solver_val: str, tradeoff_val: float,
+        run_hash_val: str, status_val: str, profile_pylist: list[dict[str, Any]],
+    ) -> None:
+        for profile in profile_pylist:
+            profile_rows.append({
+                "condition_id": cond_id,
+                "axis_medium_variant": None if medium_val is None else str(medium_val),
+                "axis_tradeoff_f": float(tradeoff_val),
+                "axis_solver": solver_val,
+                "run_hash": run_hash_val,
+                "status": status_val,
+                "metabolite": str(profile.get("metabolite", "")),
+                "net_flux": profile.get("net_flux"),
+                "ui_flux": profile.get("ui_flux"),
+                "label": profile.get("label"),
+                "fva_lo": profile.get("fva_lo"),
+                "fva_hi": profile.get("fva_hi"),
+            })
+
     try:
         namespace_decisions = (
             load_namespace_decisions(args.namespace_decisions)
             if args.namespace_decisions else None
         )
+        fva_enabled = args.fva or args.fva_metabolites is not None
+        fva_metabolites = _parse_optional_csv_strings(args.fva_metabolites)
         for cond in enumerate_conditions(axes):
             # Per-condition failure isolation (sweep.py contract: a failed run is recorded with a
             # diagnostic, never dropped, and does not abort the batch). A solver failure on one
             # condition must not lose every other condition's results. Gate/OS errors stay fatal.
+            content_key: str | None = None
             try:
                 cond_dir = run_root / cond.condition_id
                 solver = str(cond.axis_values["solver"])
+                tradeoff_f = float(cond.axis_values["tradeoff_f"])
                 medium = cond.axis_values.get("medium_variant")
                 member_set = cond.axis_values.get("member_set")
                 abundance = cond.axis_values.get("abundance")
@@ -3612,68 +3794,93 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
                 bounds = (
                     None if bounds_variant is None else _load_bounds_json(str(bounds_variant))
                 )
+                model_checksum = _taxonomy_model_checksum(taxonomy_variant, tax_path)
+                content_key = _sweep_condition_content_key(
+                    model_checksum=model_checksum,
+                    taxonomy_variant=taxonomy_variant,
+                    solver=solver,
+                    tradeoff_f=tradeoff_f,
+                    medium_path=medium_path,
+                    bounds=bounds,
+                    fva=fva_enabled,
+                    fva_metabolites=fva_metabolites,
+                    namespace_decisions=namespace_decisions,
+                )
+                cached = cache.get(content_key)
+                if cached is not None:                       # replay — 재계산 회피 (SC-4)
+                    rows.append(SweepRow(
+                        condition_id=cond.condition_id,
+                        axis_values=cond.axis_values,
+                        metric=args.metric,
+                        value=cached["value"],
+                        run_hash=cached["run_hash"],
+                        status=cached["status"],
+                        diagnostic=cached["diagnostic"],
+                        cache_hit=True,
+                    ))
+                    _emit_profiles(
+                        cond.condition_id, medium, solver, tradeoff_f,
+                        cached["run_hash"], cached["status"], cached["profile"],
+                    )
+                    continue
                 outcome = service.solve_community(
                     taxonomy=taxonomy_variant,
-                    model_checksum=_taxonomy_model_checksum(taxonomy_variant, tax_path),
+                    model_checksum=model_checksum,
                     solver=solver,
-                    tradeoff_f=float(cond.axis_values["tradeoff_f"]),
+                    tradeoff_f=tradeoff_f,
                     medium_path=medium_path,
                     namespace_decisions=namespace_decisions,
                     strict_medium=not args.allow_unknown_medium,
                     out_dir=cond_dir,
                     bounds=bounds,
-                    fva=args.fva or args.fva_metabolites is not None,
-                    fva_metabolites=_parse_optional_csv_strings(args.fva_metabolites),
+                    fva=fva_enabled,
+                    fva_metabolites=fva_metabolites,
                 )
                 status = "ok" if outcome.status == "ok" else "failed"
-                rows.append(
-                    SweepRow(
-                        condition_id=cond.condition_id,
-                        axis_values=cond.axis_values,
-                        metric=args.metric,
-                        value=(
-                            None if outcome.result is None
-                            else float(outcome.result.objective)
-                        ),
-                        run_hash=outcome.run_hash or "",
-                        status=status,
-                        diagnostic=outcome.diagnostic,
-                        cache_hit=False,
-                    )
+                value = None if outcome.result is None else float(outcome.result.objective)
+                run_hash = outcome.run_hash or ""
+                profile_pylist = (
+                    outcome.bundle.profile.to_pylist() if outcome.bundle is not None else []
                 )
-                if outcome.bundle is not None:
-                    for profile in outcome.bundle.profile.to_pylist():
-                        profile_rows.append({
-                            "condition_id": cond.condition_id,
-                            "axis_medium_variant": None if medium is None else str(medium),
-                            "axis_tradeoff_f": float(cond.axis_values["tradeoff_f"]),
-                            "axis_solver": solver,
-                            "run_hash": outcome.run_hash or "",
-                            "status": status,
-                            "metabolite": str(profile.get("metabolite", "")),
-                            "net_flux": profile.get("net_flux"),
-                            "ui_flux": profile.get("ui_flux"),
-                            "label": profile.get("label"),
-                            "fva_lo": profile.get("fva_lo"),
-                            "fva_hi": profile.get("fva_hi"),
-                        })
+                rows.append(SweepRow(
+                    condition_id=cond.condition_id,
+                    axis_values=cond.axis_values,
+                    metric=args.metric,
+                    value=value,
+                    run_hash=run_hash,
+                    status=status,
+                    diagnostic=outcome.diagnostic,
+                    cache_hit=False,
+                ))
+                _emit_profiles(
+                    cond.condition_id, medium, solver, tradeoff_f,
+                    run_hash, status, profile_pylist,
+                )
+                cache[content_key] = {
+                    "value": value, "run_hash": run_hash, "status": status,
+                    "diagnostic": outcome.diagnostic, "profile": profile_pylist,
+                }
             except (GateBlockedError, OSError):
                 raise  # cross-condition / fatal -> abort the whole sweep
             except Exception as e:  # per-condition solve/data failure -> record and continue
                 from cmig.core.diagnostics import Diagnostic
 
-                rows.append(
-                    SweepRow(
-                        condition_id=cond.condition_id,
-                        axis_values=cond.axis_values,
-                        metric=args.metric,
-                        value=None,
-                        run_hash="",
-                        status="failed",
-                        diagnostic=Diagnostic.from_exception(e).to_json(),
-                        cache_hit=False,
-                    )
-                )
+                diag = Diagnostic.from_exception(e).to_json()
+                rows.append(SweepRow(
+                    condition_id=cond.condition_id,
+                    axis_values=cond.axis_values,
+                    metric=args.metric,
+                    value=None,
+                    run_hash="",
+                    status="failed",
+                    diagnostic=diag,
+                    cache_hit=False,
+                ))
+                if content_key is not None:   # deterministic failure → cache for replay
+                    cache[content_key] = {
+                        "value": None, "run_hash": "", "status": "failed",
+                        "diagnostic": diag, "profile": [],
+                    }
     except (ValueError, GateBlockedError, OSError) as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -4126,9 +4333,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     sp.add_argument("--target", default="but", help="target metabolite id, e.g. but")
     sp.add_argument(
+        "--targets",
+        default=None,
+        help="comma-separated targets (>=2) for multi-target search, e.g. ac,but — "
+        "ranks by weighted-normalized score + Pareto flag (overrides --target)",
+    )
+    sp.add_argument(
+        "--target-weights",
+        default=None,
+        dest="target_weights",
+        help="comma-separated weights matching --targets (default: equal weights)",
+    )
+    sp.add_argument(
         "--direction",
         default="max_secretion",
         choices=["max_secretion", "min_secretion", "max_uptake", "min_uptake"],
+        help="applied to every target (single-direction multi-target)",
     )
     sp.add_argument("--growth-fraction", type=float, default=0.5, dest="growth_fraction")
     sp.add_argument("--min-size", type=int, default=2, dest="min_size")
@@ -4237,7 +4457,22 @@ def build_parser() -> argparse.ArgumentParser:
     sb.add_argument("--commit", action="store_true")
     sb.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
     sb.set_defaults(func=_cmd_sandbox_fixture)
+
+    gui = sub.add_parser("gui", help="launch the CMIG desktop GUI (requires --extra gui)")
+    gui.add_argument("--lang", default="en", choices=["en", "ko"], help="UI language")
+    gui.add_argument("--width", type=int, default=1500)
+    gui.add_argument("--height", type=int, default=950)
+    gui.set_defaults(func=_cmd_gui)
     return p
+
+
+def _cmd_gui(args: argparse.Namespace) -> int:
+    """Launch the desktop GUI. Lazy-imports the launcher so the base CLI stays light."""
+    from cmig.gui.__main__ import main as gui_main
+
+    return gui_main(
+        ["--lang", args.lang, "--width", str(args.width), "--height", str(args.height)]
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
