@@ -41,7 +41,18 @@ class CommunityBuilderView(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         self.title = QLabel("Community Builder")
-        self.status = QLabel("Advanced preview: use Search or Host for product runs.")
+        self.status = QLabel(
+            "Advanced preview: point Model Folder at prepared GEMs, then Run Community."
+        )
+        pool_row = QHBoxLayout()
+        self.model_dir_input = QLineEdit("")
+        self.model_dir_input.setPlaceholderText("Folder of user-prepared microbial models")
+        self.browse_model_dir_btn = QPushButton("Browse")
+        self.run_btn = QPushButton("Run Community")
+        pool_row.addWidget(QLabel("Model Folder"))
+        pool_row.addWidget(self.model_dir_input)
+        pool_row.addWidget(self.browse_model_dir_btn)
+        pool_row.addWidget(self.run_btn)
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["Member", "Abundance"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -56,6 +67,7 @@ class CommunityBuilderView(QWidget):
         f_row.addWidget(self.f_slider)
         layout.addWidget(self.title)
         layout.addWidget(self.status)
+        layout.addLayout(pool_row)
         layout.addWidget(self.table)
         layout.addLayout(f_row)
 
@@ -128,10 +140,18 @@ class ConstraintSandboxView(QWidget):
         layout.addLayout(btn_row)
         layout.addWidget(self.delta_view)
         layout.addWidget(self.status)
-        # debounce: 슬라이더 연속 변경 → 마지막만 재solve (OD-54)
+        # debounce: bound 편집 연속 변경 → 마지막만 재solve (OD-54). itemChanged 마다 재무장하고,
+        # 타이머 만료 시 preview_btn 을 프로그램적으로 click() 해 app.py 의 기존 preview 배선을
+        # 그대로 재사용한다(뷰는 Qt 전용 — JobRunner/EngineService 는 app.py 가 소유).
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(debounce_ms)
+        self._debounce.timeout.connect(self.preview_btn.click)
+        self.bound_table.itemChanged.connect(self._on_bound_edited)
+
+    def _on_bound_edited(self, _item: QTableWidgetItem) -> None:
+        """Restart the debounce timer on any bound edit (last edit wins)."""
+        self._debounce.start()
 
     def add_bound(self, reaction_id: str, lower: float, upper: float) -> None:
         r = self.bound_table.rowCount()
@@ -175,11 +195,31 @@ class ScenarioCompareView(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         self.title = QLabel("Scenario Compare (A → B)")
-        self.status = QLabel("Advanced preview: open completed runs through Profile first.")
+        self.status = QLabel(
+            "Advanced preview: pick two completed run folders, then Compare."
+        )
+        run_a_row = QHBoxLayout()
+        self.run_a_input = QLineEdit("")
+        self.run_a_input.setPlaceholderText("Run A directory (baseline)")
+        self.browse_a_btn = QPushButton("Browse A")
+        run_a_row.addWidget(QLabel("Run A"))
+        run_a_row.addWidget(self.run_a_input)
+        run_a_row.addWidget(self.browse_a_btn)
+        run_b_row = QHBoxLayout()
+        self.run_b_input = QLineEdit("")
+        self.run_b_input.setPlaceholderText("Run B directory (modified)")
+        self.browse_b_btn = QPushButton("Browse B")
+        self.compare_btn = QPushButton("Compare")
+        run_b_row.addWidget(QLabel("Run B"))
+        run_b_row.addWidget(self.run_b_input)
+        run_b_row.addWidget(self.browse_b_btn)
+        run_b_row.addWidget(self.compare_btn)
         self.delta_view = DeltaTable()
         self.growth_label = QLabel("")
         layout.addWidget(self.title)
         layout.addWidget(self.status)
+        layout.addLayout(run_a_row)
+        layout.addLayout(run_b_row)
         layout.addWidget(self.delta_view)
         layout.addWidget(self.growth_label)
 

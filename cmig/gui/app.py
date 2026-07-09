@@ -187,6 +187,9 @@ class CmigMainWindow(QMainWindow):
         self._abundance_impact_jobs: dict[str, Path] = {}
         self._dfba_jobs: dict[str, Path] = {}
         self._spatial_jobs: dict[str, Path] = {}
+        self._community_jobs: dict[str, Path] = {}
+        self._sweep_fixture_jobs: dict[str, Path] = {}
+        self._medium_growth_jobs: dict[str, Path] = {}
         self.current_manifest: dict[str, Any] | None = None
         self.current_graph_payload: dict[str, Any] | None = None
         self.current_model_review: dict[str, Any] | None = None
@@ -302,6 +305,16 @@ class CmigMainWindow(QMainWindow):
         self.dynamics_view.browse_out_btn.clicked.connect(self.dynamics_view.browse_out)
         self.dynamics_view.run_dfba_btn.clicked.connect(self.run_dfba)
         self.dynamics_view.run_spatial_btn.clicked.connect(self.run_spatial_preview)
+        self.community_builder.browse_model_dir_btn.clicked.connect(
+            self._browse_community_model_dir
+        )
+        self.community_builder.run_btn.clicked.connect(self.run_community_solve)
+        self.sweep_view.run_btn.clicked.connect(self.run_sweep_fixture)
+        self.medium_editor.browse_model_btn.clicked.connect(self._browse_medium_model)
+        self.medium_editor.check_growth_btn.clicked.connect(self.run_medium_growth_check)
+        self.scenario_compare.browse_a_btn.clicked.connect(self._browse_scenario_run_a)
+        self.scenario_compare.browse_b_btn.clicked.connect(self._browse_scenario_run_b)
+        self.scenario_compare.compare_btn.clicked.connect(self.run_scenario_compare)
 
     def _cancel_selected_job(self) -> None:
         job_id = self.jobs_panel.selected_job_id()
@@ -356,6 +369,28 @@ class CmigMainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Select Host-Microbe Output Folder")
         if path:
             self.host_view.out_dir_input.setText(path)
+
+    def _browse_community_model_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Community Model Folder")
+        if path:
+            self.community_builder.model_dir_input.setText(path)
+
+    def _browse_medium_model(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Model for Growth Check", "", "Models (*.xml *.sbml *.xml.gz *.sbml.gz)"
+        )
+        if path:
+            self.medium_editor.model_path_input.setText(path)
+
+    def _browse_scenario_run_a(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Run A Directory")
+        if path:
+            self.scenario_compare.run_a_input.setText(path)
+
+    def _browse_scenario_run_b(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Run B Directory")
+        if path:
+            self.scenario_compare.run_b_input.setText(path)
 
     def _export_host_figure(self) -> None:
         if self.current_host_microbe_dir is None:
@@ -1074,6 +1109,192 @@ class CmigMainWindow(QMainWindow):
         self.statusBar().showMessage(f"Started spatial preview: {jid}")
         return jid
 
+    def run_community_solve(self) -> str:
+        """Run a community solve from the Community Builder tab's members/abundances/tradeoff.
+
+        Scans Model Folder into a taxonomy (id/file/abundance), overrides abundances for
+        any member id present in the builder's table, then runs `cmig solve` through the
+        JobRunner (same argv+main() pattern as the other product tabs).
+        """
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        model_dir = self.community_builder.model_dir_input.text().strip()
+        if not model_dir:
+            self.community_builder.status.setText(
+                "Select a model folder before running the community."
+            )
+            return ""
+        members = self.community_builder.members()
+        tradeoff_f = self.community_builder.tradeoff_f()
+        out_dir = Path(
+            tempfile.mkdtemp(prefix="cmig-community-", dir=_search_temp_root())
+        ).resolve()
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            from cmig.core.model_pool import taxonomy_from_model_dir
+
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            taxonomy = taxonomy_from_model_dir(model_dir, recursive=False)
+            if members:
+                taxonomy = taxonomy.copy()
+                taxonomy["abundance"] = [
+                    members.get(str(mid), taxonomy["abundance"].iloc[i])
+                    for i, mid in enumerate(taxonomy["id"])
+                ]
+            tax_path = out_dir / "taxonomy.csv"
+            taxonomy.to_csv(tax_path, index=False)
+            argv = [
+                "solve",
+                "--taxonomy", str(tax_path),
+                "--tradeoff-f", f"{tradeoff_f:.6g}",
+                "--out", str(out_dir),
+            ]
+            rc = main(argv)
+            if rc != 0:
+                raise RuntimeError(f"community solve failed with rc={rc}")
+            ctx.raise_if_cancelled()
+            ctx.report_progress(1, 1)
+            manifest_path = out_dir / "manifest.json"
+            manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+            return {"manifest": manifest}
+
+        jid = self.submit_job("community_solve", _job)
+        self._community_jobs[jid] = out_dir
+        self.community_builder.run_btn.setEnabled(False)
+        self.community_builder.status.setText(f"community solve started: {jid}")
+        self.statusBar().showMessage(f"Started community solve: {jid}")
+        return jid
+
+    def run_sweep_fixture(self) -> str:
+        """Run a fixture tradeoff/solver sweep from the Sweep tab (`cmig sweep-fixture`)."""
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        tradeoff_fs = self.sweep_view.tradeoff_fs_input.text().strip() or "0.3,0.5"
+        solvers = self.sweep_view.solvers_input.text().strip() or "gurobi"
+        out_dir = Path(
+            tempfile.mkdtemp(prefix="cmig-sweep-", dir=_search_temp_root())
+        ).resolve()
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            argv = [
+                "sweep-fixture",
+                "--tradeoff-fs", tradeoff_fs,
+                "--solvers", solvers,
+                "--metric", "growth",
+                "--out", str(out_dir),
+            ]
+            rc = main(argv)
+            if rc != 0:
+                raise RuntimeError(f"sweep-fixture failed with rc={rc}")
+            ctx.raise_if_cancelled()
+            ctx.report_progress(1, 1)
+            return {"out_dir": str(out_dir)}
+
+        jid = self.submit_job("sweep_fixture", _job)
+        self._sweep_fixture_jobs[jid] = out_dir
+        self.sweep_view.run_btn.setEnabled(False)
+        self.sweep_view.status.setText(f"sweep started: {jid}")
+        self.statusBar().showMessage(f"Started sweep: {jid}")
+        return jid
+
+    def run_medium_growth_check(self) -> str:
+        """Run a single-model growth check from the Medium Editor tab (`cmig strain-growth`).
+
+        The selected model is copied into an isolated model-pool folder (strain-growth needs
+        --model-dir/--taxonomy, not a bare file) and the editor's MediumSpec, if non-empty, is
+        written out and passed as --medium.
+        """
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        model_path = self.medium_editor.model_path_input.text().strip()
+        if not model_path:
+            self.medium_editor.growth_label.setText("Select a model before checking growth.")
+            return ""
+        try:
+            spec = self.medium_editor.to_spec()
+        except ValueError:
+            return ""  # to_spec() already set an explicit status message (no silent failure)
+
+        out_dir = Path(
+            tempfile.mkdtemp(prefix="cmig-medium-growth-", dir=_search_temp_root())
+        ).resolve()
+        uptake = dict(spec.uptake)
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            src = Path(model_path)
+            if not src.exists():
+                raise RuntimeError(f"model file not found: {src}")
+            model_dir = out_dir / "model_pool"
+            model_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, model_dir / src.name)
+            argv = [
+                "strain-growth",
+                "--model-dir", str(model_dir),
+                "--out", str(out_dir),
+            ]
+            if uptake:
+                medium_path = out_dir / "medium.json"
+                medium_path.write_text(json.dumps(uptake))
+                argv.extend(["--medium", str(medium_path)])
+            rc = main(argv)
+            if rc != 0:
+                raise RuntimeError(f"growth check failed with rc={rc}")
+            ctx.raise_if_cancelled()
+            ctx.report_progress(1, 1)
+            payload = json.loads((out_dir / "strain_growth_summary.json").read_text())
+            if not isinstance(payload, dict):
+                raise RuntimeError("growth check output is not a JSON object")
+            return payload
+
+        jid = self.submit_job("medium_growth_check", _job)
+        self._medium_growth_jobs[jid] = out_dir
+        self.medium_editor.check_growth_btn.setEnabled(False)
+        self.medium_editor.growth_label.setText(f"growth check started: {jid}")
+        self.statusBar().showMessage(f"Started growth check: {jid}")
+        return jid
+
+    def run_scenario_compare(self) -> None:
+        """Compare two completed CMIG run directories from the Scenario Compare tab.
+
+        Reads each run's tidy profile.parquet/nodes.parquet directly (fast local IO, matching
+        the existing synchronous `load_run_dir`/sandbox-preview pattern — no solver call here,
+        so no JobRunner needed) and feeds compute_delta() the fields it actually reads
+        (external_exchange/members/status/objective).
+        """
+        from cmig.core.delta import compute_delta
+
+        dir_a = self.scenario_compare.run_a_input.text().strip()
+        dir_b = self.scenario_compare.run_b_input.text().strip()
+        if not dir_a or not dir_b:
+            self.scenario_compare.status.setText("Select both Run A and Run B directories.")
+            return
+        path_a, path_b = Path(dir_a), Path(dir_b)
+        if not (path_a / "profile.parquet").exists() or not (path_b / "profile.parquet").exists():
+            self.scenario_compare.status.setText(
+                "Both directories must be completed CMIG runs (profile.parquet missing)."
+            )
+            return
+        try:
+            result_a = _solve_result_like_from_run_dir(path_a)
+            result_b = _solve_result_like_from_run_dir(path_b)
+            # Duck-typed run-dir reconstruction: compute_delta reads only
+            # status/objective/external_exchange/members, all present on the namespace.
+            delta = compute_delta(result_a, result_b)  # type: ignore[arg-type]
+        except Exception as e:
+            self.scenario_compare.status.setText(f"Scenario compare failed: {e}")
+            return
+        self.scenario_compare.load_comparison(delta)
+        self.scenario_compare.status.setText(f"compare complete: {dir_a} vs {dir_b}")
+        self.statusBar().showMessage("Scenario compare complete")
+
     def _poll_completed_jobs(self) -> None:
         for jid in list(self._fixture_jobs):
             job = self.runner.poll(jid)
@@ -1201,6 +1422,64 @@ class CmigMainWindow(QMainWindow):
                 self.dynamics_view.status.setText(
                     f"spatial preview {job.status.value}: {job.error or jid}"
                 )
+        for jid, out_dir in list(self._community_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE:
+                self._community_jobs.pop(jid, None)
+                self.community_builder.run_btn.setEnabled(True)
+                manifest = (job.result or {}).get("manifest", {}) if isinstance(
+                    job.result, dict
+                ) else {}
+                run_hash = manifest.get("run_hash") if isinstance(manifest, dict) else None
+                suffix = f" (run_hash {str(run_hash)[:12]})" if run_hash else ""
+                self.community_builder.status.setText(f"community solve complete{suffix}")
+                self.load_run_dir(out_dir)
+                self.statusBar().showMessage(f"Community solve complete: {jid}")
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                self._community_jobs.pop(jid, None)
+                self.community_builder.run_btn.setEnabled(True)
+                self.community_builder.status.setText(
+                    f"community solve {job.status.value}: {job.error or jid}"
+                )
+        for jid, out_dir in list(self._sweep_fixture_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE:
+                self._sweep_fixture_jobs.pop(jid, None)
+                self.sweep_view.run_btn.setEnabled(True)
+                rows = _load_sweep_rows(out_dir / "sweep.parquet")
+                self.sweep_view.load_results(rows)
+                self.sweep_view.status.setText(f"sweep complete: {len(rows)} runs")
+                self.statusBar().showMessage(f"Sweep complete: {jid}")
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                self._sweep_fixture_jobs.pop(jid, None)
+                self.sweep_view.run_btn.setEnabled(True)
+                self.sweep_view.status.setText(f"sweep {job.status.value}: {job.error or jid}")
+        for jid in list(self._medium_growth_jobs):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE and isinstance(job.result, dict):
+                self._medium_growth_jobs.pop(jid, None)
+                self.medium_editor.check_growth_btn.setEnabled(True)
+                members = job.result.get("members", [])
+                if members and isinstance(members[0], dict):
+                    growth = members[0].get("single_growth")
+                    status = members[0].get(
+                        "single_status", members[0].get("community_status", "")
+                    )
+                    growth_text = "—" if growth is None else f"{growth:.4g}"
+                    self.medium_editor.growth_label.setText(
+                        f"growth: {growth_text} ({status})"
+                    )
+                else:
+                    self.medium_editor.growth_label.setText(
+                        "growth check complete (no result rows)"
+                    )
+                self.statusBar().showMessage(f"Growth check complete: {jid}")
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                self._medium_growth_jobs.pop(jid, None)
+                self.medium_editor.check_growth_btn.setEnabled(True)
+                self.medium_editor.growth_label.setText(
+                    f"growth check {job.status.value}: {job.error or jid}"
+                )
 
 
 def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1301,6 +1580,64 @@ def _abundance_impact_summary_for_search_view(payload: dict[str, Any]) -> dict[s
         "top_ranked": rows,
         "warnings": [],
     }
+
+
+def _load_sweep_rows(parquet_path: Path) -> list[Any]:
+    """Read a sweep.parquet artifact back into SweepRow objects for SweepView.load_results."""
+    import pyarrow.parquet as pq
+
+    from cmig.core.sweep import SweepRow
+
+    if not parquet_path.exists():
+        return []
+    table = pq.read_table(parquet_path)  # type: ignore[no-untyped-call]  # pyarrow has no stubs
+    rows: list[Any] = []
+    for record in table.to_pylist():
+        rows.append(SweepRow(
+            condition_id=str(record.get("condition_id", "")),
+            axis_values={},
+            metric=str(record.get("metric", "")),
+            value=record.get("value"),
+            run_hash=str(record.get("run_hash", "")),
+            status=str(record.get("status", "")),
+            diagnostic=record.get("diagnostic"),
+            cache_hit=bool(record.get("cache_hit", False)),
+        ))
+    return rows
+
+
+def _solve_result_like_from_run_dir(run_dir: Path) -> SimpleNamespace:
+    """Reconstruct the fields compute_delta() actually reads from a completed run directory.
+
+    manifest.json only stores run_hash *inputs* (11 hash components), not the solved growth
+    objective, so `objective` is reconstructed as the abundance-weighted sum of per-member
+    growth from nodes.parquet — this matches how MICOM's cooperative-tradeoff community
+    objective is itself built (a convex combination of member biomass reactions weighted by
+    abundance), so it is a faithful reconstruction rather than an approximation of a different
+    quantity. `status` is "optimal" unless a member is missing growth/abundance (infeasible).
+    """
+    from cmig.core.tidy import TidyBundle
+
+    bundle = TidyBundle.read(run_dir)
+    external_exchange = {
+        str(row["metabolite"]): float(row["net_flux"])
+        for row in bundle.profile.to_pylist()
+    }
+    members: list[str] = []
+    objective = 0.0
+    status = "optimal"
+    for row in bundle.nodes.to_pylist():
+        if row.get("node_type") != "member":
+            continue
+        members.append(str(row["node_id"]))
+        growth, abundance = row.get("growth"), row.get("abundance")
+        if growth is None or abundance is None:
+            status = "infeasible"
+            continue
+        objective += float(growth) * float(abundance)
+    return SimpleNamespace(
+        external_exchange=external_exchange, members=members, status=status, objective=objective,
+    )
 
 
 def build_main_window(runner: JobRunner | None = None, lang: str = "ko") -> CmigMainWindow:
