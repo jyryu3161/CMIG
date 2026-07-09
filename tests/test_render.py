@@ -107,3 +107,27 @@ def test_render_client_passes_project_rlib(monkeypatch, tmp_path):
     RenderClient(rscript="/usr/bin/Rscript").render([], FigureSpec(format="svg"), out)
     rlib = seen["cmd"][seen["cmd"].index("--rlib") + 1]
     assert rlib.endswith("/CMIG/.Rlib")
+
+
+def test_cli_render_figure_matplotlib(tmp_path):
+    """Rec: `cmig render-figure` renders a run's tidy profile (matplotlib forced, R-independent)."""
+    from cmig.cli.main import main as cli_main
+
+    run_dir = tmp_path / "run"
+    _bundle().write(run_dir)
+    out = tmp_path / "profile.svg"
+    rc = cli_main([
+        "render-figure", "--run-dir", str(run_dir), "--out", str(out), "--renderer", "matplotlib",
+    ])
+    assert rc == 0
+    assert out.exists() and out.stat().st_size > 0
+    assert out.with_name("profile.svg.figure_spec.json").exists()
+
+
+def test_cli_render_figure_missing_profile_errors(tmp_path):
+    from cmig.cli.main import main as cli_main
+
+    rc = cli_main([
+        "render-figure", "--run-dir", str(tmp_path), "--out", str(tmp_path / "x.svg"),
+    ])
+    assert rc == 2

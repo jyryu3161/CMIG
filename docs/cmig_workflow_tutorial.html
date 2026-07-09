@@ -234,9 +234,11 @@ uv run python -m cmig.gui     # or the module entry point</code></pre>
   --targets ac,for --target-weights 2,1 \
   --min-size 2 --max-size 2 \
   --out runs/search_ac_for</code></pre>
-    <p>Each combination is scored per target, each score normalized to [0,1] over the observed range and
-    combined by the weighted sum; for exactly two targets, non-dominated combinations get a
-    <code>pareto=True</code> flag. Live example (ac + formate, weights 2:1): best pair
+    <p>Give each target its own direction with <code>--target-directions</code> (e.g. maximize acetate but
+    minimize a toxin: <code>--targets ac,tox --target-directions max_secretion,min_secretion</code>);
+    without it every target uses <code>--direction</code>. Each combination is scored per target, each score
+    normalized to [0,1] over the observed range and combined by the weighted sum; for exactly two targets,
+    non-dominated combinations get a <code>pareto=True</code> flag. Live example (ac + formate, weights 2:1): best pair
     <code>iHN637+iML1515</code> (ac 26.5, formate 80.6, weighted score 3.0, Pareto-optimal).
     <code>search_rankings.csv</code> gains <code>flux_&lt;t&gt;</code>/<code>score_&lt;t&gt;</code> columns and a
     <code>pareto</code> flag. Combinations missing any target exchange are excluded from ranking with an
@@ -317,6 +319,15 @@ uv run python -m cmig.gui     # or the module entry point</code></pre>
       (spec &sect;12). If the host FBA is infeasible under coupling it is reported honestly as
       <code>host_status: infeasible</code> rather than silently succeeding.
     </div>
+
+    <h3>Mapping wizard (pre-flight) <span class="pill">host-map</span></h3>
+    <p>Before coupling, check which microbial secretions the host can actually consume:</p>
+    <pre><code>uv run cmig host-map --host /path/to/Recon3D.xml --model-dir models --out runs/host_map</code></pre>
+    <p>It classifies every secretable microbial metabolite as <strong>exact</strong> (same BiGG id,
+    directly consumable), <strong>normalized</strong> (matches only after id normalization &mdash; review
+    before trusting), or <strong>unmatched</strong> (no host counterpart). Outputs: <code>host_map_summary.json</code>,
+    <code>host_exchange_map.csv</code>, and a starter <code>host_interface_map.json</code> you can edit. Live
+    example (iML1515 as host + 2 microbes): 331 exact / 0 normalized / 21 unmatched of 352 secretions.</p>
 
     <h2 id="community">10. Scenario F &mdash; a MICOM taxonomy solve <span class="pill">solve</span></h2>
     <p>If you already have a MICOM-compatible taxonomy CSV:</p>
@@ -425,6 +436,16 @@ uv run cmig inspect-run --run-dir runs/search_acetate --format json   # kind, st
     <code>manifest.json</code>) and reports the workflow kind, status, run hash, summary keys, and artifacts &mdash;
     the CLI counterpart to opening a run in the GUI Profile view.</p>
 
+    <h3>Publication figures <span class="pill">render-figure</span></h3>
+    <p>Render a completed run's tidy profile to a publication figure with the R (ggplot2) renderer, with an
+    automatic matplotlib fallback:</p>
+    <pre><code>uv run cmig render-figure --run-dir runs/solve --out runs/solve/profile.svg \
+  --renderer auto --format svg --title "Community profile"</code></pre>
+    <p><code>--renderer auto</code> uses R when <code>Rscript</code> is available and falls back to matplotlib
+    on any R failure (e.g. missing <code>.Rlib</code> packages); <code>r</code> forces R (hard error on
+    failure) and <code>matplotlib</code> forces the fallback. Formats: <code>svg|tiff|pdf|eps</code>. A
+    <code>&lt;out&gt;.figure_spec.json</code> sidecar (seed, dims, preset) is written for reproducibility.</p>
+
     <h2 id="repro">17. Reproducibility &amp; provenance</h2>
     <ul>
       <li><strong>run_hash</strong> combines model/medium checksums, member set, abundances, bounds,
@@ -444,10 +465,10 @@ uv run cmig inspect-run --run-dir runs/search_acetate --format json   # kind, st
       so <code>model-review</code>'s "blocked" is advisory &mdash; verify mixed-namespace pools yourself.</li>
       <li>Host-microbe coupling is BiGG-style direct exchange matching only (no interface mapping wizard).</li>
       <li>dFBA is well-mixed single-model; <code>spatial-preview</code> is medium design only (no per-cell FBA).</li>
-      <li>The R publication renderer (ggraph/ComplexHeatmap/circlize) exists but is not yet wired to the
-      export path — figures are produced with matplotlib SVG/TIFF.</li>
-      <li>Multi-target search applies one direction to all targets and is exhaustive-only (no heuristic
-      strategy for very large candidate sets).</li>
+      <li>The R (ggplot2) profile renderer is wired via <code>cmig render-figure</code> (with a matplotlib
+      fallback); the multi-panel R figures (ggraph/ComplexHeatmap/circlize) are still produced by the
+      per-workflow matplotlib helpers.</li>
+      <li>Multi-target search is exhaustive-only (no heuristic strategy for very large candidate sets).</li>
       <li>Minimal-medium selection is deterministic for a fixed solver on a fixed machine; among
       equicardinal alternate optima, cross-solver selection may differ (documented).</li>
     </ul>
