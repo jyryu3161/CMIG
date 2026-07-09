@@ -765,6 +765,201 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_host_map(args: argparse.Namespace) -> int:
+    """Host-microbe exchange mapping wizard: pre-flight matched/unmatched report."""
+    try:
+        import pandas as pd
+        from cobra.io import read_sbml_model
+
+        from cmig.core.host_map import build_host_map
+        from cmig.core.model_pool import taxonomy_from_model_dir
+    except ImportError:
+        print("host-map requires the engine stack: uv sync --extra engine", file=sys.stderr)
+        return 2
+    try:
+        host_path = Path(args.host)
+        if not host_path.exists():
+            raise ValueError(f"host model file not found: {host_path}")
+        if bool(args.taxonomy) == bool(args.model_dir):
+            raise ValueError("provide exactly one of --taxonomy or --model-dir")
+        tax_dir: Path | None = None
+        if args.taxonomy:
+            tax_path = Path(args.taxonomy)
+            if not tax_path.exists():
+                raise ValueError(f"taxonomy file not found: {tax_path}")
+            taxonomy = pd.read_csv(tax_path)
+            tax_dir = tax_path.parent
+        else:
+            taxonomy = taxonomy_from_model_dir(args.model_dir, recursive=args.recursive)
+        missing_cols = {"id", "file"} - set(taxonomy.columns)
+        if missing_cols:
+            raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
+        host = read_sbml_model(str(host_path))
+        member_models = {}
+        for rec in taxonomy.to_dict("records"):
+            mp = Path(str(rec["file"]))
+            if not mp.exists() and not mp.is_absolute() and tax_dir is not None:
+                mp = tax_dir / mp
+            if not mp.exists():
+                raise ValueError(f"member model file not found: {rec['file']}")
+            member_models[str(rec["id"])] = read_sbml_model(str(mp))
+        result = build_host_map(host, member_models)
+        out = Path(args.out)
+        _write_host_map_outputs(result, out)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"failed to write host-map outputs: {e}", file=sys.stderr)
+        return 2
+    print(
+        f"host-map complete: {result.n_exact} exact / {result.n_normalized} normalized / "
+        f"{result.n_unmatched} unmatched (of {result.n_microbial_secretions} secretions) -> {out}"
+    )
+    return 0
+
+
+def _write_host_map_outputs(result: Any, out: Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "host_exchange_map.csv", "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "metabolite", "microbial_exchange", "secreting_members",
+                "host_exchange", "match_type", "host_can_uptake", "suggestion",
+            ],
+        )
+        writer.writeheader()
+        for e in result.entries:
+            writer.writerow({
+                "metabolite": e.metabolite,
+                "microbial_exchange": e.microbial_exchange,
+                "secreting_members": ";".join(e.secreting_members),
+                "host_exchange": e.host_exchange or "",
+                "match_type": e.match_type,
+                "host_can_uptake": e.host_can_uptake,
+                "suggestion": e.suggestion,
+            })
+    # Starter interface map the user can edit/confirm: metabolite -> host_exchange for
+    # exact + normalized matches (unmatched entries are listed but left null on purpose).
+    interface_map = {
+        e.metabolite: e.host_exchange
+        for e in result.entries if e.match_type in ("exact", "normalized")
+    }
+    with open(out / "host_interface_map.json", "w") as f:
+        json.dump(
+            {
+                "_comment": "Edit/confirm this metabolite->host_exchange map, then couple. "
+                "null host_exchange means no host counterpart was found.",
+                "interface_map": interface_map,
+                "unmatched": [e.metabolite for e in result.entries
+                              if e.match_type == "unmatched"],
+            },
+            f, indent=2,
+        )
+    summary = {
+        "kind": "host_exchange_map",
+        "n_microbial_secretions": result.n_microbial_secretions,
+        "n_exact": result.n_exact,
+        "n_normalized": result.n_normalized,
+        "n_unmatched": result.n_unmatched,
+        "n_host_uptake_capable": result.n_host_uptake_capable,
+        "entries": [
+            {
+                "metabolite": e.metabolite,
+                "microbial_exchange": e.microbial_exchange,
+                "secreting_members": e.secreting_members,
+                "host_exchange": e.host_exchange,
+                "match_type": e.match_type,
+                "host_can_uptake": e.host_can_uptake,
+                "suggestion": e.suggestion,
+            }
+            for e in result.entries
+        ],
+        "warnings": result.warnings,
+    }
+    with open(out / "host_map_summary.json", "w") as f:
+        json.dump(summary, f, indent=2, allow_nan=False)
+
+
+def _cmd_render_figure(args: argparse.Namespace) -> int:
+    """Render a completed run's tidy profile to a publication figure via the R renderer.
+
+    Renderer policy: `r` forces the R(ggplot2) path (hard error if R fails), `matplotlib`
+    forces the Python fallback, `auto` (default) uses R when Rscript is available and falls
+    back to matplotlib on any R failure (e.g. missing .Rlib packages).
+    """
+    try:
+        from cmig.core.tidy import TidyBundle
+        from cmig.render.client import (
+            FigureSpec,
+            RenderClient,
+            RenderError,
+            render_profile,
+            rscript_available,
+        )
+    except ImportError:
+        print("render-figure requires the render extra: uv sync --extra render", file=sys.stderr)
+        return 2
+
+    run_dir = Path(args.run_dir)
+    if not (run_dir / "profile.parquet").exists():
+        print(
+            f"no profile.parquet in {run_dir} — render-figure needs a tidy-profile run "
+            "(e.g. solve/solve-fixture output)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        bundle = TidyBundle.read(run_dir)
+    except OSError as e:
+        print(f"failed to read run: {e}", file=sys.stderr)
+        return 2
+
+    spec = FigureSpec(
+        title=args.title, width_in=args.width, height_in=args.height, dpi=args.dpi,
+        format=args.format, seed=args.seed, journal_preset=args.journal_preset,
+    )
+    try:
+        spec.validate()
+    except RenderError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+    out = Path(args.out)
+    forced_matplotlib = RenderClient(rscript="")   # empty rscript → available() False → fallback
+    try:
+        if args.renderer == "matplotlib":
+            render_profile(bundle, spec, out, client=forced_matplotlib)
+            used = "matplotlib"
+        elif args.renderer == "r":
+            if not rscript_available():
+                print("Rscript not found; install R or use --renderer matplotlib", file=sys.stderr)
+                return 2
+            render_profile(bundle, spec, out)
+            used = "R (ggplot2)"
+        else:  # auto
+            if rscript_available():
+                try:
+                    render_profile(bundle, spec, out)
+                    used = "R (ggplot2)"
+                except RenderError as e:
+                    print(f"R render failed ({e}); falling back to matplotlib", file=sys.stderr)
+                    render_profile(bundle, spec, out, client=forced_matplotlib)
+                    used = "matplotlib (R fallback)"
+            else:
+                render_profile(bundle, spec, out, client=forced_matplotlib)
+                used = "matplotlib (no Rscript)"
+    except RenderError as e:
+        print(f"render failed: {e}", file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"failed to write figure: {e}", file=sys.stderr)
+        return 2
+    print(f"render-figure complete [{used}, {spec.format}] -> {out}")
+    return 0
+
+
 def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
     """Rank microbial combinations by host objective and/or target transfer."""
     try:
@@ -2273,10 +2468,23 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
             raise ValueError("--target-weights count must match --targets count")
     else:
         weights = [1.0] * len(targets)
-    direction = Direction(args.direction)
+    default_direction = Direction(args.direction)
+    if args.target_directions:
+        raw_dirs = [d.strip() for d in str(args.target_directions).split(",")]
+        if len(raw_dirs) != len(targets):
+            raise ValueError("--target-directions count must match --targets count")
+        try:
+            dir_list = [Direction(d) for d in raw_dirs]
+        except ValueError as e:
+            raise ValueError(
+                "--target-directions values must be one of "
+                "max_secretion,min_secretion,max_uptake,min_uptake"
+            ) from e
+    else:
+        dir_list = [default_direction] * len(targets)
     config = MultiTargetConfig(
         targets=targets,
-        directions={t: direction for t in targets},
+        directions=dict(zip(targets, dir_list, strict=True)),
         weights=dict(zip(targets, weights, strict=True)),
         min_size=args.min_size,
         max_size=args.max_size,
@@ -4107,6 +4315,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hmb.add_argument("--out", required=True, help="output directory")
     hmb.set_defaults(func=_cmd_host_microbe_bigg)
+
+    hm = sub.add_parser(
+        "host-map",
+        help="host-microbe exchange mapping wizard: matched/normalized/unmatched pre-flight",
+    )
+    hm.add_argument("--host", required=True, help="host GEM (SBML) path")
+    hm_src = hm.add_mutually_exclusive_group(required=True)
+    hm_src.add_argument("--taxonomy", default=None, help="MICOM-compatible pool taxonomy csv")
+    hm_src.add_argument("--model-dir", default=None, help="directory of microbial GEM files")
+    hm.add_argument("--recursive", action="store_true", help="scan --model-dir recursively")
+    hm.add_argument("--out", required=True, help="output directory")
+    hm.set_defaults(func=_cmd_host_map)
+
+    rf = sub.add_parser(
+        "render-figure",
+        help="render a run's tidy profile to a publication figure (R ggplot2, matplotlib fallback)",
+    )
+    rf.add_argument("--run-dir", required=True, dest="run_dir", help="completed run directory")
+    rf.add_argument("--out", required=True, help="output figure path (e.g. runs/x/profile.svg)")
+    rf.add_argument(
+        "--renderer", default="auto", choices=["auto", "r", "matplotlib"],
+        help="auto (R if available, else/ on failure matplotlib) | r | matplotlib",
+    )
+    rf.add_argument("--format", default="svg", choices=["svg", "tiff", "pdf", "eps"])
+    rf.add_argument("--title", default="External Profile")
+    rf.add_argument("--width", type=float, default=6.0, help="figure width (inches)")
+    rf.add_argument("--height", type=float, default=4.0, help="figure height (inches)")
+    rf.add_argument("--dpi", type=int, default=600)
+    rf.add_argument("--seed", type=int, default=42)
+    rf.add_argument("--journal-preset", default="default", dest="journal_preset")
+    rf.set_defaults(func=_cmd_render_figure)
+
     hs = sub.add_parser(
         "host-search-bigg",
         help="rank microbial combinations by host objective and target transfer",
@@ -4345,10 +4585,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="comma-separated weights matching --targets (default: equal weights)",
     )
     sp.add_argument(
+        "--target-directions",
+        default=None,
+        dest="target_directions",
+        help="comma-separated per-target directions matching --targets, e.g. "
+        "max_secretion,min_secretion (default: every target uses --direction)",
+    )
+    sp.add_argument(
         "--direction",
         default="max_secretion",
         choices=["max_secretion", "min_secretion", "max_uptake", "min_uptake"],
-        help="applied to every target (single-direction multi-target)",
+        help="default target direction (per-target override via --target-directions)",
     )
     sp.add_argument("--growth-fraction", type=float, default=0.5, dest="growth_fraction")
     sp.add_argument("--min-size", type=int, default=2, dest="min_size")

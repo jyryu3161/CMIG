@@ -159,3 +159,21 @@ class _FakeTaxo:
     def __getitem__(self, key):
         assert key == "id"
         return self._ids
+
+
+def test_rank_multi_target_mixed_directions():
+    """Per-target direction: MIN_SECRETION ranks a smaller flux higher (signed = -flux)."""
+    from cmig.core.search_product import _ComboEval, rank_multi_target
+
+    specs = [
+        TargetSpec("ac", Direction.MAX_SECRETION, 1.0),
+        TargetSpec("tox", Direction.MIN_SECRETION, 1.0),
+    ]
+    evals = [
+        # A: high acetate, low toxin (best on both objectives)
+        _ComboEval(("A",), "optimal", 0.5, {"ac": 10.0, "tox": 1.0}, {"ac": 10.0, "tox": -1.0}),
+        _ComboEval(("B",), "optimal", 0.5, {"ac": 2.0, "tox": 9.0}, {"ac": 2.0, "tox": -9.0}),
+    ]
+    ranked, _ = rank_multi_target(evals, specs)
+    assert ranked[0].members == ("A",)                 # A dominates on both signed axes
+    assert ranked[0].pareto and not ranked[1].pareto
