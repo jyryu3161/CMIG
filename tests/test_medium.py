@@ -59,6 +59,20 @@ def test_tc10_u_base_always_included(textbook):
     assert set(DEFAULT_U_BASE) <= set(res.components)
 
 
+def test_zero_uptake_u_base_excluded_from_medium(textbook):
+    """흡수 용량 0(secretion-only)인 U-base 는 강제 추가에서 제외 — essential 오라벨 방지.
+
+    U-base 를 무조건 넣으면 lower_bound==0(흡수 불가)인 exchange 를 limiting_nutrients 가
+    essential 로 오라벨한다. 흡수 용량이 있는 것만 포함해야 한다.
+    """
+    with textbook:
+        textbook.reactions.EX_h_e.lower_bound = 0.0     # H⁺ 를 secretion-only 로
+        res = minimal_medium_cardinality(textbook, min_objective_value=0.1)
+    assert "EX_h_e" not in res.components               # 흡수 용량 0 → 최소 배지 미포함
+    assert limiting_nutrients(res) == res.components    # 계약(limiting == components) 유지
+    assert all(res.uptake_bounds[c] > 0.0 for c in res.components)  # 모든 구성요소가 실 흡수 용량>0
+
+
 def test_tc10_oxygen_mode_anaerobic_excludes_o2(textbook):
     """TC-10: anaerobic → O₂ exchange 제외, aerobic 과 다른 결과."""
     from cmig.core.medium import O2_EXCHANGE

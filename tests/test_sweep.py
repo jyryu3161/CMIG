@@ -137,3 +137,25 @@ def test_failed_run_is_cached():
     assert calls["n"] == 1                         # 두 번째는 캐시 hit (재계산 없음)
     assert r1[0].status == "failed" and r2[0].status == "failed"
     assert r2[0].cache_hit is True and r2[0].diagnostic
+
+
+def test_cli_sweep_replays_content_identical_condition(tmp_path):
+    """Rec-3: `cmig sweep` 가 content-identical 조건을 재solve 하지 않고 replay(cache_hit)."""
+    pytest.importorskip("micom")
+    import pyarrow.parquet as pq
+
+    from cmig.cli.main import main as cli_main
+    from cmig.synthetic_pair import build_pair_taxonomy
+
+    tax = build_pair_taxonomy(tmp_path / "models")
+    tax_csv = tmp_path / "tax.csv"
+    tax.to_csv(tax_csv, index=False)
+    out = tmp_path / "sweep_out"
+    rc = cli_main([
+        "sweep", "--taxonomy", str(tax_csv), "--tradeoff-fs", "0.5,0.5", "--out", str(out),
+    ])
+    assert rc == 0
+    t = pq.read_table(out / "sweep.parquet").to_pydict()
+    assert t["cache_hit"] == [False, True]             # 2번째 동일-내용 조건은 replay
+    assert t["run_hash"][0] == t["run_hash"][1]         # 동일 내용 → 동일 run_hash
+    assert t["value"][0] == t["value"][1]

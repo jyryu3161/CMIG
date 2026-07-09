@@ -75,13 +75,19 @@ def _apply_min_medium_invariants(
     anaerobic → O₂ exchange 제외. blocked(구조적 (0,0)) exchange 제외.
     """
     out = dict(bounds)
-    # U 기본집합 항상 포함 (모델에 존재 + 미blocked 인 것만).
+    # U 기본집합 항상 포함 (모델에 존재 + 미blocked + 실제 흡수 용량이 있는 것만).
     for ex in u_base:
         if ex in out:
             continue
-        if not _is_blocked(model, ex):
-            rxn = model.reactions.get_by_id(ex)
-            out[ex] = abs(float(rxn.lower_bound))   # 허용 uptake 량
+        if _is_blocked(model, ex):
+            continue
+        rxn = model.reactions.get_by_id(ex)
+        uptake_cap = abs(float(rxn.lower_bound))    # 허용 uptake 량
+        # 흡수 용량 0(lower_bound==0, ub>0 인 secretion-only exchange)은 영양원으로 무의미하다.
+        # 강제 추가하면 limiting_nutrients 가 이를 essential 로 오라벨하므로 제외한다.
+        if uptake_cap == 0.0:
+            continue
+        out[ex] = uptake_cap
     # oxygen_mode: anaerobic → O₂ 제외.
     if oxygen_mode == "anaerobic":
         out.pop(O2_EXCHANGE, None)
@@ -101,7 +107,10 @@ def minimal_medium_cardinality(
     model: cobra Model. min_objective_value: 유지할 성장 하한(절대).
     minimize_components=True → 최소 **개수**의 exchange (MILP, Gurobi/HiGHS/CPLEX).
     capability 부재 → MILPUnavailableError; 실제 infeasible → MILPInfeasibleError (TC-8).
-    invariant: U 기본집합 항상 포함·oxygen_mode(O₂)·blocked 제외·결정적 tie-break(sorted).
+    invariant: U 기본집합 항상 포함(흡수 용량 0 은 제외)·oxygen_mode(O₂)·blocked 제외.
+    결정성: 출력은 exchange id 로 정렬한다. 동일 cardinality 대안 최적(alternate optima) 간의
+    **선택**은 solver 결정성에 의존한다(같은 solver·머신이면 재현적). cross-solver 선택 차이는
+    예상된 동작이다(cobra minimal_medium API 한계로 lexicographic tie-break 미적용).
     """
     if oxygen_mode not in OXYGEN_MODES:
         raise ValueError(f"oxygen_mode ∈ {OXYGEN_MODES} (받음: {oxygen_mode}) [§4.5]")

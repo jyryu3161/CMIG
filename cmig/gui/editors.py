@@ -11,8 +11,10 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -36,10 +38,24 @@ class MediumEditor(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.add_btn = QPushButton("Add row")
         self.add_btn.clicked.connect(lambda: self.add_row())
-        self.status = QLabel("Advanced editor: save or apply medium through CLI/product workflows.")
+        self.status = QLabel(
+            "Advanced editor: build a medium, then Check Growth against a model."
+        )
+        model_row = QHBoxLayout()
+        self.model_path_input = QLineEdit("")
+        self.model_path_input.setPlaceholderText("SBML model to check growth against")
+        self.browse_model_btn = QPushButton("Model")
+        self.check_growth_btn = QPushButton("Check Growth")
+        model_row.addWidget(QLabel("Model"))
+        model_row.addWidget(self.model_path_input)
+        model_row.addWidget(self.browse_model_btn)
+        model_row.addWidget(self.check_growth_btn)
+        self.growth_label = QLabel("")
         layout.addWidget(self.title)
         layout.addWidget(self.table)
         layout.addWidget(self.add_btn)
+        layout.addLayout(model_row)
+        layout.addWidget(self.growth_label)
         layout.addWidget(self.status)
 
     def add_row(self, exchange: str = "", limit: float = 0.0) -> None:

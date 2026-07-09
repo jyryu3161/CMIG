@@ -51,7 +51,13 @@ class InterfaceFlux:
 
 @dataclass(frozen=True)
 class HostSolveResult:
-    """host solve(config B) 산출. viable = ATP maintenance 충족 + feasible."""
+    """host solve(config B) 산출.
+
+    viable = feasible(status optimal, ATP maintenance 충족 가능) **그리고** 양(+)의 biomass(>1e-9).
+    maintenance 만 충족하고 biomass 최적이 0 인 host 는 **non-viable**(정성 의존성 계약 —
+    test_host_feasible_zero_objective_is_not_viable). 세 solve 경로(solve_host/solve_bigg_host/
+    solve_generic_host)가 이 계약을 동일하게 적용한다.
+    """
 
     viable: bool
     status: str
@@ -376,7 +382,8 @@ def solve_host(
 ) -> HostSolveResult:
     """config B host solve: lumen 가용 대사체 → host uptake 한계 + viability(ATPM≥임계) 제약.
 
-    host 는 **군집 성장 목적 미포함** — host 자체 목적(biomass)로 풀되 maintenance 충족이 viability.
+    host 는 **군집 성장 목적 미포함** — host 자체 목적(biomass)로 풀되, viability =
+    feasible(status optimal) AND biomass>0 (제로-biomass host 는 non-viable 계약).
     lumen_availability: {metabolite: 가용 flux}(미생물 community 분비량). 미생물 SCFA → host 흡수.
     """
     from cmig.core.single_model import _require_lp
@@ -414,8 +421,8 @@ def solve_host(
 
         sol = host.optimize()
         status = str(sol.status)
-        viable = status == "optimal"
-        if not viable:
+        feasible = status == "optimal"          # maintenance 충족 가능성 (viability 필요조건)
+        if not feasible:
             from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
             diag = diagnostic_from_parts([(
                 DiagnosticCode.INFEASIBLE,
@@ -433,7 +440,7 @@ def solve_host(
         coeffs = linear_reaction_coefficients(host)
         biomass = sum(float(c) * fluxes.get(r.id, 0.0) for r, c in coeffs.items())
         return HostSolveResult(
-            biomass > 1e-9,
+            biomass > 1e-9,        # viability = feasible AND 양의 biomass (계약; 216·331 동일)
             status,
             biomass,
             interface,

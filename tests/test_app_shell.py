@@ -329,6 +329,39 @@ def test_sandbox_rejects_multiple_bounds_before_silent_ignore(monkeypatch):
     assert "one bound" in w.sandbox_view.status.text()
 
 
+def test_sandbox_debounce_triggers_preview_after_bound_edit(monkeypatch):
+    """The `_debounce` QTimer must not be dead code: an edit restarts it, and its timeout
+    programmatically clicks Preview (reusing the existing preview wiring/JobRunner path)."""
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    import cmig.service
+    from cmig.core.delta import DeltaResult
+
+    calls = {"n": 0}
+
+    class FakeEngineService:
+        def sandbox_fixture(self, *, reaction_id, lower, upper, commit, out_dir):
+            calls["n"] += 1
+            return SimpleNamespace(
+                delta=DeltaResult([], [], [], 0.0),
+                run_hash="hash" if commit else None,
+            )
+
+    monkeypatch.setattr(cmig.service, "EngineService", FakeEngineService)
+    _app()
+    w = build_main_window()
+    w.sandbox_view._debounce.setInterval(20)
+    w.sandbox_view.add_bound("EX_glc__D_e", -1.0, 1000.0)
+    loop = QEventLoop()
+    w.sandbox_view._debounce.timeout.connect(loop.quit)
+    QTimer.singleShot(2000, loop.quit)
+    loop.exec()
+    assert calls["n"] == 1
+    assert "preview" in w.sandbox_view.status.text()
+
+
 def test_search_button_requires_model_folder(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     _app()
@@ -575,6 +608,214 @@ def test_host_figure_export_copies_selected_svg(monkeypatch, tmp_path):
     w._export_host_figure()
     assert target.read_text() == "<svg>heatmap</svg>"
     assert "Exported figure" in w.host_view.run_status.text()
+
+
+def test_community_solve_button_requires_model_folder():
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    jid = w.run_community_solve()
+    assert jid == ""
+    assert "model folder" in w.community_builder.status.text().lower()
+    runner.shutdown()
+
+
+def test_community_solve_button_writes_taxonomy_and_overrides_abundance(monkeypatch, tmp_path):
+    import csv
+    import json
+
+    import cmig.cli.main
+
+    pool_dir = tmp_path / "pool"
+    pool_dir.mkdir()
+    (pool_dir / "iML1515.xml").write_text("<sbml/>")
+    (pool_dir / "iHN637.xml").write_text("<sbml/>")
+
+    seen = {"argv": []}
+
+    def fake_main(argv):
+        seen["argv"] = list(argv)
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "manifest.json").write_text(json.dumps({"run_hash": "abc123def456"}))
+        return 0
+
+    monkeypatch.setattr(cmig.cli.main, "main", fake_main)
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    w.community_builder.model_dir_input.setText(str(pool_dir))
+    w.community_builder.add_member("iML1515", 0.75)
+    w.community_builder.f_slider.setValue(30)
+    jid = w.run_community_solve()
+    runner.result(jid, timeout=5)
+    w._poll_completed_jobs()
+    assert seen["argv"][0] == "solve"
+    assert seen["argv"][seen["argv"].index("--tradeoff-f") + 1] == "0.3"
+    tax_path = Path(seen["argv"][seen["argv"].index("--taxonomy") + 1])
+    assert tax_path.exists()
+    rows = {r["id"]: r for r in csv.DictReader(tax_path.open())}
+    assert rows["iML1515"]["abundance"] == "0.75"    # overridden from the member table
+    assert rows["iHN637"]["abundance"] == "1.0"       # untouched discovered default
+    assert "run_hash" in w.community_builder.status.text()
+    assert w.community_builder.run_btn.isEnabled()
+    runner.shutdown()
+
+
+def test_sweep_fixture_button_launches_and_loads_result_matrix(monkeypatch, tmp_path):
+    import json
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    import cmig.cli.main
+
+    seen = {"argv": []}
+
+    def fake_main(argv):
+        seen["argv"] = list(argv)
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        table = pa.table({
+            "schema_version": ["1.0", "1.0"],
+            "condition_id": ["cond-0", "cond-1"],
+            "axis_medium_variant": [None, None],
+            "axis_abundance": [None, None],
+            "axis_member_set": [None, None],
+            "axis_bounds": [None, None],
+            "axis_tradeoff_f": [0.3, 0.5],
+            "axis_solver": ["gurobi", "gurobi"],
+            "metric": ["growth", "growth"],
+            "value": [0.41, 0.52],
+            "run_hash": ["h0", "h1"],
+            "status": ["ok", "ok"],
+            "diagnostic": [None, None],
+            "cache_hit": [False, True],
+        })
+        pq.write_table(table, out / "sweep.parquet")
+        (out / "sweep_summary.json").write_text(json.dumps({"status": "ok", "n_runs": 2}))
+        return 0
+
+    monkeypatch.setattr(cmig.cli.main, "main", fake_main)
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    w.sweep_view.tradeoff_fs_input.setText("0.3,0.5")
+    jid = w.run_sweep_fixture()
+    runner.result(jid, timeout=5)
+    w._poll_completed_jobs()
+    assert seen["argv"][0] == "sweep-fixture"
+    assert seen["argv"][seen["argv"].index("--tradeoff-fs") + 1] == "0.3,0.5"
+    assert w.sweep_view.table.rowCount() == 2
+    assert w.sweep_view.table.item(0, 3).text() == "miss"
+    assert w.sweep_view.table.item(1, 3).text() == "hit"      # cache_hit column surfaced
+    assert w.sweep_view.run_btn.isEnabled()
+    runner.shutdown()
+
+
+def test_medium_growth_check_requires_model():
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    jid = w.run_medium_growth_check()
+    assert jid == ""
+    assert "model" in w.medium_editor.growth_label.text().lower()
+    runner.shutdown()
+
+
+def test_medium_growth_check_invalid_uptake_shows_status_not_exception(tmp_path):
+    """argparse SystemExit isn't the risk here — a raw to_spec() ValueError must not escape
+    the slot either; the guard must show a status message instead (no crash)."""
+    _app()
+    w = build_main_window()
+    model_path = tmp_path / "model.xml"
+    model_path.write_text("<sbml/>")
+    w.medium_editor.model_path_input.setText(str(model_path))
+    w.medium_editor.add_row("EX_glc__D_e", 0.0)
+    w.medium_editor.table.item(0, 1).setText("not_a_number")
+    jid = w.run_medium_growth_check()
+    assert jid == ""
+    assert "Invalid" in w.medium_editor.status.text()
+
+
+def test_medium_growth_check_button_uses_strain_growth_command(monkeypatch, tmp_path):
+    import json
+
+    import cmig.cli.main
+
+    model_path = tmp_path / "model.xml"
+    model_path.write_text("<sbml/>")
+    seen = {"argv": []}
+
+    def fake_main(argv):
+        seen["argv"] = list(argv)
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "status": "optimal",
+            "members": [{
+                "member": "model",
+                "single_growth": 0.87,
+                "single_status": "optimal",
+                "community_member_growth": 0.87,
+                "community_growth": 0.87,
+                "community_status": "optimal",
+            }],
+        }
+        (out / "strain_growth_summary.json").write_text(json.dumps(payload))
+        return 0
+
+    monkeypatch.setattr(cmig.cli.main, "main", fake_main)
+    _app()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
+    w.medium_editor.model_path_input.setText(str(model_path))
+    w.medium_editor.add_row("EX_glc__D_e", 10.0)
+    jid = w.run_medium_growth_check()
+    runner.result(jid, timeout=5)
+    w._poll_completed_jobs()
+    assert seen["argv"][0] == "strain-growth"
+    assert "--medium" in seen["argv"]
+    assert "0.87" in w.medium_editor.growth_label.text()
+    assert w.medium_editor.check_growth_btn.isEnabled()
+    runner.shutdown()
+
+
+def test_scenario_compare_requires_both_run_dirs():
+    _app()
+    w = build_main_window()
+    w.run_scenario_compare()
+    assert "select both" in w.scenario_compare.status.text().lower()
+    assert w.scenario_compare.delta_view.rowCount() == 0
+
+
+def test_scenario_compare_button_computes_real_delta(tmp_path):
+    from cmig.core.engine import SolveResult
+    from cmig.core.interactions import build_tidy
+
+    baseline = SolveResult(
+        objective=0.5, member_growth={"A": 0.5}, abundances={"A": 1.0},
+        external_exchange={"ac": 5.0}, member_exchange={"A": {"ac": 5.0}},
+        status="optimal", flux_report_status="full", growth_solver="gurobi",
+        flux_solver="gurobi", members=["A"],
+    )
+    modified = SolveResult(
+        objective=0.8, member_growth={"A": 0.8}, abundances={"A": 1.0},
+        external_exchange={"ac": 2.0}, member_exchange={"A": {"ac": 2.0}},
+        status="optimal", flux_report_status="full", growth_solver="gurobi",
+        flux_solver="gurobi", members=["A"],
+    )
+    dir_a, dir_b = tmp_path / "run_a", tmp_path / "run_b"
+    build_tidy(baseline).write(dir_a)
+    build_tidy(modified).write(dir_b)
+    _app()
+    w = build_main_window()
+    w.scenario_compare.run_a_input.setText(str(dir_a))
+    w.scenario_compare.run_b_input.setText(str(dir_b))
+    w.run_scenario_compare()
+    assert w.scenario_compare.delta_view.rowCount() == 1
+    assert "+0.3" in w.scenario_compare.growth_label.text()
+    assert "compare complete" in w.scenario_compare.status.text()
 
 
 def test_jobrunner_qt_bridge_reflects_job():

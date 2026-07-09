@@ -45,12 +45,26 @@ class SweepView(QWidget):
         self.runner = runner if runner is not None else JobRunner(max_workers=2)
         layout = QVBoxLayout(self)
         self.title = QLabel("Sweep")
-        self.status = QLabel("Advanced result view: configure product sweeps from the CLI.")
+        self.status = QLabel(
+            "Advanced result view: configure a fixture sweep, then Run Sweep."
+        )
+        config_row = QHBoxLayout()
+        self.tradeoff_fs_input = QLineEdit("0.3,0.5")
+        self.tradeoff_fs_input.setPlaceholderText("Comma-separated tradeoff f values")
+        self.solvers_input = QLineEdit("gurobi")
+        self.solvers_input.setPlaceholderText("Comma-separated solvers")
+        self.run_btn = QPushButton("Run Sweep")
+        config_row.addWidget(QLabel("tradeoff f"))
+        config_row.addWidget(self.tradeoff_fs_input)
+        config_row.addWidget(QLabel("solvers"))
+        config_row.addWidget(self.solvers_input)
+        config_row.addWidget(self.run_btn)
         self.table = QTableWidget(0, len(self._COLS))
         self.table.setHorizontalHeaderLabels(["Condition", "Value", "Status", "Cache"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.title)
         layout.addWidget(self.status)
+        layout.addLayout(config_row)
         layout.addWidget(self.table)
         self._job_id: str | None = None
 
