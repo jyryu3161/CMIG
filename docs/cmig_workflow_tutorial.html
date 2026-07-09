@@ -6,273 +6,468 @@
   <title>CMIG Workflow Tutorial</title>
   <style>
     :root {
-      color-scheme: light;
+      color-scheme: light dark;
       --ink: #1f2933;
       --muted: #52606d;
       --line: #d9e2ec;
       --panel: #f5f7fa;
       --accent: #0f609b;
       --accent-2: #2f855a;
+      --warn: #b7791f;
+      --bg: #ffffff;
+      --codebg: #eef2f7;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #e4e7eb;
+        --muted: #9aa5b1;
+        --line: #323d4d;
+        --panel: #1b2431;
+        --accent: #5aa2d8;
+        --accent-2: #68d391;
+        --warn: #e0b050;
+        --bg: #10161f;
+        --codebg: #1b2431;
+      }
     }
     body {
       margin: 0;
-      font-family: Arial, Helvetica, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
       color: var(--ink);
-      background: white;
-      line-height: 1.55;
+      background: var(--bg);
+      line-height: 1.58;
     }
     header {
-      padding: 48px 32px 30px;
+      padding: 46px 32px 28px;
       border-bottom: 1px solid var(--line);
-      background: linear-gradient(180deg, #eef6fc 0%, #ffffff 100%);
+      background: linear-gradient(180deg, rgba(15,96,155,0.08) 0%, transparent 100%);
     }
-    main {
-      max-width: 1040px;
-      margin: 0 auto;
-      padding: 28px 32px 56px;
-    }
-    h1, h2, h3 {
-      line-height: 1.2;
-      margin: 0 0 14px;
-    }
-    h1 {
-      font-size: 34px;
-      letter-spacing: 0;
-    }
-    h2 {
-      margin-top: 34px;
-      padding-top: 8px;
-      font-size: 24px;
-      border-top: 1px solid var(--line);
-    }
-    h3 {
-      margin-top: 24px;
-      font-size: 18px;
-    }
-    p {
-      margin: 0 0 14px;
-    }
-    ul, ol {
-      margin-top: 8px;
-      padding-left: 24px;
-    }
-    li {
-      margin: 6px 0;
-    }
+    main { max-width: 1060px; margin: 0 auto; padding: 26px 32px 64px; }
+    h1, h2, h3 { line-height: 1.2; margin: 0 0 14px; }
+    h1 { font-size: 34px; }
+    h2 { margin-top: 40px; padding-top: 10px; font-size: 24px; border-top: 2px solid var(--line); }
+    h3 { margin-top: 26px; font-size: 18px; color: var(--accent); }
+    p { margin: 0 0 13px; }
+    ul, ol { margin-top: 8px; padding-left: 24px; }
+    li { margin: 6px 0; }
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 0.95em;
-      background: #eef2f7;
-      padding: 1px 5px;
-      border-radius: 4px;
+      font-size: 0.9em; background: var(--codebg); padding: 1px 5px; border-radius: 4px;
     }
     pre {
-      overflow-x: auto;
-      padding: 14px 16px;
-      background: #111827;
-      color: #f9fafb;
-      border-radius: 6px;
-      font-size: 14px;
+      overflow-x: auto; padding: 14px 16px; background: #111827; color: #f4f6fb;
+      border-radius: 8px; font-size: 13.5px; line-height: 1.5;
     }
-    pre code {
-      color: inherit;
-      background: transparent;
-      padding: 0;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin: 12px 0 18px;
-      font-size: 14px;
-    }
-    th, td {
-      text-align: left;
-      vertical-align: top;
-      border: 1px solid var(--line);
-      padding: 9px 10px;
-    }
-    th {
-      background: var(--panel);
-    }
-    .note {
-      padding: 13px 15px;
-      border-left: 4px solid var(--accent);
-      background: #f0f7ff;
-      margin: 14px 0;
-    }
-    .ok {
-      border-left-color: var(--accent-2);
-      background: #f0fff4;
-    }
-    .muted {
-      color: var(--muted);
-    }
+    pre code { color: inherit; background: transparent; padding: 0; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 18px; font-size: 14px; }
+    th, td { text-align: left; vertical-align: top; border: 1px solid var(--line); padding: 8px 10px; }
+    th { background: var(--panel); }
+    .note { padding: 12px 15px; border-left: 4px solid var(--accent); background: rgba(15,96,155,0.07); margin: 14px 0; border-radius: 0 6px 6px 0; }
+    .ok { border-left-color: var(--accent-2); background: rgba(47,133,90,0.09); }
+    .warn { border-left-color: var(--warn); background: rgba(183,121,31,0.10); }
+    .muted { color: var(--muted); }
+    .toc { columns: 2; column-gap: 34px; font-size: 14px; }
+    .toc a { text-decoration: none; color: var(--accent); }
+    .pill { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); margin-left: 6px; }
+    .out { font-size: 13px; }
+    .out th, .out td { padding: 6px 9px; }
   </style>
 </head>
 <body>
   <header>
     <h1>CMIG Workflow Tutorial</h1>
     <p class="muted">
-      Installation and scenario-based guide for model-pool search, strain growth
-      profiling, abundance impact sweeps, host-microbe coupling, and dynamics.
+      A verified, scenario-based guide to community metabolic interaction analysis with CMIG:
+      model review, consortium search, strain growth, abundance sweeps, gene knockouts,
+      host&ndash;microbe coupling, community solves, dynamics, spatial preview, parameter sweeps, and statistics.
+    </p>
+    <p class="muted" style="font-size:13px">
+      Commands and example outputs below were run against the five GEMs shipped in <code>models/</code>
+      (<code>iAF987</code>, <code>iHN637</code>, <code>iML1515</code>, <code>iSFV_1184</code>, <code>iYO844</code>)
+      with Gurobi&nbsp;12 and MICOM&nbsp;0.39.0.
     </p>
   </header>
   <main>
-    <h2>1. Installation</h2>
-    <p>CMIG expects user-prepared GEM files. It does not download or curate AGORA,
+
+    <h2 id="mental-model">0. How CMIG Works (mental model)</h2>
+    <p>CMIG is a product layer around <strong>MICOM</strong>. MICOM owns the community construction
+    and the cooperative-tradeoff solve; CMIG owns everything around it that turns a raw solve into a
+    reproducible, interpretable analysis:</p>
+    <ul>
+      <li><strong>MICOM does:</strong> build a community from member GEMs, apply abundances and medium,
+      run the cooperative-tradeoff QP, return member/community growth and fluxes.</li>
+      <li><strong>CMIG adds:</strong> model-pool search, per-strain growth reports, abundance sweeps,
+      gene/reaction knockout screening, host coupling, sign normalization, tidy Parquet outputs,
+      run hashes and manifests, diagnostics, and publication figures.</li>
+    </ul>
+    <p>Two equivalent entry points cover the same analyses: a <strong>CLI</strong> (best for scripting,
+    automation, and LLM agents) and a <strong>desktop GUI</strong> (PySide6/Qt). Every working GUI
+    surface has a matching CLI command &mdash; see <a href="#automation">§12</a>.</p>
+
+    <h2 id="install">1. Installation &amp; verification</h2>
+    <p>CMIG expects you to supply your own GEM files. It does <em>not</em> download or curate AGORA,
     VMH, Recon, Human-GEM, or BiGG model collections.</p>
     <pre><code>git clone https://github.com/jyryu3161/CMIG.git
 cd CMIG
 uv sync --extra engine --extra gui --extra render --extra stats</code></pre>
-    <p>Verify the environment:</p>
+    <p>For a smaller headless install without GUI/stats:</p>
+    <pre><code>uv sync --extra engine --extra render</code></pre>
+    <p>Verify the toolchain:</p>
     <pre><code>uv run cmig version
-uv run cmig solvers
+uv run cmig solvers        # capability matrix: gurobi (LP/QP/MILP), highs (LP/MILP), osqp (LP/QP)
+uv run cmig golden verify  # MICOM-version regression gate — runs a real fixture solve
 uv run ruff check cmig tests
 uv run mypy cmig
 uv run pytest -q</code></pre>
-    <div class="note">
-      The current product workflows assume Gurobi for full LP/QP community
-      analysis, host-microbe coupling, search, and FVA-oriented tasks.
+    <div class="note ok">
+      Expected: <code>ruff</code> clean, <code>mypy</code> clean (strict), <code>pytest</code> green
+      (425&nbsp;test functions), and <code>golden verify</code> reporting both solvers match the golden
+      MICOM version.
+    </div>
+    <div class="note warn">
+      <strong>Gurobi is required</strong> for the full-flux workflows (host-microbe, search, community FVA).
+      Place a valid <code>gurobi.lic</code> in your home directory. The <code>osqp</code> path is available
+      for QP-only <em>approximate</em> community solves, but its flux report is labelled
+      <code>qp_only_approximate</code> and community FVA is not supported on <code>osqp</code>.
     </div>
 
-    <h2>2. Launch The GUI</h2>
-    <pre><code>uv run python - &lt;&lt;'PY'
-from PySide6.QtWidgets import QApplication
-from cmig.gui.app import build_main_window
-
-app = QApplication([])
-window = build_main_window(lang="en")
-window.resize(1500, 950)
-window.show()
-app.exec()
-PY</code></pre>
-    <p>The default GUI tabs are focused on working workflows:</p>
+    <h2 id="launch-gui">2. Launching the GUI</h2>
+    <p>Start the desktop app with the console script or the CLI subcommand:</p>
+    <pre><code>cmig-gui --lang en            # console script (installed by uv sync)
+uv run cmig gui --lang ko     # or via the CLI subcommand
+uv run python -m cmig.gui     # or the module entry point</code></pre>
+    <p><code>--lang en|ko</code> selects the UI language; <code>--width</code>/<code>--height</code> set the
+    initial window size. All three resolve to the same launcher.</p>
+    <p>The default window has a Project Explorer (left), five primary tabs (center), and a Jobs panel (right):</p>
     <table>
-      <thead>
-        <tr><th>Tab</th><th>Use</th></tr>
-      </thead>
+      <thead><tr><th>Tab</th><th>What it does</th></tr></thead>
       <tbody>
-        <tr><td>Search</td><td>Model-pool search, strain growth report, ratio impact sweep, and gene-KO ranking.</td></tr>
-        <tr><td>Host</td><td>BiGG-style direct host-microbe coupling and host-aware model-pool search.</td></tr>
-        <tr><td>Dynamics</td><td>Single-model well-mixed dFBA and lightweight spatial medium preview.</td></tr>
-        <tr><td>Profile</td><td>Open completed CMIG run directories and inspect result tables.</td></tr>
-        <tr><td>Models</td><td>Import and review a user-provided GEM.</td></tr>
+        <tr><td><strong>Models</strong></td><td>Import and review a user-provided GEM.</td></tr>
+        <tr><td><strong>Search</strong></td><td>Model-pool combination search, strain growth report, ratio-impact sweep, and gene-KO ranking.</td></tr>
+        <tr><td><strong>Host</strong></td><td>BiGG-style direct host&ndash;microbe coupling and host-aware pool search.</td></tr>
+        <tr><td><strong>Dynamics</strong></td><td>Single-model well-mixed dFBA and lightweight spatial medium preview.</td></tr>
+        <tr><td><strong>Profile</strong></td><td>Open a completed run directory and inspect result tables.</td></tr>
       </tbody>
     </table>
+    <p>The <strong>Show Advanced Tools</strong> toolbar button reveals lower-level tabs. These are now
+    wired to real compute: <strong>Community Builder</strong> assembles a member folder + abundances and
+    runs a community solve; <strong>Sweep View</strong> launches a sweep and shows the cache-hit column;
+    <strong>Medium Editor</strong> has a Check-Growth button; <strong>Scenario Compare</strong> diffs two
+    completed run directories.</p>
 
-    <h2>3. Prepare Model Folders</h2>
-    <p>Place microbial SBML/XML models in one folder:</p>
+    <h2 id="prepare">3. Prepare your model pool</h2>
+    <p>Put microbial SBML/XML (or JSON/MAT) models in one folder:</p>
     <pre><code>models/
-  iHN637.xml
-  iML1515.xml
-  other_strain.xml</code></pre>
-    <p>If each strain has its own subfolder, pass <code>--recursive</code> in the CLI.
-    The GUI product search currently uses the selected folder directly.</p>
+  iHN637.xml      # Clostridium ljungdahlii (acetogen)
+  iML1515.xml     # Escherichia coli K-12
+  iYO844.xml      # Bacillus subtilis
+  ...</code></pre>
+    <p>If each strain sits in its own subfolder (<code>strainA/model.xml</code>), add <code>--recursive</code>
+    to CLI pool commands. Always sanity-check imports first (<a href="#model-review">§4</a>).</p>
 
-    <h2>4. Scenario A: Find The Best Model Combination</h2>
-    <p>Question: which 2-member combination produces the most butyrate?</p>
+    <h2 id="model-review">4. Review a model before you trust it</h2>
+    <p><strong>Question:</strong> does this GEM import cleanly, and what is its exchange namespace status?</p>
+    <pre><code>uv run cmig model-review --model models/iML1515.xml --out runs/review_iML1515</code></pre>
+    <p><code>model_review.json</code> reports model stats, inferred origin, warnings, and a namespace draft.
+    Live example (iML1515):</p>
+    <table class="out">
+      <tbody>
+        <tr><td>reactions / metabolites / genes / exchanges</td><td>2712 / 1877 / 1516 / 331</td></tr>
+        <tr><td>source_format</td><td>sbml</td></tr>
+        <tr><td>namespace.blocked</td><td><code>true</code></td></tr>
+        <tr><td>namespace.coverage_pct</td><td><code>0.0</code></td></tr>
+      </tbody>
+    </table>
+    <div class="note warn">
+      <strong>Do not panic at <code>"blocked": true, coverage 0%</code>.</strong> The namespace hard-gate
+      (spec &sect;4.8) is designed to block a community solve when high-confidence exchange mappings are
+      unresolved &mdash; but <code>model-review</code> produces a <em>draft with no known targets</em>, so
+      every metabolite is reported "unresolved". In practice the community workflows (<code>strain-growth</code>,
+      <code>search</code>, &hellip;) run with an empty decision set and are <strong>not</strong> blocked. So
+      this field is advisory only. It also means the gate provides no protection against genuine
+      mixed-namespace pools by default &mdash; if you combine models from different namespace conventions,
+      verify the exchange IDs match yourself.
+    </div>
+
+    <h2 id="strain-growth">5. Scenario A &mdash; strain-specific growth <span class="pill">strain-growth</span></h2>
+    <p><strong>Question:</strong> how does each model grow alone, and how does it grow inside the full
+    MICOM community?</p>
+    <pre><code>uv run cmig strain-growth --model-dir models --out runs/strain_growth</code></pre>
+    <p>Live example (2-member pool <code>iHN637 + iML1515</code>):</p>
+    <table class="out">
+      <thead><tr><th>member</th><th>single_growth</th><th>community_member_growth</th><th>abundance</th></tr></thead>
+      <tbody>
+        <tr><td>iHN637</td><td>0.2245</td><td>0.7510</td><td>0.5</td></tr>
+        <tr><td>iML1515</td><td>0.8770</td><td>0.7510</td><td>0.5</td></tr>
+      </tbody>
+    </table>
+    <p><code>single_growth</code> is standalone FBA growth (the 0.877 for iML1515 is the textbook
+    <em>E. coli</em> aerobic-glucose value). <code>community_member_growth</code> is growth after community
+    construction and cooperative tradeoff. In the GUI: Search tab &rarr; pick the folder &rarr;
+    <strong>Strain Growth</strong>.</p>
+
+    <h2 id="search">6. Scenario B &mdash; best model combination for a target <span class="pill">search</span></h2>
+    <p><strong>Question:</strong> which 2-member combination produces the most acetate?</p>
     <pre><code>uv run cmig search \
   --model-dir models \
-  --target but \
-  --min-size 2 \
-  --max-size 2 \
-  --top-k 10 \
-  --strategy auto \
-  --out runs/search_butyrate</code></pre>
-    <p>Review <code>search_rankings.csv</code>, <code>search_member_matrix.csv</code>,
-    <code>search_plot.svg</code>, and <code>search_scatter.svg</code>.</p>
-
-    <h2>5. Scenario B: Estimate Strain-Specific Growth</h2>
-    <p>Question: how does each model grow alone, and how does it grow after being
-    placed in the full community?</p>
-    <pre><code>uv run cmig strain-growth \
-  --model-dir models \
-  --out runs/strain_growth</code></pre>
-    <table>
-      <thead>
-        <tr><th>Field</th><th>Meaning</th></tr>
-      </thead>
-      <tbody>
-        <tr><td><code>single_growth</code></td><td>FBA growth of the individual GEM.</td></tr>
-        <tr><td><code>community_member_growth</code></td><td>Member growth after MICOM community construction and cooperative tradeoff.</td></tr>
-        <tr><td><code>abundance</code></td><td>Community abundance used for that member.</td></tr>
-      </tbody>
-    </table>
-    <p>In the GUI, open the <strong>Search</strong> tab, choose the model folder, and
-    click <strong>Strain Growth</strong>.</p>
-
-    <h2>6. Scenario C: Increase One Strain Ratio</h2>
-    <p>Question: if one strain becomes more abundant, does it have more influence
-    on acetate exchange or community growth?</p>
-    <pre><code>uv run cmig abundance-impact \
-  --model-dir models \
-  --member iML1515 \
-  --fractions 0.1,0.25,0.5,0.75 \
   --target ac \
-  --out runs/iML1515_ac_ratio</code></pre>
-    <p>CMIG sets the selected member to each requested fraction and rescales the
-    other members to fill the remaining abundance. MICOM then recomputes growth
-    and fluxes for each condition.</p>
+  --min-size 2 --max-size 2 \
+  --top-k 10 --strategy auto \
+  --out runs/search_acetate</code></pre>
+    <p>Live example (best pair): <code>iHN637 + iML1515</code>, acetate flux <strong>26.50</strong>,
+    community growth 0.751, target exchange resolved to <code>EX_ac_m</code>.</p>
+    <p>Useful outputs: <code>search_rankings.csv</code>, <code>search_member_matrix.csv</code>,
+    <code>pool_diagnostics.csv</code>, <code>search_plot.svg</code>, <code>search_scatter.svg</code>,
+    <code>search_summary.json</code>. Use <code>--recursive</code> for subfolder pools.</p>
+    <div class="note">
+      <strong>Honest target handling.</strong> If a target exchange is absent from the candidate models,
+      the run reports it as <code>missing</code> rather than a false zero. For butyrate (<code>--target but</code>)
+      on an <em>E.&nbsp;coli</em>&nbsp;+&nbsp;acetogen pool you should expect <code>missing</code> &mdash; neither
+      organism secretes butyrate. Check <code>pool_diagnostics.csv</code> (<code>n_with_target_exchange</code>)
+      before interpreting a ranking.
+    </div>
+    <h3>Multi-target search</h3>
+    <p>Rank combinations against several targets at once with <code>--targets</code> (plus optional
+    <code>--target-weights</code>):</p>
+    <pre><code>uv run cmig search \
+  --model-dir models \
+  --targets ac,for --target-weights 2,1 \
+  --min-size 2 --max-size 2 \
+  --out runs/search_ac_for</code></pre>
+    <p>Each combination is scored per target, each score normalized to [0,1] over the observed range and
+    combined by the weighted sum; for exactly two targets, non-dominated combinations get a
+    <code>pareto=True</code> flag. Live example (ac + formate, weights 2:1): best pair
+    <code>iHN637+iML1515</code> (ac 26.5, formate 80.6, weighted score 3.0, Pareto-optimal).
+    <code>search_rankings.csv</code> gains <code>flux_&lt;t&gt;</code>/<code>score_&lt;t&gt;</code> columns and a
+    <code>pareto</code> flag. Combinations missing any target exchange are excluded from ranking with an
+    explicit diagnostic (never a false zero). Multi-target search is exhaustive-only and errors rather than
+    silently truncating an oversized candidate set.</p>
+
+    <h2 id="gene-ko">7. Scenario C &mdash; rank gene/reaction knockouts <span class="pill">gene-ko-search</span></h2>
+    <p><strong>Question:</strong> within a fixed consortium, which single-gene knockout in one member most
+    changes target production?</p>
+    <pre><code>uv run cmig gene-ko-search \
+  --model-dir models \
+  --members iML1515,iHN637 \
+  --member iML1515 \
+  --target ac \
+  --max-genes 0 \
+  --top-k 20 \
+  --out runs/gene_ko_ac</code></pre>
     <table>
-      <thead>
-        <tr><th>Output</th><th>Use</th></tr>
-      </thead>
+      <thead><tr><th>Option</th><th>Meaning</th></tr></thead>
       <tbody>
-        <tr><td><code>abundance_impact.csv</code></td><td>Main sweep table for growth, target flux, and influence share.</td></tr>
-        <tr><td><code>member_growth_by_abundance.csv</code></td><td>Member-level growth and realized abundance per sweep point.</td></tr>
-        <tr><td><code>abundance_impact_plot.svg</code></td><td>Quick visual check of growth, exchange flux, and target share.</td></tr>
+        <tr><td><code>--member</code></td><td>Knock out genes in one named member. Omit to screen every member (<code>screening_scope: all_members</code>).</td></tr>
+        <tr><td><code>--ko-level gene|reaction</code></td><td>Knock out genes via GPR (default) or reactions directly. Automatic reaction enumeration skips exchanges and the biomass/objective reaction.</td></tr>
+        <tr><td><code>--gene-selection id|random</code> + <code>--seed</code></td><td>How targets are picked when not listed explicitly. Deterministic either way.</td></tr>
+        <tr><td><code>--max-genes N</code></td><td><code>0</code> = evaluate all. If a smaller N truncates the set, the run records an explicit <code>warnings</code> entry and <code>n_genes_total</code>.</td></tr>
+        <tr><td><code>--jobs N</code></td><td>Worker threads. Results are independent of <code>--jobs</code>; validate solver thread-safety before relying on <code>&gt;1</code>.</td></tr>
       </tbody>
     </table>
     <div class="note ok">
-      Interpret this as a controlled sensitivity analysis. A higher abundance can
-      increase a member's contribution to a target flux, but the result still
-      depends on medium, objective, model constraints, and cross-feeding.
+      <strong>Transparency is built in.</strong> A capped screen never pretends to be complete. Live example
+      with <code>--max-genes 6</code> emitted:
+      <code>"iML1515: evaluated 6 of 1516 genes (selection=id); raise --max-genes (0=all) for full coverage"</code>.
+      Outputs: <code>gene_ko_summary.json</code> (baseline flux, warnings, ko_level, selection, seed,
+      n_genes_total, ranked KOs), <code>gene_ko_rankings.csv</code>, <code>gene_ko_plot.svg/.tiff</code>.
     </div>
-    <p>In the GUI, open the <strong>Search</strong> tab, enter a member id in the
-    <strong>Growth/Ratio</strong> member box, set fractions, and click
-    <strong>Ratio Impact</strong>.</p>
 
-    <h2>7. Scenario D: Host-Microbe Coupling</h2>
-    <p>Question: which microbial secretion can be directly consumed by a
-    Recon/Human-GEM style host model?</p>
-    <pre><code>uv run cmig host-microbe-bigg \
-  --host models_human/Recon3D.xml \
+    <h2 id="abundance">8. Scenario D &mdash; one-strain abundance sweep <span class="pill">abundance-impact</span></h2>
+    <p><strong>Question:</strong> if one strain becomes more abundant, does its influence on acetate rise?</p>
+    <pre><code>uv run cmig abundance-impact \
   --model-dir models \
-  --out runs/host_microbe</code></pre>
-    <p>This workflow assumes compatible BiGG-style exchange identifiers. CMIG does
-    not perform Recon-specific curation or automatic host interface mapping.</p>
+  --member iML1515 \
+  --fractions 0.25,0.5,0.75 \
+  --target ac \
+  --out runs/iML1515_ac_ratio</code></pre>
+    <p>CMIG sets the selected member to each fraction and rescales the others to fill the remainder; MICOM
+    recomputes growth and fluxes per condition. Live example:</p>
+    <table class="out">
+      <thead><tr><th>iML1515 abundance</th><th>community growth</th><th>member acetate exchange</th><th>community acetate exchange</th><th>influence share</th></tr></thead>
+      <tbody>
+        <tr><td>0.25</td><td>0.732</td><td>0.00</td><td>16.47</td><td>0.00</td></tr>
+        <tr><td>0.50</td><td>0.751</td><td>0.32</td><td>1.14</td><td>0.14</td></tr>
+        <tr><td>0.75</td><td>0.729</td><td>0.55</td><td>0.45</td><td>0.77</td></tr>
+      </tbody>
+    </table>
+    <div class="note ok">
+      Read this as a controlled <strong>sensitivity analysis</strong>, not ecological causality. Note the
+      non-monotone community acetate: raising iML1515 increases <em>its own</em> acetate share (0&rarr;0.14&rarr;0.77)
+      while total community acetate falls &mdash; a cross-feeding shift worth inspecting, not optimizing on
+      influence share alone. Outputs: <code>abundance_impact.csv</code>, <code>member_growth_by_abundance.csv</code>,
+      <code>abundance_impact_plot.svg/.tiff</code>.
+    </div>
 
-    <h2>8. Scenario E: Dynamics</h2>
-    <p>Run single-model well-mixed dFBA with the default aerobic preset:</p>
+    <h2 id="host">9. Scenario E &mdash; host&ndash;microbe coupling <span class="pill">host-microbe-bigg</span></h2>
+    <p><strong>Question:</strong> which microbial secretions can a Recon/Human-GEM-style host directly consume?</p>
+    <pre><code>uv run cmig host-microbe-bigg \
+  --host /path/to/Recon3D.xml \
+  --model-dir models \
+  --recursive \
+  --out runs/host_microbe</code></pre>
+    <p>This assumes compatible BiGG-style exchange identifiers; CMIG does not perform Recon-specific
+    interface curation. Outputs include <code>microbial_secretion.csv</code>, <code>host_uptake.csv</code>,
+    <code>microbe_to_host.csv</code>, <code>interaction_edges.csv</code>, <code>interaction_matrix.csv</code>,
+    <code>member_contribution.csv</code>, and figures (<code>interaction_circle/heatmap/bubble.svg</code>,
+    <code>member_contribution.svg</code>).</p>
+    <div class="note">
+      A synthetic smoke test is available with no host GEM: <code>uv run cmig host-fixture --out runs/host_fixture</code>
+      (self-labelled <code>scope: synthetic_toy_host_not_human_gem_quantitative</code>). The host is held to a
+      viability/maintenance lower-bound constraint and is <em>not</em> added to the community objective
+      (spec &sect;12). If the host FBA is infeasible under coupling it is reported honestly as
+      <code>host_status: infeasible</code> rather than silently succeeding.
+    </div>
+
+    <h2 id="community">10. Scenario F &mdash; a MICOM taxonomy solve <span class="pill">solve</span></h2>
+    <p>If you already have a MICOM-compatible taxonomy CSV:</p>
+    <pre><code>uv run cmig solve \
+  --taxonomy /path/to/taxonomy.csv \
+  --medium medium_presets/western_diet.csv \
+  --solver gurobi \
+  --tradeoff-f 0.5 \
+  --out runs/solve</code></pre>
+    <p>Or run the built-in fixture: <code>uv run cmig solve-fixture --solver gurobi --out runs/solve_fixture</code>.
+    Outputs: <code>nodes.parquet</code>, <code>edges.parquet</code>, <code>profile.parquet</code>,
+    <code>manifest.json</code>.</p>
+    <div class="note ok">
+      <strong>Solver provenance is explicit.</strong> The manifest records the growth solver, flux solver,
+      and flux report status. Live fixture example:
+      <table class="out" style="margin-top:8px">
+        <thead><tr><th>solver</th><th>growth_solver</th><th>flux_solver</th><th>flux_report_status</th></tr></thead>
+        <tbody>
+          <tr><td>gurobi</td><td>gurobi</td><td>gurobi</td><td><code>full</code></td></tr>
+          <tr><td>osqp</td><td>osqp</td><td><code>null</code></td><td><code>qp_only_approximate</code></td></tr>
+        </tbody>
+      </table>
+      The same inputs produce identical run hashes across machines and months
+      (fixture gurobi <code>29844e29&hellip;</code>, osqp <code>c491a6a8&hellip;</code>), so cached and published
+      results stay comparable.
+    </div>
+
+    <h2 id="dfba">11. Scenario G &mdash; well-mixed dFBA <span class="pill">dfba</span></h2>
+    <p>Static-optimization dFBA (Mahadevan 2002): each step updates uptake bounds from extracellular
+    concentrations, solves FBA, and advances biomass + metabolites with non-negativity enforced.</p>
     <pre><code>uv run cmig dfba \
   --model models/iML1515.xml \
   --dt 0.1 \
+  --t-end 5.0 \
   --out runs/dfba_iML1515</code></pre>
-    <p>The default tracked exchanges are glucose, oxygen, acetate, and D-lactate
-    when present in the model.</p>
+    <p>With no <code>--initial</code>, CMIG uses an aerobic default where available
+    (<code>EX_glc__D_e=10</code>, <code>EX_o2_e=20</code>, <code>EX_ac_e=0</code>, <code>EX_lac__D_e=0</code>).
+    Explicit <code>--initial</code> values are strict and must exist in the model. Live example (short horizon)
+    completed with <code>status: completed</code>, 16 timepoints, tracking those four exchanges. Outputs:
+    <code>dfba_summary.json</code>, <code>timecourse.parquet</code>, <code>dfba_timecourse.csv</code>,
+    <code>dfba_timecourse.svg/.tiff</code>.</p>
+    <div class="note">
+      Scope: well-mixed single-model only. When a substrate is exhausted mid-step, both flux and biomass are
+      scaled by the limiting-substrate fraction so mass balance holds (no growth on phantom substrate).
+      Full spatial community dFBA is out of scope.
+    </div>
 
-    <h2>9. LLM and Automation Entry Point</h2>
-    <p>Agents that need to run CMIG without the desktop GUI should first request
-    the workflow map:</p>
-    <pre><code>uv run cmig workflows --format json</code></pre>
-    <p>The JSON maps each working GUI surface to the equivalent CLI command,
-    required arguments, common options, key output files, and a copyable example.
-    After a run completes, inspect the output directory with:</p>
-    <pre><code>uv run cmig inspect-run --run-dir runs/search_butyrate --format json</code></pre>
-    <p>This reports the detected run kind, status, run hash when available,
-    summary keys, and artifacts. It is the CLI counterpart to opening a run in
-    the GUI Profile/Open Run view.</p>
+    <h2 id="spatial">12. Scenario H &mdash; spatial medium preview <span class="pill">spatial-preview</span></h2>
+    <p>A lightweight, COMETS-inspired 2D diffusion/source-sink design tool. It does <em>not</em> solve FBA on
+    each grid cell &mdash; use it to check gradient settings before heavier analyses.</p>
+    <pre><code>uv run cmig spatial-preview \
+  --metabolite EX_glc__D_e \
+  --width 48 --height 48 \
+  --source-edge left --sink-edge right \
+  --steps 120 \
+  --out runs/spatial_glucose</code></pre>
+    <p>Live example completed with a glucose gradient (source value 10 &rarr; sink 0), 7 stored frames.
+    Outputs: <code>spatial_summary.json</code>, <code>spatial_frames.csv</code>,
+    <code>spatial_heatmap.svg/.tiff</code>, <code>spatial_snapshots.svg/.tiff</code>.</p>
 
-    <h2>10. Recommended Review Checklist</h2>
+    <h2 id="sweep">13. Scenario I &mdash; parameter sweeps <span class="pill">sweep</span></h2>
+    <p>Sweep any of six axes (<code>medium_variant</code>, <code>abundance</code>, <code>member_set</code>,
+    <code>bounds</code>, <code>tradeoff_f</code>, <code>solver</code>) into a long-format
+    <code>sweep.parquet</code>, one condition per row, with a run hash and an ok/failed status per condition.</p>
+    <pre><code># fixture demo (tradeoff_f axis):
+uv run cmig sweep-fixture --out runs/sweep_fixture</code></pre>
+    <p>Live example produced two rows for tradeoff_f = 0.3 and 0.5 with <strong>two distinct run hashes</strong>
+    &mdash; confirming the reproducibility axis (including the <code>bounds</code> axis) actually varies the hash.
+    Failed conditions are recorded with a diagnostic rather than dropped.</p>
+    <div class="note ok">
+      <code>cmig sweep</code> now caches by a content signature equivalent to the run-hash components, so a
+      content-identical condition <strong>replays instead of re-solving</strong> (its row shows
+      <code>cache_hit=true</code> with the same run_hash and value). Deterministic failures are cached too.
+      Distinct conditions correctly show <code>cache_hit=false</code>.
+    </div>
+
+    <h2 id="stats">14. Scenario J &mdash; statistics on sweep results <span class="pill">stats-sweep</span></h2>
+    <p>Distribution summaries, effect sizes (Cliff's &delta;, Cohen's d), MWU/Welch/Kruskal/ANOVA, and
+    BH/BY FDR correction &mdash; with misuse warnings.</p>
+    <pre><code>uv run cmig stats-demo  --out runs/stats_demo          # deterministic 2-group demo
+uv run cmig stats-sweep --sweep runs/sweep_fixture/sweep.parquet --out runs/stats_sweep</code></pre>
+    <p>Live <code>stats-demo</code> produced <code>summary</code>, <code>test</code>, <code>fdr_qvalues</code>,
+    and <code>warnings</code> keys. Embedding methods (PCA/KMeans/UMAP) are available in the stats extra.</p>
+
+    <h2 id="sandbox">15. Scenario K &mdash; constraint sandbox (preview vs commit) <span class="pill">sandbox-fixture</span></h2>
+    <p>Change a reaction's bound and re-optimize the community, comparing baseline vs constrained profiles.
+    A <strong>preview</strong> is ephemeral; only <strong>commit</strong> promotes it to a reproducible run.</p>
+    <pre><code># preview (ephemeral — no manifest, no run hash):
+uv run cmig sandbox-fixture --reaction EX_glc__D_e__Escherichia_coli_1 --lower -8 --upper 1000 \
+  --out runs/sandbox_preview
+
+# commit (promotes to a durable run):
+uv run cmig sandbox-fixture --reaction EX_glc__D_e__Escherichia_coli_1 --lower -8 --upper 1000 --commit \
+  --out runs/sandbox_commit</code></pre>
+    <p>Live example: the preview wrote only <code>sandbox_summary.json</code>; the commit added
+    <code>nodes/edges/profile.parquet</code> + <code>manifest.json</code> with run hash <code>3494f654&hellip;</code>.
+    This is the &sect;4.8 preview-vs-commit guarantee &mdash; experimenting never pollutes your reproducibility store.</p>
+
+    <h2 id="automation">16. CLI for LLM agents &amp; automation</h2>
+    <p>Agents should start from the machine-readable workflow map, then inspect finished runs in a stable
+    JSON shape:</p>
+    <pre><code>uv run cmig workflows --format json                                   # 14 GUI→CLI workflow entries
+uv run cmig inspect-run --run-dir runs/search_acetate --format json   # kind, status, run_hash, summary, artifacts</code></pre>
+    <p><code>inspect-run</code> detects known summaries (<code>search_summary.json</code>,
+    <code>host_microbe_bigg_summary.json</code>, <code>dfba_summary.json</code>, <code>spatial_summary.json</code>,
+    <code>manifest.json</code>) and reports the workflow kind, status, run hash, summary keys, and artifacts &mdash;
+    the CLI counterpart to opening a run in the GUI Profile view.</p>
+
+    <h2 id="repro">17. Reproducibility &amp; provenance</h2>
+    <ul>
+      <li><strong>run_hash</strong> combines model/medium checksums, member set, abundances, bounds,
+      tradeoff&nbsp;f, solver setting, MICOM version, CMIG core version, namespace decisions, and flux
+      normalization. Change any of these and the hash changes; change none and it is byte-identical.</li>
+      <li><strong>Solver labels</strong> are honest: <code>gurobi</code> &rarr; <code>full</code>,
+      <code>osqp</code> &rarr; <code>qp_only_approximate</code> (with <code>flux_solver: null</code>).</li>
+      <li><strong>Manifests</strong> record solver/flux status, software versions, platform, and env lock.</li>
+      <li><strong>Golden gate:</strong> <code>cmig golden verify</code> blocks promotion if the installed
+      MICOM version diverges from the golden baseline.</li>
+    </ul>
+
+    <h2 id="limits">18. Scope &amp; honest limitations</h2>
+    <ul>
+      <li>You provide your own GEM files; CMIG never auto-downloads model collections.</li>
+      <li>The namespace hard-gate is inert on the default community path (no auto-reconciliation producer),
+      so <code>model-review</code>'s "blocked" is advisory &mdash; verify mixed-namespace pools yourself.</li>
+      <li>Host-microbe coupling is BiGG-style direct exchange matching only (no interface mapping wizard).</li>
+      <li>dFBA is well-mixed single-model; <code>spatial-preview</code> is medium design only (no per-cell FBA).</li>
+      <li>The R publication renderer (ggraph/ComplexHeatmap/circlize) exists but is not yet wired to the
+      export path — figures are produced with matplotlib SVG/TIFF.</li>
+      <li>Multi-target search applies one direction to all targets and is exhaustive-only (no heuristic
+      strategy for very large candidate sets).</li>
+      <li>Minimal-medium selection is deterministic for a fixed solver on a fixed machine; among
+      equicardinal alternate optima, cross-solver selection may differ (documented).</li>
+    </ul>
+
+    <h2 id="checklist">19. Recommended review checklist</h2>
     <ol>
-      <li>Confirm every model imports cleanly in <code>pool_diagnostics.csv</code>.</li>
-      <li>Check whether the target exchange exists in candidate models.</li>
-      <li>Compare <code>single_growth</code> and <code>community_member_growth</code>.</li>
-      <li>For ratio sweeps, inspect both <code>target_influence_share</code> and
-      <code>community_growth</code>; do not optimize influence alone.</li>
-      <li>Export SVG figures for inspection, then use the CSV files for final
-      manuscript plotting if journal-specific styling is required.</li>
+      <li>Confirm every model imports cleanly (<code>pool_diagnostics.csv</code>, <code>n_readable</code>).</li>
+      <li>Confirm the target exchange exists in candidates (<code>n_with_target_exchange</code>) before trusting a ranking.</li>
+      <li>Compare <code>single_growth</code> vs <code>community_member_growth</code> to see who benefits/loses from the community.</li>
+      <li>For abundance sweeps, read both <code>target_influence_share</code> and <code>community_growth</code> &mdash; don't optimize influence alone.</li>
+      <li>For gene-KO, check the <code>warnings</code> and <code>n_genes_total</code> to confirm coverage (use <code>--max-genes 0</code> for full screens).</li>
+      <li>Check the manifest's solver label before comparing numbers across runs (<code>full</code> vs <code>qp_only_approximate</code>).</li>
+      <li>Export SVG for inspection, then use the CSV/Parquet tables for final manuscript plotting.</li>
     </ol>
+
+    <p class="muted" style="margin-top:34px;font-size:13px">
+      This tutorial's commands and example numbers were verified end-to-end against the shipped models on
+      2026-07-09 (Gurobi 12, MICOM 0.39.0). Your absolute flux values will depend on your medium, model set,
+      and solver.
+    </p>
   </main>
 </body>
 </html>

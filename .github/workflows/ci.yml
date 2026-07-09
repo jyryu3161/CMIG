@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Always-on gate: lint + strict type-check. No solver license required.
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync (dev + typed extras, no license needed to import)
+        run: uv sync --extra engine --extra render --extra stats
+      - name: Ruff
+        run: uv run ruff check cmig tests
+      - name: Mypy (strict)
+        run: uv run mypy cmig
+
+  # Full suite + golden solver/MICOM-version regression (spec §16 / A17).
+  # Requires a Gurobi license. Gated to the canonical repo where WLS secrets exist,
+  # so forks/PRs without the secret are skipped rather than failing.
+  tests:
+    needs: quality
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'jyryu3161/CMIG' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync (full stack)
+        run: uv sync --extra engine --extra gui --extra render --extra stats
+      - name: Configure Gurobi WLS license
+        env:
+          GRB_WLSACCESSID: ${{ secrets.GRB_WLSACCESSID }}
+          GRB_WLSSECRET: ${{ secrets.GRB_WLSSECRET }}
+          GRB_LICENSEID: ${{ secrets.GRB_LICENSEID }}
+        run: |
+          if [ -z "$GRB_WLSACCESSID" ]; then
+            echo "::error::Gurobi WLS secrets not configured; cannot run the solver suite."
+            exit 1
+          fi
+          {
+            echo "WLSACCESSID=$GRB_WLSACCESSID"
+            echo "WLSSECRET=$GRB_WLSSECRET"
+            echo "LICENSEID=$GRB_LICENSEID"
+          } > "$HOME/gurobi.lic"
+          echo "GRB_LICENSE_FILE=$HOME/gurobi.lic" >> "$GITHUB_ENV"
+      - name: Golden MICOM-version regression gate
+        run: uv run cmig golden verify
+      - name: Test suite (offscreen GUI)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run pytest -q
