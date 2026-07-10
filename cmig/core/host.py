@@ -22,6 +22,7 @@ from typing import Any
 from cmig.core.sign import Label, Scope, convert
 
 DEFAULT_BIGG_COUPLING_EXCLUDE = frozenset({"h", "h2o", "co2"})
+BIOMASS_BASIS_KINDS = frozenset({"measured", "literature", "validation"})
 
 
 class HostInterface(enum.Enum):
@@ -65,6 +66,22 @@ class HostSolveResult:
     interface_fluxes: list[InterfaceFlux] = field(default_factory=list)
     lumen_uptake: dict[str, float] = field(default_factory=dict)   # 미생물→host 흡수(met→flux)
     diagnostic: str | None = None
+    lumen_uptake_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
+    attribution_method: str = "objective_fixed_fva"
+    flux_unit: str = "mmol gDW_host^-1 h^-1"
+
+
+@dataclass(frozen=True)
+class CouplingScale:
+    """미생물 community-specific flux를 host-specific flux로 변환하는 biomass 기준."""
+
+    microbial_biomass_gdw: float
+    host_biomass_gdw: float
+    microbe_to_host_ratio: float
+    basis_kind: str
+    basis_source: str
+    source_flux_unit: str = "mmol gDW_microbiome^-1 h^-1"
+    target_flux_unit: str = "mmol gDW_host^-1 h^-1"
 
 
 @dataclass(frozen=True)
@@ -111,6 +128,8 @@ class BiggHostMicrobeResult:
     host_result: HostSolveResult
     impact: Any
     warnings: list[str]
+    community_secretion: dict[str, float] = field(default_factory=dict)
+    coupling_scale: CouplingScale | None = None
 
 
 def _met_from_host_exchange(exchange_id: str) -> str:
@@ -145,6 +164,65 @@ def _availability_flux(value: float, *, label: str) -> float:
     if not math.isfinite(flux) or flux < 0.0:
         raise ValueError(f"{label} availability must be finite and non-negative")
     return flux
+
+
+def _coupling_scale(
+    microbial_biomass_gdw: float,
+    host_biomass_gdw: float,
+    *,
+    basis_kind: str,
+    basis_source: str,
+) -> CouplingScale:
+    """Validate numeric scaling and retain how the gDW bases were obtained."""
+    microbial = _availability_flux(
+        microbial_biomass_gdw, label="microbial_biomass_gdw"
+    )
+    host = _availability_flux(host_biomass_gdw, label="host_biomass_gdw")
+    if microbial <= 0.0 or host <= 0.0:
+        raise ValueError("microbial_biomass_gdw and host_biomass_gdw must be > 0")
+    kind = str(basis_kind).strip().lower()
+    if kind not in BIOMASS_BASIS_KINDS:
+        raise ValueError(
+            "biomass_basis_kind must be one of: " + ", ".join(sorted(BIOMASS_BASIS_KINDS))
+        )
+    source = str(basis_source).strip()
+    if not source:
+        raise ValueError(
+            "biomass_basis_source is required (measurement method or literature citation)"
+        )
+    return CouplingScale(microbial, host, microbial / host, kind, source)
+
+
+def _uptake_fva_ranges(
+    model: Any, exchange_ids: list[str]
+) -> dict[str, tuple[float, float]]:
+    """최적 host objective를 고정한 exchange uptake 가능 범위."""
+    if not exchange_ids:
+        return {}
+    from cobra.flux_analysis import flux_variability_analysis
+
+    table = flux_variability_analysis(
+        model,
+        reaction_list=sorted(exchange_ids),
+        fraction_of_optimum=1.0,
+    )
+    ranges: dict[str, tuple[float, float]] = {}
+    for reaction_id in sorted(exchange_ids):
+        minimum = float(table.loc[reaction_id, "minimum"])
+        maximum = float(table.loc[reaction_id, "maximum"])
+        ranges[reaction_id] = (max(0.0, -maximum), max(0.0, -minimum))
+    return ranges
+
+
+def _identified_points(
+    ranges: dict[str, tuple[float, float]], *, tolerance: float = 1e-6
+) -> dict[str, float]:
+    """범위 폭이 tolerance 이내인 flux만 식별된 점 추정치로 노출한다."""
+    return {
+        metabolite: (lower + upper) / 2.0
+        for metabolite, (lower, upper) in ranges.items()
+        if upper > tolerance and upper - lower <= tolerance
+    }
 
 
 def classify_host_exchanges(fluxes: dict[str, float]) -> list[InterfaceFlux]:
@@ -227,118 +305,6 @@ def solve_generic_host(host: Any, *, solver: str = "gurobi") -> HostSolveResult:
                 f.metabolite: -f.flux for f in interface
                 if f.interface == HostInterface.LUMEN.value and f.label == Label.UPTAKE.value
             },
-        )
-
-
-def solve_bigg_host(
-    host: Any,
-    microbial_availability: dict[str, float],
-    *,
-    host_medium: dict[str, float] | None = None,
-    exchange_suffix: str = "_e",
-    exclude_metabolites: set[str] | frozenset[str] | None = DEFAULT_BIGG_COUPLING_EXCLUDE,
-    close_unlisted_uptake: bool = True,
-    solver: str = "gurobi",
-) -> HostSolveResult:
-    """Solve a BiGG-style host GEM coupled to microbial secretions.
-
-    Microbial secretion metabolite ids are assumed to be BiGG ids and are mapped directly to
-    host exchange ids (`met` -> `EX_<met>_e`). `host_medium` is optional background host
-    availability for non-microbial nutrients, with keys accepted as either exchange ids or
-    metabolite ids.
-    """
-    from cobra.util.solver import linear_reaction_coefficients
-
-    from cmig.core.single_model import _require_lp, set_model_solver
-
-    _require_lp(solver)
-    host_medium = host_medium or {}
-    with host:
-        set_model_solver(host, solver)
-        exchange_ids = {str(r.id) for r in host.reactions if str(r.id).startswith("EX_")}
-        if close_unlisted_uptake:
-            for reaction in host.reactions:
-                if str(reaction.id).startswith("EX_") and reaction.lower_bound < 0:
-                    reaction.lower_bound = 0.0
-
-        exchange_availability: dict[str, float] = {}
-        microbial_caps: dict[str, float] = {}
-
-        def add_availability(key: str, value: float, *, label: str) -> tuple[str | None, float]:
-            rid = key if key.startswith("EX_") else _bigg_exchange_id(key, suffix=exchange_suffix)
-            flux = _availability_flux(value, label=label)
-            if rid in exchange_ids:
-                exchange_availability[rid] = (
-                    exchange_availability.get(rid, 0.0) + flux
-                )
-                return rid, flux
-            return None, flux
-
-        for key, value in host_medium.items():
-            add_availability(str(key), value, label=f"host_medium[{key!r}]")
-        excluded = set(exclude_metabolites or set())
-        matched: set[str] = set()
-        for raw_met, value in microbial_availability.items():
-            # Normalize to the bare metabolite id so callers may pass either bare ids or EX_ ids
-            # without diverging from the bare-id keys used by the output/transfer loop below.
-            met = (
-                _met_from_bigg_exchange(str(raw_met), suffix=exchange_suffix)
-                if str(raw_met).startswith("EX_")
-                else str(raw_met)
-            )
-            if met in excluded:
-                continue
-            rid, flux = add_availability(
-                raw_met,
-                value,
-                label=f"microbial_availability[{raw_met!r}]",
-            )
-            if rid is not None:
-                microbial_caps[met] = microbial_caps.get(met, 0.0) + flux
-                matched.add(met)
-        for rid, availability in exchange_availability.items():
-            host.reactions.get_by_id(rid).lower_bound = -availability
-
-        sol = host.optimize()
-        status = str(sol.status)
-        if status != "optimal":
-            from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
-
-            diag = diagnostic_from_parts([(
-                DiagnosticCode.INFEASIBLE,
-                f"BiGG host LP non-optimal under microbial coupling (status={status})",
-            )])
-            return HostSolveResult(False, status, 0.0, [], {}, diag)
-
-        fluxes = {str(rid): float(v) for rid, v in sol.fluxes.items()}
-        coeffs = linear_reaction_coefficients(host)
-        objective_value = sum(float(c) * fluxes.get(r.id, 0.0) for r, c in coeffs.items())
-        interface_fluxes: list[InterfaceFlux] = []
-        lumen_uptake: dict[str, float] = {}
-        for rid in sorted(exchange_ids):
-            flux = fluxes.get(rid, 0.0)
-            signed = convert(flux, Scope.ENVIRONMENT)
-            if signed.label is None:
-                continue
-            met = _met_from_bigg_exchange(rid, suffix=exchange_suffix)
-            interface_fluxes.append(InterfaceFlux(
-                exchange_id=rid,
-                interface="bigg_external",
-                metabolite=met,
-                flux=flux,
-                label=signed.label.value,
-            ))
-            if met in matched and signed.label is Label.UPTAKE:
-                microbial_cap = microbial_caps.get(met, 0.0)
-                transfer = min(-flux, microbial_cap)
-                if transfer > 1e-6:
-                    lumen_uptake[met] = transfer
-        return HostSolveResult(
-            viable=status == "optimal" and objective_value > 1e-9,
-            status=status,
-            biomass=objective_value,
-            interface_fluxes=interface_fluxes,
-            lumen_uptake=lumen_uptake,
         )
 
 
@@ -431,11 +397,19 @@ def solve_host(
 
         fluxes = {str(rid): float(v) for rid, v in sol.fluxes.items()}
         interface = classify_host_exchanges(fluxes)
-        # 미생물→host 흡수 = lumen interface 에서 uptake(label=uptake)
-        lumen_uptake = {
-            f.metabolite: -f.flux for f in interface
-            if f.interface == HostInterface.LUMEN.value and f.label == Label.UPTAKE.value
+        lumen_exchange_by_metabolite = {
+            met: f"EX_{met}_lumen"
+            for met in sorted(lumen_availability)
+            if f"EX_{met}_lumen" in ex_ids
         }
+        exchange_ranges = _uptake_fva_ranges(
+            host, list(lumen_exchange_by_metabolite.values())
+        )
+        lumen_uptake_ranges = {
+            met: exchange_ranges[exchange]
+            for met, exchange in lumen_exchange_by_metabolite.items()
+        }
+        lumen_uptake = _identified_points(lumen_uptake_ranges)
         from cobra.util.solver import linear_reaction_coefficients
         coeffs = linear_reaction_coefficients(host)
         biomass = sum(float(c) * fluxes.get(r.id, 0.0) for r, c in coeffs.items())
@@ -445,11 +419,17 @@ def solve_host(
             biomass,
             interface,
             lumen_uptake,
+            lumen_uptake_ranges=lumen_uptake_ranges,
         )
 
 
 def run_host_microbe(
-    taxonomy: Any, host: Any, *, solver: str = "gurobi", tradeoff_f: float = 0.5,
+    taxonomy: Any, host: Any, *,
+    microbial_biomass_gdw: float,
+    host_biomass_gdw: float,
+    biomass_basis_kind: str,
+    biomass_basis_source: str,
+    solver: str = "gurobi", tradeoff_f: float = 0.5,
     maintenance_flux: float = 1.0, engine: Any = None,
 ) -> tuple[HostSolveResult, Any]:
     """end-to-end config B: 미생물 community solve → lumen 분비 → host solve + impact (실 wiring).
@@ -461,103 +441,28 @@ def run_host_microbe(
     from cmig.core.host_impact import host_impact
 
     eng = engine if engine is not None else MicomEngine()
+    scale = _coupling_scale(
+        microbial_biomass_gdw,
+        host_biomass_gdw,
+        basis_kind=biomass_basis_kind,
+        basis_source=biomass_basis_source,
+    )
     community = eng.build_community(taxonomy, cmig_solver=solver)
     result = eng.cooperative_tradeoff(community, tradeoff_f, cmig_solver=solver)
     if result.status != "optimal":
         diag = result.diagnostic
         host_res = HostSolveResult(False, result.status, 0.0, [], {}, diag)
         return host_res, host_impact({}, host_res)
-    secretion = {m: v for m, v in result.external_exchange.items() if v > 1e-6}  # lumen 가용
+    secretion = {
+        metabolite: flux * scale.microbe_to_host_ratio
+        for metabolite, flux in result.external_exchange.items()
+        if flux > 1e-6
+    }
     host_res = solve_host(host, secretion, maintenance_flux=maintenance_flux, solver=solver)
     return host_res, host_impact(secretion, host_res)
 
 
-def run_bigg_host_microbe(
-    taxonomy: Any,
-    host: Any,
-    *,
-    solver: str = "gurobi",
-    tradeoff_f: float = 0.5,
-    microbe_medium: Any | None = None,
-    host_medium: dict[str, float] | None = None,
-    exchange_suffix: str = "_e",
-    exclude_metabolites: set[str] | frozenset[str] | None = DEFAULT_BIGG_COUPLING_EXCLUDE,
-    close_unlisted_host_uptake: bool = True,
-    engine: Any = None,
-) -> BiggHostMicrobeResult:
-    """BiGG direct coupling: microbe community secretion -> host `EX_<met>_e` uptake."""
-    from cmig.core.engine import MicomEngine
-    from cmig.core.host_impact import host_impact
-
-    eng = engine if engine is not None else MicomEngine()
-    community = eng.build_community(taxonomy, cmig_solver=solver)
-    if microbe_medium is not None:
-        from cmig.core.medium_spec import apply_medium_checked
-
-        apply_medium_checked(community, microbe_medium, strict=True)
-    community_result = eng.cooperative_tradeoff(community, tradeoff_f, cmig_solver=solver)
-    if community_result.status != "optimal":
-        host_res = HostSolveResult(
-            False, community_result.status, 0.0, [], {}, community_result.diagnostic
-        )
-        return BiggHostMicrobeResult(
-            community_status=community_result.status,
-            community_growth=community_result.objective,
-            microbial_secretion={},
-            member_secretion={},
-            matched_exchanges={},
-            unmatched_metabolites=[],
-            host_result=host_res,
-            impact=host_impact({}, host_res),
-            warnings=["microbial community solve was not optimal"],
-        )
-    secretion = {
-        metabolite: flux
-        for metabolite, flux in community_result.external_exchange.items()
-        if flux > 1e-6
-    }
-    member_secretion = {
-        member: {
-            metabolite: flux
-            for metabolite, flux in exchange.items()
-            if flux > 1e-6
-        }
-        for member, exchange in community_result.member_exchange.items()
-    }
-    excluded = set(exclude_metabolites or set())
-    host_exchange_ids = {str(r.id) for r in host.reactions if str(r.id).startswith("EX_")}
-    matched = {
-        met: _bigg_exchange_id(met, suffix=exchange_suffix)
-        for met in secretion
-        if met not in excluded
-        if _bigg_exchange_id(met, suffix=exchange_suffix) in host_exchange_ids
-    }
-    unmatched = sorted(set(secretion) - set(matched) - excluded)
-    host_res = solve_bigg_host(
-        host,
-        secretion,
-        host_medium=host_medium,
-        exchange_suffix=exchange_suffix,
-        exclude_metabolites=exclude_metabolites,
-        close_unlisted_uptake=close_unlisted_host_uptake,
-        solver=solver,
-    )
-    warnings: list[str] = []
-    excluded_present = sorted(set(secretion) & excluded)
-    if excluded_present:
-        warnings.append(f"excluded currency microbial secretions: {excluded_present}")
-    if unmatched:
-        warnings.append(f"unmatched microbial secretions: {unmatched}")
-    if not matched:
-        warnings.append("no microbial secretions matched host BiGG exchange ids")
-    return BiggHostMicrobeResult(
-        community_status=community_result.status,
-        community_growth=community_result.objective,
-        microbial_secretion=secretion,
-        member_secretion=member_secretion,
-        matched_exchanges=matched,
-        unmatched_metabolites=unmatched,
-        host_result=host_res,
-        impact=host_impact(secretion, host_res),
-        warnings=warnings,
-    )
+from cmig.core.host_coupling import (  # noqa: E402
+    run_bigg_host_microbe as run_bigg_host_microbe,
+)
+from cmig.core.host_coupling import solve_bigg_host as solve_bigg_host  # noqa: E402

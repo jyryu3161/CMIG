@@ -3,7 +3,10 @@
 Design Ref: §4.3·§4.6 / schema §2 / glossary §1.A·§1.E.
 Plan SC: SC-9 (tidy 계약), SC-2 (sign 단일 진입점 경유).
 
-cross-feeding (m→m′): m 분비(raw>0) ∧ m′ 흡수(raw<0), weight = min(분비량, 흡수량) (§4.3).
+cross-feeding (m→m′): m 분비(raw>0) ∧ m′ 흡수(raw<0). Shared-pool flux만으로
+donor→recipient 실제 전달은 식별되지 않으므로, 대사체별 총 전달량
+``min(total secretion, total uptake)``을 donor 공급·consumer 수요에 비례 배분한다. 이 방식은
+결정적이며 모든 donor/consumer marginal에서 질량보존 상한을 지킨다.
 모든 부호 변환은 sign 모듈 단일 진입점만 경유.
 """
 
@@ -12,7 +15,7 @@ from __future__ import annotations
 import pyarrow as pa
 
 from cmig.core.engine import SolveResult
-from cmig.core.sign import NOISE_FLOOR, Label, Scope, convert, cross_feeding_weight
+from cmig.core.sign import NOISE_FLOOR, Label, Scope, convert
 from cmig.core.tidy import (
     EDGES_SCHEMA,
     NODES_SCHEMA,
@@ -22,10 +25,45 @@ from cmig.core.tidy import (
 )
 
 ENV_POOL_ID = "medium"
+CROSS_FEEDING_ALLOCATION_METHOD = "proportional_shared_pool"
 
 
 def _label_str(label: Label | None) -> str | None:
     return label.value if label is not None else None
+
+
+def allocate_cross_feeding(
+    secretors: dict[str, float], consumers: dict[str, float], *, eps: float = NOISE_FLOOR
+) -> list[tuple[str, str, float]]:
+    """Mass-conserving shared-pool allocation for one metabolite.
+
+    ``secretors`` values are positive raw secretion fluxes and ``consumers`` values are negative
+    raw uptake fluxes. Because a steady-state shared pool does not identify pairwise transfers,
+    CMIG uses a transparent proportional allocation rather than emitting every pairwise minimum
+    (which double-counts mass whenever more than one donor or consumer exists).
+
+    Returned weights satisfy, within floating tolerance:
+
+    - ``sum_j w[i,j] <= secretion[i]`` for every donor,
+    - ``sum_i w[i,j] <= abs(uptake[j])`` for every consumer,
+    - ``sum_ij w[i,j] = min(total secretion, total uptake)``.
+    """
+    supply = {m: float(v) for m, v in secretors.items() if float(v) > eps}
+    demand = {m: -float(v) for m, v in consumers.items() if float(v) < -eps}
+    total_supply = sum(supply.values())
+    total_demand = sum(demand.values())
+    transferable = min(total_supply, total_demand)
+    if transferable <= eps or total_supply <= eps or total_demand <= eps:
+        return []
+
+    rows: list[tuple[str, str, float]] = []
+    for source in sorted(supply):
+        source_share = supply[source] / total_supply
+        for target in sorted(demand):
+            weight = transferable * source_share * (demand[target] / total_demand)
+            if weight > eps:
+                rows.append((source, target, weight))
+    return rows
 
 
 def build_tidy(result: SolveResult, eps: float = NOISE_FLOOR) -> TidyBundle:
@@ -92,18 +130,17 @@ def build_tidy(result: SolveResult, eps: float = NOISE_FLOOR) -> TidyBundle:
                 edges.append((m, ENV_POOL_ID, metab, "secretion", sf.ui_flux, "secretion"))
             elif sf.label is Label.UPTAKE:
                 edges.append((ENV_POOL_ID, m, metab, "uptake", sf.ui_flux, "uptake"))
-    # 2) cross-feeding: 동일 metabolite 의 secretor → consumer
+    # 2) cross-feeding: 동일 metabolite 의 secretor → consumer.
+    # Shared-pool 해는 pairwise donor attribution을 식별하지 않으므로 대사체별 총 전달 가능량을
+    # 공급/수요 비례로 보존 배분한다(CROSS_FEEDING_ALLOCATION_METHOD).
     metabolites = sorted({x for ex in result.member_exchange.values() for x in ex})
     for metab in metabolites:
         secretors = {m: result.member_exchange[m][metab]
                      for m in members if result.member_exchange.get(m, {}).get(metab, 0.0) > eps}
         consumers = {m: result.member_exchange[m][metab]
                      for m in members if result.member_exchange.get(m, {}).get(metab, 0.0) < -eps}
-        for s in sorted(secretors):
-            for c in sorted(consumers):
-                w = cross_feeding_weight(secretors[s], consumers[c], eps=eps)
-                if w is not None:
-                    edges.append((s, c, metab, "cross_feeding", w, "secretion"))
+        for source, target, weight in allocate_cross_feeding(secretors, consumers, eps=eps):
+            edges.append((source, target, metab, "cross_feeding", weight, "secretion"))
     edges.sort()
     edges_tbl = pa.table(
         {

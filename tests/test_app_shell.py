@@ -573,6 +573,10 @@ def test_host_microbe_run_button_uses_product_command(monkeypatch, tmp_path):
     w.host_view.host_path_input.setText(str(tmp_path / "Recon3D.xml"))
     w.host_view.model_dir_input.setText(str(tmp_path / "models"))
     w.host_view.out_dir_input.setText(str(tmp_path / "out"))
+    w.host_view.microbial_biomass_spin.setValue(0.25)
+    w.host_view.host_biomass_spin.setValue(4.0)
+    w.host_view.biomass_basis_kind_combo.setCurrentText("measured")
+    w.host_view.biomass_basis_source_input.setText("Methods section dry-mass assay")
     w.host_view.recursive_check.setChecked(True)
     w.host_view.include_currency_check.setChecked(True)
     jid = w.run_host_microbe_bigg()
@@ -583,10 +587,25 @@ def test_host_microbe_run_button_uses_product_command(monkeypatch, tmp_path):
     assert seen["argv"][seen["argv"].index("--model-dir") + 1].endswith("models")
     assert "--recursive" in seen["argv"]
     assert "--include-currency-metabolites" in seen["argv"]
+    assert seen["argv"][seen["argv"].index("--biomass-basis-kind") + 1] == "measured"
+    assert "Methods section" in seen["argv"][
+        seen["argv"].index("--biomass-basis-source") + 1
+    ]
     assert w.tabs.currentWidget() is w.host_view
     assert w.host_view.cross_table.rowCount() == 1
     assert w.host_view.network_payload is not None
     runner.shutdown()
+
+
+def test_host_microbe_gui_blocks_missing_biomass_provenance(tmp_path):
+    _app()
+    w = build_main_window()
+    w.host_view.host_path_input.setText(str(tmp_path / "host.xml"))
+    w.host_view.model_dir_input.setText(str(tmp_path / "models"))
+    w.host_view.out_dir_input.setText(str(tmp_path / "out"))
+
+    assert w.run_host_microbe_bigg() == ""
+    assert "basis kind, and source are required" in w.host_view.run_status.text()
 
 
 def test_host_figure_export_copies_selected_svg(monkeypatch, tmp_path):

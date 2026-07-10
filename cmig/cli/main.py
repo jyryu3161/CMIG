@@ -159,7 +159,15 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         "gui_surface": "Host / Run Host-Microbe",
         "cli_command": "cmig host-microbe-bigg",
         "purpose": "Run direct BiGG-style host-microbe exchange coupling.",
-        "required_args": ["--host", "--model-dir or --taxonomy", "--out"],
+        "required_args": [
+            "--host",
+            "--model-dir or --taxonomy",
+            "--microbial-biomass-gdw",
+            "--host-biomass-gdw",
+            "--biomass-basis-kind",
+            "--biomass-basis-source",
+            "--out",
+        ],
         "common_options": [
             "--host-objective",
             "--microbe-medium",
@@ -178,14 +186,25 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         ],
         "example": (
             "uv run cmig host-microbe-bigg --host models_human/Recon3D.xml "
-            "--model-dir models --recursive --out runs/host_microbe"
+            "--model-dir models --microbial-biomass-gdw \"$MICROBIAL_BIOMASS_GDW\" "
+            "--host-biomass-gdw \"$HOST_BIOMASS_GDW\" --biomass-basis-kind measured "
+            "--biomass-basis-source \"$BIOMASS_BASIS_SOURCE\" --recursive "
+            "--out runs/host_microbe"
         ),
     },
     {
         "gui_surface": "Host / Rank Combinations",
         "cli_command": "cmig host-search-bigg",
         "purpose": "Rank microbial combinations by host objective and target transfer.",
-        "required_args": ["--host", "--model-dir or --taxonomy", "--out"],
+        "required_args": [
+            "--host",
+            "--model-dir or --taxonomy",
+            "--microbial-biomass-gdw",
+            "--host-biomass-gdw",
+            "--biomass-basis-kind",
+            "--biomass-basis-source",
+            "--out",
+        ],
         "common_options": [
             "--min-size",
             "--max-size",
@@ -193,6 +212,8 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "--metric",
             "--host-weight",
             "--target-weight",
+            "--host-reference",
+            "--target-reference",
             "--host-objective",
             "--recursive",
         ],
@@ -203,7 +224,10 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         ],
         "example": (
             "uv run cmig host-search-bigg --host models_human/Recon3D.xml "
-            "--model-dir models --target ac --out runs/host_search"
+            "--model-dir models --target ac --metric target_transfer "
+            "--microbial-biomass-gdw \"$MICROBIAL_BIOMASS_GDW\" "
+            "--host-biomass-gdw \"$HOST_BIOMASS_GDW\" --biomass-basis-kind measured "
+            "--biomass-basis-source \"$BIOMASS_BASIS_SOURCE\" --out runs/host_search"
         ),
     },
     {
@@ -507,6 +531,11 @@ def _cmd_solve(args: argparse.Namespace) -> int:
     if missing_cols:
         print(f"taxonomy 필수 컬럼 누락: {sorted(missing_cols)} (필요: id, file)", file=sys.stderr)
         return 2
+    try:
+        taxonomy = _resolve_taxonomy_model_paths(taxonomy, tax_path)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
 
     try:
         namespace_decisions = (
@@ -520,6 +549,9 @@ def _cmd_solve(args: argparse.Namespace) -> int:
             tradeoff_f=args.tradeoff_f,
             medium_path=args.medium,
             namespace_decisions=namespace_decisions,
+            namespace_policy=(
+                "assume_bigg" if args.assume_bigg_namespace else "require_reviewed"
+            ),
             strict_medium=not args.allow_unknown_medium,
             fva=args.fva or args.fva_metabolites is not None,
             fva_metabolites=_parse_optional_csv_strings(args.fva_metabolites),
@@ -604,7 +636,10 @@ def _cmd_host_fixture(args: argparse.Namespace) -> int:
         "viable": result.viable,
         "biomass": result.biomass,
         "lumen_uptake": result.lumen_uptake,
+        "lumen_uptake_ranges": result.lumen_uptake_ranges,
         "microbe_to_host": impact.microbe_to_host,
+        "microbe_to_host_ranges": impact.microbe_to_host_ranges,
+        "ambiguous_metabolites": impact.ambiguous_metabolites,
         "unused_secretion": impact.unused_secretion,
         "diagnostic": result.diagnostic,
         "scope": "synthetic_toy_host_not_human_gem_quantitative",
@@ -732,6 +767,7 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
         _apply_host_objective(host, args.host_objective)
         microbe_medium = load_medium(args.microbe_medium) if args.microbe_medium else None
         host_medium = load_medium(args.host_medium).uptake if args.host_medium else None
+        interface_map = _load_host_interface_map(args.interface_map)
         exclude = set() if args.include_currency_metabolites else {"h", "h2o", "co2"}
         if args.exclude_metabolites:
             exclude.update(
@@ -740,10 +776,15 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
         result = run_bigg_host_microbe(
             taxonomy,
             host,
+            microbial_biomass_gdw=args.microbial_biomass_gdw,
+            host_biomass_gdw=args.host_biomass_gdw,
+            biomass_basis_kind=args.biomass_basis_kind,
+            biomass_basis_source=args.biomass_basis_source,
             solver=args.solver,
             tradeoff_f=args.tradeoff_f,
             microbe_medium=microbe_medium,
             host_medium=host_medium,
+            interface_map=interface_map,
             exchange_suffix=args.exchange_suffix,
             exclude_metabolites=exclude,
             close_unlisted_host_uptake=not args.keep_host_uptake,
@@ -813,7 +854,8 @@ def _cmd_host_map(args: argparse.Namespace) -> int:
         print(f"failed to write host-map outputs: {e}", file=sys.stderr)
         return 2
     print(
-        f"host-map complete: {result.n_exact} exact / {result.n_normalized} normalized / "
+        f"host-map complete: {result.n_exact} exact / {result.n_annotation} annotation / "
+        f"{result.n_normalized} normalized / "
         f"{result.n_unmatched} unmatched (of {result.n_microbial_secretions} secretions) -> {out}"
     )
     return 0
@@ -841,10 +883,10 @@ def _write_host_map_outputs(result: Any, out: Path) -> None:
                 "suggestion": e.suggestion,
             })
     # Starter interface map the user can edit/confirm: metabolite -> host_exchange for
-    # exact + normalized matches (unmatched entries are listed but left null on purpose).
+    # exact + annotation + normalized matches (unmatched entries remain null on purpose).
     interface_map = {
         e.metabolite: e.host_exchange
-        for e in result.entries if e.match_type in ("exact", "normalized")
+        for e in result.entries if e.match_type in ("exact", "annotation", "normalized")
     }
     with open(out / "host_interface_map.json", "w") as f:
         json.dump(
@@ -861,6 +903,7 @@ def _write_host_map_outputs(result: Any, out: Path) -> None:
         "kind": "host_exchange_map",
         "n_microbial_secretions": result.n_microbial_secretions,
         "n_exact": result.n_exact,
+        "n_annotation": result.n_annotation,
         "n_normalized": result.n_normalized,
         "n_unmatched": result.n_unmatched,
         "n_host_uptake_capable": result.n_host_uptake_capable,
@@ -960,6 +1003,43 @@ def _cmd_render_figure(args: argparse.Namespace) -> int:
     return 0
 
 
+def _weighted_host_search_score(
+    host_objective: float,
+    target_transfer: float,
+    *,
+    host_weight: float | None,
+    target_weight: float | None,
+    host_reference: float | None,
+    target_reference: float | None,
+) -> float:
+    """Combine unlike host/flux quantities only after explicit nondimensionalization."""
+    values = {
+        "host_weight": host_weight,
+        "target_weight": target_weight,
+        "host_reference": host_reference,
+        "target_reference": target_reference,
+    }
+    invalid = [
+        name
+        for name, value in values.items()
+        if value is None or not math.isfinite(float(value)) or float(value) <= 0.0
+    ]
+    if invalid:
+        raise ValueError(
+            "weighted host search requires positive finite --host-weight, "
+            "--target-weight, --host-reference, and --target-reference; invalid: "
+            + ", ".join(invalid)
+        )
+    assert host_weight is not None
+    assert target_weight is not None
+    assert host_reference is not None
+    assert target_reference is not None
+    return (
+        host_weight * host_objective / host_reference
+        + target_weight * target_transfer / target_reference
+    )
+
+
 def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
     """Rank microbial combinations by host objective and/or target transfer."""
     try:
@@ -996,10 +1076,20 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         candidates = candidate_combinations(ids, args.min_size, args.max_size)
         if not candidates:
             raise ValueError("no candidate combinations generated")
+        if args.metric == "weighted":
+            _weighted_host_search_score(
+                0.0,
+                0.0,
+                host_weight=args.host_weight,
+                target_weight=args.target_weight,
+                host_reference=args.host_reference,
+                target_reference=args.target_reference,
+            )
         host_model = read_sbml_model(str(host_path))
         _apply_host_objective(host_model, args.host_objective)
         microbe_medium = load_medium(args.microbe_medium) if args.microbe_medium else None
         host_medium = load_medium(args.host_medium).uptake if args.host_medium else None
+        interface_map = _load_host_interface_map(args.interface_map)
         exclude = set() if args.include_currency_metabolites else {"h", "h2o", "co2"}
         if args.exclude_metabolites:
             exclude.update(
@@ -1012,10 +1102,15 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                 result = run_bigg_host_microbe(
                     sub,
                     host_model.copy(),
+                    microbial_biomass_gdw=args.microbial_biomass_gdw,
+                    host_biomass_gdw=args.host_biomass_gdw,
+                    biomass_basis_kind=args.biomass_basis_kind,
+                    biomass_basis_source=args.biomass_basis_source,
                     solver=args.solver,
                     tradeoff_f=args.tradeoff_f,
                     microbe_medium=microbe_medium,
                     host_medium=host_medium,
+                    interface_map=interface_map,
                     exchange_suffix=args.exchange_suffix,
                     exclude_metabolites=exclude,
                     close_unlisted_host_uptake=not args.keep_host_uptake,
@@ -1027,9 +1122,13 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                 elif args.metric == "target_transfer":
                     score = target_transfer
                 else:
-                    score = (
-                        args.host_weight * host_objective
-                        + args.target_weight * target_transfer
+                    score = _weighted_host_search_score(
+                        host_objective,
+                        target_transfer,
+                        host_weight=args.host_weight,
+                        target_weight=args.target_weight,
+                        host_reference=args.host_reference,
+                        target_reference=args.target_reference,
                     )
                 rows.append({
                     "members": members,
@@ -1073,6 +1172,18 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
             metric=args.metric,
             n_candidates_total=len(candidates),
             n_candidates_evaluated=len(candidates),
+            ranking_parameters={
+                "host_weight": args.host_weight,
+                "target_weight": args.target_weight,
+                "host_reference": args.host_reference,
+                "target_reference": args.target_reference,
+            },
+            biomass_basis={
+                "microbial_biomass_gdw": args.microbial_biomass_gdw,
+                "host_biomass_gdw": args.host_biomass_gdw,
+                "kind": args.biomass_basis_kind,
+                "source": args.biomass_basis_source,
+            },
         )
     except ValueError as e:
         print(str(e), file=sys.stderr)
@@ -1885,6 +1996,8 @@ def _write_host_search_bigg_outputs(
     metric: str,
     n_candidates_total: int,
     n_candidates_evaluated: int,
+    ranking_parameters: dict[str, float | None],
+    biomass_basis: dict[str, Any],
 ) -> None:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "host_search_rankings.csv", "w", newline="") as f:
@@ -1929,6 +2042,8 @@ def _write_host_search_bigg_outputs(
         "target": target,
         "n_candidates_total": n_candidates_total,
         "n_candidates_evaluated": n_candidates_evaluated,
+        "ranking_parameters": ranking_parameters,
+        "biomass_basis": biomass_basis,
         "top_ranked": [
             {
                 "rank": rank,
@@ -1972,26 +2087,54 @@ def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> N
     out.mkdir(parents=True, exist_ok=True)
     taxonomy.to_csv(out / "microbe_taxonomy.csv", index=False)
     with open(out / "microbial_secretion.csv", "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["metabolite", "flux", "host_exchange", "matched"])
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "metabolite", "community_flux", "host_scaled_availability",
+                "host_exchange", "matched", "unit",
+            ],
+        )
         writer.writeheader()
         for metabolite, flux in sorted(result.microbial_secretion.items()):
             exchange = result.matched_exchanges.get(metabolite, "")
             writer.writerow({
                 "metabolite": metabolite,
-                "flux": _finite_csv(float(flux)),
+                "community_flux": _finite_csv(
+                    float(result.community_secretion.get(metabolite, 0.0))
+                ),
+                "host_scaled_availability": _finite_csv(float(flux)),
                 "host_exchange": exchange,
                 "matched": bool(exchange),
+                "unit": result.host_result.flux_unit,
             })
     with open(out / "host_uptake.csv", "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["metabolite", "uptake_flux"])
+        writer = csv.DictWriter(
+            f, fieldnames=["metabolite", "uptake_flux", "minimum", "maximum", "unit"]
+        )
         writer.writeheader()
-        for metabolite, flux in sorted(result.host_result.lumen_uptake.items()):
-            writer.writerow({"metabolite": metabolite, "uptake_flux": _finite_csv(float(flux))})
+        for metabolite, bounds in sorted(result.host_result.lumen_uptake_ranges.items()):
+            point = result.host_result.lumen_uptake.get(metabolite)
+            writer.writerow({
+                "metabolite": metabolite,
+                "uptake_flux": "" if point is None else _finite_csv(float(point)),
+                "minimum": _finite_csv(float(bounds[0])),
+                "maximum": _finite_csv(float(bounds[1])),
+                "unit": result.host_result.flux_unit,
+            })
     with open(out / "microbe_to_host.csv", "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["metabolite", "transfer_flux"])
+        writer = csv.DictWriter(
+            f, fieldnames=["metabolite", "transfer_flux", "minimum", "maximum", "identifiable"]
+        )
         writer.writeheader()
-        for metabolite, flux in sorted(result.impact.microbe_to_host.items()):
-            writer.writerow({"metabolite": metabolite, "transfer_flux": _finite_csv(float(flux))})
+        for metabolite, bounds in sorted(result.impact.microbe_to_host_ranges.items()):
+            point = result.impact.microbe_to_host.get(metabolite)
+            writer.writerow({
+                "metabolite": metabolite,
+                "transfer_flux": "" if point is None else _finite_csv(float(point)),
+                "minimum": _finite_csv(float(bounds[0])),
+                "maximum": _finite_csv(float(bounds[1])),
+                "identifiable": point is not None,
+            })
     edge_rows = host_microbe_interaction_rows(
         microbial_secretion=result.microbial_secretion,
         host_uptake=result.host_result.lumen_uptake,
@@ -2044,12 +2187,20 @@ def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> N
             "objective_value": _finite_or_none(float(result.host_result.biomass)),
             "diagnostic": result.host_result.diagnostic,
             "lumen_uptake": result.host_result.lumen_uptake,
+            "lumen_uptake_ranges": result.host_result.lumen_uptake_ranges,
+            "flux_unit": result.host_result.flux_unit,
         },
+        "coupling_scale": (
+            None if result.coupling_scale is None else result.coupling_scale.__dict__
+        ),
         "matched_exchanges": result.matched_exchanges,
         "unmatched_metabolites": result.unmatched_metabolites,
         "microbial_secretion": result.microbial_secretion,
+        "community_secretion": result.community_secretion,
         "member_secretion": result.member_secretion,
         "microbe_to_host": result.impact.microbe_to_host,
+        "microbe_to_host_ranges": result.impact.microbe_to_host_ranges,
+        "ambiguous_metabolites": result.impact.ambiguous_metabolites,
         "unused_secretion": result.impact.unused_secretion,
         "warnings": result.warnings,
         "artifacts": [
@@ -2170,6 +2321,65 @@ def _cmd_dfba(args: argparse.Namespace) -> int:
         },
     )
     print(f"dfba complete ({result.status}) -> {args.out}")
+    return 0
+
+
+def _cmd_dfba_sensitivity(args: argparse.Namespace) -> int:
+    """Run a numerical dt×Km sensitivity grid for one user model."""
+    try:
+        import cobra
+
+        from cmig.core.dfba import DfbaConfig, run_dfba_sensitivity
+        from cmig.io.dfba_output import write_dfba_sensitivity
+        from cmig.io.solve_output import file_checksum, runtime_versions
+    except ImportError:
+        print("dfba-sensitivity requires the engine stack", file=sys.stderr)
+        return 2
+    model_path = Path(args.model)
+    if not model_path.exists():
+        print(f"model file not found: {model_path}", file=sys.stderr)
+        return 2
+    try:
+        model = cobra.io.read_sbml_model(str(model_path))
+        concentrations = _dfba_initial_concentrations(model, args.initial_concentrations)
+        vmax = _parse_key_float_map(args.vmax, flag="--vmax") if args.vmax else None
+        _require_model_exchanges(model, concentrations, flag="--initial")
+        if vmax is not None:
+            _require_model_exchanges(model, vmax, flag="--vmax")
+        dts = _parse_csv_floats(args.dts, flag="--dts")
+        kms = _parse_csv_floats(args.kms, flag="--kms")
+        config = DfbaConfig(
+            t_end=args.t_end,
+            dt=min(dts),
+            initial_biomass=args.initial_biomass,
+            initial_concentrations=concentrations,
+            km=min(kms),
+            vmax=vmax,
+            min_dt=min(args.min_dt, min(dts)),
+            growth_floor=args.growth_floor,
+        )
+        result = run_dfba_sensitivity(
+            model,
+            config,
+            dts=dts,
+            kms=kms,
+            solver=args.solver,
+        )
+        artifacts = write_dfba_sensitivity(
+            result,
+            args.out,
+            provenance={
+                "model_path": str(model_path.resolve()),
+                "model_checksum": file_checksum(model_path),
+                "dependency_versions": runtime_versions(),
+                "solver": args.solver,
+            },
+        )
+    except (KeyError, OSError, ValueError) as e:
+        print(f"dfba-sensitivity input error: {e}", file=sys.stderr)
+        return 2
+    print(f"dfba-sensitivity complete ({len(result.rows)} runs) -> {args.out}")
+    print(f"  artifacts: {', '.join(artifacts)}")
     return 0
 
 
@@ -2545,6 +2755,7 @@ def _write_multi_target_outputs(result: Any, taxonomy: Any, out: Path) -> None:
         "weights": result.weights,
         "strategy": result.strategy,
         "normalizer": result.normalizer,
+        "solution_semantics": result.solution_semantics,
         "n_pool_members": result.n_pool_members,
         "n_candidates_total": result.n_candidates_total,
         "n_candidates_evaluated": result.n_candidates_evaluated,
@@ -2772,7 +2983,12 @@ def _write_dfba_outputs(
     solver: str,
     config: dict[str, Any],
 ) -> None:
-    from cmig.core.dfba import build_timecourse, timecourse_rows, write_timecourse
+    from cmig.core.dfba import (
+        audit_dfba_balance,
+        build_timecourse,
+        timecourse_rows,
+        write_timecourse,
+    )
 
     out.mkdir(parents=True, exist_ok=True)
     table = build_timecourse(result)
@@ -2783,6 +2999,7 @@ def _write_dfba_outputs(
         writer.writeheader()
         writer.writerows(rows)
     final = result.timecourse[-1]
+    balance_audit = audit_dfba_balance(result)
     payload = {
         "status": result.status,
         "diagnostic": result.diagnostic,
@@ -2795,6 +3012,7 @@ def _write_dfba_outputs(
         "final_biomass": final.biomass,
         "final_growth_rate": final.growth_rate,
         "final_concentrations": final.concentrations,
+        "integration_balance": balance_audit.__dict__,
         "artifacts": [
             "timecourse.parquet",
             "dfba_timecourse.csv",
@@ -3458,6 +3676,7 @@ def _cmd_stats_demo(args: argparse.Namespace) -> int:
     groups = {"western": [1.0, 1.2, 1.1, 1.3], "fiber": [2.0, 2.3, 2.1, 2.4]}
     test = two_group_test(groups["western"], groups["fiber"])
     payload = {
+        "scope": "synthetic_demo_values_not_experimental_evidence",
         "summary": [s.__dict__ for s in distribution_summary(groups)],
         "test": test.__dict__,
         "fdr_qvalues": fdr_correct([test.pvalue], method=args.fdr_method),
@@ -3486,10 +3705,33 @@ def _cmd_stats_sweep(args: argparse.Namespace) -> int:
         print(f"sweep 파일 없음: {sweep_path}", file=sys.stderr)
         return 2
     rows = pq.read_table(sweep_path).to_pylist()  # type: ignore[no-untyped-call]
-    groups = groups_from_sweep_rows(rows, metric=args.metric, group_axis=args.group_axis)
+    if bool(args.replicate_column) != bool(args.confirm_independent_replicates):
+        print(
+            "추론통계에는 --replicate-column과 --confirm-independent-replicates를 "
+            "함께 지정해야 함",
+            file=sys.stderr,
+        )
+        return 2
+    inference_enabled = bool(args.replicate_column)
+    try:
+        groups = groups_from_sweep_rows(
+            rows,
+            metric=args.metric,
+            group_axis=args.group_axis,
+            replicate_column=args.replicate_column,
+            replicate_aggregate=args.replicate_aggregate,
+        )
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
     names = sorted(groups)
     test = None
-    if len(names) == 2:
+    inference_status = "not_run_no_independent_replicates"
+    if inference_enabled and len(names) != 2:
+        inference_status = "not_run_requires_exactly_two_groups"
+    elif inference_enabled and any(len(groups[name]) < 2 for name in names):
+        inference_status = "not_run_fewer_than_two_replicates"
+    elif inference_enabled and len(names) == 2:
         result = two_group_test(
             groups[names[0]],
             groups[names[1]],
@@ -3503,13 +3745,22 @@ def _cmd_stats_sweep(args: argparse.Namespace) -> int:
             "effect_size": result.effect_size,
             "effect_name": result.effect_name,
         }
+        inference_status = "completed"
     payload = {
         "metric": args.metric,
         "group_axis": args.group_axis,
         "groups": {name: len(groups[name]) for name in names},
         "summary": [s.__dict__ for s in distribution_summary(groups)],
         "test": test,
-        "warnings": stats_warnings(groups),
+        "inference": {
+            "status": inference_status,
+            "replicate_column": args.replicate_column,
+            "replicate_aggregate": args.replicate_aggregate,
+            "confirmed_independent": bool(args.confirm_independent_replicates),
+        },
+        "warnings": stats_warnings(
+            groups, independent_replicates=inference_enabled
+        ),
         "source": str(sweep_path),
     }
     _write_json_or_print(payload, args.out, "stats_sweep_summary.json")
@@ -3739,26 +3990,47 @@ def _load_bounds_json(path: str) -> dict[str, list[float]]:
     return out
 
 
-def _taxonomy_model_checksum(taxonomy: Any, tax_path: Path) -> str:
-    """taxonomy file 컬럼이 가리키는 GEM 파일 바이트 집합의 결정적 checksum."""
-    from cmig.io.solve_output import file_checksum
+def _load_host_interface_map(path: str | None) -> dict[str, str] | None:
+    if path is None:
+        return None
+    source = Path(path)
+    raw = json.loads(source.read_text())
+    if isinstance(raw, dict) and "interface_map" in raw:
+        raw = raw["interface_map"]
+    if not isinstance(raw, dict):
+        raise ValueError("host interface map must be a JSON object")
+    mapping: dict[str, str] = {}
+    for metabolite, exchange in raw.items():
+        if not isinstance(metabolite, str) or not metabolite.strip():
+            raise ValueError("host interface map metabolite keys must be non-empty strings")
+        if exchange is None:
+            continue
+        if not isinstance(exchange, str) or not exchange.strip():
+            raise ValueError(f"invalid host exchange mapping: {metabolite} -> {exchange}")
+        mapping[metabolite] = exchange
+    return mapping
 
-    rows: list[dict[str, str]] = []
-    for record in taxonomy.to_dict("records"):
-        member_id = str(record["id"])
-        raw_path = Path(str(record["file"]))
-        model_path = raw_path
-        if not model_path.exists() and not model_path.is_absolute():
-            model_path = tax_path.parent / raw_path
-        if not model_path.exists():
+
+def _taxonomy_model_checksum(taxonomy: Any, tax_path: Path) -> str:
+    """GEM 바이트와 solve 관련 taxonomy metadata의 결정적 checksum."""
+    from cmig.io.solve_output import taxonomy_model_checksum
+
+    return taxonomy_model_checksum(taxonomy, base_dir=tax_path.parent)
+
+
+def _resolve_taxonomy_model_paths(taxonomy: Any, tax_path: Path) -> Any:
+    """taxonomy CSV 기준 상대 경로를 절대 경로로 고정해 CWD 의존성을 제거한다."""
+    resolved = taxonomy.copy(deep=True)
+    for index in resolved.index:
+        raw_path = Path(str(resolved.at[index, "file"]))
+        candidates = [raw_path]
+        if not raw_path.is_absolute():
+            candidates.insert(0, tax_path.parent / raw_path)
+        model_path = next((path for path in candidates if path.exists()), None)
+        if model_path is None:
             raise ValueError(f"taxonomy model 파일 없음: {raw_path}")
-        rows.append({"id": member_id, "file_checksum": file_checksum(model_path)})
-    payload = json.dumps(
-        sorted(rows, key=lambda row: row["id"]),
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        resolved.at[index, "file"] = str(model_path.resolve())
+    return resolved
 
 
 def _sweep_condition_content_key(
@@ -3923,6 +4195,11 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         print(f"taxonomy 필수 컬럼 누락: {sorted(missing_cols)} (필요: id, file)", file=sys.stderr)
         return 2
     try:
+        taxonomy = _resolve_taxonomy_model_paths(taxonomy, tax_path)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    try:
         tradeoff_fs = _parse_csv_floats(args.tradeoff_fs, flag="--tradeoff-fs")
         bad_tradeoffs = [v for v in tradeoff_fs if not (0.0 < v <= 1.0)]
         if bad_tradeoffs:
@@ -4038,6 +4315,9 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
                     tradeoff_f=tradeoff_f,
                     medium_path=medium_path,
                     namespace_decisions=namespace_decisions,
+                    namespace_policy=(
+                        "assume_bigg" if args.assume_bigg_namespace else "require_reviewed"
+                    ),
                     strict_medium=not args.allow_unknown_medium,
                     out_dir=cond_dir,
                     bounds=bounds,
@@ -4217,10 +4497,16 @@ def build_parser() -> argparse.ArgumentParser:
     sv = sub.add_parser("solve", help="community solve --taxonomy [--medium] (C6/C7, P1)")
     sv.add_argument("--taxonomy", required=True, help="taxonomy csv (micom Community 입력)")
     sv.add_argument("--medium", default=None, help="medium spec csv/json (생략 시 default medium)")
-    sv.add_argument(
+    sv_namespace = sv.add_mutually_exclusive_group()
+    sv_namespace.add_argument(
         "--namespace-decisions",
         default=None,
         help="namespace decision JSON; unresolved high-confidence mapping 이 있으면 solve 차단",
+    )
+    sv_namespace.add_argument(
+        "--assume-bigg-namespace",
+        action="store_true",
+        help="입력 모델이 이미 BiGG namespace임을 명시적으로 확인(검토 파일 우회 audit)",
     )
     sv.add_argument(
         "--allow-unknown-medium",
@@ -4286,6 +4572,25 @@ def build_parser() -> argparse.ArgumentParser:
     hmb.add_argument("--recursive", action="store_true", help="scan --model-dir recursively")
     hmb.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     hmb.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f")
+    hmb.add_argument(
+        "--microbial-biomass-gdw", type=float, required=True,
+        help="microbial community biomass represented by MICOM flux (gDW)",
+    )
+    hmb.add_argument(
+        "--host-biomass-gdw", type=float, required=True,
+        help="host biomass basis for host-specific uptake flux (gDW)",
+    )
+    hmb.add_argument(
+        "--biomass-basis-kind",
+        required=True,
+        choices=["measured", "literature", "validation"],
+        help="measured/literature for study results; validation is explicitly non-publication",
+    )
+    hmb.add_argument(
+        "--biomass-basis-source",
+        required=True,
+        help="measurement method, sample record, or literature citation for both gDW bases",
+    )
     hmb.add_argument("--microbe-medium", default=None, help="optional microbial medium csv/json")
     hmb.add_argument(
         "--host-medium",
@@ -4293,6 +4598,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional host background medium csv/json; keys may be EX_*_e or BiGG ids",
     )
     hmb.add_argument("--exchange-suffix", default="_e", help="host BiGG exchange suffix")
+    hmb.add_argument(
+        "--interface-map",
+        default=None,
+        help="reviewed JSON metabolite->host exchange map (e.g. host-map output)",
+    )
     hmb.add_argument(
         "--host-objective",
         default=None,
@@ -4363,16 +4673,47 @@ def build_parser() -> argparse.ArgumentParser:
     hs.add_argument("--target", default="ac", help="target transferred metabolite id")
     hs.add_argument(
         "--metric",
-        default="weighted",
+        default="target_transfer",
         choices=["weighted", "objective_value", "target_transfer"],
         help="ranking metric",
     )
-    hs.add_argument("--host-weight", type=float, default=1.0, dest="host_weight")
-    hs.add_argument("--target-weight", type=float, default=1.0, dest="target_weight")
+    hs.add_argument("--host-weight", type=float, default=None, dest="host_weight")
+    hs.add_argument("--target-weight", type=float, default=None, dest="target_weight")
+    hs.add_argument(
+        "--host-reference", type=float, default=None, dest="host_reference",
+        help="positive host-objective reference used to make weighted scoring dimensionless",
+    )
+    hs.add_argument(
+        "--target-reference", type=float, default=None, dest="target_reference",
+        help="positive target-flux reference used to make weighted scoring dimensionless",
+    )
     hs.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f")
+    hs.add_argument(
+        "--microbial-biomass-gdw", type=float, required=True,
+        help="microbial community biomass represented by MICOM flux (gDW)",
+    )
+    hs.add_argument(
+        "--host-biomass-gdw", type=float, required=True,
+        help="host biomass basis for host-specific uptake flux (gDW)",
+    )
+    hs.add_argument(
+        "--biomass-basis-kind",
+        required=True,
+        choices=["measured", "literature", "validation"],
+        help="measured/literature for study results; validation is explicitly non-publication",
+    )
+    hs.add_argument(
+        "--biomass-basis-source",
+        required=True,
+        help="measurement method, sample record, or literature citation for both gDW bases",
+    )
     hs.add_argument("--microbe-medium", default=None, help="optional microbial medium csv/json")
     hs.add_argument("--host-medium", default=None, help="optional host background medium csv/json")
     hs.add_argument("--exchange-suffix", default="_e", help="host BiGG exchange suffix")
+    hs.add_argument(
+        "--interface-map", default=None,
+        help="reviewed JSON metabolite->host exchange map",
+    )
     hs.add_argument(
         "--host-objective",
         default=None,
@@ -4530,6 +4871,22 @@ def build_parser() -> argparse.ArgumentParser:
     df_user.add_argument("--growth-floor", type=float, default=1e-6, dest="growth_floor")
     df_user.add_argument("--out", required=True, help="output directory")
     df_user.set_defaults(func=_cmd_dfba)
+    dfs = sub.add_parser(
+        "dfba-sensitivity",
+        help="numerical dt x Km sensitivity for a user SBML model",
+    )
+    dfs.add_argument("--model", required=True, help="SBML model file")
+    dfs.add_argument("--solver", default="gurobi", choices=["gurobi", "osqp"])
+    dfs.add_argument("--t-end", type=float, default=2.0, dest="t_end")
+    dfs.add_argument("--dts", default="0.2,0.1,0.05")
+    dfs.add_argument("--kms", default="0.005,0.01,0.02")
+    dfs.add_argument("--initial-biomass", type=float, default=0.01, dest="initial_biomass")
+    dfs.add_argument("--initial", default=None, dest="initial_concentrations")
+    dfs.add_argument("--vmax", default=None)
+    dfs.add_argument("--min-dt", type=float, default=1e-4, dest="min_dt")
+    dfs.add_argument("--growth-floor", type=float, default=1e-6, dest="growth_floor")
+    dfs.add_argument("--out", required=True, help="output directory")
+    dfs.set_defaults(func=_cmd_dfba_sensitivity)
     spatial = sub.add_parser(
         "spatial-preview",
         help="COMETS-inspired 2D medium source/sink diffusion preview -> heatmap",
@@ -4643,6 +5000,20 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument("--metric", default="growth")
     ss.add_argument("--group-axis", default="solver", dest="group_axis")
     ss.add_argument("--parametric", action="store_true")
+    ss.add_argument(
+        "--replicate-column",
+        default=None,
+        help="독립 생물학적/실험 replicate ID column (미지정 시 p-value를 계산하지 않음)",
+    )
+    ss.add_argument(
+        "--confirm-independent-replicates",
+        action="store_true",
+        help="지정한 replicate ID가 독립 반복임을 명시적으로 확인",
+    )
+    ss.add_argument(
+        "--replicate-aggregate", default="mean", choices=["mean", "median"],
+        help="같은 group×replicate의 여러 조건을 한 관측치로 집계",
+    )
     ss.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
     ss.set_defaults(func=_cmd_stats_sweep)
     ns = sub.add_parser("namespace-suggest", help="model exchange namespace decision 초안 생성")
@@ -4659,6 +5030,9 @@ def build_parser() -> argparse.ArgumentParser:
     mr.add_argument("--target-namespace", default="bigg")
     mr.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
     mr.set_defaults(func=_cmd_model_review)
+    from cmig.cli.publication import add_publication_parsers
+
+    add_publication_parsers(sub)
     sw = sub.add_parser("sweep-fixture", help="fixture parameter sweep → sweep.parquet")
     sw.add_argument("--tradeoff-fs", default="0.3,0.5", dest="tradeoff_fs")
     sw.add_argument("--solvers", default="gurobi")
@@ -4685,7 +5059,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="comma-separated JSON files {reaction_id: [lo, hi]}",
     )
-    us.add_argument("--namespace-decisions", default=None)
+    us_namespace = us.add_mutually_exclusive_group()
+    us_namespace.add_argument("--namespace-decisions", default=None)
+    us_namespace.add_argument(
+        "--assume-bigg-namespace",
+        action="store_true",
+        help="입력 모델이 이미 BiGG namespace임을 명시적으로 확인",
+    )
     us.add_argument("--allow-unknown-medium", action="store_true")
     us.add_argument("--fva", action="store_true", help="include community FVA for each condition")
     us.add_argument(

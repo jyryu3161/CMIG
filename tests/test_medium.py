@@ -41,7 +41,9 @@ def test_minimal_medium_is_minimal(textbook):
 
 def test_limiting_nutrients_are_components(textbook):
     res = minimal_medium_cardinality(textbook, min_objective_value=0.1)
-    assert limiting_nutrients(res) == res.components
+    assert set(limiting_nutrients(res)) <= set(res.components)
+    assert any("glc" in component for component in limiting_nutrients(res))
+    assert res.achieved_growth >= res.min_growth - 1e-7
 
 
 def test_infeasible_growth_raises(textbook):
@@ -69,7 +71,7 @@ def test_zero_uptake_u_base_excluded_from_medium(textbook):
         textbook.reactions.EX_h_e.lower_bound = 0.0     # H⁺ 를 secretion-only 로
         res = minimal_medium_cardinality(textbook, min_objective_value=0.1)
     assert "EX_h_e" not in res.components               # 흡수 용량 0 → 최소 배지 미포함
-    assert limiting_nutrients(res) == res.components    # 계약(limiting == components) 유지
+    assert set(limiting_nutrients(res)) <= set(res.components)
     assert all(res.uptake_bounds[c] > 0.0 for c in res.components)  # 모든 구성요소가 실 흡수 용량>0
 
 
@@ -79,6 +81,30 @@ def test_tc10_oxygen_mode_anaerobic_excludes_o2(textbook):
     ana = minimal_medium_cardinality(textbook, 0.1, oxygen_mode="anaerobic")
     assert O2_EXCHANGE not in ana.components
     assert ana.oxygen_mode == "anaerobic"
+    assert ana.achieved_growth >= 0.1 - 1e-7
+
+
+def test_anaerobic_mode_rejects_obligate_oxygen_medium():
+    """O2 must be closed before the MILP; removing it after solve used to return false success."""
+    from cobra import Metabolite, Model, Reaction
+
+    model = Model("obligate_o2")
+    oxygen_external = Metabolite("o2_e", compartment="e")
+    oxygen_internal = Metabolite("o2_c", compartment="c")
+    exchange = Reaction("EX_o2_e")
+    exchange.add_metabolites({oxygen_external: -1.0})
+    exchange.bounds = (-10.0, 1000.0)
+    transport = Reaction("O2t")
+    transport.add_metabolites({oxygen_external: -1.0, oxygen_internal: 1.0})
+    transport.bounds = (0.0, 1000.0)
+    biomass = Reaction("BIOMASS")
+    biomass.add_metabolites({oxygen_internal: -1.0})
+    biomass.bounds = (0.0, 1000.0)
+    model.add_reactions([exchange, transport, biomass])
+    model.objective = biomass
+
+    with pytest.raises(MILPInfeasibleError):
+        minimal_medium_cardinality(model, 1.0, oxygen_mode="anaerobic")
 
 
 def test_tc10_invalid_oxygen_mode_raises(textbook):

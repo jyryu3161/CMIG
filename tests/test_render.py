@@ -15,6 +15,7 @@ from cmig.render.client import (
     render_profile,
     rscript_available,
 )
+from cmig.render.provenance import parse_r_provenance
 
 
 def _bundle():
@@ -64,6 +65,11 @@ def test_real_r_render_svg(tmp_path):
     assert "<svg" in head or "<?xml" in head        # 유효 SVG
     # sidecar 재현 자산
     assert out.with_name("profile.svg.figure_spec.json").exists()
+    provenance = json.loads(out.with_name("profile.svg.render_provenance.json").read_text())
+    assert provenance["renderer"] == "r"
+    assert provenance["runtime"]["r_packages"]["ggplot2"]
+    assert provenance["script"]["file"] == "cmig/render_r/figure.R"
+    assert provenance["renv_lock"]["sha256"]
 
 
 @pytest.mark.skipif(not rscript_available(), reason="Rscript 미설치")
@@ -92,6 +98,11 @@ def test_matplotlib_fallback_uses_label_palette(tmp_path):
     text = out.read_text(errors="ignore").lower()
     assert "#d62728" in text
     assert "#1f77b4" in text
+    provenance = json.loads(out.with_name("profile.svg.render_provenance.json").read_text())
+    assert provenance["renderer"] == "matplotlib"
+    assert provenance["input"]["serialization"] == "canonical-json-v1"
+    assert provenance["renv_lock"]["file"] == "cmig/render_r/renv.lock"
+    assert provenance["figure"]["sha256"]
 
 
 def test_render_client_passes_project_rlib(monkeypatch, tmp_path):
@@ -100,13 +111,25 @@ def test_render_client_passes_project_rlib(monkeypatch, tmp_path):
     def fake_run(cmd, **kwargs):
         seen["cmd"] = list(cmd)
         Path(cmd[cmd.index("--out") + 1]).write_text("<svg/>")
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        stdout = "CMIG_R_VERSION\tR version 4.3.2\nCMIG_R_PACKAGE\tggplot2\t3.5.2\n"
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     out = tmp_path / "profile.svg"
     RenderClient(rscript="/usr/bin/Rscript").render([], FigureSpec(format="svg"), out)
     rlib = seen["cmd"][seen["cmd"].index("--rlib") + 1]
     assert rlib.endswith("/CMIG/.Rlib")
+    provenance = json.loads(out.with_name("profile.svg.render_provenance.json").read_text())
+    assert provenance["runtime"]["r_version"] == "R version 4.3.2"
+    assert provenance["runtime"]["r_packages"] == {"ggplot2": "3.5.2"}
+
+
+def test_parse_r_provenance_ignores_regular_output():
+    version, packages = parse_r_provenance(
+        "warning\nCMIG_R_PACKAGE\tsvglite\t2.2.1\nCMIG_R_VERSION\tR 4.3.2\nOK\n"
+    )
+    assert version == "R 4.3.2"
+    assert packages == {"svglite": "2.2.1"}
 
 
 def test_cli_render_figure_matplotlib(tmp_path):
@@ -122,6 +145,7 @@ def test_cli_render_figure_matplotlib(tmp_path):
     assert rc == 0
     assert out.exists() and out.stat().st_size > 0
     assert out.with_name("profile.svg.figure_spec.json").exists()
+    assert out.with_name("profile.svg.render_provenance.json").exists()
 
 
 def test_cli_render_figure_missing_profile_errors(tmp_path):

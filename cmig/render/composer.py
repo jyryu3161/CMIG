@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from cmig.render.client import RenderError, rscript_path
+from cmig.render.provenance import sha256_file, write_render_provenance
 
 _RENDER_R_DIR = Path(__file__).resolve().parent.parent / "render_r"
 _RLIB = Path(__file__).resolve().parents[2] / ".Rlib"
@@ -105,8 +106,9 @@ class FigureComposer:
         spec.validate()
         out = Path(out_path)
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.with_name(out.name + ".figure_spec.json").write_text(
-            json.dumps(asdict(spec), indent=2, sort_keys=True, ensure_ascii=True)
+        spec_path = out.with_name(out.name + ".figure_spec.json")
+        spec_path.write_text(
+            json.dumps(asdict(spec), indent=2, sort_keys=True, ensure_ascii=True) + "\n"
         )
         if not self.available():
             raise RenderError(
@@ -129,6 +131,16 @@ class FigureComposer:
                 raise RenderError(
                     f"R {spec.kind} 패널 실패 (rc={proc.returncode}): {proc.stderr.strip()[:400]}"
                 )
+            write_render_provenance(
+                out,
+                renderer="r",
+                spec_path=spec_path,
+                input_sha256=sha256_file(data_csv),
+                input_serialization=f"cmig-{spec.kind}-csv-v1",
+                script=script,
+                rscript=str(self._rscript),
+                r_stdout=proc.stdout,
+            )
         return out
 
     def render_panels(

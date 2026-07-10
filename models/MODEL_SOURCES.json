@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "license_url": "https://bigg.ucsd.edu/",
+  "resource_citation": "King ZA et al. Nucleic Acids Res. 2016;44(D1):D515-D522. doi:10.1093/nar/gkv1049",
+  "retrieval_note": "Legacy repository fixtures; original retrieval dates were not recorded. SHA-256 values identify the exact bytes used by CMIG validation.",
+  "models": [
+    {
+      "id": "iAF987",
+      "file": "iAF987.xml",
+      "source_url": "https://bigg.ucsd.edu/models/iAF987",
+      "sha256": "641570049c1b7400d0cbbc3eebc9407d7549e1177fccda9514ede441b006cba2"
+    },
+    {
+      "id": "iHN637",
+      "file": "iHN637.xml",
+      "source_url": "https://bigg.ucsd.edu/models/iHN637",
+      "sha256": "4a34f7086269f2b1c991a7c95c96576a607d5e2630db3917267472d436b60e07"
+    },
+    {
+      "id": "iML1515",
+      "file": "iML1515.xml",
+      "source_url": "https://bigg.ucsd.edu/models/iML1515",
+      "sha256": "9c772d44ca43350e40dc7ee86c7aa148796856be1eea45e5406c6df8f7dcde28"
+    },
+    {
+      "id": "iSFV_1184",
+      "file": "iSFV_1184.xml",
+      "source_url": "https://bigg.ucsd.edu/models/iSFV_1184",
+      "sha256": "f49356843b2e44ff6305a46e82f1479033954c17fa9e998a7271a1c17d8a2255"
+    },
+    {
+      "id": "iYO844",
+      "file": "iYO844.xml",
+      "source_url": "https://bigg.ucsd.edu/models/iYO844",
+      "sha256": "28e4ca32d412102481ac29f84b0267b1449108bbf1fa6efc604794b4a93b9740"
+    }
+  ]
+}

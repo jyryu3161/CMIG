@@ -152,7 +152,8 @@ def test_cli_sweep_replays_content_identical_condition(tmp_path):
     tax.to_csv(tax_csv, index=False)
     out = tmp_path / "sweep_out"
     rc = cli_main([
-        "sweep", "--taxonomy", str(tax_csv), "--tradeoff-fs", "0.5,0.5", "--out", str(out),
+        "sweep", "--taxonomy", str(tax_csv), "--assume-bigg-namespace",
+        "--tradeoff-fs", "0.5,0.5", "--out", str(out),
     ])
     assert rc == 0
     t = pq.read_table(out / "sweep.parquet").to_pydict()

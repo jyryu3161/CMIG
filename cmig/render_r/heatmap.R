@@ -61,3 +61,10 @@ if (fmt == "tiff") {
 }
 draw(ht)
 dev.off()
+cat("CMIG_R_VERSION\t", R.version.string, "\n", sep = "")
+for (package in c("ComplexHeatmap", "circlize", "svglite", "systemfonts")) {
+  if (requireNamespace(package, quietly = TRUE)) {
+    cat("CMIG_R_PACKAGE\t", package, "\t", as.character(packageVersion(package)), "\n",
+        sep = "")
+  }
+}

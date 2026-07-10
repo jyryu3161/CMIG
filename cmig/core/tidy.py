@@ -45,7 +45,7 @@ EDGES_SCHEMA = pa.schema([
     ("target_id", pa.string()),
     ("metabolite", pa.string()),
     ("edge_type", pa.string()),       # {cross_feeding, uptake, secretion}
-    ("weight", pa.float64()),         # cross_feeding=min(분비,흡수)
+    ("weight", pa.float64()),         # mass-conserving proportional shared-pool allocation
     ("label", pa.string()),           # sign label (uptake|secretion)
 ])
 

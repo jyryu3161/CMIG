@@ -51,6 +51,7 @@ def test_render_network(tmp_path):
     assert out.exists() and out.stat().st_size > 1000
     sidecar = out.with_name(out.name + ".figure_spec.json")
     assert sidecar.exists() and json.loads(sidecar.read_text())["kind"] == "network"
+    assert out.with_name(out.name + ".render_provenance.json").exists()
 
 
 @_needs_r

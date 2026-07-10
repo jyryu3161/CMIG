@@ -54,11 +54,14 @@ def test_facade_solve_community_matches_cli(tmp_path):
     build_taxonomy().to_csv(tax, index=False)
     cli_dir = tmp_path / "cli"
     fac_dir = tmp_path / "fac"
-    main(["solve", "--taxonomy", str(tax), "--solver", "gurobi", "--out", str(cli_dir)])
+    main([
+        "solve", "--taxonomy", str(tax), "--assume-bigg-namespace",
+        "--solver", "gurobi", "--out", str(cli_dir),
+    ])
     EngineService().solve_community(
         taxonomy=pd.read_csv(tax),
         model_checksum=_taxonomy_model_checksum(pd.read_csv(tax), tax),
-        solver="gurobi", tradeoff_f=0.5, out_dir=fac_dir,
+        solver="gurobi", tradeoff_f=0.5, namespace_policy="assume_bigg", out_dir=fac_dir,
     )
     cli_hash = json.loads((cli_dir / "manifest.json").read_text())["run_hash"]
     fac_hash = json.loads((fac_dir / "manifest.json").read_text())["run_hash"]
@@ -76,6 +79,7 @@ def test_facade_solve_community_applies_bounds(tmp_path):
         model_checksum=file_checksum(tax),
         solver="gurobi",
         tradeoff_f=0.5,
+        namespace_policy="assume_bigg",
         out_dir=tmp_path / "base",
     )
     constrained = EngineService().solve_community(
@@ -83,6 +87,7 @@ def test_facade_solve_community_applies_bounds(tmp_path):
         model_checksum=file_checksum(tax),
         solver="gurobi",
         tradeoff_f=0.5,
+        namespace_policy="assume_bigg",
         bounds={"EX_glc__D_e__Escherichia_coli_1": [-1.0, 1000.0]},
         out_dir=tmp_path / "constrained",
     )

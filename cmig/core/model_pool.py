@@ -8,6 +8,7 @@ not download or curate external models.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +20,30 @@ SUPPORTED_MODEL_SUFFIXES = (".xml", ".sbml", ".xml.gz", ".sbml.gz", ".json", ".m
 def is_supported_model_file(path: Path) -> bool:
     """Return True for cobra-readable GEM file names CMIG accepts as pool members."""
     name = path.name.lower()
-    return path.is_file() and any(name.endswith(suffix) for suffix in SUPPORTED_MODEL_SUFFIXES)
+    if not path.is_file() or not any(
+        name.endswith(suffix) for suffix in SUPPORTED_MODEL_SUFFIXES
+    ):
+        return False
+    if name.endswith(".json"):
+        return _is_cobra_json_candidate(path)
+    return True
+
+
+def _is_cobra_json_candidate(path: Path) -> bool:
+    """Distinguish COBRA JSON models from manifests and analysis JSON in model folders.
+
+    Malformed JSON remains a candidate so the normal importer can report a useful parse
+    diagnostic. A valid JSON document is accepted only when it has the core COBRA model arrays.
+    """
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return True
+    return (
+        isinstance(payload, dict)
+        and isinstance(payload.get("reactions"), list)
+        and isinstance(payload.get("metabolites"), list)
+    )
 
 
 def _base_name(path: Path) -> str:

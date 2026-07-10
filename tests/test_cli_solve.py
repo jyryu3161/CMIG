@@ -30,10 +30,12 @@ def test_solve_fixture_writes_artifacts(tmp_path):
     bundle = TidyBundle.read(tmp_path)
     assert bundle.nodes.num_rows == 4          # 3 member + environment_pool
     manifest = json.loads((tmp_path / "manifest.json").read_text())
-    assert manifest["manifest_schema_version"] == "1.0"
+    assert manifest["manifest_schema_version"] == "2.0"
     assert manifest["inputs"]["model_checksum"]
     assert manifest["solver"]["flux_report_status"] == "full"
     assert manifest["software"]["cmig_core_version"]
+    assert manifest["software"]["dependency_versions"]["cobra"] != "not-installed"
+    assert manifest["env_lock"].startswith("sha256:")
 
 
 def test_manifest_run_hash_matches_library(tmp_path):
@@ -103,6 +105,18 @@ def test_taxonomy_model_checksum_tracks_model_bytes(tmp_path):
     assert _taxonomy_model_checksum(taxonomy, tax_path) != first
 
 
+def test_taxonomy_model_checksum_tracks_taxonomy_metadata(tmp_path):
+    import pandas as pd
+
+    model = tmp_path / "model.xml"
+    model.write_text("<model/>")
+    tax_path = tmp_path / "taxonomy.csv"
+    taxonomy = pd.DataFrame({"id": ["A"], "file": [str(model)], "abundance": [1.0]})
+    first = _taxonomy_model_checksum(taxonomy, tax_path)
+    taxonomy.loc[0, "abundance"] = 0.5
+    assert _taxonomy_model_checksum(taxonomy, tax_path) != first
+
+
 def test_sweep_user_taxonomy_writes_runs(tmp_path):
     from cmig.golden_fixture import build_taxonomy
 
@@ -112,6 +126,7 @@ def test_sweep_user_taxonomy_writes_runs(tmp_path):
     rc = main([
         "sweep",
         "--taxonomy", str(taxonomy),
+        "--assume-bigg-namespace",
         "--tradeoff-fs", "0.5",
         "--solvers", "gurobi",
         "--out", str(out),
@@ -141,6 +156,7 @@ def test_sweep_user_taxonomy_records_member_abundance_and_bounds_axes(tmp_path):
     rc = main([
         "sweep",
         "--taxonomy", str(taxonomy),
+        "--assume-bigg-namespace",
         "--tradeoff-fs", "0.5",
         "--solvers", "gurobi",
         "--member-sets", member_set,
@@ -166,6 +182,7 @@ def test_sweep_user_taxonomy_fva_writes_profile_ranges(tmp_path):
     rc = main([
         "sweep",
         "--taxonomy", str(taxonomy),
+        "--assume-bigg-namespace",
         "--tradeoff-fs", "0.5",
         "--solvers", "gurobi",
         "--fva-metabolites", "ac",
@@ -302,6 +319,10 @@ def test_host_microbe_bigg_cli_writes_coupling_outputs(tmp_path):
         "host-microbe-bigg",
         "--host", str(host_path),
         "--taxonomy", str(taxonomy),
+        "--microbial-biomass-gdw", "1.0",
+        "--host-biomass-gdw", "1.0",
+        "--biomass-basis-kind", "validation",
+        "--biomass-basis-source", "synthetic CLI fixture",
         "--host-medium", str(host_medium),
         "--host-objective", "BIOMASS_host",
         "--out", str(out),
@@ -309,6 +330,9 @@ def test_host_microbe_bigg_cli_writes_coupling_outputs(tmp_path):
     assert rc == 0
     payload = json.loads((out / "host_microbe_bigg_summary.json").read_text())
     assert payload["coupling"] == "bigg_direct_exchange"
+    assert payload["coupling_scale"]["basis_kind"] == "validation"
+    assert payload["coupling_scale"]["basis_source"] == "synthetic CLI fixture"
+    assert any("not publication-ready" in warning for warning in payload["warnings"])
     assert payload["matched_exchanges"]["but"] == "EX_but_e"
     assert payload["microbial_secretion"]["but"] > 0.0
     assert payload["host"]["viable"] is True
@@ -378,6 +402,10 @@ def test_host_search_bigg_cli_ranks_host_target_transfer(tmp_path):
         "host-search-bigg",
         "--host", str(host_path),
         "--taxonomy", str(taxonomy),
+        "--microbial-biomass-gdw", "1.0",
+        "--host-biomass-gdw", "1.0",
+        "--biomass-basis-kind", "validation",
+        "--biomass-basis-source", "synthetic CLI fixture",
         "--host-medium", str(host_medium),
         "--host-objective", "BIOMASS_host",
         "--target", "but",
@@ -387,6 +415,8 @@ def test_host_search_bigg_cli_ranks_host_target_transfer(tmp_path):
     assert rc == 0
     payload = json.loads((out / "host_search_summary.json").read_text())
     assert payload["metric"] == "target_transfer"
+    assert payload["biomass_basis"]["kind"] == "validation"
+    assert payload["ranking_parameters"]["host_reference"] is None
     assert payload["target"] == "but"
     assert payload["n_candidates_evaluated"] == 1
     assert payload["top_ranked"][0]["target_transfer"] > 0.0
@@ -394,6 +424,28 @@ def test_host_search_bigg_cli_ranks_host_target_transfer(tmp_path):
     assert (out / "host_search_rankings.csv").exists()
     assert (out / "host_search_plot.svg").exists()
     assert (out / "host_search_plot.tiff").exists()
+
+
+def test_weighted_host_search_score_requires_dimensionless_references():
+    from cmig.cli.main import _weighted_host_search_score
+
+    with pytest.raises(ValueError, match="host-reference"):
+        _weighted_host_search_score(
+            10.0,
+            2.0,
+            host_weight=1.0,
+            target_weight=1.0,
+            host_reference=None,
+            target_reference=None,
+        )
+    assert _weighted_host_search_score(
+        10.0,
+        2.0,
+        host_weight=0.25,
+        target_weight=0.75,
+        host_reference=20.0,
+        target_reference=4.0,
+    ) == pytest.approx(0.5)
 
 
 def test_strain_growth_cli_writes_member_growth_report(tmp_path):

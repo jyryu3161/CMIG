@@ -4,7 +4,27 @@ version = "0.1.0"
 description = "CMIG — Community Metabolic Interaction GUI (headless core). Community FBA delegated to MICOM; CMIG owns the value-added layer (namespace gate, sign, tidy, delta, sandbox, sweep, R figures)."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "TBD (see CMIG_명세서_v3.0.md §2 / NFR-License)" }
+license = { file = "LICENSE" }
+authors = [
+    { name = "Jaeyong Ryu", email = "jyryu3161@kaist.ac.kr" },
+]
+keywords = [
+    "constraint-based modeling",
+    "genome-scale metabolic model",
+    "microbial community",
+    "MICOM",
+    "host-microbe",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 # Base runtime deps kept minimal so `uv sync` is fast and the pure-logic core
 # (sign / namespace / tidy / manifest) imports without the solver/engine stack.
 dependencies = [
@@ -49,12 +69,45 @@ dev = [
 cmig = "cmig.cli.main:main"
 cmig-gui = "cmig.gui.__main__:main"
 
+[project.urls]
+Homepage = "https://github.com/jyryu3161/CMIG"
+Repository = "https://github.com/jyryu3161/CMIG"
+Issues = "https://github.com/jyryu3161/CMIG/issues"
+Changelog = "https://github.com/jyryu3161/CMIG/blob/main/CHANGELOG.md"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["cmig"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/cmig",
+    "/tests",
+    "/scripts",
+    "/docs/PUBLICATION_VALIDATION.md",
+    "/pyproject.toml",
+    "/uv.lock",
+    "/README.md",
+    "/LICENSE",
+    "/NOTICE",
+    "/THIRD_PARTY_NOTICES.md",
+    "/CITATION.cff",
+    "/CHANGELOG.md",
+    "/RELEASE_CHECKLIST.md",
+]
+exclude = [
+    "/models",
+    "/fixtures",
+    "/REVIEW",
+    "/docs/archive",
+    "/.run",
+    "/.omc",
+    "/.bkit",
+    "/.Rlib",
+]
 
 # ── Conventions (Phase 2 essentials folded in — Design §10) ──
 [tool.ruff]

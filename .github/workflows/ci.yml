@@ -6,61 +6,106 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # Always-on gate: lint + strict type-check. No solver license required.
   quality:
-    runs-on: ubuntu-latest
+    name: Quality (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.12"
     steps:
       - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: Sync (dev + typed extras, no license needed to import)
-        run: uv sync --extra engine --extra render --extra stats
+          python-version: ${{ matrix.python }}
+      - name: Verify lock and sync typed stack
+        run: |
+          uv lock --check
+          uv sync --extra engine --extra render --extra stats
       - name: Ruff
-        run: uv run ruff check cmig tests
-      - name: Mypy (strict)
+        run: uv run ruff check .
+      - name: Strict mypy
         run: uv run mypy cmig
+      - name: License-free deterministic core tests
+        run: >-
+          uv run pytest -q
+          tests/test_sign.py
+          tests/test_namespace_gate.py
+          tests/test_run_hash.py
+          tests/test_stats.py
+          tests/test_model_quality.py
 
-  # Full suite + golden solver/MICOM-version regression (spec §16 / A17).
-  # Requires a Gurobi license. Gated to the canonical repo where WLS secrets exist,
-  # so forks/PRs without the secret are skipped rather than failing.
-  tests:
+  package:
+    name: Build and inspect distributions
     needs: quality
     runs-on: ubuntu-latest
-    if: ${{ github.repository == 'jyryu3161/CMIG' }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: Sync (full stack)
-        run: uv sync --extra engine --extra gui --extra render --extra stats
+          python-version: "3.12"
+      - run: uv build
+      - name: Reject private/runtime/large-data package members
+        run: uv run python scripts/audit_distribution.py dist/*
+
+  solver-tests:
+    name: Full solver, golden, GUI, and publication smoke
+    needs: [quality, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: >-
+      github.repository == 'jyryu3161/CMIG' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: uv sync --extra engine --extra gui --extra render --extra stats
       - name: Configure Gurobi WLS license
+        shell: bash
         env:
           GRB_WLSACCESSID: ${{ secrets.GRB_WLSACCESSID }}
           GRB_WLSSECRET: ${{ secrets.GRB_WLSSECRET }}
           GRB_LICENSEID: ${{ secrets.GRB_LICENSEID }}
         run: |
-          if [ -z "$GRB_WLSACCESSID" ]; then
-            echo "::error::Gurobi WLS secrets not configured; cannot run the solver suite."
+          test -n "$GRB_WLSACCESSID" || {
+            echo "::error::Gurobi WLS secrets are required for solver-tests."
             exit 1
-          fi
+          }
           {
             echo "WLSACCESSID=$GRB_WLSACCESSID"
             echo "WLSSECRET=$GRB_WLSSECRET"
             echo "LICENSEID=$GRB_LICENSEID"
           } > "$HOME/gurobi.lic"
           echo "GRB_LICENSE_FILE=$HOME/gurobi.lic" >> "$GITHUB_ENV"
-      - name: Golden MICOM-version regression gate
+      - name: MICOM-version golden gate
         run: uv run cmig golden verify
-      - name: Test suite (offscreen GUI)
+      - name: Full test suite
         env:
           QT_QPA_PLATFORM: offscreen
         run: uv run pytest -q
+      - name: Integrated publication benchmark smoke
+        run: uv run pytest -q tests/test_publication_benchmark.py

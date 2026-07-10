@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from cmig.core.engine import SolveResult
-from cmig.core.interactions import build_tidy
+from cmig.core.interactions import allocate_cross_feeding, build_tidy
 
 # ── G-2 [Minor] cross-feeding sanity (extraction 계약, micom 불요) ──
 
@@ -54,6 +54,44 @@ def test_no_cross_feeding_when_no_consumer():
     r2 = SolveResult(**{**r.__dict__, "member_exchange": {"A": {"ac": 8.0}, "B": {"ac": 2.0}}})
     bundle = build_tidy(r2)  # 둘 다 분비 → consumer 없음
     assert not [e for e in bundle.edges.to_pylist() if e["edge_type"] == "cross_feeding"]
+
+
+def test_cross_feeding_many_to_many_conserves_mass():
+    """Two donors/two consumers must not emit four pairwise minima (20 from only 10 supply)."""
+    result = SolveResult(
+        objective=1.0,
+        member_growth={m: 1.0 for m in ("S1", "S2", "C1", "C2")},
+        abundances={m: 0.25 for m in ("S1", "S2", "C1", "C2")},
+        external_exchange={},
+        member_exchange={
+            "S1": {"x": 5.0},
+            "S2": {"x": 5.0},
+            "C1": {"x": -5.0},
+            "C2": {"x": -5.0},
+        },
+        status="optimal",
+        flux_report_status="full",
+        growth_solver="gurobi",
+        flux_solver="gurobi",
+        members=["S1", "S2", "C1", "C2"],
+    )
+    edges = [
+        row for row in build_tidy(result).edges.to_pylist()
+        if row["edge_type"] == "cross_feeding"
+    ]
+    assert len(edges) == 4
+    assert sum(row["weight"] for row in edges) == pytest.approx(10.0)
+    for donor in ("S1", "S2"):
+        assert sum(row["weight"] for row in edges if row["source_id"] == donor) <= 5.0
+    for consumer in ("C1", "C2"):
+        assert sum(row["weight"] for row in edges if row["target_id"] == consumer) <= 5.0
+
+
+def test_cross_feeding_allocation_is_deterministic_and_handles_imbalance():
+    a = allocate_cross_feeding({"B": 3.0, "A": 9.0}, {"D": -2.0, "C": -4.0})
+    b = allocate_cross_feeding({"A": 9.0, "B": 3.0}, {"C": -4.0, "D": -2.0})
+    assert a == b
+    assert sum(weight for _source, _target, weight in a) == pytest.approx(6.0)
 
 
 # ── SC-7 튜토리얼 재현 (micom 필요) ──

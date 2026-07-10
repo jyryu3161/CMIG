@@ -772,6 +772,16 @@ class CmigMainWindow(QMainWindow):
                 "Host model, microbial model folder, and output folder are required."
             )
             return ""
+        if (
+            float(request["microbial_biomass_gdw"]) <= 0.0
+            or float(request["host_biomass_gdw"]) <= 0.0
+            or not request["biomass_basis_kind"]
+            or not request["biomass_basis_source"]
+        ):
+            self.host_view.run_status.setText(
+                "Positive biomass gDW values, basis kind, and source are required."
+            )
+            return ""
         out_dir = Path(out_dir_text)
 
         def _job(ctx: JobContext) -> dict[str, Any]:
@@ -782,6 +792,11 @@ class CmigMainWindow(QMainWindow):
                 "--host", str(host),
                 "--model-dir", str(model_dir),
                 "--tradeoff-f", f"{float(request['tradeoff_f']):.6g}",
+                "--microbial-biomass-gdw",
+                f"{float(request['microbial_biomass_gdw']):.12g}",
+                "--host-biomass-gdw", f"{float(request['host_biomass_gdw']):.12g}",
+                "--biomass-basis-kind", str(request["biomass_basis_kind"]),
+                "--biomass-basis-source", str(request["biomass_basis_source"]),
                 "--out", str(out_dir),
             ]
             if request["recursive"]:
@@ -827,6 +842,16 @@ class CmigMainWindow(QMainWindow):
                 "Host model and microbial model folder are required for ranking."
             )
             return ""
+        if (
+            float(request["microbial_biomass_gdw"]) <= 0.0
+            or float(request["host_biomass_gdw"]) <= 0.0
+            or not request["biomass_basis_kind"]
+            or not request["biomass_basis_source"]
+        ):
+            self.host_view.run_status.setText(
+                "Positive biomass gDW values, basis kind, and source are required for ranking."
+            )
+            return ""
         out_dir_text = request["out_dir"]
         out_dir = (
             Path(out_dir_text)
@@ -846,6 +871,11 @@ class CmigMainWindow(QMainWindow):
                 "--min-size", str(request["min_size"]),
                 "--max-size", str(request["max_size"]),
                 "--tradeoff-f", f"{float(request['tradeoff_f']):.6g}",
+                "--microbial-biomass-gdw",
+                f"{float(request['microbial_biomass_gdw']):.12g}",
+                "--host-biomass-gdw", f"{float(request['host_biomass_gdw']):.12g}",
+                "--biomass-basis-kind", str(request["biomass_basis_kind"]),
+                "--biomass-basis-source", str(request["biomass_basis_source"]),
                 "--out", str(out_dir),
             ]
             if request["recursive"]:

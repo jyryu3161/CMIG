@@ -17,6 +17,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from cmig.render.provenance import (
+    canonical_rows_sha256,
+    sha256_file,
+    write_render_provenance,
+)
+
 # cmig/render/client.py → cmig/render_r/figure.R
 R_SCRIPT = Path(__file__).resolve().parent.parent / "render_r" / "figure.R"
 _RLIB = Path(__file__).resolve().parents[2] / ".Rlib"
@@ -75,11 +81,12 @@ class RenderClient:
         out = Path(out_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         # figure_spec sidecar (seed·dims 재현 자산)
-        out.with_name(out.name + ".figure_spec.json").write_text(
-            json.dumps(asdict(spec), indent=2, sort_keys=True, ensure_ascii=True)
+        spec_path = out.with_name(out.name + ".figure_spec.json")
+        spec_path.write_text(
+            json.dumps(asdict(spec), indent=2, sort_keys=True, ensure_ascii=True) + "\n"
         )
         if not self.available():
-            return self._fallback(profile_rows, spec, out)
+            return self._fallback(profile_rows, spec, out, spec_path)
         with tempfile.TemporaryDirectory() as td:
             data_csv = Path(td) / "data.csv"
             _write_csv(profile_rows, data_csv)
@@ -94,9 +101,25 @@ class RenderClient:
             if proc.returncode != 0 or not out.exists():
                 err = proc.stderr.strip()[:400]
                 raise RenderError(f"R render 실패 (rc={proc.returncode}): {err}")
+            write_render_provenance(
+                out,
+                renderer="r",
+                spec_path=spec_path,
+                input_sha256=sha256_file(data_csv),
+                input_serialization="cmig-profile-csv-v1",
+                script=R_SCRIPT,
+                rscript=str(self._rscript),
+                r_stdout=proc.stdout,
+            )
         return out
 
-    def _fallback(self, rows: list[dict[str, Any]], spec: FigureSpec, out: Path) -> Path:
+    def _fallback(
+        self,
+        rows: list[dict[str, Any]],
+        spec: FigureSpec,
+        out: Path,
+        spec_path: Path,
+    ) -> Path:
         """R 부재 시 matplotlib(plotnine/matplotlib) fallback (§9). render extra 필요."""
         try:
             import matplotlib
@@ -122,6 +145,13 @@ class RenderClient:
             fig.savefig(out, format=spec.format)
         finally:
             plt.close(fig)
+        write_render_provenance(
+            out,
+            renderer="matplotlib",
+            spec_path=spec_path,
+            input_sha256=canonical_rows_sha256(rows),
+            input_serialization="canonical-json-v1",
+        )
         return out
 
 

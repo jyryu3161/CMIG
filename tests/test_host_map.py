@@ -60,3 +60,22 @@ def test_build_host_map_ignores_uptake_only_microbial_exchanges():
     _ex(microbe, "glc__D_e", -1000, 0)   # uptake-only (cannot secrete) -> excluded
     res = build_host_map(host, {"m1": microbe})
     assert res.n_microbial_secretions == 0
+
+
+def test_build_host_map_uses_authoritative_bigg_annotation_for_non_bigg_host_ids():
+    from cobra import Model
+
+    host = Model("human_gem_style")
+    _ex(host, "MAM01410e", -1000, 1000)
+    host_exchange = host.reactions.get_by_id("EX_MAM01410e")
+    host_exchange.id = "MAR09809"
+    host_exchange.annotation = {"bigg.reaction": "EX_but_e"}
+    next(iter(host_exchange.metabolites)).annotation = {"bigg.metabolite": "but"}
+    microbe = Model("m1")
+    _ex(microbe, "but_e", 0, 1000)
+
+    result = build_host_map(host, {"m1": microbe})
+    entry = result.entries[0]
+    assert entry.match_type == "annotation"
+    assert entry.host_exchange == "MAR09809"
+    assert result.n_annotation == 1

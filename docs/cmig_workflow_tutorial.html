@@ -302,13 +302,24 @@ uv run python -m cmig.gui     # or the module entry point</code></pre>
 
     <h2 id="host">9. Scenario E &mdash; host&ndash;microbe coupling <span class="pill">host-microbe-bigg</span></h2>
     <p><strong>Question:</strong> which microbial secretions can a Recon/Human-GEM-style host directly consume?</p>
-    <pre><code>uv run cmig host-microbe-bigg \
+    <pre><code>export MICROBIAL_BIOMASS_GDW="&lt;study microbial dry mass in gDW&gt;"
+export HOST_BIOMASS_GDW="&lt;host dry-mass basis in gDW&gt;"
+export BIOMASS_BASIS_SOURCE="&lt;measurement record or literature citation&gt;"
+
+uv run cmig host-microbe-bigg \
   --host /path/to/Recon3D.xml \
   --model-dir models \
   --recursive \
+  --microbial-biomass-gdw "$MICROBIAL_BIOMASS_GDW" \
+  --host-biomass-gdw "$HOST_BIOMASS_GDW" \
+  --biomass-basis-kind measured \
+  --biomass-basis-source "$BIOMASS_BASIS_SOURCE" \
+  --interface-map runs/host_map/host_interface_map.json \
   --out runs/host_microbe</code></pre>
-    <p>This assumes compatible BiGG-style exchange identifiers; CMIG does not perform Recon-specific
-    interface curation. Outputs include <code>microbial_secretion.csv</code>, <code>host_uptake.csv</code>,
+    <p>CMIG proposes matches from metabolite annotations and normalized BiGG identifiers, but the
+    generated interface map must be reviewed before a publication run. The two biomass arguments
+    make the microbial and host gDW bases explicit. CMIG requires their measurement/citation source
+    and provides no implicit equal-mass default. Outputs include <code>microbial_secretion.csv</code>, <code>host_uptake.csv</code>,
     <code>microbe_to_host.csv</code>, <code>interaction_edges.csv</code>, <code>interaction_matrix.csv</code>,
     <code>member_contribution.csv</code>, and figures (<code>interaction_circle/heatmap/bubble.svg</code>,
     <code>member_contribution.svg</code>).</p>

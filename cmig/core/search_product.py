@@ -8,6 +8,7 @@ GA approximation for larger candidate spaces.
 from __future__ import annotations
 
 import itertools
+import math
 import random
 from dataclasses import dataclass, replace
 from typing import Any, Literal
@@ -120,44 +121,55 @@ def _evaluate_members(
     robustness_fva: bool = False,
 ) -> PoolRank:
     sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
-    community = engine.build_community(sub, cmig_solver=solver)
-    if medium_spec is not None:
-        from cmig.core.medium_spec import apply_medium_checked
+    try:
+        community = engine.build_community(sub, cmig_solver=solver)
+        if medium_spec is not None:
+            from cmig.core.medium_spec import apply_medium_checked
 
-        apply_medium_checked(community, medium_spec, strict=strict_medium)
-    result = target_max_solve(
-        community,
-        spec,
-        growth_fraction=growth_fraction,
-        solver=solver,
-    )
-    fva_lo = fva_hi = None
-    fva_status = None
-    if robustness_fva:
-        from cmig.core.search_advanced import robustness_fva as run_robustness_fva
-
-        fva = run_robustness_fva(
+            apply_medium_checked(community, medium_spec, strict=strict_medium)
+        result = target_max_solve(
             community,
             spec,
             growth_fraction=growth_fraction,
             solver=solver,
         )
-        fva_status = fva.status
-        if fva.status == "ok":
-            fva_lo = fva.fva_lo
-            fva_hi = fva.fva_hi
-    return PoolRank(
-        rank=0,
-        members=members,
-        score=score_target_result(result, spec),
-        target_flux=result.target_flux,
-        community_growth=result.community_growth,
-        status=result.status,
-        diagnostic=result.diagnostic,
-        robustness_fva_lo=fva_lo,
-        robustness_fva_hi=fva_hi,
-        robustness_status=fva_status,
-    )
+        fva_lo = fva_hi = None
+        fva_status = None
+        if robustness_fva:
+            from cmig.core.search_advanced import robustness_fva as run_robustness_fva
+
+            fva = run_robustness_fva(
+                community,
+                spec,
+                growth_fraction=growth_fraction,
+                solver=solver,
+            )
+            fva_status = fva.status
+            if fva.status == "ok":
+                fva_lo = fva.fva_lo
+                fva_hi = fva.fva_hi
+        return PoolRank(
+            rank=0,
+            members=members,
+            score=score_target_result(result, spec),
+            target_flux=result.target_flux,
+            community_growth=result.community_growth,
+            status=result.status,
+            diagnostic=result.diagnostic,
+            robustness_fva_lo=fva_lo,
+            robustness_fva_hi=fva_hi,
+            robustness_status=fva_status,
+        )
+    except Exception as error:  # noqa: BLE001 - isolate one failed consortium
+        return PoolRank(
+            rank=0,
+            members=members,
+            score=float("-inf"),
+            target_flux=0.0,
+            community_growth=0.0,
+            status="failed",
+            diagnostic=str(error),
+        )
 
 
 def search_model_pool(
@@ -291,6 +303,7 @@ class MultiTargetSearchResult:
     weights: dict[str, float]
     strategy: str
     normalizer: str
+    solution_semantics: str
     n_pool_members: int
     n_candidates_total: int
     n_candidates_evaluated: int
@@ -320,7 +333,8 @@ def _signed_raw(result: Any, spec: TargetSpec) -> float:
 
 
 def rank_multi_target(
-    evals: list[_ComboEval], specs: list[TargetSpec]
+    evals: list[_ComboEval], specs: list[TargetSpec], *,
+    normalization_ranges: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[list[MultiTargetRank], str]:
     """Pure ranking: normalize per-target over observed range, weight, Pareto-flag (2 targets).
 
@@ -336,11 +350,16 @@ def rank_multi_target(
     ok = [e for e in evals if e.status == "optimal"]
     ranges: dict[str, tuple[float, float]] = {}
     for m in mets:
-        vals = [e.signed[m] for e in ok if m in e.signed]
-        ranges[m] = (min(vals), max(vals)) if vals else (0.0, 1.0)
+        if normalization_ranges is not None and m in normalization_ranges:
+            ranges[m] = normalization_ranges[m]
+        else:
+            vals = [e.signed[m] for e in ok if m in e.signed]
+            ranges[m] = (min(vals), max(vals)) if vals else (0.0, 1.0)
 
     rows: list[MultiTargetRank] = []
-    normalizer = "observed_range"
+    normalizer = (
+        "capability_range_joint_lp" if normalization_ranges is not None else "observed_range"
+    )
     for e in evals:
         if e.status != "optimal":
             rows.append(MultiTargetRank(
@@ -396,6 +415,56 @@ def _evaluate_members_multi(
         return _ComboEval(members, "failed", 0.0, {}, {}, str(e))
 
 
+def _capability_ranges(
+    evals: list[_ComboEval], specs: list[TargetSpec]
+) -> dict[str, tuple[float, float]]:
+    """Observed per-target capability ranges used only to scale the joint LP objective."""
+    ok = [row for row in evals if row.status == "optimal"]
+    ranges: dict[str, tuple[float, float]] = {}
+    for spec in specs:
+        values = [row.signed[spec.metabolite] for row in ok if spec.metabolite in row.signed]
+        ranges[spec.metabolite] = (min(values), max(values)) if values else (0.0, 1.0)
+    return ranges
+
+
+def _evaluate_members_multi_joint(
+    engine: Any, taxonomy: Any, members: tuple[str, ...], specs: list[TargetSpec], *,
+    normalization_ranges: dict[str, tuple[float, float]], growth_fraction: float,
+    solver: str, medium_spec: Any | None, strict_medium: bool,
+) -> _ComboEval:
+    """Evaluate one consortium with a single jointly feasible weighted LP solution."""
+    from cmig.core.search import joint_target_solve
+
+    sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
+    try:
+        community = engine.build_community(sub, cmig_solver=solver)
+        if medium_spec is not None:
+            from cmig.core.medium_spec import apply_medium_checked
+
+            apply_medium_checked(community, medium_spec, strict=strict_medium)
+        scales = {
+            metabolite: (high - low if high - low > 1e-12 else 1.0)
+            for metabolite, (low, high) in normalization_ranges.items()
+        }
+        result = joint_target_solve(
+            community,
+            specs,
+            normalization_scales=scales,
+            growth_fraction=growth_fraction,
+            solver=solver,
+        )
+        return _ComboEval(
+            members,
+            result.status,
+            result.community_growth,
+            result.target_fluxes,
+            result.signed_values,
+            result.diagnostic,
+        )
+    except Exception as e:  # noqa: BLE001 - per-combo isolation
+        return _ComboEval(members, "failed", 0.0, {}, {}, str(e))
+
+
 def search_model_pool_multi(
     engine: Any, taxonomy: Any, config: MultiTargetConfig, *,
     medium_spec: Any | None = None, strict_medium: bool = True,
@@ -409,6 +478,14 @@ def search_model_pool_multi(
         raise ValueError("--top-k must be > 0")
     if not (0.0 < config.growth_fraction <= 1.0):
         raise ValueError("--growth-fraction must satisfy 0<f<=1")
+    if set(config.directions) != set(config.targets):
+        raise ValueError("directions keys must match targets exactly")
+    if set(config.weights) != set(config.targets):
+        raise ValueError("weights keys must match targets exactly")
+    if any(not math.isfinite(config.weights[t]) or config.weights[t] < 0.0 for t in config.targets):
+        raise ValueError("target weights must be finite and non-negative")
+    if not any(config.weights[t] > 0.0 for t in config.targets):
+        raise ValueError("at least one target weight must be positive")
 
     ids = [str(x) for x in taxonomy["id"]]
     if len(set(ids)) != len(ids):
@@ -425,14 +502,35 @@ def search_model_pool_multi(
             "narrow --min-size/--max-size (multi-target search is exhaustive-only, no silent "
             "truncation)")
 
-    evals = [
+    capability_evals = [
         _evaluate_members_multi(
             engine, taxonomy, members, specs,
             growth_fraction=config.growth_fraction, solver=config.solver,
             medium_spec=medium_spec, strict_medium=strict_medium)
         for members in candidates
     ]
-    ranked, normalizer = rank_multi_target(evals, specs)
+    ranges = _capability_ranges(capability_evals, specs)
+    evals: list[_ComboEval] = []
+    for members, capability in zip(candidates, capability_evals, strict=True):
+        if capability.status != "optimal":
+            evals.append(capability)
+            continue
+        evals.append(
+            _evaluate_members_multi_joint(
+                engine,
+                taxonomy,
+                members,
+                specs,
+                normalization_ranges=ranges,
+                growth_fraction=config.growth_fraction,
+                solver=config.solver,
+                medium_spec=medium_spec,
+                strict_medium=strict_medium,
+            )
+        )
+    ranked, normalizer = rank_multi_target(
+        evals, specs, normalization_ranges=ranges
+    )
     warnings: list[str] = []
     if any(r.status != "optimal" for r in ranked):
         warnings.append(
@@ -445,6 +543,7 @@ def search_model_pool_multi(
         weights=dict(config.weights),
         strategy="exhaustive",
         normalizer=normalizer,
+        solution_semantics="joint_weighted_lp_single_flux_vector",
         n_pool_members=len(ids),
         n_candidates_total=len(candidates),
         n_candidates_evaluated=len(evals),

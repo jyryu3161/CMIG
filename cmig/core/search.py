@@ -47,6 +47,21 @@ class TargetMaxResult:
     diagnostic: str | None = None
 
 
+@dataclass(frozen=True)
+class MultiTargetSolveResult:
+    """One jointly feasible multi-target LP solution.
+
+    ``target_fluxes`` are read from one flux vector. ``signed_values`` converts every configured
+    direction to a larger-is-better axis but never combines optima from different solves.
+    """
+
+    target_fluxes: dict[str, float]
+    signed_values: dict[str, float]
+    community_growth: float
+    status: str
+    diagnostic: str | None = None
+
+
 def target_objective_direction(direction: Direction) -> str:
     """CMIG semantic direction → cobra objective direction.
 
@@ -57,14 +72,49 @@ def target_objective_direction(direction: Direction) -> str:
     return "min"
 
 
+def target_flux_domain(direction: Direction) -> tuple[float | None, float | None]:
+    """Physical sign domain for a direction-specific target objective.
+
+    Secretion objectives operate only on ``v >= 0`` and uptake objectives only on ``v <= 0``.
+    Without this constraint, ``min_secretion`` degenerates into ``max_uptake`` and
+    ``min_uptake`` degenerates into ``max_secretion``.
+    """
+    if direction in (Direction.MAX_SECRETION, Direction.MIN_SECRETION):
+        return 0.0, None
+    return None, 0.0
+
+
+def signed_target_flux(flux: float, direction: Direction) -> float:
+    """Direction-adjust raw flux so a larger value always means a better objective."""
+    if direction in (Direction.MAX_SECRETION, Direction.MIN_UPTAKE):
+        return float(flux)
+    return -float(flux)
+
+
 def _community_growth_star(community: Any) -> float:
     """μ_c* = 최대 community growth. target-max growth floor 의 기준값."""
     sol = community.cooperative_tradeoff(fraction=1.0, fluxes=False)
+    if sol is None:
+        raise ValueError("community maximum-growth solve returned no solution")
     gr = sol.growth_rate
     value = float(gr.iloc[0]) if hasattr(gr, "iloc") else float(gr)
-    # 비유한 μ_c*(infeasible/unbounded community)는 growth-floor lb 를 NaN/inf 로 만들어
-    # solver 거동을 미정의로 만든다 → 0.0 으로 가드(하한 비활성, fail-safe).
-    return value if math.isfinite(value) else 0.0
+    if not math.isfinite(value):
+        raise ValueError(f"community maximum growth is non-finite: {value}")
+    if value < 0.0:
+        raise ValueError(f"community maximum growth is negative: {value}")
+    return value
+
+
+def _validate_growth_floor(growth_fraction: float, mu_community: float | None) -> None:
+    if not math.isfinite(growth_fraction) or not (0.0 < growth_fraction <= 1.0):
+        raise ValueError("growth_fraction must be finite and satisfy 0 < f <= 1")
+    if mu_community is not None and (not math.isfinite(mu_community) or mu_community < 0.0):
+        raise ValueError("mu_community must be finite and non-negative")
+
+
+def _target_domain_constraint(model: Any, reaction: Any, direction: Direction, name: str) -> Any:
+    lower, upper = target_flux_domain(direction)
+    return model.problem.Constraint(reaction.flux_expression, lb=lower, ub=upper, name=name)
 
 
 def target_max_solve(
@@ -77,49 +127,160 @@ def target_max_solve(
     산출한다. gurobi(LP) 전제.
     """
     from cmig.core.single_model import _require_lp, set_model_solver
+    _validate_growth_floor(growth_fraction, mu_community)
+    if not math.isfinite(spec.weight) or spec.weight < 0.0:
+        raise ValueError("target weight must be finite and non-negative")
     _require_lp(solver)
-    set_model_solver(community, solver)
-    if mu_community is None:
-        mu_community = _community_growth_star(community)
-
     ex_id = spec.exchange_id()
-    if ex_id not in {r.id for r in community.reactions}:
-        from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
-        diag = diagnostic_from_parts([(
-            DiagnosticCode.CAPABILITY_MISSING, f"target exchange 부재: {ex_id}")])
-        return TargetMaxResult(ex_id, spec.direction.value, 0.0, 0.0, "missing", diag)
-
     with community as m:
+        set_model_solver(m, solver)
+        if mu_community is None:
+            try:
+                mu_community = _community_growth_star(m)
+            except ValueError as e:
+                from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
+
+                diag = diagnostic_from_parts([(DiagnosticCode.INFEASIBLE, str(e))])
+                return TargetMaxResult(
+                    ex_id, spec.direction.value, 0.0, 0.0, "baseline_failed", diag
+                )
+        if ex_id not in {r.id for r in m.reactions}:
+            from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
+
+            diag = diagnostic_from_parts([(
+                DiagnosticCode.CAPABILITY_MISSING, f"target exchange 부재: {ex_id}")])
+            return TargetMaxResult(ex_id, spec.direction.value, 0.0, 0.0, "missing", diag)
         growth_expr = m.objective.expression                      # community growth 식
         floor = m.problem.Constraint(
             growth_expr, lb=growth_fraction * mu_community, name="cmig_growth_floor")
-        m.add_cons_vars([floor])
-        m.solver.update()
         rxn = m.reactions.get_by_id(ex_id)
+        domain = _target_domain_constraint(m, rxn, spec.direction, "cmig_target_sign_domain")
+        m.add_cons_vars([floor, domain])
+        m.solver.update()
         m.objective = rxn
         m.objective.direction = target_objective_direction(spec.direction)
         sol = m.optimize()
-        status = sol.status
+        if sol is None:
+            solver_status = getattr(m.solver, "status", None)
+            status = str(solver_status) if solver_status else "solver_no_solution"
+            return TargetMaxResult(
+                ex_id,
+                spec.direction.value,
+                0.0,
+                0.0,
+                status,
+                f"target LP returned no solution object (solver_status={status})",
+            )
+        status = str(sol.status)
         flux = float(rxn.flux) if status == "optimal" else 0.0
         # community growth at target-max 해 = growth_floor 제약의 primal(LHS 값)
         growth = float(floor.primal) if status == "optimal" else 0.0
-    return TargetMaxResult(ex_id, spec.direction.value, flux, growth, status)
+    diagnostic = None if status == "optimal" else f"target LP status={status}"
+    return TargetMaxResult(ex_id, spec.direction.value, flux, growth, status, diagnostic)
+
+
+def joint_target_solve(
+    community: Any,
+    specs: list[TargetSpec],
+    *,
+    normalization_scales: dict[str, float],
+    growth_fraction: float = 0.5,
+    mu_community: float | None = None,
+    solver: str = "gurobi",
+) -> MultiTargetSolveResult:
+    """Optimize all targets in one LP and return fluxes from the same feasible solution.
+
+    The objective is ``sum(weight * signed_flux / scale)``. Observed-range offsets are constants
+    and therefore do not affect the optimizer; callers apply them when reporting normalized
+    scores. Every direction receives an explicit secretion/uptake sign-domain constraint.
+    """
+    from cmig.core.single_model import _require_lp, set_model_solver
+
+    _validate_growth_floor(growth_fraction, mu_community)
+    if len(specs) < 2:
+        raise ValueError("joint_target_solve requires at least two targets")
+    metabolites = [spec.metabolite for spec in specs]
+    if len(set(metabolites)) != len(metabolites):
+        raise ValueError("multi-target metabolites must be unique")
+    if any(not math.isfinite(spec.weight) or spec.weight < 0.0 for spec in specs):
+        raise ValueError("multi-target weights must be finite and non-negative")
+    if not any(spec.weight > 0.0 for spec in specs):
+        raise ValueError("at least one multi-target weight must be positive")
+    for spec in specs:
+        scale = normalization_scales.get(spec.metabolite)
+        if scale is None or not math.isfinite(scale) or scale <= 0.0:
+            raise ValueError(f"normalization scale for {spec.metabolite!r} must be finite and > 0")
+
+    _require_lp(solver)
+    with community as model:
+        set_model_solver(model, solver)
+        if mu_community is None:
+            try:
+                mu_community = _community_growth_star(model)
+            except ValueError as e:
+                return MultiTargetSolveResult({}, {}, 0.0, "baseline_failed", str(e))
+        missing = [
+            spec.exchange_id() for spec in specs
+            if spec.exchange_id() not in model.reactions
+        ]
+        if missing:
+            return MultiTargetSolveResult(
+                {}, {}, 0.0, "missing", f"target exchanges absent: {sorted(missing)}"
+            )
+
+        growth_expr = model.objective.expression
+        floor = model.problem.Constraint(
+            growth_expr,
+            lb=growth_fraction * mu_community,
+            name="cmig_multi_growth_floor",
+        )
+        constraints = [floor]
+        objective = 0
+        reactions: dict[str, Any] = {}
+        for index, spec in enumerate(specs):
+            reaction = model.reactions.get_by_id(spec.exchange_id())
+            reactions[spec.metabolite] = reaction
+            constraints.append(
+                _target_domain_constraint(
+                    model, reaction, spec.direction, f"cmig_multi_target_domain_{index}"
+                )
+            )
+            sign = 1.0 if spec.direction in (
+                Direction.MAX_SECRETION, Direction.MIN_UPTAKE
+            ) else -1.0
+            objective += (
+                spec.weight / normalization_scales[spec.metabolite]
+            ) * sign * reaction.flux_expression
+        model.add_cons_vars(constraints)
+        model.objective = model.problem.Objective(objective, direction="max")
+        model.solver.update()
+        solution = model.optimize()
+        if solution is None:
+            solver_status = getattr(model.solver, "status", None)
+            status = str(solver_status) if solver_status else "solver_no_solution"
+            return MultiTargetSolveResult(
+                {}, {}, 0.0, status,
+                f"joint target LP returned no solution object (solver_status={status})",
+            )
+        status = str(solution.status)
+        if status != "optimal":
+            return MultiTargetSolveResult({}, {}, 0.0, status, f"joint target LP status={status}")
+        fluxes = {
+            spec.metabolite: float(reactions[spec.metabolite].flux) for spec in specs
+        }
+        signed = {
+            spec.metabolite: signed_target_flux(fluxes[spec.metabolite], spec.direction)
+            for spec in specs
+        }
+        growth = float(floor.primal)
+    return MultiTargetSolveResult(fluxes, signed, growth, "optimal")
 
 
 def score_target_result(result: TargetMaxResult, spec: TargetSpec) -> float:
     """가중 점수(정규화 전 raw·weight). 모든 direction 에서 클수록 우수."""
     if result.status != "optimal":
         return float("-inf")
-    match spec.direction:
-        case Direction.MAX_SECRETION:
-            signed = result.target_flux
-        case Direction.MIN_SECRETION:
-            signed = -result.target_flux
-        case Direction.MAX_UPTAKE:
-            signed = -result.target_flux
-        case Direction.MIN_UPTAKE:
-            signed = result.target_flux
-    return spec.weight * signed
+    return spec.weight * signed_target_flux(result.target_flux, spec.direction)
 
 
 @dataclass(frozen=True)

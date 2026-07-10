@@ -6,12 +6,15 @@ config B 확정: micom 0.39.0 Community 에 host 파라미터 없음(probe) → 
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("cobra")
 
 from cmig.core.host import (  # noqa: E402
     InterfaceFlux,
+    _coupling_scale,
     benchmark_generic_host,
     classify_host_exchanges,
     run_bigg_host_microbe,
@@ -65,6 +68,34 @@ def _zero_biomass_maintenance_host():
     bio.add_metabolites({biomass: -1})
     bio.bounds = (0, 1000)
     model.add_reactions([src, atpm, bio])
+    model.objective = "BIOMASS_host"
+    return model
+
+
+def _alternative_substrate_host():
+    from cobra import Metabolite, Model, Reaction
+
+    def met(mid):
+        return Metabolite(mid, compartment="e" if mid.endswith("_e") else "c")
+
+    def rxn(rid, stoich, bounds):
+        reaction = Reaction(rid)
+        reaction.add_metabolites({met(mid): coefficient for mid, coefficient in stoich.items()})
+        reaction.bounds = bounds
+        return reaction
+
+    model = Model("alternative_substrate_host")
+    model.add_reactions([
+        rxn("EX_ac_e", {"ac_e": -1}, (0, 1000)),
+        rxn("EX_but_e", {"but_e": -1}, (0, 1000)),
+        rxn("EX_o2_e", {"o2_e": -1}, (0, 1000)),
+        rxn("ACt", {"ac_e": -1, "ac_c": 1}, (0, 1000)),
+        rxn("BUTt", {"but_e": -1, "but_c": 1}, (0, 1000)),
+        rxn("O2t", {"o2_e": -1, "o2_c": 1}, (0, 1000)),
+        rxn("AC_OX", {"ac_c": -1, "o2_c": -1, "atp_c": 1}, (0, 1000)),
+        rxn("BUT_OX", {"but_c": -1, "o2_c": -1, "atp_c": 1}, (0, 1000)),
+        rxn("BIOMASS_host", {"atp_c": -1}, (0, 1000)),
+    ])
     model.objective = "BIOMASS_host"
     return model
 
@@ -160,6 +191,37 @@ def test_bigg_host_direct_coupling_uses_shared_ids():
     assert any(f.exchange_id == "EX_but_e" for f in res.interface_fluxes)
 
 
+def test_bigg_host_uses_reviewed_interface_map_for_non_bigg_reaction_ids():
+    host = _bigg_host_model()
+    renames = {
+        "EX_but_e": "MAR_BUT",
+        "EX_o2_e": "MAR_O2",
+        "EX_co2_e": "MAR_CO2",
+    }
+    for source, target in renames.items():
+        host.reactions.get_by_id(source).id = target
+    host.repair()
+    result = solve_bigg_host(
+        host,
+        {"but": 4.0},
+        host_medium={"o2": 20.0},
+        interface_map={"but_e": "MAR_BUT", "o2_e": "MAR_O2", "co2_e": "MAR_CO2"},
+        solver="gurobi",
+    )
+    assert result.status == "optimal" and result.viable
+    assert result.lumen_uptake["but"] == pytest.approx(4.0)
+    assert any(flux.exchange_id == "MAR_BUT" for flux in result.interface_fluxes)
+
+
+def test_bigg_host_rejects_interface_map_target_absent_from_host():
+    with pytest.raises(ValueError, match="host exchange not found"):
+        solve_bigg_host(
+            _bigg_host_model(),
+            {"but": 1.0},
+            interface_map={"but": "MAR_NOT_PRESENT"},
+        )
+
+
 def test_bigg_host_background_medium_does_not_inflate_microbe_transfer():
     """Background host medium can add uptake capacity, but microbial transfer remains capped."""
     res = solve_bigg_host(
@@ -172,6 +234,56 @@ def test_bigg_host_background_medium_does_not_inflate_microbe_transfer():
     assert abs(res.lumen_uptake.get("but", 0.0) - 4.0) < 1e-6
     total_but = next(f for f in res.interface_fluxes if f.exchange_id == "EX_but_e")
     assert abs(total_but.flux + 14.0) < 1e-6
+
+
+def test_bigg_host_reports_nonidentifiable_alternative_substrate_transfer():
+    res = solve_bigg_host(
+        _alternative_substrate_host(),
+        {"ac": 1.0, "but": 1.0},
+        host_medium={"o2": 1.0},
+        solver="gurobi",
+    )
+    impact = host_impact({"ac": 1.0, "but": 1.0}, res)
+    assert res.status == "optimal"
+    assert res.lumen_uptake == {}
+    assert res.lumen_uptake_ranges["ac"][0] < 1e-6
+    assert res.lumen_uptake_ranges["ac"][1] > 0.99
+    assert impact.microbe_to_host == {}
+    assert impact.ambiguous_metabolites == ["ac", "but"]
+
+
+def test_run_bigg_host_microbe_scales_flux_and_member_attribution_by_biomass():
+    class FakeEngine:
+        def build_community(self, taxonomy, cmig_solver):
+            return taxonomy
+
+        def cooperative_tradeoff(self, community, tradeoff_f, cmig_solver):
+            return SimpleNamespace(
+                status="optimal",
+                objective=0.5,
+                external_exchange={"but": 2.0},
+                member_exchange={"producer": {"but": 8.0}},
+                abundances={"producer": 0.25},
+                diagnostic=None,
+            )
+
+    result = run_bigg_host_microbe(
+        object(),
+        _bigg_host_model(),
+        microbial_biomass_gdw=2.0,
+        host_biomass_gdw=4.0,
+        biomass_basis_kind="validation",
+        biomass_basis_source="synthetic scaling regression fixture",
+        host_medium={"o2": 20.0},
+        engine=FakeEngine(),
+    )
+    assert result.community_secretion["but"] == 2.0
+    assert result.microbial_secretion["but"] == 1.0
+    assert result.member_secretion["producer"]["but"] == 1.0
+    assert result.coupling_scale is not None
+    assert result.coupling_scale.microbe_to_host_ratio == 0.5
+    assert result.coupling_scale.basis_kind == "validation"
+    assert "not publication-ready" in result.warnings[0]
 
 
 def test_bigg_host_rejects_invalid_availability():
@@ -196,7 +308,10 @@ def test_run_host_microbe_end_to_end():
     with tempfile.TemporaryDirectory() as td:
         tax = build_pair_taxonomy(td)
         host_res, impact = run_host_microbe(
-            tax, build_host_model(), solver="gurobi", tradeoff_f=0.5)
+            tax, build_host_model(), microbial_biomass_gdw=1.0, host_biomass_gdw=1.0,
+            biomass_basis_kind="validation",
+            biomass_basis_source="synthetic end-to-end fixture",
+            solver="gurobi", tradeoff_f=0.5)
     # 실 community 는 butyrate(6.25) 분비 → host 가 흡수해 viable
     assert host_res.viable
     assert impact.microbe_to_host.get("but", 0.0) > 1.0             # 미생물→host butyrate 횡단
@@ -214,6 +329,10 @@ def test_run_bigg_host_microbe_end_to_end():
         result = run_bigg_host_microbe(
             tax,
             _bigg_host_model(),
+            microbial_biomass_gdw=1.0,
+            host_biomass_gdw=1.0,
+            biomass_basis_kind="validation",
+            biomass_basis_source="synthetic end-to-end fixture",
             solver="gurobi",
             tradeoff_f=0.5,
             host_medium={"o2": 100.0},
@@ -221,6 +340,13 @@ def test_run_bigg_host_microbe_end_to_end():
     assert result.host_result.viable
     assert result.matched_exchanges["but"] == "EX_but_e"
     assert result.impact.microbe_to_host.get("but", 0.0) > 1.0
+
+
+def test_biomass_coupling_requires_traceable_basis():
+    with pytest.raises(ValueError, match="biomass_basis_source is required"):
+        _coupling_scale(1.0, 2.0, basis_kind="measured", basis_source="")
+    with pytest.raises(ValueError, match="biomass_basis_kind"):
+        _coupling_scale(1.0, 2.0, basis_kind="assumed", basis_source="unknown")
 
 
 def test_host_osqp_hybrid_restores_bounds():

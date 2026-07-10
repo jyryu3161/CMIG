@@ -71,6 +71,10 @@ def test_host_view_request_controls():
     assert req["model_dir"] == "/tmp/models"
     assert req["out_dir"] == "/tmp/out"
     assert req["recursive"] is True
+    assert req["microbial_biomass_gdw"] == 0.0
+    assert req["host_biomass_gdw"] == 0.0
+    assert req["biomass_basis_kind"] == ""
+    assert req["biomass_basis_source"] == ""
     v.figure_mode_combo.setCurrentText("Heatmap")
     assert v.selected_figure_artifact() == "interaction_heatmap.svg"
 

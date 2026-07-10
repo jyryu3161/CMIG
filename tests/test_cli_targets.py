@@ -42,6 +42,9 @@ def test_solve_taxonomy_targets(tmp_path):
     tax = tmp_path / "tax.csv"
     build_taxonomy().to_csv(tax, index=False)
     out = tmp_path / "out"
-    rc = main(["solve", "--taxonomy", str(tax), "--targets", "scfa", "--out", str(out)])
+    rc = main([
+        "solve", "--taxonomy", str(tax), "--assume-bigg-namespace",
+        "--targets", "scfa", "--out", str(out),
+    ])
     assert rc == 0
     assert (out / "target_summary.json").exists()

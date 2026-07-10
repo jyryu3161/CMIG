@@ -53,3 +53,10 @@ chordDiagram(df, annotationTrack = c("name", "grid"), grid.col = palette,
 title(main = title, family = PLOT_FONT, font.main = 2, cex.main = 1.2)
 circos.clear()
 dev.off()
+cat("CMIG_R_VERSION\t", R.version.string, "\n", sep = "")
+for (package in c("circlize", "svglite", "systemfonts")) {
+  if (requireNamespace(package, quietly = TRUE)) {
+    cat("CMIG_R_PACKAGE\t", package, "\t", as.character(packageVersion(package)), "\n",
+        sep = "")
+  }
+}

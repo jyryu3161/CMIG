@@ -42,6 +42,8 @@ JSON, or MAT models yourself, then load them through the GUI or CLI.
 - `uv` for environment and dependency management.
 - A Gurobi installation and valid license for the default full solver workflow.
 - macOS, Linux, or Windows with Qt support for the GUI.
+- R 4.3.2 plus the checked-in `renv.lock` is optional for the R figure backend;
+  matplotlib remains the single-profile fallback.
 
 CMIG pins `micom==0.39.0` and expects Gurobi 12.x through `gurobipy>=12,<13`.
 The `osqp` solver path is available for approximate QP-only provenance in core
@@ -76,19 +78,12 @@ uv run pytest -q
 
 ## Launch The GUI
 
-CMIG currently exposes the GUI as a Python entry point:
+Launch the installed GUI through either entry point:
 
 ```bash
-uv run python - <<'PY'
-from PySide6.QtWidgets import QApplication
-from cmig.gui.app import build_main_window
-
-app = QApplication([])
-window = build_main_window(lang="en")
-window.resize(1500, 950)
-window.show()
-app.exec()
-PY
+uv run cmig gui
+# equivalent dedicated entry point
+uv run cmig-gui
 ```
 
 The default GUI is focused on the main user workflows:
@@ -287,10 +282,19 @@ Key fields:
 Example with a Recon/Human-GEM style host model and a microbial model folder:
 
 ```bash
+export MICROBIAL_BIOMASS_GDW="<study microbial dry mass in gDW>"
+export HOST_BIOMASS_GDW="<host dry-mass basis represented by the host fluxes in gDW>"
+export BIOMASS_BASIS_SOURCE="<measurement record, Methods section, or literature citation>"
+
 uv run cmig host-microbe-bigg \
-  --host /path/to/Recon3D.xml \
+  --host /path/to/Human-GEM.xml \
   --model-dir /path/to/microbial_models \
   --recursive \
+  --microbial-biomass-gdw "$MICROBIAL_BIOMASS_GDW" \
+  --host-biomass-gdw "$HOST_BIOMASS_GDW" \
+  --biomass-basis-kind measured \
+  --biomass-basis-source "$BIOMASS_BASIS_SOURCE" \
+  --interface-map /path/to/reviewed_host_interface_map.json \
   --out runs/host_microbe
 ```
 
@@ -309,8 +313,21 @@ Useful outputs:
 - `interaction_bubble.svg`
 - `member_contribution.svg`
 
-The direct coupling assumes compatible BiGG-style exchange identifiers. CMIG does
-not perform Recon-specific interface curation or external model import.
+CMIG first uses metabolite annotations and normalized BiGG identifiers, but
+annotation matches are still computational suggestions. Generate a candidate map
+with `cmig host-map`, review it, and pass it with `--interface-map` for a
+publication run. Biomass bases are explicit because microbial and host-specific
+fluxes cannot be compared or transferred without their gDW scaling assumptions.
+CMIG therefore has no biomass default: both positive values, their basis kind,
+and a measurement record or citation are mandatory. `--biomass-basis-kind
+validation` is available for software tests but marks the result as
+non-publication-ready.
+
+`host-search-bigg --metric weighted` never adds raw quantities with different
+units. It requires explicit positive weights and `--host-reference` plus
+`--target-reference`, and ranks the resulting dimensionless normalized score.
+Use `target_transfer` or `objective_value` when no defensible reference scales
+exist.
 
 ### 6. Run a MICOM taxonomy solve
 
@@ -355,6 +372,20 @@ Useful outputs:
 - `dfba_timecourse.svg`
 - `dfba_timecourse.tiff`
 
+Audit numerical sensitivity to both the integration step and uptake half-saturation
+constant before interpreting a dFBA endpoint:
+
+```bash
+uv run cmig dfba-sensitivity \
+  --model /path/to/model.xml \
+  --dts 0.2,0.1,0.05 \
+  --kms 0.005,0.01,0.02 \
+  --out runs/dfba_sensitivity
+```
+
+The output includes every run plus integration mass-balance residuals, so a
+coarse-step result cannot silently become the reported result.
+
 ### 8. Preview a spatial medium gradient
 
 This is a lightweight design tool inspired by COMETS spatial layouts. It is not
@@ -389,6 +420,24 @@ uv run cmig dfba-fixture --out runs/dfba_fixture
 uv run cmig stats-demo --out runs/stats_demo
 ```
 
+### 10. Publication preflight
+
+Audit model formulas, objective feasibility, gene/formula coverage, dead ends,
+and optionally blocked reactions independently of the biological workflow:
+
+```bash
+uv run cmig model-quality \
+  --model-dir /path/to/microbial_models \
+  --recursive \
+  --check-blocked-reactions \
+  --out runs/model_quality
+```
+
+The integrated `publication-benchmark` command combines quality audit, a
+community solve, combination search, optional dFBA sensitivity, and optional
+host coupling in one checksummed manifest. A fully specified real-model command
+and reviewed results are recorded in `docs/PUBLICATION_VALIDATION.md`.
+
 ## Medium Files
 
 Medium files can be CSV or JSON. Built-in examples live in `medium_presets/`.
@@ -412,6 +461,8 @@ Run the standard checks:
 uv run ruff check cmig tests
 uv run mypy cmig
 uv run pytest -q
+uv build
+uv run python scripts/audit_distribution.py dist/*
 ```
 
 Golden-version gate:
@@ -428,7 +479,8 @@ provenance tests, GUI offscreen smoke tests, and real workflow regressions.
 - CMIG expects users to provide their own GEM files.
 - CMIG does not automatically download AGORA, VMH, Recon, Human-GEM, or BiGG
   model collections.
-- Host-microbe coupling is implemented for BiGG-style direct exchange matching.
+- Host-microbe coupling maps authoritative metabolite annotations where available,
+  but publication use still requires review of the generated interface map.
 - dFBA currently supports well-mixed single-model simulations. Full spatial
   community dFBA with biomass propagation, extracellular reactions, and
   evolution-like COMETS modules is out of scope for the current CMIG engine.
@@ -446,10 +498,16 @@ provenance tests, GUI offscreen smoke tests, and real workflow regressions.
 - `cmig/cli/`: command-line entry point.
 - `cmig/io/`: run output, checksums, manifests, and import helpers.
 - `cmig/render/`: figure rendering helpers.
+- `cmig/render_r/`: R scripts and a pinned `renv.lock` for figure reproduction.
 - `tests/`: regression and workflow tests.
+- `scripts/`: release and distribution audits.
 - `medium_presets/`: example medium definitions.
 - `docs/`: design and project-management notes.
 
 ## License
 
-The project license is currently marked as TBD in `pyproject.toml`.
+CMIG-authored code and documentation are licensed under Apache-2.0; see `LICENSE`
+and `NOTICE`. External GEMs, Gurobi, Python/R dependencies, and generated research
+outputs keep their own terms. In particular, the validation models under
+`models/` are not Apache-licensed and are excluded from wheels and source
+distributions; see `THIRD_PARTY_NOTICES.md` and `models/MODEL_SOURCES.json`.

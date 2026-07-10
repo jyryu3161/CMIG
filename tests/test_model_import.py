@@ -115,6 +115,20 @@ def test_model_pool_from_directory(tmp_path):
     assert all(Path(p).is_absolute() for p in taxonomy["file"])
 
 
+def test_model_pool_ignores_non_cobra_json_manifest(tmp_path):
+    """Provenance/analysis JSON beside GEMs must not become a pool member."""
+    model = cobra.io.read_sbml_model(_SBML)
+    cobra.io.save_json_model(model, str(tmp_path / "microbe.json"))
+    (tmp_path / "MODEL_SOURCES.json").write_text(
+        '{"schema_version":"1.0","models":[{"file":"microbe.json"}]}'
+    )
+    (tmp_path / "analysis.json").write_text('{"status":"completed"}')
+
+    files = discover_model_files(tmp_path)
+    assert [path.name for path in files] == ["microbe.json"]
+    assert list(taxonomy_from_model_dir(tmp_path)["id"]) == ["microbe"]
+
+
 def test_model_pool_collision_ids_get_stable_digest_suffix(tmp_path):
     """Punctuation-only filename collisions should not depend on discovery tie numbering."""
     (tmp_path / "a-b.xml").write_text("<sbml/>")

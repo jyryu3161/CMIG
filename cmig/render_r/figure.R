@@ -94,4 +94,14 @@ if (opt$format == "svg") {
 } else {
   stop(paste("unsupported format:", opt$format))
 }
+emit_cmig_provenance <- function(packages) {
+  cat("CMIG_R_VERSION\t", R.version.string, "\n", sep = "")
+  for (package in packages) {
+    if (requireNamespace(package, quietly = TRUE)) {
+      cat("CMIG_R_PACKAGE\t", package, "\t", as.character(packageVersion(package)), "\n",
+          sep = "")
+    }
+  }
+}
+emit_cmig_provenance(c("ggplot2", "svglite", "ragg", "systemfonts"))
 cat("OK\n")

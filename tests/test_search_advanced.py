@@ -152,6 +152,18 @@ def test_search_model_pool_multi_requires_two_targets():
         search_model_pool_multi(object(), _FakeTaxo(["A", "B"]), cfg)
 
 
+def test_search_model_pool_multi_rejects_invalid_weights():
+    from cmig.core.search_product import MultiTargetConfig, search_model_pool_multi
+
+    cfg = MultiTargetConfig(
+        targets=["ac", "but"],
+        directions={"ac": Direction.MAX_SECRETION, "but": Direction.MAX_SECRETION},
+        weights={"ac": 1.0, "but": -1.0},
+    )
+    with pytest.raises(ValueError, match="weights"):
+        search_model_pool_multi(object(), _FakeTaxo(["A", "B"]), cfg)
+
+
 class _FakeTaxo:
     def __init__(self, ids):
         self._ids = ids

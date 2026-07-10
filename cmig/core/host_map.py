@@ -30,6 +30,7 @@ class ExchangeMapEntry:
 class HostMapResult:
     n_microbial_secretions: int
     n_exact: int
+    n_annotation: int
     n_normalized: int
     n_unmatched: int
     n_host_uptake_capable: int
@@ -54,10 +55,19 @@ def _iter_exchanges(model: Any) -> list[Any]:
 _HostIdx = dict[str, tuple[str, bool]]
 
 
-def _host_exchange_index(host: Any) -> tuple[_HostIdx, _HostIdx]:
-    """Return (exact-id index, normalized-id index); each value is (exchange_id, can_uptake)."""
+def _annotation_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def _host_exchange_index(host: Any) -> tuple[_HostIdx, _HostIdx, _HostIdx]:
+    """Return exact, normalized, and authoritative BiGG-annotation indices."""
     exact: _HostIdx = {}
     normalized: _HostIdx = {}
+    annotation_candidates: dict[str, list[tuple[str, bool]]] = {}
     for rxn in _iter_exchanges(host):
         met = _sole_metabolite_id(rxn)
         if met is None:
@@ -65,12 +75,29 @@ def _host_exchange_index(host: Any) -> tuple[_HostIdx, _HostIdx]:
         can_uptake = float(rxn.lower_bound) < 0.0
         exact.setdefault(met, (str(rxn.id), can_uptake))
         normalized.setdefault(_normalize_metabolite_id(met), (str(rxn.id), can_uptake))
-    return exact, normalized
+        annotation_ids: list[str] = []
+        for metabolite in rxn.metabolites:
+            annotation_ids.extend(
+                _annotation_values(metabolite.annotation.get("bigg.metabolite"))
+            )
+        # Metabolite cross-references identify the exchanged chemical directly. Some curated
+        # models retain stale reaction-level BiGG annotations, so use those only as a fallback.
+        if not annotation_ids:
+            annotation_ids = _annotation_values(rxn.annotation.get("bigg.reaction"))
+        for annotation_id in annotation_ids:
+            key = _normalize_metabolite_id(annotation_id)
+            annotation_candidates.setdefault(key, []).append((str(rxn.id), can_uptake))
+    annotation = {
+        key: values[0]
+        for key, values in annotation_candidates.items()
+        if len({exchange_id for exchange_id, _can_uptake in values}) == 1
+    }
+    return exact, normalized, annotation
 
 
 def build_host_map(host: Any, member_models: dict[str, Any]) -> HostMapResult:
     """Match each secretable microbial metabolite to a host exchange (exact/normalized/none)."""
-    exact_idx, norm_idx = _host_exchange_index(host)
+    exact_idx, norm_idx, annotation_idx = _host_exchange_index(host)
 
     # microbial secretable metabolites: metabolite → (exchange_id, [members])
     secretions: dict[str, tuple[str, list[str]]] = {}
@@ -87,7 +114,7 @@ def build_host_map(host: Any, member_models: dict[str, Any]) -> HostMapResult:
             secretions[met] = (ex_id, members)
 
     entries: list[ExchangeMapEntry] = []
-    n_exact = n_norm = n_unmatched = n_uptake = 0
+    n_exact = n_annotation = n_norm = n_unmatched = n_uptake = 0
     for met in sorted(secretions):
         ex_id, members = secretions[met]
         if met in exact_idx:
@@ -98,6 +125,14 @@ def build_host_map(host: Any, member_models: dict[str, Any]) -> HostMapResult:
                 else "host exchange present but uptake closed (open lower_bound to consume)"
             )
             n_exact += 1
+        elif _normalize_metabolite_id(met) in annotation_idx:
+            host_ex, can_uptake = annotation_idx[_normalize_metabolite_id(met)]
+            match_type = "annotation"
+            suggestion = (
+                f"host BiGG annotation match to {host_ex}; confirm in interface map before "
+                "quantitative coupling"
+            )
+            n_annotation += 1
         elif _normalize_metabolite_id(met) in norm_idx:
             host_ex, can_uptake = norm_idx[_normalize_metabolite_id(met)]
             match_type = "normalized"
@@ -126,12 +161,17 @@ def build_host_map(host: Any, member_models: dict[str, Any]) -> HostMapResult:
     warnings: list[str] = []
     if n_unmatched:
         warnings.append(f"{n_unmatched} microbial secretions have no host exchange")
+    if n_annotation:
+        warnings.append(
+            f"{n_annotation} matches use host BiGG annotations; save and review the interface map"
+        )
     if n_norm:
         warnings.append(
             f"{n_norm} matches rely on id normalization; manual review recommended")
     return HostMapResult(
         n_microbial_secretions=len(secretions),
         n_exact=n_exact,
+        n_annotation=n_annotation,
         n_normalized=n_norm,
         n_unmatched=n_unmatched,
         n_host_uptake_capable=n_uptake,

@@ -51,7 +51,7 @@ class ModelImportReview:
     next_actions: list[str]
 
 
-def _detect_format(path: Path) -> str:
+def detect_model_format(path: Path) -> str:
     name = path.name.lower()
     if name.endswith((".xml", ".sbml", ".xml.gz", ".sbml.gz")):
         return "sbml"
@@ -63,19 +63,22 @@ def _detect_format(path: Path) -> str:
         f"미지원 모델 확장자: {path.name} (지원: .xml/.sbml/.xml.gz·.json·.mat)")
 
 
-def _load_cobra_model(path: Path, fmt: str) -> Any:
+def load_cobra_model(path: str | Path) -> Any:
+    """Load a supported Cobra model with extension-based format detection."""
+    source = Path(path)
+    fmt = detect_model_format(source)
     try:
         import cobra.io
     except ImportError as e:
         raise ModelImportError("cobra 미설치 (`uv sync --extra engine`).") from e
     try:
         if fmt == "sbml":
-            return cobra.io.read_sbml_model(str(path))
+            return cobra.io.read_sbml_model(str(source))
         if fmt == "json":
-            return cobra.io.load_json_model(str(path))
-        return cobra.io.load_matlab_model(str(path))
+            return cobra.io.load_json_model(str(source))
+        return cobra.io.load_matlab_model(str(source))
     except Exception as e:                       # 파싱 실패 → 명시적 에러
-        raise ModelImportError(f"{fmt} 파싱 실패 ({path.name}): {e}") from e
+        raise ModelImportError(f"{fmt} 파싱 실패 ({source.name}): {e}") from e
 
 
 def _biomass_reactions(model: Any) -> list[str]:
@@ -93,8 +96,8 @@ def import_model(path: str | Path) -> ModelSummary:
     p = Path(path)
     if not p.exists():
         raise ModelImportError(f"모델 파일 없음: {p}")
-    fmt = _detect_format(p)
-    model = _load_cobra_model(p, fmt)
+    fmt = detect_model_format(p)
+    model = load_cobra_model(p)
     exchanges = sorted(str(r.id) for r in model.exchanges)
     return ModelSummary(
         model_id=str(model.id) or p.stem,

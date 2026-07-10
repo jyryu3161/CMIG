@@ -80,6 +80,38 @@ def test_build_run_components_threads_bounds_into_hash():
     assert compute_run_hash(a) != compute_run_hash(b)
 
 
+def test_build_run_components_threads_analysis_and_dependency_provenance_into_hash():
+    result = SimpleNamespace(
+        abundances={"A": 1.0}, members=["A"], growth_solver="gurobi", flux_solver="gurobi"
+    )
+    common = {
+        "model_checksum": "m",
+        "medium_checksum": "med",
+        "tradeoff_f": 0.5,
+        "micom_version": "0.39.0",
+    }
+    base = build_run_components(
+        result,
+        **common,
+        analysis_settings={"fva": False},
+        dependency_versions={"gurobipy": "12.0.0"},
+    )
+    fva = build_run_components(
+        result,
+        **common,
+        analysis_settings={"fva": True},
+        dependency_versions={"gurobipy": "12.0.0"},
+    )
+    solver_upgrade = build_run_components(
+        result,
+        **common,
+        analysis_settings={"fva": False},
+        dependency_versions={"gurobipy": "12.1.0"},
+    )
+    assert compute_run_hash(base) != compute_run_hash(fva)
+    assert compute_run_hash(base) != compute_run_hash(solver_upgrade)
+
+
 def test_float_rounding_absorbs_noise():
     # 6 decimal 이하 잡음은 동일 hash (alternate-optima 흡수)
     h1 = compute_run_hash(_components(tradeoff_f=0.5))

@@ -26,6 +26,8 @@ MEMBER_CONTRIBUTION_COLUMNS = (
     "secretion_flux",
     "transfer_flux",
     "contribution_fraction",
+    "attribution_method",
+    "identifiable",
 )
 CURRENCY_METABOLITES = frozenset({"h", "h2o", "co2"})
 EDGE_COLORS = {
@@ -138,6 +140,8 @@ def contribution_rows(
                 "secretion_flux": flux,
                 "transfer_flux": microbe_to_host.get(met, 0.0) * frac,
                 "contribution_fraction": frac,
+                "attribution_method": "abundance_weighted_proportional_allocation",
+                "identifiable": False,
             })
     return rows
 

@@ -82,6 +82,24 @@ class HostImpactView(QWidget):
         self.tradeoff_spin.setSingleStep(0.05)
         self.tradeoff_spin.setValue(0.5)
         self.tradeoff_spin.setDecimals(2)
+        self.microbial_biomass_spin = QDoubleSpinBox()
+        self.microbial_biomass_spin.setRange(0.0, 1e9)
+        self.microbial_biomass_spin.setSpecialValueText("required")
+        self.microbial_biomass_spin.setValue(0.0)
+        self.microbial_biomass_spin.setDecimals(6)
+        self.host_biomass_spin = QDoubleSpinBox()
+        self.host_biomass_spin.setRange(0.0, 1e9)
+        self.host_biomass_spin.setSpecialValueText("required")
+        self.host_biomass_spin.setValue(0.0)
+        self.host_biomass_spin.setDecimals(6)
+        self.biomass_basis_kind_combo = QComboBox()
+        self.biomass_basis_kind_combo.addItems(
+            ["select basis", "measured", "literature", "validation"]
+        )
+        self.biomass_basis_source_input = QLineEdit("")
+        self.biomass_basis_source_input.setPlaceholderText(
+            "Biomass measurement record or literature citation"
+        )
         self.recursive_check = QCheckBox("Recursive")
         self.keep_host_uptake_check = QCheckBox("Keep host uptake")
         self.include_currency_check = QCheckBox("Currency metabolites")
@@ -89,6 +107,12 @@ class HostImpactView(QWidget):
         self.run_search_btn = QPushButton("Rank Combinations")
         run_row.addWidget(QLabel("tradeoff f"))
         run_row.addWidget(self.tradeoff_spin)
+        run_row.addWidget(QLabel("microbe gDW"))
+        run_row.addWidget(self.microbial_biomass_spin)
+        run_row.addWidget(QLabel("host gDW"))
+        run_row.addWidget(self.host_biomass_spin)
+        run_row.addWidget(self.biomass_basis_kind_combo)
+        run_row.addWidget(self.biomass_basis_source_input)
         run_row.addWidget(self.recursive_check)
         run_row.addWidget(self.keep_host_uptake_check)
         run_row.addWidget(self.include_currency_check)
@@ -99,7 +123,7 @@ class HostImpactView(QWidget):
         self.search_target_input = QLineEdit("ac")
         self.search_target_input.setPlaceholderText("Target transferred metabolite")
         self.search_metric_combo = QComboBox()
-        self.search_metric_combo.addItems(["target_transfer", "weighted", "objective_value"])
+        self.search_metric_combo.addItems(["target_transfer", "objective_value"])
         self.min_size_spin = QSpinBox()
         self.min_size_spin.setRange(1, 20)
         self.min_size_spin.setValue(2)
@@ -182,6 +206,14 @@ class HostImpactView(QWidget):
             "microbe_medium": self.microbe_medium_input.text().strip(),
             "out_dir": self.out_dir_input.text().strip(),
             "tradeoff_f": self.tradeoff_spin.value(),
+            "microbial_biomass_gdw": self.microbial_biomass_spin.value(),
+            "host_biomass_gdw": self.host_biomass_spin.value(),
+            "biomass_basis_kind": (
+                ""
+                if self.biomass_basis_kind_combo.currentIndex() == 0
+                else self.biomass_basis_kind_combo.currentText()
+            ),
+            "biomass_basis_source": self.biomass_basis_source_input.text().strip(),
             "search_target": self.search_target_input.text().strip() or "ac",
             "search_metric": self.search_metric_combo.currentText(),
             "min_size": self.min_size_spin.value(),

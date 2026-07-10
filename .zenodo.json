@@ -1,0 +1,26 @@
+{
+  "title": "CMIG: Community Metabolic Interaction GUI",
+  "description": "A reproducible desktop and command-line platform for MICOM-backed community metabolic interaction analysis, model-pool search, host-microbe coupling, dFBA sensitivity, and publication preflight reporting.",
+  "creators": [
+    {
+      "name": "Ryu, Jaeyong"
+    }
+  ],
+  "license": "Apache-2.0",
+  "upload_type": "software",
+  "access_right": "open",
+  "keywords": [
+    "constraint-based modeling",
+    "genome-scale metabolic model",
+    "microbial community",
+    "MICOM",
+    "host-microbe"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/jyryu3161/CMIG",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    }
+  ]
+}

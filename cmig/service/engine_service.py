@@ -11,8 +11,9 @@ CLI(_cmd_solve/_cmd_solve_fixture)·GUI·JobRunner 가 이 facade 를 공통 소
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from cmig.core.diagnostics import Diagnostic, DiagnosticCode, parse_diagnostic
 from cmig.core.engine import MicomEngine
@@ -21,9 +22,15 @@ from cmig.core.medium_spec import apply_medium_checked, load_medium, medium_chec
 from cmig.core.namespace import (
     NamespaceDecision,
     evaluate_gate,
+    mapped_taxonomy,
     namespace_decision_keys,
 )
-from cmig.io.solve_output import build_run_components, write_solve_output
+from cmig.io.solve_output import (
+    build_run_components,
+    file_checksum,
+    runtime_versions,
+    write_solve_output,
+)
 from cmig.service.outcome import SolveOutcome
 
 
@@ -89,6 +96,7 @@ class EngineService:
         tradeoff_f: float = 0.5,
         medium_path: str | None = None,
         namespace_decisions: list[NamespaceDecision] | None = None,
+        namespace_policy: Literal["require_reviewed", "assume_bigg"] = "require_reviewed",
         strict_medium: bool = True,
         fva: bool = False,
         fva_metabolites: list[str] | None = None,
@@ -104,68 +112,110 @@ class EngineService:
         `env_lock` 기본 None — CLI shim 은 전달하지 않음(manifest bytes 불변, §2.3).
         """
         decisions = namespace_decisions or []
-        gate = evaluate_gate(decisions)
-        gate.raise_if_blocked()
+        if namespace_policy not in {"require_reviewed", "assume_bigg"}:
+            raise ValueError(f"미지원 namespace_policy: {namespace_policy}")
+        if namespace_policy == "assume_bigg" and decisions:
+            raise ValueError("assume_bigg policy와 namespace_decisions를 동시에 사용할 수 없음")
+        if namespace_policy == "require_reviewed":
+            gate = evaluate_gate(decisions)
+            gate.raise_if_blocked()
 
         spec = load_medium(medium_path) if medium_path else None
-        community = self._engine.build_community(taxonomy, cmig_solver=solver)
-        original_bounds = None
-        unknown_medium: list[str] = []
-        try:
-            if spec is not None:
-                _, unknown_medium = apply_medium_checked(
-                    community, spec, strict=strict_medium
-                )  # MICOM public API
-            if bounds:
-                from cmig.core.sandbox import BoundConstraint, apply_bounds
+        dependencies = runtime_versions()
+        analysis_settings = {
+            "fva": bool(fva),
+            "fva_metabolites": sorted(fva_metabolites or []),
+            "targets": targets,
+            "strict_medium": bool(strict_medium),
+        }
+        model_sources = [
+            {
+                "member_id": str(record["id"]),
+                "path": str(Path(str(record["file"])).resolve()),
+                "checksum": file_checksum(str(record["file"])),
+            }
+            for record in taxonomy.to_dict("records")
+        ]
+        mapping_decisions = decisions if namespace_policy == "require_reviewed" else []
+        with mapped_taxonomy(taxonomy, mapping_decisions) as (
+            effective_taxonomy,
+            applied_mappings,
+        ):
+            community = self._engine.build_community(effective_taxonomy, cmig_solver=solver)
+            original_bounds = None
+            unknown_medium: list[str] = []
+            try:
+                if spec is not None:
+                    _, unknown_medium = apply_medium_checked(
+                        community, spec, strict=strict_medium
+                    )  # MICOM public API
+                if bounds:
+                    from cmig.core.sandbox import BoundConstraint, apply_bounds
 
-                original_bounds = apply_bounds(
-                    community,
-                    [
-                        BoundConstraint(rid, float(pair[0]), float(pair[1]))
-                        for rid, pair in sorted(bounds.items())
-                    ],
+                    original_bounds = apply_bounds(
+                        community,
+                        [
+                            BoundConstraint(rid, float(pair[0]), float(pair[1]))
+                            for rid, pair in sorted(bounds.items())
+                        ],
+                    )
+                result = self._engine.cooperative_tradeoff(
+                    community, tradeoff_f, cmig_solver=solver
                 )
-            result = self._engine.cooperative_tradeoff(community, tradeoff_f, cmig_solver=solver)
-            bundle = build_tidy(result)
-            if fva:
-                from cmig.core.fva import attach_community_fva_to_bundle, community_fva
-                # AE-1: 실제 요청 solver 전달(미전달 시 community solver 불일치 → 오표기).
-                reactions = (
-                    None if fva_metabolites is None
-                    else [f"EX_{met}_m" for met in fva_metabolites]
+                bundle = build_tidy(result)
+                if fva:
+                    from cmig.core.fva import attach_community_fva_to_bundle, community_fva
+                    # AE-1: 실제 요청 solver 전달(미전달 시 community solver 불일치 → 오표기).
+                    reactions = (
+                        None if fva_metabolites is None
+                        else [f"EX_{met}_m" for met in fva_metabolites]
+                    )
+                    ranges = community_fva(
+                        community,
+                        reactions=reactions,
+                        fraction_of_optimum=tradeoff_f,
+                        solver=solver,
+                    )
+                    attach_community_fva_to_bundle(bundle, ranges)
+                tsum = self._target_summary_or_none(bundle, targets)
+                namespace_components = (
+                    namespace_decision_keys(decisions)
+                    if namespace_policy == "require_reviewed"
+                    else ["assumption:bigg_namespace_v1"]
                 )
-                ranges = community_fva(
-                    community,
-                    reactions=reactions,
-                    fraction_of_optimum=tradeoff_f,
-                    solver=solver,
+                components = build_run_components(
+                    result,
+                    model_checksum=model_checksum,
+                    medium_checksum=medium_checksum(spec),
+                    tradeoff_f=tradeoff_f,
+                    micom_version=self._engine.micom_version,
+                    bounds=bounds,
+                    namespace_decisions=namespace_components,
+                    analysis_settings=analysis_settings,
+                    dependency_versions=dependencies,
                 )
-                attach_community_fva_to_bundle(bundle, ranges)
-            tsum = self._target_summary_or_none(bundle, targets)
-            components = build_run_components(
-                result,
-                model_checksum=model_checksum,
-                medium_checksum=medium_checksum(spec),
-                tradeoff_f=tradeoff_f,
-                micom_version=self._engine.micom_version,
-                bounds=bounds,
-                namespace_decisions=namespace_decision_keys(decisions),
-            )
-            diagnostic = self._merge_run_diagnostic(result.diagnostic, unknown_medium)
-            manifest_path = write_solve_output(
-                bundle, components, out_dir,
-                diagnostic=diagnostic, env_lock=env_lock, target_summary=tsum,
-                flux_report_status=result.flux_report_status,
-            )
-            return SolveOutcome.from_manifest(
-                result, bundle, components, manifest_path, community=community,
-            )
-        finally:
-            if original_bounds:
-                from cmig.core.sandbox import restore_bounds
+                diagnostic = self._merge_run_diagnostic(result.diagnostic, unknown_medium)
+                manifest_path = write_solve_output(
+                    bundle, components, out_dir,
+                    diagnostic=diagnostic, env_lock=env_lock, target_summary=tsum,
+                    flux_report_status=result.flux_report_status,
+                    provenance={
+                        "model_sources": model_sources,
+                        "namespace": {
+                            "policy": namespace_policy,
+                            "applied_mappings": [asdict(item) for item in applied_mappings],
+                        },
+                        "analysis_settings": analysis_settings,
+                    },
+                )
+                return SolveOutcome.from_manifest(
+                    result, bundle, components, manifest_path, community=community,
+                )
+            finally:
+                if original_bounds:
+                    from cmig.core.sandbox import restore_bounds
 
-                restore_bounds(community, original_bounds)
+                    restore_bounds(community, original_bounds)
 
     @staticmethod
     def _merge_run_diagnostic(base: str | None, unknown_medium: list[str]) -> str | None:

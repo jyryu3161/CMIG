@@ -25,11 +25,21 @@ def _taxonomy_csv(tmp_path):
 def test_solve_with_taxonomy_writes_artifacts(tmp_path):
     tax = _taxonomy_csv(tmp_path)
     out = tmp_path / "out"
-    rc = main(["solve", "--taxonomy", str(tax), "--solver", "gurobi", "--out", str(out)])
+    rc = main([
+        "solve", "--taxonomy", str(tax), "--assume-bigg-namespace",
+        "--solver", "gurobi", "--out", str(out),
+    ])
     assert rc == 0
     for f in ("nodes.parquet", "edges.parquet", "profile.parquet", "manifest.json"):
         assert (out / f).exists()
     assert TidyBundle.read(out).nodes.num_rows == 4
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["provenance"]["namespace"]["policy"] == "assume_bigg"
+    assert len(manifest["provenance"]["model_sources"]) == 3
+    assert all(
+        source["checksum"].startswith("sha256:")
+        for source in manifest["provenance"]["model_sources"]
+    )
 
 
 def test_medium_changes_run_hash(tmp_path):
@@ -38,7 +48,8 @@ def test_medium_changes_run_hash(tmp_path):
 
     def run(out_name, *medium):
         out = tmp_path / out_name
-        main(["solve", "--taxonomy", str(tax), "--solver", "gurobi",
+        main(["solve", "--taxonomy", str(tax), "--assume-bigg-namespace",
+              "--solver", "gurobi",
               *medium, "--out", str(out)])
         return json.loads((out / "manifest.json").read_text())
 
@@ -65,6 +76,13 @@ def test_solve_missing_taxonomy(tmp_path, capsys):
     rc = main(["solve", "--taxonomy", str(tmp_path / "nope.csv"), "--out", str(tmp_path / "o")])
     assert rc == 2
     assert "taxonomy" in capsys.readouterr().err.lower()
+
+
+def test_solve_requires_explicit_namespace_policy(tmp_path, capsys):
+    tax = _taxonomy_csv(tmp_path)
+    rc = main(["solve", "--taxonomy", str(tax), "--out", str(tmp_path / "o")])
+    assert rc == 2
+    assert "namespace gate blocked" in capsys.readouterr().err
 
 
 def test_bounds_json_rejects_null_and_bool(tmp_path):
@@ -124,6 +142,7 @@ def test_unknown_medium_exchange_is_strict_by_default(tmp_path, capsys):
     medium.write_text("exchange_id,uptake_limit\nEX_not_real_m,1.0\n")
     rc = main([
         "solve", "--taxonomy", str(tax), "--medium", str(medium),
+        "--assume-bigg-namespace",
         "--out", str(tmp_path / "o"),
     ])
     assert rc == 2
@@ -137,7 +156,8 @@ def test_allow_unknown_medium_records_diagnostic(tmp_path):
     out = tmp_path / "out"
     rc = main([
         "solve", "--taxonomy", str(tax), "--medium", str(medium),
-        "--allow-unknown-medium", "--solver", "gurobi", "--out", str(out),
+        "--assume-bigg-namespace", "--allow-unknown-medium",
+        "--solver", "gurobi", "--out", str(out),
     ])
     assert rc == 0
     manifest = json.loads((out / "manifest.json").read_text())

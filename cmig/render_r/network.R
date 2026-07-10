@@ -67,3 +67,10 @@ if (fmt == "tiff") {
   ggsave(out, p, width = width, height = height, dpi = dpi,
          device = svglite::svglite)
 }
+cat("CMIG_R_VERSION\t", R.version.string, "\n", sep = "")
+for (package in c("ggraph", "graphlayouts", "igraph", "ggplot2", "svglite", "systemfonts")) {
+  if (requireNamespace(package, quietly = TRUE)) {
+    cat("CMIG_R_PACKAGE\t", package, "\t", as.character(packageVersion(package)), "\n",
+        sep = "")
+  }
+}

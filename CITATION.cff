@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use CMIG, cite this software and the model/data resources used in your analysis."
+title: "CMIG: Community Metabolic Interaction GUI"
+type: software
+authors:
+  - family-names: "Ryu"
+    given-names: "Jaeyong"
+    email: "jyryu3161@kaist.ac.kr"
+repository-code: "https://github.com/jyryu3161/CMIG"
+url: "https://github.com/jyryu3161/CMIG"
+version: "0.1.0"
+date-released: "2026-07-10"
+license: "Apache-2.0"
+keywords:
+  - constraint-based modeling
+  - genome-scale metabolic model
+  - microbial community
+  - MICOM
+  - host-microbe

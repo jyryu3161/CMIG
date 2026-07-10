@@ -10,6 +10,7 @@ cobra 는 lazy import — 엔진 stack 없는 환경에서도 cmig 패키지 imp
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,12 +38,19 @@ OXYGEN_MODES = ("aerobic", "anaerobic")
 
 @dataclass(frozen=True)
 class MinimalMediumResult:
-    """minimal medium 산출 — 최소 exchange 집합 ([MIN-MEDIUM-U] invariant 적용)."""
+    """Validated minimal-medium result.
+
+    ``components`` is one cardinality-minimal support selected by the MILP. It is not itself an
+    essentiality claim. ``essential_components`` contains exchanges whose removal from the full
+    candidate medium makes ``min_growth`` unattainable (leave-one-out verification).
+    """
 
     components: list[str]            # exchange reaction id (결정적 정렬)
     n_components: int                # cardinality
     min_growth: float                # 충족 성장 하한
     uptake_bounds: dict[str, float]  # exchange id → uptake 허용량
+    achieved_growth: float           # returned medium을 재solve한 검증 성장률
+    essential_components: list[str]  # full candidate medium leave-one-out verified
     oxygen_mode: str = "aerobic"     # {aerobic, anaerobic} — O₂ 포함/제외
 
 
@@ -114,6 +122,8 @@ def minimal_medium_cardinality(
     """
     if oxygen_mode not in OXYGEN_MODES:
         raise ValueError(f"oxygen_mode ∈ {OXYGEN_MODES} (받음: {oxygen_mode}) [§4.5]")
+    if not math.isfinite(min_objective_value) or min_objective_value <= 0.0:
+        raise ValueError("min_objective_value must be finite and > 0")
     _load_cobra()                       # cobra 가용성 보장
     from cobra.medium import minimal_medium
 
@@ -125,30 +135,68 @@ def minimal_medium_cardinality(
             f"solver '{solver}' MILP capability 부재/미가용 (§2 capability matrix). "
             f"가용 MILP solver: {[n for n, c in capability_matrix().items() if c.supports('MILP')]}"
         )
-    model.solver = solver               # capability 확인 후 설정 (실패는 더 이상 silent 아님)
-    series = minimal_medium(
-        model, min_objective_value=min_objective_value, minimize_components=True
-    )
-    if series is None:                  # capability 있음 → None 은 infeasible (TC-8)
-        raise MILPInfeasibleError(
-            f"minimal medium MILP infeasible (min_growth={min_objective_value}, solver={solver})"
+    with model as working:
+        working.solver = solver           # context가 solver/bounds/medium을 원본에 남기지 않음
+        candidate_medium = dict(working.medium)
+        if oxygen_mode == "anaerobic":
+            # Oxygen is a solve constraint, not a label applied after an aerobic MILP.
+            candidate_medium.pop(O2_EXCHANGE, None)
+        working.medium = candidate_medium
+
+        series = minimal_medium(
+            working, min_objective_value=min_objective_value, minimize_components=True
         )
-    bounds = {str(k): float(v) for k, v in series.items()}
-    bounds = _apply_min_medium_invariants(
-        model, bounds, oxygen_mode=oxygen_mode, u_base=u_base, exclude_blocked=exclude_blocked,
-    )
+        if series is None:                # capability 있음 → None 은 infeasible (TC-8)
+            raise MILPInfeasibleError(
+                f"minimal medium MILP infeasible (min_growth={min_objective_value}, "
+                f"solver={solver}, oxygen_mode={oxygen_mode})"
+            )
+        bounds = {str(k): float(v) for k, v in series.items()}
+        bounds = _apply_min_medium_invariants(
+            working,
+            bounds,
+            oxygen_mode=oxygen_mode,
+            u_base=u_base,
+            exclude_blocked=exclude_blocked,
+        )
+
+        # Re-solve the exact medium that will be returned. A post-processed support that does not
+        # achieve the declared growth threshold is never published as a successful result.
+        working.medium = bounds
+        achieved_raw = working.slim_optimize(error_value=float("nan"))
+        achieved = float(achieved_raw)
+        tolerance = 1e-7 * max(1.0, abs(min_objective_value))
+        if not math.isfinite(achieved) or achieved + tolerance < min_objective_value:
+            raise MILPInfeasibleError(
+                "minimal medium validation failed: "
+                f"achieved={achieved}, required={min_objective_value}, "
+                f"oxygen_mode={oxygen_mode}"
+            )
+
+        # Global-within-input-medium essentiality: restore the full candidate medium, remove one
+        # selected component, and re-optimize. Alternatives remain available, so alternate carbon
+        # or electron sources prevent false 'limiting' labels.
+        essential: list[str] = []
+        for exchange_id in sorted(bounds):
+            leave_one_out = dict(candidate_medium)
+            leave_one_out.pop(exchange_id, None)
+            working.medium = leave_one_out
+            value = float(working.slim_optimize(error_value=float("nan")))
+            if not math.isfinite(value) or value + tolerance < min_objective_value:
+                essential.append(exchange_id)
+
     return MinimalMediumResult(
-        components=sorted(bounds),       # 결정적 tie-break
+        # Deterministic presentation; the selected MILP support may still be solver-specific.
+        components=sorted(bounds),
         n_components=len(bounds),
         min_growth=min_objective_value,
         uptake_bounds=bounds,
+        achieved_growth=achieved,
+        essential_components=essential,
         oxygen_mode=oxygen_mode,
     )
 
 
 def limiting_nutrients(result: MinimalMediumResult) -> list[str]:
-    """제한 영양 = 최소 배지 구성요소 (이 중 하나라도 빠지면 성장 하한 미달).
-
-    cardinality 최소이므로 모든 구성요소가 essential(=limiting) 후보다 (§10 limiting nutrient).
-    """
-    return list(result.components)
+    """Return leave-one-out verified essential nutrients, not all selected components."""
+    return list(result.essential_components)

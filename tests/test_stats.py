@@ -71,10 +71,10 @@ def test_fdr_correction():
 
 
 def test_stats_warnings_honesty():
-    """SC-ST6: 오용 경고(소표본·pseudo-replication) — 차단 아닌 노출."""
+    """SC-ST6: 독립 반복 없는 deterministic sweep는 추론통계를 차단한다."""
     warns = stats_warnings({"tiny": [1.0, 2.0]}, min_n=3)
     assert any("소표본" in w for w in warns)
-    assert any("pseudo-replication" in w for w in warns)
+    assert any("p-value" in w and "차단" in w for w in warns)
 
 
 def test_groups_from_sweep_rows_wiring():
@@ -89,6 +89,27 @@ def test_groups_from_sweep_rows_wiring():
     g = groups_from_sweep_rows(rows, metric="growth", group_axis="solver")
     assert set(g) == {"gurobi", "osqp"}
     assert g["gurobi"] == [1.0, 1.2] and g["osqp"] == [0.8]
+
+
+def test_groups_from_sweep_rows_aggregates_each_replicate_once():
+    rows = [
+        {
+            "status": "ok", "metric": "growth", "axis_solver": "gurobi",
+            "replicate_id": "r1", "value": 1.0,
+        },
+        {
+            "status": "ok", "metric": "growth", "axis_solver": "gurobi",
+            "replicate_id": "r1", "value": 3.0,
+        },
+        {
+            "status": "ok", "metric": "growth", "axis_solver": "gurobi",
+            "replicate_id": "r2", "value": 4.0,
+        },
+    ]
+    groups = groups_from_sweep_rows(
+        rows, metric="growth", group_axis="solver", replicate_column="replicate_id"
+    )
+    assert groups == {"gurobi": [2.0, 4.0]}
 
 
 def test_stats_sweep_cli_reads_sweep_store(tmp_path):
@@ -111,6 +132,33 @@ def test_stats_sweep_cli_reads_sweep_store(tmp_path):
     payload = json.loads((out / "stats_sweep_summary.json").read_text())
     assert payload["group_axis"] == "solver"
     assert payload["groups"] == {"gurobi": 2, "osqp": 2}
+    assert payload["test"] is None
+    assert payload["inference"]["status"] == "not_run_no_independent_replicates"
+
+
+def test_stats_sweep_cli_runs_inference_only_with_confirmed_replicates(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from cmig.cli.main import main
+
+    rows = []
+    for group, base in (("gurobi", 1.0), ("osqp", 3.0)):
+        for replicate, delta in (("r1", 0.0), ("r2", 0.1), ("r3", -0.1)):
+            rows.append({
+                "status": "ok", "metric": "growth", "axis_solver": group,
+                "replicate_id": replicate, "value": base + delta,
+            })
+    sweep = tmp_path / "replicates.parquet"
+    pq.write_table(pa.Table.from_pylist(rows), sweep)
+    out = tmp_path / "stats"
+    rc = main([
+        "stats-sweep", "--sweep", str(sweep), "--replicate-column", "replicate_id",
+        "--confirm-independent-replicates", "--out", str(out),
+    ])
+    assert rc == 0
+    payload = json.loads((out / "stats_sweep_summary.json").read_text())
+    assert payload["inference"]["status"] == "completed"
     assert payload["test"]["test"] == "mann_whitney_u"
 
 

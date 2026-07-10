@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import enum
 import json
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -47,8 +50,21 @@ class NamespaceDecision:
 class GateBlockedError(RuntimeError):
     """unresolved high-confidence mapping 존재 → solve 차단 (§4.8)."""
 
-    def __init__(self, unresolved_high: list[NamespaceDecision]):
+    def __init__(
+        self,
+        unresolved_high: list[NamespaceDecision],
+        *,
+        missing_decisions: bool = False,
+    ):
         self.unresolved_high = unresolved_high
+        self.missing_decisions = missing_decisions
+        if missing_decisions:
+            super().__init__(
+                "namespace gate blocked: 검토된 namespace decision이 없습니다. "
+                "`--namespace-decisions`로 검토 결과를 제공하거나, 입력 모델이 이미 BiGG "
+                "namespace임을 확인한 경우에만 `--assume-bigg-namespace`를 명시하세요."
+            )
+            return
         names = ", ".join(sorted(d.metabolite for d in unresolved_high))
         super().__init__(
             f"namespace gate blocked: unresolved high-confidence exchange mapping "
@@ -68,19 +84,52 @@ class NamespaceGateResult:
     unresolved_high: list[NamespaceDecision] = field(default_factory=list)
     warned_low: list[NamespaceDecision] = field(default_factory=list)
     decisions: list[NamespaceDecision] = field(default_factory=list)
+    missing_decisions: bool = False
 
     def raise_if_blocked(self) -> None:
         if self.blocked:
-            raise GateBlockedError(self.unresolved_high)
+            raise GateBlockedError(
+                self.unresolved_high, missing_decisions=self.missing_decisions
+            )
 
 
-def evaluate_gate(decisions: list[NamespaceDecision]) -> NamespaceGateResult:
+def _validate_decisions(decisions: list[NamespaceDecision]) -> None:
+    """모순되거나 충돌하는 audit 결정을 solve 전에 거부한다."""
+    mappings: dict[tuple[str, str], str] = {}
+    for decision in decisions:
+        if not decision.metabolite.strip() or not decision.source_id.strip():
+            raise ValueError("namespace decision의 metabolite/source_id는 비어 있을 수 없음")
+        if decision.status is DecisionStatus.RESOLVED and not decision.target_id:
+            raise ValueError(
+                f"resolved namespace decision에는 target_id가 필요함: {decision.metabolite}"
+            )
+        if decision.status is DecisionStatus.UNRESOLVED and decision.target_id is not None:
+            raise ValueError(
+                f"unresolved namespace decision의 target_id는 null이어야 함: "
+                f"{decision.metabolite}"
+            )
+        if decision.status is not DecisionStatus.RESOLVED:
+            continue
+        key = (decision.metabolite, decision.source_id)
+        target = str(decision.target_id)
+        prior = mappings.setdefault(key, target)
+        if prior != target:
+            raise ValueError(
+                f"충돌하는 namespace target: {decision.metabolite} -> {prior}, {target}"
+            )
+
+
+def evaluate_gate(
+    decisions: list[NamespaceDecision], *, require_decisions: bool = True
+) -> NamespaceGateResult:
     """namespace 결정 목록 → gate 결과.
 
     - blocked := ∃ (confidence=HIGH ∧ status=UNRESOLVED)
     - warned_low := low-confidence 이며 진행(자동병합 금지)
     - coverage_pct := resolved / total × 100  (OD-40: 분모=평가된 exchange 매핑 수)
     """
+    _validate_decisions(decisions)
+    missing_decisions = require_decisions and not decisions
     unresolved_high = [
         d for d in decisions
         if d.confidence is Confidence.HIGH and d.status is DecisionStatus.UNRESOLVED
@@ -88,14 +137,160 @@ def evaluate_gate(decisions: list[NamespaceDecision]) -> NamespaceGateResult:
     warned_low = [d for d in decisions if d.status is DecisionStatus.WARNED]
     resolved = sum(1 for d in decisions if d.status is DecisionStatus.RESOLVED)
     total = len(decisions)
-    coverage = 100.0 if total == 0 else (resolved / total) * 100.0
+    coverage = 0.0 if total == 0 else (resolved / total) * 100.0
     return NamespaceGateResult(
-        blocked=len(unresolved_high) > 0,
+        blocked=missing_decisions or len(unresolved_high) > 0,
         coverage_pct=coverage,
         unresolved_high=unresolved_high,
         warned_low=warned_low,
         decisions=list(decisions),
+        missing_decisions=missing_decisions,
     )
+
+
+@dataclass(frozen=True)
+class AppliedNamespaceMapping:
+    """모델 사본에 실제 적용된 단일 metabolite/exchange ID 변경."""
+
+    model_id: str
+    source_metabolite_id: str
+    target_metabolite_id: str
+    source_exchange_id: str
+    target_exchange_id: str
+
+
+_COMPARTMENT_SUFFIXES = ("_lumen", "_blood", "_e", "_m", "_c", "_p")
+
+
+def _without_namespace(raw: str) -> str:
+    """`bigg:ac` 같은 audit ID에서 namespace prefix만 제거한다."""
+    return raw.split(":", 1)[1] if ":" in raw else raw
+
+
+def _bare_metabolite_id(raw: str) -> tuple[str, str]:
+    """정확 매핑용 ID를 (bare ID, compartment suffix)로 분리한다."""
+    value = _without_namespace(raw.strip())
+    if value.startswith("EX_"):
+        value = value[3:]
+    for suffix in _COMPARTMENT_SUFFIXES:
+        if value.endswith(suffix):
+            return value[: -len(suffix)], suffix
+    return value, ""
+
+
+def apply_namespace_decisions_to_model(
+    model: Any, decisions: list[NamespaceDecision]
+) -> list[AppliedNamespaceMapping]:
+    """RESOLVED 결정만 Cobra 모델 사본의 exchange와 metabolite ID에 적용한다.
+
+    WARNED 후보는 의도적으로 적용하지 않는다. source matching은 느슨한 소문자 정규화가
+    아니라 compartment만 제거한 정확 ID 비교라서 stereochemistry 표기를 보존한다.
+    """
+    _validate_decisions(decisions)
+    resolved = [d for d in decisions if d.status is DecisionStatus.RESOLVED]
+    applied: list[AppliedNamespaceMapping] = []
+    occupied_metabolites = {str(m.id) for m in model.metabolites}
+    occupied_reactions = {str(r.id) for r in model.reactions}
+
+    for decision in resolved:
+        source_candidates = {
+            _bare_metabolite_id(decision.metabolite)[0],
+            _bare_metabolite_id(decision.source_id)[0],
+        }
+        target_bare, _ = _bare_metabolite_id(str(decision.target_id))
+        for exchange in sorted(model.exchanges, key=lambda reaction: str(reaction.id)):
+            extracellular = [
+                metabolite
+                for metabolite in exchange.metabolites
+                if str(getattr(metabolite, "compartment", ""))
+                in {"e", "m", "lumen", "blood", "extracellular"}
+                or _bare_metabolite_id(str(metabolite.id))[1]
+                in {"_e", "_m", "_lumen", "_blood"}
+            ]
+            if len(extracellular) != 1:
+                continue
+            metabolite = extracellular[0]
+            source_bare, suffix = _bare_metabolite_id(str(metabolite.id))
+            if source_bare not in source_candidates:
+                continue
+            target_metabolite_id = f"{target_bare}{suffix}"
+            source_metabolite_id = str(metabolite.id)
+            source_exchange_id = str(exchange.id)
+            target_exchange_id = f"EX_{target_metabolite_id}"
+            if target_metabolite_id != source_metabolite_id:
+                if target_metabolite_id in occupied_metabolites:
+                    raise ValueError(
+                        f"namespace metabolite ID 충돌: {source_metabolite_id} -> "
+                        f"{target_metabolite_id}"
+                    )
+                occupied_metabolites.remove(source_metabolite_id)
+                occupied_metabolites.add(target_metabolite_id)
+                metabolite.id = target_metabolite_id
+            if target_exchange_id != source_exchange_id:
+                if target_exchange_id in occupied_reactions:
+                    raise ValueError(
+                        f"namespace exchange ID 충돌: {source_exchange_id} -> "
+                        f"{target_exchange_id}"
+                    )
+                occupied_reactions.remove(source_exchange_id)
+                occupied_reactions.add(target_exchange_id)
+                exchange.id = target_exchange_id
+            if (
+                source_metabolite_id != target_metabolite_id
+                or source_exchange_id != target_exchange_id
+            ):
+                applied.append(
+                    AppliedNamespaceMapping(
+                        model_id=str(model.id),
+                        source_metabolite_id=source_metabolite_id,
+                        target_metabolite_id=target_metabolite_id,
+                        source_exchange_id=source_exchange_id,
+                        target_exchange_id=target_exchange_id,
+                    )
+                )
+    model.repair()
+    return applied
+
+
+def _load_cobra_model(path: Path) -> Any:
+    import cobra.io
+
+    name = path.name.lower()
+    if name.endswith((".xml", ".sbml", ".xml.gz", ".sbml.gz")):
+        return cobra.io.read_sbml_model(str(path))
+    if name.endswith(".json"):
+        return cobra.io.load_json_model(str(path))
+    if name.endswith(".mat"):
+        return cobra.io.load_matlab_model(str(path))
+    raise ValueError(f"namespace mapping 미지원 모델 형식: {path}")
+
+
+@contextmanager
+def mapped_taxonomy(
+    taxonomy: Any, decisions: list[NamespaceDecision]
+) -> Iterator[tuple[Any, list[AppliedNamespaceMapping]]]:
+    """검토 매핑을 임시 SBML 사본에 적용하고 MICOM용 taxonomy를 산출한다."""
+    resolved = [d for d in decisions if d.status is DecisionStatus.RESOLVED]
+    if not resolved:
+        yield taxonomy, []
+        return
+
+    import cobra.io
+
+    mapped = taxonomy.copy(deep=True)
+    applied: list[AppliedNamespaceMapping] = []
+    with tempfile.TemporaryDirectory(prefix="cmig-namespace-") as tmp:
+        tmp_path = Path(tmp)
+        for index, record in enumerate(mapped.to_dict("records")):
+            source_path = Path(str(record["file"]))
+            if not source_path.exists():
+                raise ValueError(f"taxonomy model 파일 없음: {source_path}")
+            model = _load_cobra_model(source_path)
+            applied.extend(apply_namespace_decisions_to_model(model, resolved))
+            target_path = tmp_path / f"{index:04d}.xml"
+            cobra.io.write_sbml_model(model, str(target_path))
+            mapped.at[mapped.index[index], "file"] = str(target_path)
+        yield mapped, applied
 
 
 def namespace_decision_key(decision: NamespaceDecision) -> str:

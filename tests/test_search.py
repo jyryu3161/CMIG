@@ -14,8 +14,10 @@ from cmig.core.engine import MicomEngine  # noqa: E402
 from cmig.core.search import (  # noqa: E402
     Direction,
     TargetSpec,
+    joint_target_solve,
     rank_consortia,
     score_target_result,
+    target_flux_domain,
     target_max_solve,
     target_objective_direction,
 )
@@ -36,6 +38,10 @@ def test_target_objective_direction_respects_exchange_sign():
     assert target_objective_direction(Direction.MIN_SECRETION) == "min"
     assert target_objective_direction(Direction.MAX_UPTAKE) == "min"
     assert target_objective_direction(Direction.MIN_UPTAKE) == "max"
+    assert target_flux_domain(Direction.MAX_SECRETION) == (0.0, None)
+    assert target_flux_domain(Direction.MIN_SECRETION) == (0.0, None)
+    assert target_flux_domain(Direction.MAX_UPTAKE) == (None, 0.0)
+    assert target_flux_domain(Direction.MIN_UPTAKE) == (None, 0.0)
 
 
 def test_target_max_solve_optimal():
@@ -55,6 +61,88 @@ def test_target_max_missing_exchange():
     comm = eng.build_community(build_taxonomy(), cmig_solver="gurobi")
     r = target_max_solve(comm, TargetSpec(metabolite="nonexistent_xyz"), solver="gurobi")
     assert r.status == "missing" and r.diagnostic is not None
+
+
+@pytest.mark.parametrize(
+    ("direction", "lower", "upper"),
+    [
+        (Direction.MIN_SECRETION, -1e-8, float("inf")),
+        (Direction.MIN_UPTAKE, float("-inf"), 1e-8),
+    ],
+)
+def test_target_solve_enforces_direction_sign_domain(direction, lower, upper):
+    eng = MicomEngine()
+    comm = eng.build_community(build_taxonomy(), cmig_solver="gurobi")
+    result = target_max_solve(comm, TargetSpec("ac", direction), solver="gurobi")
+    assert result.status == "optimal"
+    assert lower <= result.target_flux <= upper
+
+
+def test_target_solve_rejects_invalid_growth_fraction():
+    eng = MicomEngine()
+    comm = eng.build_community(build_taxonomy(), cmig_solver="gurobi")
+    with pytest.raises(ValueError, match="growth_fraction"):
+        target_max_solve(comm, _spec(), growth_fraction=0.0)
+
+
+def test_target_solve_handles_solver_returning_no_solution(monkeypatch):
+    from cobra import Metabolite, Model, Reaction
+
+    metabolite = Metabolite("ac_m", compartment="m")
+    model = Model("no_solution")
+    target = Reaction("EX_ac_m")
+    target.add_metabolites({metabolite: -1.0})
+    target.bounds = (-1000.0, 1000.0)
+    model.add_reactions([target])
+    model.objective = target
+    monkeypatch.setattr(model, "optimize", lambda: None)
+
+    result = target_max_solve(
+        model, _spec(), growth_fraction=0.5, mu_community=1.0, solver="gurobi"
+    )
+
+    assert result.status == "solver_no_solution"
+    assert result.diagnostic is not None
+
+
+def test_joint_multi_target_uses_one_flux_vector_not_combined_individual_optima():
+    """A shared precursor permits only five total target units after the growth floor.
+
+    Independent target optima would report a=5 and b=5 together. The joint LP must return one
+    feasible vector with a+b<=5.
+    """
+    from cobra import Metabolite, Model, Reaction
+
+    precursor = Metabolite("p_c", compartment="c")
+    model = Model("joint_target_tradeoff")
+    source = Reaction("SOURCE")
+    source.add_metabolites({precursor: 1.0})
+    source.bounds = (0.0, 10.0)
+    growth = Reaction("GROWTH")
+    growth.add_metabolites({precursor: -1.0})
+    growth.bounds = (0.0, 1000.0)
+    target_a = Reaction("EX_a_m")
+    target_a.add_metabolites({precursor: -1.0})
+    target_a.bounds = (-1000.0, 1000.0)
+    target_b = Reaction("EX_b_m")
+    target_b.add_metabolites({precursor: -1.0})
+    target_b.bounds = (-1000.0, 1000.0)
+    model.add_reactions([source, growth, target_a, target_b])
+    model.objective = growth
+
+    result = joint_target_solve(
+        model,
+        [TargetSpec("a"), TargetSpec("b")],
+        normalization_scales={"a": 1.0, "b": 1.0},
+        growth_fraction=0.5,
+        mu_community=10.0,
+        solver="gurobi",
+    )
+    assert result.status == "optimal"
+    assert result.community_growth >= 5.0 - 1e-7
+    assert result.target_fluxes["a"] >= -1e-8
+    assert result.target_fluxes["b"] >= -1e-8
+    assert sum(result.target_fluxes.values()) <= 5.0 + 1e-7
 
 
 def test_score_target_result():

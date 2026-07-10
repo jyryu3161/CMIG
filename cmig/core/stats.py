@@ -5,13 +5,14 @@ Design Ref: §15 G5 / cmig-stats.design. Plan SC: SC-ST1~ST6.
 scipy/statsmodels 위임. **robust 기본**(Cliff's δ·Mann-Whitney/Kruskal) — flux 분포는 비정규가
 흔하므로 정규성 가정 검정(Welch/ANOVA)은 opt-in. 오용 경고(stats_warnings) — 과학적 주장 회피.
 
-[sweep replicate 의미론] 결정적 sweep 에는 그룹 내 반복이 없으므로, **그룹=한 축 값 / 표본=다른
-축 값** 으로 해석한다(예: 그룹=medium_variant, 표본=member_set들). pseudo-replication 위험은
-경고로 노출(사용자가 무시 가능) — honesty-first.
+[sweep replicate 의미론] 결정적 sweep 조건은 독립 반복이 아니다. replicate ID가 별도 column으로
+제공되고 사용자가 독립성을 명시적으로 확인한 경우에만 p-value를 계산한다. 같은 replicate의 여러
+조건은 먼저 한 관측치로 집계해 pseudo-replication을 방지한다.
 """
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -19,22 +20,54 @@ from dataclasses import dataclass
 
 def groups_from_sweep_rows(
     rows: Sequence[Mapping[str, object]], *, metric: str, group_axis: str,
+    replicate_column: str | None = None,
+    replicate_aggregate: str = "mean",
 ) -> dict[str, list[float]]:
-    """sweep long-format 행 → 그룹별 값 (실 wiring). status==ok & metric 일치만 사용.
+    """sweep long-format 행 → 그룹별 값. status==ok & metric 일치만 사용.
 
-    그룹 = axis_<group_axis> 값. group_axis 의 각 값이 한 그룹, 나머지 축이 그룹 내 표본
-    (pseudo-replication 경고 대상).
+    replicate_column이 없으면 동일 run_hash replay를 제거한 결정적 조건값(기술통계 전용)을
+    반환한다. replicate_column이 있으면 group×replicate 내 여러 조건을 먼저 mean/median으로
+    집계해 각 독립 replicate가 정확히 한 관측치만 기여하게 한다.
     """
+    if replicate_aggregate not in {"mean", "median"}:
+        raise ValueError("replicate_aggregate must be 'mean' or 'median'")
     col = f"axis_{group_axis}"
-    groups: dict[str, list[float]] = {}
-    for r in rows:
+    buckets: dict[tuple[str, str], list[float]] = {}
+    seen_runs: set[tuple[str, str]] = set()
+    for row_index, r in enumerate(rows):
         if r.get("status") != "ok" or r.get("metric") != metric:
             continue
+        if col not in r:
+            raise ValueError(f"group axis column missing from sweep: {col}")
         v = r.get("value")
         if v is None:
             continue
-        key = str(r.get(col))
-        groups.setdefault(key, []).append(float(v))  # type: ignore[arg-type]
+        value = float(v)  # type: ignore[arg-type]
+        if not math.isfinite(value):
+            raise ValueError("sweep statistics require finite values")
+        group = str(r.get(col))
+        if replicate_column is None:
+            run_id = str(r.get("run_hash") or r.get("condition_id") or f"row-{row_index:08d}")
+            if (group, run_id) in seen_runs:
+                continue
+            seen_runs.add((group, run_id))
+            replicate = run_id
+        else:
+            if replicate_column not in r or r.get(replicate_column) in {None, ""}:
+                raise ValueError(
+                    f"independent replicate column missing/empty: {replicate_column}"
+                )
+            replicate = str(r[replicate_column])
+        buckets.setdefault((group, replicate), []).append(value)
+
+    groups: dict[str, list[float]] = {}
+    for (group, _replicate), values in sorted(buckets.items()):
+        aggregate = (
+            statistics.fmean(values)
+            if replicate_aggregate == "mean"
+            else float(statistics.median(values))
+        )
+        groups.setdefault(group, []).append(float(aggregate))
     return groups
 
 
@@ -147,17 +180,22 @@ def normality_pvalue(x: Sequence[float]) -> float:
     return float(stats.shapiro(x).pvalue)
 
 
-def stats_warnings(groups: Mapping[str, Sequence[float]], *, min_n: int = 3) -> list[str]:
-    """오용 경고(honesty-first) — 소표본·pseudo-replication·비정규. 차단 아님(노출만)."""
+def stats_warnings(
+    groups: Mapping[str, Sequence[float]], *,
+    min_n: int = 3,
+    independent_replicates: bool = False,
+) -> list[str]:
+    """오용 경고 — 독립 반복 부재 시 추론통계 차단 사실을 명시한다."""
     warns: list[str] = []
     for g in sorted(groups):
         n = len(groups[g])
         if n < min_n:
             warns.append(f"소표본 그룹 '{g}' (n={n}<{min_n}) — 검정력 부족, 해석 주의")
-    warns.append(
-        "결정적 sweep 그룹 비교는 pseudo-replication 위험(독립 반복 아님) — "
-        "효과크기(effect size) 중심 해석 권고, 단정적 통계 주장 회피"
-    )
+    if not independent_replicates:
+        warns.append(
+            "결정적 sweep 조건은 독립 반복이 아니므로 추론통계(p-value/FDR)를 차단함 — "
+            "기술통계와 조건별 효과만 보고"
+        )
     for g in sorted(groups):
         p = normality_pvalue(groups[g])
         if p == p and p < 0.05:                       # 비정규 → robust 권고

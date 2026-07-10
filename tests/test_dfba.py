@@ -20,7 +20,9 @@ import micom  # noqa: E402
 from cmig.core.dfba import (  # noqa: E402
     TIMECOURSE_SCHEMA,
     DfbaConfig,
+    audit_dfba_balance,
     build_timecourse,
+    run_dfba_sensitivity,
     simulate_dfba,
 )
 
@@ -193,6 +195,46 @@ def test_dfba_timecourse_schema():
     assert {"biomass", "growth_rate", "EX_glc__D_e"} <= series
 
 
+def test_dfba_records_reconstructable_mass_balance_per_step():
+    result = simulate_dfba(_model(), _glucose_cfg(1.0), solver="gurobi")
+    audit = audit_dfba_balance(result)
+    assert audit.n_steps == len(result.timecourse) - 1
+    assert audit.concentrations_nonnegative is True
+    assert audit.max_concentration_residual < 1e-12
+    assert audit.max_biomass_residual < 1e-12
+    assert all(point.exchange_fluxes for point in result.timecourse[1:])
+
+
+def test_dfba_config_rejects_invalid_numerics_and_unmanaged_vmax():
+    with pytest.raises(ValueError, match="must be > 0"):
+        DfbaConfig(t_end=0.0, initial_concentrations={"EX_s": 1.0})
+    with pytest.raises(ValueError, match="non-empty|at least one"):
+        DfbaConfig(t_end=1.0, initial_concentrations={})
+    with pytest.raises(ValueError, match="not managed"):
+        DfbaConfig(
+            t_end=1.0,
+            initial_concentrations={"EX_s": 1.0},
+            vmax={"EX_other": 1.0},
+        )
+
+
+def test_dfba_sensitivity_uses_finest_dt_reference_and_preserves_balance():
+    config = DfbaConfig(
+        t_end=0.5,
+        dt=0.05,
+        initial_biomass=0.01,
+        initial_concentrations={"EX_glc__D_e": 10.0},
+    )
+    result = run_dfba_sensitivity(
+        _model(), config, dts=[0.2, 0.1, 0.05], kms=[0.01], solver="gurobi"
+    )
+    assert len(result.rows) == 3
+    finest = next(row for row in result.rows if row.dt == 0.05)
+    assert finest.relative_biomass_error_to_finest_dt == 0.0
+    assert all(row.max_concentration_residual < 1e-12 for row in result.rows)
+    assert all(row.max_biomass_residual < 1e-12 for row in result.rows)
+
+
 def test_dfba_osqp_hybrid_restores_model_bounds():
     """SC-DF6: osqp hybrid LP 경로가 동작하고 시뮬레이션 bound 변경을 모델에 남기지 않는다."""
     model = _model()
@@ -262,6 +304,23 @@ def test_dfba_cli_explicit_missing_exchange_fails(tmp_path):
         "--out", str(tmp_path / "bad"),
     ])
     assert rc == 2
+
+
+def test_dfba_sensitivity_cli_writes_provenance_and_acceptance(tmp_path):
+    from cmig.cli.main import main
+
+    out = tmp_path / "sensitivity"
+    rc = main([
+        "dfba-sensitivity", "--model", _MODEL, "--t-end", "0.3",
+        "--dts", "0.1,0.05", "--kms", "0.01,0.02",
+        "--initial", "EX_glc__D_e=10", "--out", str(out),
+    ])
+    assert rc == 0
+    payload = json.loads((out / "dfba_sensitivity.json").read_text())
+    assert payload["n_runs"] == 4
+    assert payload["acceptance"]["balance_passed"] is True
+    assert payload["provenance"]["model_checksum"].startswith("sha256:")
+    assert (out / "dfba_sensitivity.csv").exists()
 
 
 def test_spatial_preview_cli_writes_heatmap(tmp_path):

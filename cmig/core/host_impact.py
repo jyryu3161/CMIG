@@ -19,6 +19,10 @@ class HostImpact:
     unused_secretion: dict[str, float] = field(default_factory=dict)  # host 미사용 분비
     host_viable: bool = False
     host_biomass: float = 0.0
+    microbe_to_host_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
+    unused_secretion_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
+    ambiguous_metabolites: list[str] = field(default_factory=list)
+    attribution_method: str = "objective_fixed_fva"
 
 
 def host_impact(
@@ -30,20 +34,40 @@ def host_impact(
     unused_secretion = 분비 − host 사용 (host 가 다 못 쓴 잔여, ≥0).
     """
     host_uptake = getattr(host_result, "lumen_uptake", {})
+    host_ranges = getattr(host_result, "lumen_uptake_ranges", {})
     viable = bool(getattr(host_result, "viable", False))
     biomass = float(getattr(host_result, "biomass", 0.0))
 
     crossing: dict[str, float] = {}
     unused: dict[str, float] = {}
+    crossing_ranges: dict[str, tuple[float, float]] = {}
+    unused_ranges: dict[str, tuple[float, float]] = {}
+    ambiguous: list[str] = []
     for met, secreted in microbial_secretion.items():
         if secreted <= eps:
             continue
-        taken = min(secreted, abs(host_uptake.get(met, 0.0)))
-        if taken > eps:
-            crossing[met] = taken
-        leftover = secreted - taken
-        if leftover > eps:
-            unused[met] = leftover
+        if met in host_ranges:
+            raw_lower, raw_upper = host_ranges[met]
+            lower = min(secreted, max(0.0, float(raw_lower)))
+            upper = min(secreted, max(lower, float(raw_upper)))
+        else:
+            point = min(secreted, abs(host_uptake.get(met, 0.0)))
+            lower = upper = point
+        crossing_ranges[met] = (lower, upper)
+        unused_ranges[met] = (max(0.0, secreted - upper), max(0.0, secreted - lower))
+        if upper - lower <= eps:
+            taken = (lower + upper) / 2.0
+            if taken > eps:
+                crossing[met] = taken
+            leftover = secreted - taken
+            if leftover > eps:
+                unused[met] = leftover
+        else:
+            ambiguous.append(met)
     return HostImpact(
         microbe_to_host=crossing, unused_secretion=unused,
-        host_viable=viable, host_biomass=biomass)
+        host_viable=viable, host_biomass=biomass,
+        microbe_to_host_ranges=crossing_ranges,
+        unused_secretion_ranges=unused_ranges,
+        ambiguous_metabolites=sorted(ambiguous),
+    )

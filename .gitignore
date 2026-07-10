@@ -28,6 +28,8 @@ temp_figures/
 # Large external GEM fixtures: keep local, not in source control.
 Recon3D.xml
 fixtures/Recon3D.xml
+fixtures/Recon3D.xml.gz
+fixtures/Human-GEM*.xml
 fixtures/human_models/
 
 # OS
