@@ -1,10 +1,11 @@
-# CMIG
+# CMIG — Community Metabolic Interaction GUI
 
-CMIG is a desktop and command-line platform for community metabolic interaction
-analysis. It uses user-provided GEM files and delegates community FBA to MICOM,
-while CMIG owns the product layer around model-pool search, host-microbe
-coupling, namespace checks, reproducible manifests, tidy outputs, diagnostics,
-and publication-oriented figures.
+CMIG (**Community Metabolic Interaction GUI**) is a desktop and command-line
+platform for community metabolic interaction analysis. It uses user-provided
+GEM files and delegates community FBA to MICOM, while CMIG owns the product
+layer around model-pool search, host-microbe coupling, namespace checks,
+reproducible manifests, tidy outputs, diagnostics, and publication-oriented
+figures.
 
 The current workflow is intentionally local-file based. CMIG does not download,
 curate, or auto-select external model catalogues. Prepare the microbial SBML,
