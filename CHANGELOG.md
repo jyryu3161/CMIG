@@ -7,6 +7,10 @@ semantic versioning for public releases.
 
 ### Added
 
+- Claude Code agent skill `cmig-metabolic-analysis` (`.claude/skills/`) that routes requests to the
+  correct `cmig` workflow and enforces the scientific-validity guardrails, plus a
+  `.claude-plugin/marketplace.json` making it installable following the anthropics/life-sciences
+  marketplace pattern.
 - Integrated publication benchmark with model quality, community, search, dFBA sensitivity, host
   scale/mapping/coupling, checksums, acceptance checks, and artifact manifests.
 - Annotation-aware host interface mapping and objective-fixed FVA transfer intervals.

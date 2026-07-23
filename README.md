@@ -131,6 +131,33 @@ and `manifest.json`, then reports the workflow kind, status, run hash when
 available, summary keys, and artifacts. This is the CLI counterpart to opening a
 run in the GUI Profile/Open Run view.
 
+## Agentic Skill For Claude Code
+
+CMIG ships a Claude Code **agent skill** so that an assistant working in this
+repository automatically knows how to drive CMIG correctly — which `cmig`
+workflow matches a request, and the scientific-validity guardrails that keep a
+run publication-defensible (mandatory host-microbe biomass basis, reviewed
+interface maps, solver provenance, and dFBA sensitivity audits).
+
+- The skill lives at `.claude/skills/cmig-metabolic-analysis/`. Claude Code
+  loads it automatically for sessions in this repo; no setup is required.
+- `SKILL.md` holds the trigger description, the intent→command routing table,
+  and the critical decision points. Deeper material is split into
+  `references/workflows.md` (per-command reference), `references/scientific-validity.md`
+  (the guardrails in depth), and `references/outputs.md` (reading and
+  reproducing runs).
+- It is also packaged as an installable plugin via `.claude-plugin/marketplace.json`,
+  following the [anthropics/life-sciences](https://github.com/anthropics/life-sciences)
+  marketplace pattern:
+
+  ```bash
+  /plugin marketplace add https://github.com/jyryu3161/CMIG.git
+  ```
+
+The skill deliberately points agents back to `cmig workflows --format json` and
+`cmig <command> --help` as ground truth, so it stays aligned with the CLI as the
+tool evolves rather than duplicating flag lists that could drift.
+
 ## Typical CLI Workflows
 
 ### 1. Review a user-provided model
