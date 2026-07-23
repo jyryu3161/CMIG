@@ -1,0 +1,33 @@
+{
+  "name": "cmig",
+  "owner": {
+    "name": "CMIG maintainers",
+    "url": "https://github.com/jyryu3161/CMIG"
+  },
+  "metadata": {
+    "version": "1.0.0",
+    "description": "Agentic skill for community metabolic interaction analysis with CMIG (MICOM-backed community FBA, model-pool search, host-microbe coupling, dFBA, and gene-KO ranking)."
+  },
+  "plugins": [
+    {
+      "name": "cmig-metabolic-analysis",
+      "source": "./",
+      "description": "Operate CMIG for microbial community metabolic interaction analysis and route requests to the correct cmig CLI workflow while enforcing the scientific-validity guardrails (biomass basis, reviewed interface maps, solver provenance, sensitivity audits).",
+      "category": "life-sciences",
+      "tags": [
+        "bioinformatics",
+        "metabolic-modeling",
+        "microbiome",
+        "community-fba",
+        "micom",
+        "host-microbe",
+        "dfba",
+        "cmig"
+      ],
+      "strict": false,
+      "skills": [
+        "./.claude/skills/cmig-metabolic-analysis"
+      ]
+    }
+  ]
+}

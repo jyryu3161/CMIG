@@ -19,7 +19,9 @@ dist/
 !fixtures/**/*.parquet
 .run/
 .bkit/
-.claude/
+# Ignore local Claude Code settings, but keep the shared agent skill in source control.
+.claude/*
+!.claude/skills/
 .Rlib/
 .bkit/runtime/
 Rplots.pdf
