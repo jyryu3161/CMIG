@@ -161,6 +161,17 @@ def build_run_components(
     )
 
 
+def solve_provenance(provenance: dict[str, Any] | None) -> dict[str, Any]:
+    """Provenance block of a solve manifest, with `medium_policy` stamped by the WRITER.
+
+    Writer-last, deliberately. The previous spelling was ``{"medium_policy": MEDIUM_POLICY,
+    **(provenance or {})}``, which let a caller passing its own `medium_policy` key silently win —
+    contradicting the adjacent comment's claim that no solve path can omit it. No caller does today;
+    the ordering is what makes the claim true rather than merely currently unfalsified.
+    """
+    return {**(provenance or {}), "medium_policy": MEDIUM_POLICY}
+
+
 def write_solve_output(
     bundle: object,
     components: RunHashComponents,
@@ -293,7 +304,7 @@ def write_solve_output(
             },
             # NOT hashed (round 5, blocker 5): marks which medium semantics produced this run.
             # Stamped by the writer, not the caller, so no solve path can omit it.
-            "provenance": {"medium_policy": MEDIUM_POLICY, **(provenance or {})},
+            "provenance": solve_provenance(provenance),
             "sweep": sweep,
             "figure_specs": figure_specs or [],
             "platform": manifest.platform,

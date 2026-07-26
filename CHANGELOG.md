@@ -81,6 +81,63 @@ semantic versioning for public releases.
 
 ### Fixed
 
+- **The `strain-growth` figure turned "never measured" into a measured zero.** `single` and
+  `community` bar heights were built with `_optional_float(...) or 0.0`, so a member whose
+  alone-solve raised (`single_growth: null`, `single_status: "failed"`) was drawn as a zero-height
+  "Single model" bar beside a real "Community" bar — which reads as obligate syntrophy, a
+  biological conclusion invented by a plotting default. Every other layer of the command was
+  already honest (blank CSV cell, `null` in JSON, degraded summary tier, a run-level warning naming
+  the member, an em dash in the GUI table); only `strain_growth_plot.svg`/`.tiff` — the artifacts
+  that go in a manuscript — fabricated. An unmeasured leg is now NaN (no bar drawn), each omitted
+  bar is labelled "not evaluable" in place, and the title states `N of M members not evaluable`.
+  A genuinely measured zero is still drawn as zero.
+- **`sweep` certified an all-failed grid as `status: "ok"`, and exited 0.** The summary carried a
+  hard-coded literal and the manifest derived `"ok" if rows else "failed"` — but a failed condition
+  *stays* in `rows` by `core/sweep.py`'s no-drop contract, so the `failed` branch was reachable only
+  for an empty grid. Reproduced with an ordinary medium file and no flags: every condition
+  `status: failed` with `value: NaN` in `sweep.parquet`, while the summary, the manifest,
+  `inspect-run` and `$?` all said ok with no warning printed. The run-level tier is now derived from
+  the per-condition statuses (all failed → `failed`, some failed → `degraded`), the failed
+  condition ids are named in `warnings` and printed, `sweep_summary.json` gains `n_ok`/`n_failed`,
+  and **`sweep` now exits 3 when every condition failed** (`--allow-failed-run` waives the exit
+  code, never the recorded status). `run_hash` is unchanged — none of these fields is hashed.
+- **`host-search-bigg` ranked and plotted a non-optimal host LP as an evaluated result.**
+  `evaluation_status` was the literal `"ok"` in the success branch, but
+  `core/host_coupling.solve_bigg_host` *returns* `HostSolveResult(False, status, 0.0, …)` for a
+  non-optimal host LP rather than raising — so that branch was taken, `host_objective` became a
+  fabricated `0.0`, and the candidate was ranked with `n_candidates_failed: 0`, painted in the
+  "evaluated ok" colour and exited 0, while the same row's `warnings` cell read "the reported host
+  objective is not a result". `evaluation_status` is now derived from the community and host solve
+  statuses (matching the sibling `host-microbe-bigg`), an unevaluable candidate publishes NaN rather
+  than `0.0` in every scientific field and moves to the `unevaluated` block, and the ranking figure
+  states `N of M candidates not evaluable (excluded)`.
+- **`inspect-run` claimed to certify artifact bytes it did not check.** `result_digest` only digests
+  the artifacts the *manifest* declares, and no workflow declared its publication figures — so a
+  `gene_ko_plot.svg` overwritten with `<svg>FABRICATED FIGURE</svg>` still printed
+  "certifies the ARTIFACT BYTES — verified", with the tampered file listed under `artifacts:` in the
+  same output. Meanwhile each summary JSON's own `artifacts` field *did* list the figures, so the two
+  lists in one run directory disagreed. Every workflow writer now returns the artifact list it
+  actually wrote and the manifest declares exactly that list, so the two agree by construction and
+  the figures are covered by `result_digest`. `run_hash` is unchanged (`artifacts` is not a hash
+  component); `result_digest` values move for every kind that writes a figure.
+- **A detected `result_digest` mismatch did not reach `status`, `$?` or `--format json`.** The
+  mismatch was reported loudly on stderr — but only in the text branch, while the payload said
+  `status: "ok"` beside `result_digest.match: false` and the command exited 0. Any gate written
+  against `status` or `$?` (as `SKILL.md`'s mandated verification step is) accepted a run whose
+  artifacts are not the artifacts its manifest fingerprinted. `inspect-run` now reports
+  `artifact_integrity: verified | mismatch | not_recorded`, reports `status: failed` with
+  `status_source: result_digest_mismatch` on a mismatch (the manifest's own status stays readable
+  under `manifest.status`), emits the stderr block in **both** output formats, and **exits 3**. A
+  failed *solve* still exits 0 here — `inspect-run` reports on a run, it does not re-judge it.
+  `inspect-run`'s payload `schema_version` moves 1.0 → 1.1.
+- `inspect-run` dropped the signals the manifest already recorded. `_compact_manifest` whitelisted
+  12 keys, so the `medium_unapplied` diagnostic naming dropped nutrients, the `medium_policy` marker
+  created for the `--medium` discontinuity above, `provenance`, `warnings` and the summary *values*
+  (only the key names were listed) were all invisible to the tool's own inspection command. All five
+  are now surfaced.
+- `provenance.medium_policy` in a solve manifest is now stamped writer-last, so a caller passing its
+  own `medium_policy` key cannot silently overwrite it — the adjacent comment claimed as much, but
+  the dict ordering said otherwise.
 - A gene knockout whose solve *raised* was published as the screen's strongest result. The
   exception handler wrote `score: 0.0` and `score_delta: -baseline.score` — a finite,
   large-magnitude, entirely plausible effect size that was never measured — and the writer

@@ -411,24 +411,13 @@ def _cmd_inspect_run(args: argparse.Namespace) -> int:
     except CorruptRunArtifactError as e:
         print(f"{e} (in {run_dir})", file=sys.stderr)
         return 2
-    if args.format == "json":
-        print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False))
-        return 0
-    print(f"run_dir: {payload['run_dir']}")
-    print(f"kind: {payload['kind']}")
-    print(f"status: {payload['status']} (source: {payload['status_source']})")
-    if payload["summary_file"]:
-        print(f"summary_file: {payload['summary_file']}")
-    if payload["run_hash"]:
-        print(f"run_hash: {payload['run_hash']}   (certifies the INPUTS)")
     verified = payload["result_digest"]
-    if verified is None:
-        print("result_digest: not recorded (manifest predates result digests)")
-    elif verified["match"]:
-        print(f"result_digest: {verified['actual']}   (certifies the ARTIFACT BYTES) — verified")
-    else:
+    tampered = payload["artifact_integrity"] == "mismatch"
+    if tampered:
         # Loud, and on stderr, because this is the failure `run_hash` structurally cannot report:
-        # same inputs, different answer.
+        # same inputs, different answer. R5 final P1-b: this block used to live inside the text
+        # branch only, so `--format json` — the form SKILL.md tells an agent to use — was completely
+        # silent about a detected tamper. stderr does not corrupt the JSON document on stdout.
         print("result_digest: MISMATCH", file=sys.stderr)
         print(f"  recorded: {verified['recorded']}", file=sys.stderr)
         print(f"  actual  : {verified['actual']}", file=sys.stderr)
@@ -441,6 +430,20 @@ def _cmd_inspect_run(args: argparse.Namespace) -> int:
             "result_digest certifies the answer, and they disagree.",
             file=sys.stderr,
         )
+    if args.format == "json":
+        print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False))
+        return _inspect_run_exit_code(payload)
+    print(f"run_dir: {payload['run_dir']}")
+    print(f"kind: {payload['kind']}")
+    print(f"status: {payload['status']} (source: {payload['status_source']})")
+    if payload["summary_file"]:
+        print(f"summary_file: {payload['summary_file']}")
+    if payload["run_hash"]:
+        print(f"run_hash: {payload['run_hash']}   (certifies the INPUTS)")
+    if verified is None:
+        print("result_digest: not recorded (manifest predates result digests)")
+    elif verified["match"]:
+        print(f"result_digest: {verified['actual']}   (certifies the ARTIFACT BYTES) — verified")
     basis = payload.get("edge_weight_basis")
     if basis:
         print(f"edges.weight basis: {basis.get('weight_basis')} [{basis.get('weight_unit')}]")
@@ -449,7 +452,18 @@ def _cmd_inspect_run(args: argparse.Namespace) -> int:
     print("artifacts:")
     for artifact in payload["artifacts"]:
         print(f"  - {artifact}")
-    return 0
+    return _inspect_run_exit_code(payload)
+
+
+def _inspect_run_exit_code(payload: dict[str, Any]) -> int:
+    """Non-zero only when the run's artifacts contradict its own manifest.
+
+    A `failed` *solve* still exits 0 here — `inspect-run` reports on a run, it does not re-judge it,
+    and the exit contract for a failed solve belongs to the command that produced it. A tampered or
+    truncated artifact set is different in kind: the directory cannot be inspected as the run it
+    claims to be, so `$?` has to say so (R5 final P1-b).
+    """
+    return EXIT_ANALYSIS_FAILED if payload["artifact_integrity"] == "mismatch" else 0
 
 
 def _inspect_run_dir(run_dir: Path) -> dict[str, Any]:
@@ -483,15 +497,28 @@ def _inspect_run_dir(run_dir: Path) -> dict[str, Any]:
 
     status, status_source = _resolve_run_status(summary, manifest)
     run_hash = _string_or_none(summary.get("run_hash")) or _string_or_none(manifest.get("run_hash"))
+    verified = _verify_result_digest(run_dir, manifest)
+    # R5 final P1-b: the mismatch used to be reported only as `result_digest.match: false` buried in
+    # the payload, next to `status: "ok"` — so a gate written against `status` (as SKILL.md's
+    # mandated verification step is) accepted a run whose artifacts are not the artifacts its
+    # manifest fingerprinted. A detected tamper is now the run's headline verdict. The manifest's
+    # own recorded status stays readable under `manifest.status`, so nothing is hidden by this.
+    integrity = (
+        "not_recorded" if verified is None
+        else ("verified" if verified["match"] else "mismatch")
+    )
+    if integrity == "mismatch":
+        status, status_source = "failed", "result_digest_mismatch"
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "run_dir": str(run_dir),
         "kind": kind,
         "status": status,
         "status_source": status_source,
         "summary_file": summary_file,
         "run_hash": run_hash,
-        "result_digest": _verify_result_digest(run_dir, manifest),
+        "artifact_integrity": integrity,
+        "result_digest": verified,
         "artifacts": _list_run_artifacts(run_dir),
         "manifest": _compact_manifest(manifest),
         "summary_keys": sorted(str(key) for key in summary.keys()),
@@ -660,6 +687,16 @@ def _compact_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         # answer depended on without opening the file.
         "hash_components",
         "components",
+        # R5 final P2-a: these four were dropped by the whitelist, so `inspect-run` — the step
+        # SKILL.md mandates for every run — could not show the `medium_unapplied` diagnostic naming
+        # dropped nutrients, nor `medium_policy`/`provenance.medium_policy`, the marker this round
+        # created specifically so a reader could tell pre-fix from post-fix medium semantics apart.
+        # `summary_keys` listed the key names but never their values, so `summary` joins them.
+        "medium_policy",
+        "provenance",
+        "diagnostic",
+        "warnings",
+        "summary",
     ]
     return {key: manifest[key] for key in keys if key in manifest}
 
@@ -1068,7 +1105,7 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
             close_unlisted_host_uptake=not args.keep_host_uptake,
         )
         out = Path(args.out)
-        _write_host_microbe_bigg_outputs(result, taxonomy, out)
+        run_artifacts = _write_host_microbe_bigg_outputs(result, taxonomy, out)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -1110,7 +1147,7 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
             "solve_run_hash": None,
         },
         status=host_run_status,
-        artifacts=["host_microbe_bigg_summary.json", "interaction_edges.csv"],
+        artifacts=run_artifacts,
         warnings=list(result.warnings),
         summary={
             "community_growth": _finite_or_none(float(result.community_growth)),
@@ -1163,7 +1200,7 @@ def _cmd_host_map(args: argparse.Namespace) -> int:
             member_models[str(rec["id"])] = read_sbml_model(str(mp))
         result = build_host_map(host, member_models)
         out = Path(args.out)
-        _write_host_map_outputs(result, out)
+        run_artifacts = _write_host_map_outputs(result, out)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -1183,9 +1220,7 @@ def _cmd_host_map(args: argparse.Namespace) -> int:
         status="failed" if result.n_microbial_secretions == 0 else (
             "degraded" if result.n_exact == 0 else "ok"
         ),
-        artifacts=[
-            "host_exchange_map.csv", "host_interface_map.json", "host_map_summary.json",
-        ],
+        artifacts=run_artifacts,
         warnings=list(result.warnings),
         summary={
             "n_microbial_secretions": result.n_microbial_secretions,
@@ -1241,7 +1276,7 @@ def _host_map_hash_components(
     return components
 
 
-def _write_host_map_outputs(result: Any, out: Path) -> None:
+def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
     from cmig.core.host_map import (
         HOST_MAP_INTERFACE_MAP_ADMITS,
         HOST_MAP_NEEDS_REVIEW_TYPES,
@@ -1322,6 +1357,7 @@ def _write_host_map_outputs(result: Any, out: Path) -> None:
     }
     with open(out / "host_map_summary.json", "w") as f:
         json.dump(summary, f, indent=2, allow_nan=False)
+    return ["host_exchange_map.csv", "host_interface_map.json", "host_map_summary.json"]
 
 
 def _cmd_render_figure(args: argparse.Namespace) -> int:
@@ -1524,46 +1560,77 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                     exclude_metabolites=exclude,
                     close_unlisted_host_uptake=not args.keep_host_uptake,
                 )
-                host_objective = float(result.host_result.biomass)
-                target_transfer = float(result.impact.microbe_to_host.get(args.target, 0.0))
-                if args.metric == "objective_value":
-                    score = host_objective
-                elif args.metric == "target_transfer":
-                    score = target_transfer
+                # R5 final P0-3: `evaluation_status` used to be the literal "ok" here, but
+                # `core/host_coupling.solve_bigg_host` RETURNS `HostSolveResult(False, status,
+                # 0.0, …)` for a non-optimal host LP rather than raising — so this success branch
+                # was taken, `host_objective` became a fabricated 0.0, and the row was ranked and
+                # painted in the "evaluated ok" colour while its own `warnings` cell said "the
+                # reported host objective is not a result". `evaluation_status` is the ONLY field
+                # the ranked/unevaluated partition, the figure colour and the summary status read,
+                # so it has to be derived from the solve statuses, exactly as the sibling
+                # `host-microbe-bigg` already does.
+                host_status = str(result.host_result.status)
+                community_status = str(result.community_status)
+                evaluation_status = _worst_status(
+                    _run_status_from_solve(community_status),
+                    _run_status_from_solve(host_status),
+                )
+                if evaluation_status == "ok":
+                    host_objective = float(result.host_result.biomass)
+                    target_transfer = float(result.impact.microbe_to_host.get(args.target, 0.0))
+                    if args.metric == "objective_value":
+                        score = host_objective
+                    elif args.metric == "target_transfer":
+                        score = target_transfer
+                    else:
+                        score = _weighted_host_search_score(
+                            host_objective,
+                            target_transfer,
+                            host_weight=args.host_weight,
+                            target_weight=args.target_weight,
+                            host_reference=args.host_reference,
+                            target_reference=args.target_reference,
+                        )
+                    diagnostic = None
                 else:
-                    score = _weighted_host_search_score(
-                        host_objective,
-                        target_transfer,
-                        host_weight=args.host_weight,
-                        target_weight=args.target_weight,
-                        host_reference=args.host_reference,
-                        target_reference=args.target_reference,
+                    # Nothing was measured, so nothing is published: NaN renders blank in the CSV
+                    # and null in the JSON rather than as a host that gained nothing.
+                    host_objective = target_transfer = score = float("nan")
+                    diagnostic = (
+                        f"not evaluated: community solve status={community_status}, host solve "
+                        f"status={host_status}; the host objective is not a result"
                     )
                 rows.append({
                     "members": members,
-                    "evaluation_status": "ok",
+                    "evaluation_status": evaluation_status,
                     "score": score,
                     "host_objective_value": host_objective,
-                    "host_status": result.host_result.status,
+                    "host_status": host_status,
                     "host_viable": result.host_result.viable,
                     "target": args.target,
                     "target_transfer": target_transfer,
-                    "community_growth": float(result.community_growth),
-                    "community_status": result.community_status,
+                    "community_growth": (
+                        float(result.community_growth)
+                        if _run_status_from_solve(community_status) == "ok"
+                        else float("nan")
+                    ),
+                    "community_status": community_status,
                     "warnings": result.warnings,
-                    "diagnostic": None,
+                    "diagnostic": diagnostic,
                 })
             except Exception as e:
                 rows.append({
                     "members": members,
                     "evaluation_status": "failed",
-                    "score": 0.0,
-                    "host_objective_value": 0.0,
+                    # A candidate whose evaluation raised measured nothing; 0.0 here was
+                    # indistinguishable from a real "the host gained nothing" result.
+                    "score": float("nan"),
+                    "host_objective_value": float("nan"),
                     "host_status": "failed",
                     "host_viable": False,
                     "target": args.target,
-                    "target_transfer": 0.0,
-                    "community_growth": 0.0,
+                    "target_transfer": float("nan"),
+                    "community_growth": float("nan"),
                     "community_status": "failed",
                     "warnings": [],
                     "diagnostic": str(e),
@@ -1584,7 +1651,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         if not ranked_rows:
             search_warnings.append("no candidate was evaluable; the ranking is empty")
         out = Path(args.out)
-        _write_host_search_bigg_outputs(
+        run_artifacts = _write_host_search_bigg_outputs(
             ranked_rows[: args.top_k],
             out,
             target=args.target,
@@ -1654,7 +1721,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
             "ok" if ranked_rows else "failed",
             "degraded" if unevaluated_rows else "ok",
         ),
-        artifacts=["host_search_summary.json", "host_search_rankings.csv"],
+        artifacts=run_artifacts,
         warnings=search_warnings,
         summary={
             "n_candidates_total": len(candidates),
@@ -1829,7 +1896,7 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
             },
         )
         out = Path(args.out)
-        _write_host_ko_impact_outputs(result, out)
+        run_artifacts = _write_host_ko_impact_outputs(result, out)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -1888,7 +1955,7 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
             "biomass_basis": _biomass_basis_component(args),
         },
         status=result.status,
-        artifacts=["host_ko_impact_summary.json", "host_ko_impact.csv"],
+        artifacts=run_artifacts,
         warnings=list(result.warnings),
         summary={
             "baseline_host_objective": _finite_or_none(result.baseline.host_objective),
@@ -1905,7 +1972,7 @@ def _fmt_number(value: float | None) -> str:
     return "n/a" if not math.isfinite(value) else f"{value:.6g}"
 
 
-def _write_host_ko_impact_outputs(result: Any, out: Path) -> None:
+def _write_host_ko_impact_outputs(result: Any, out: Path) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "host_ko_impact.csv", "w", newline="") as f:
         writer = csv.DictWriter(
@@ -1991,6 +2058,7 @@ def _write_host_ko_impact_outputs(result: Any, out: Path) -> None:
         out / "host_ko_impact_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
+    return list(payload["artifacts"])
 
 
 def _select_ko_targets(
@@ -2354,7 +2422,7 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             score_is_flux=False,
         ))
         out = Path(args.out)
-        _write_gene_ko_search_outputs(
+        run_artifacts = _write_gene_ko_search_outputs(
             evaluated_rows[: args.top_k] + failed_rows,
             out,
             baseline=baseline,
@@ -2432,7 +2500,7 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         status=_worst_status(*[
             "ok" if row.get("evaluation_status") == "ok" else "degraded" for row in rows
         ] or ["failed"]),
-        artifacts=["gene_ko_summary.json", "gene_ko_rankings.csv"],
+        artifacts=run_artifacts,
         warnings=warnings,
         summary={
             "baseline_score": _finite_or_none(float(baseline.score)),
@@ -2620,7 +2688,7 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
                 "confirming the model's objective really is its biomass reaction"
             )
         out = Path(args.out)
-        _write_strain_growth_outputs(
+        run_artifacts = _write_strain_growth_outputs(
             rows,
             out,
             solver=args.solver,
@@ -2662,7 +2730,7 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
             "ok" if (media_matched and not failed_single) else "degraded",
             "ok" if not objective_suspect else "degraded",
         ),
-        artifacts=["strain_growth_summary.json", "strain_growth.csv"],
+        artifacts=run_artifacts,
         warnings=warnings,
         summary={
             "n_members": len(rows),
@@ -2801,7 +2869,7 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
                     "diagnostic": str(e),
                 })
         out = Path(args.out)
-        _write_abundance_impact_outputs(
+        run_artifacts = _write_abundance_impact_outputs(
             rows,
             member_growth_rows,
             out,
@@ -2833,7 +2901,7 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
         status=_worst_status(*[
             _run_status_from_solve(str(row.get("status"))) for row in rows
         ] or ["failed"]),
-        artifacts=["abundance_impact_summary.json", "abundance_impact.csv"],
+        artifacts=run_artifacts,
         summary={
             "n_points": len(rows),
             "target_member": args.member,
@@ -2902,7 +2970,7 @@ def _write_gene_ko_search_outputs(
     seed: int,
     direction: str,
     warnings: list[str],
-) -> None:
+) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "gene_ko_rankings.csv", "w", newline="") as f:
         writer = csv.DictWriter(
@@ -3023,6 +3091,7 @@ def _write_gene_ko_search_outputs(
         n_total=n_genes_total,
         selection=gene_selection,
     )
+    return list(payload["artifacts"])
 
 
 def _optional_float(value: Any) -> float | None:
@@ -3051,7 +3120,7 @@ def _write_strain_growth_outputs(
     community_diagnostic: str | None,
     medium_basis: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
-) -> None:
+) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "strain_growth.csv", "w", newline="") as f:
         writer = csv.DictWriter(
@@ -3161,6 +3230,7 @@ def _write_strain_growth_outputs(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_strain_growth_figures(rows, out)
+    return list(payload["artifacts"])
 
 
 def _write_abundance_impact_outputs(
@@ -3173,7 +3243,7 @@ def _write_abundance_impact_outputs(
     solver: str,
     tradeoff_f: float,
     warnings: list[str] | None = None,
-) -> None:
+) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "abundance_impact.csv", "w", newline="") as f:
         writer = csv.DictWriter(
@@ -3303,6 +3373,7 @@ def _write_abundance_impact_outputs(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_abundance_impact_figures(rows, out, target_member=target_member, target=target)
+    return list(payload["artifacts"])
 
 
 def _write_host_search_bigg_outputs(
@@ -3318,7 +3389,7 @@ def _write_host_search_bigg_outputs(
     n_candidates_failed: int = 0,
     unevaluated: list[dict[str, Any]] | None = None,
     warnings: list[str] | None = None,
-) -> None:
+) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     unevaluated = list(unevaluated or [])
     with open(out / "host_search_rankings.csv", "w", newline="") as f:
@@ -3421,11 +3492,15 @@ def _write_host_search_bigg_outputs(
         out / "host_search_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
-    _write_host_search_figures(rows, out, target=target, metric=metric)
+    _write_host_search_figures(
+        rows, out, target=target, metric=metric,
+        n_unevaluated=n_candidates_failed, n_total=n_candidates_total,
+    )
     _prune_stale_workflow_artifacts(out, KNOWN_HOST_SEARCH_ARTIFACTS, payload["artifacts"])
+    return list(payload["artifacts"])
 
 
-def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> None:
+def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> list[str]:
     from cmig.core.interaction_figures import (
         contribution_rows,
         host_microbe_interaction_rows,
@@ -3587,6 +3662,7 @@ def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> N
         out / "host_microbe_bigg_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
+    return list(payload["artifacts"])
 
 
 def _cmd_dfba_fixture(args: argparse.Namespace) -> int:
@@ -3677,7 +3753,7 @@ def _cmd_dfba(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"dfba failed: {e}", file=sys.stderr)
         return 1
-    _write_dfba_outputs(
+    run_artifacts = _write_dfba_outputs(
         result,
         Path(args.out),
         model_path=model_path,
@@ -3731,7 +3807,7 @@ def _cmd_dfba(args: argparse.Namespace) -> int:
             # informational warnings (e.g. "closed N untracked uptake exchanges") must not.
             "degraded" if getattr(result, "untracked_uptake", None) else "ok",
         ),
-        artifacts=["dfba_summary.json", "timecourse.parquet"],
+        artifacts=run_artifacts,
         warnings=list(getattr(result, "warnings", []) or []),
         summary={"status": result.status, "n_steps": len(getattr(result, "rows", []) or [])},
     )
@@ -4095,7 +4171,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
             strict_medium=not args.allow_unknown_medium,
         )
         out = Path(args.out)
-        _write_search_outputs(result, taxonomy, diagnostics, out)
+        run_artifacts = _write_search_outputs(result, taxonomy, diagnostics, out)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -4161,7 +4237,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
             "ok" if result.ranks else "failed",
             "degraded" if result.unevaluated else "ok",
         ),
-        artifacts=["search_summary.json", "search_rankings.csv", "pool_taxonomy.csv"],
+        artifacts=run_artifacts,
         warnings=list(result.warnings),
         summary={
             "n_candidates_total": result.n_candidates_total,
@@ -4299,7 +4375,7 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
         medium_spec=medium_spec, strict_medium=not args.allow_unknown_medium,
     )
     out = Path(args.out)
-    _write_multi_target_outputs(
+    run_artifacts = _write_multi_target_outputs(
         result,
         taxonomy,
         out,
@@ -4362,7 +4438,7 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
             "ok" if result.ranks else "failed",
             "degraded" if result.unevaluated else "ok",
         ),
-        artifacts=["search_summary.json", "search_rankings.csv", "pool_taxonomy.csv"],
+        artifacts=run_artifacts,
         warnings=list(result.warnings),
         summary={
             "n_candidates_total": result.n_candidates_total,
@@ -4393,7 +4469,7 @@ def _write_multi_target_outputs(
     user_weights: dict[str, float] | None = None,
     carbon_numbers: dict[str, int] | None = None,
     carbon_sources: dict[str, str] | None = None,
-) -> None:
+) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     taxonomy.to_csv(out / "pool_taxonomy.csv", index=False)
     # D9: `cmig workflows` advertises pool_diagnostics.csv and figures for `cmig search`; the
@@ -4504,6 +4580,7 @@ def _write_multi_target_outputs(
         json.dump(summary, f, indent=2, allow_nan=False)
     _write_multi_target_figure(result, out / "search_plot.svg")
     _prune_stale_workflow_artifacts(out, KNOWN_SEARCH_ARTIFACTS, summary["artifacts"])
+    return list(summary["artifacts"])
 
 
 def _search_hash_components(
@@ -4949,7 +5026,9 @@ def _prune_stale_workflow_artifacts(
         print(f"  removed stale artifact(s) from a previous run: {', '.join(removed)}")
 
 
-def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], out: Path) -> None:
+def _write_search_outputs(
+    result: Any, taxonomy: Any, diagnostics: list[Any], out: Path
+) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     taxonomy.to_csv(out / "pool_taxonomy.csv", index=False)
     _write_pool_diagnostics_csv(diagnostics, out / "pool_diagnostics.csv")
@@ -5115,6 +5194,7 @@ def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], ou
     _write_search_tiff(result, out / "search_plot.tiff")
     _write_search_scatter_tiff(result, out / "search_scatter.tiff")
     _prune_stale_workflow_artifacts(out, KNOWN_SEARCH_ARTIFACTS, payload["artifacts"])
+    return list(payload["artifacts"])
 
 
 # P1-F: publication figure constants, shared by every writer so the outputs agree.
@@ -5243,7 +5323,7 @@ def _write_dfba_outputs(
     model_path: Path,
     solver: str,
     config: dict[str, Any],
-) -> None:
+) -> list[str]:
     from cmig.core.dfba import (
         audit_dfba_balance,
         build_timecourse,
@@ -5291,6 +5371,7 @@ def _write_dfba_outputs(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_dfba_figure(rows, out / "dfba_timecourse.svg", out / "dfba_timecourse.tiff")
+    return list(payload["artifacts"])
 
 
 def _write_dfba_figure(rows: list[dict[str, Any]], out_svg: Path, out_tiff: Path) -> None:
@@ -5368,11 +5449,50 @@ def _write_dfba_figure(rows: list[dict[str, Any]], out_svg: Path, out_tiff: Path
     plt.close(fig)
 
 
+def _measured_growth(value: Any, status: Any) -> float:
+    """A growth number only when it was actually solved for; otherwise NaN.
+
+    R5 final P0-1: the caller used ``_optional_float(...) or 0.0``, so a leg whose solve raised
+    (``single_growth: None``, ``single_status: "failed"``) became a *measured* zero. NaN is the
+    honest value — matplotlib draws no bar for it, and it cannot be mistaken for a collapse.
+    """
+    number = _optional_float(value)
+    if number is None or str(status) != "optimal":
+        return float("nan")
+    return number
+
+
+def _strain_growth_plot_series(
+    rows: list[dict[str, Any]],
+) -> tuple[list[float], list[float], list[str]]:
+    """(single-leg heights, community-leg heights, members with an unmeasured leg).
+
+    R5 final P0-1, the same fix as ``_abundance_impact_plot_series`` one screen below: a bar height
+    is a claim that something was measured. A member whose alone-solve raised is drawn as NaN (no
+    bar) and named, never as a zero-height bar — a zero "Single model" bar beside a real "Community"
+    bar reads as obligate syntrophy, i.e. a biological conclusion invented by a plotting default.
+    The community leg of the same member is kept when it *did* solve, so the fix drops the
+    fabrication rather than the measurement.
+    """
+    single: list[float] = []
+    community: list[float] = []
+    unmeasured: list[str] = []
+    for row in rows:
+        single_value = _measured_growth(row.get("single_growth"), row.get("single_status"))
+        community_value = _measured_growth(
+            row.get("community_member_growth"), row.get("community_status")
+        )
+        single.append(single_value)
+        community.append(community_value)
+        if math.isnan(single_value) or math.isnan(community_value):
+            unmeasured.append(str(row["member"]))
+    return single, community, unmeasured
+
+
 def _write_strain_growth_figures(rows: list[dict[str, Any]], out: Path) -> None:
     plt = _load_matplotlib_pyplot()
     labels = [str(row["member"]) for row in rows]
-    single = [_optional_float(row.get("single_growth")) or 0.0 for row in rows]
-    community = [_optional_float(row.get("community_member_growth")) or 0.0 for row in rows]
+    single, community, unmeasured = _strain_growth_plot_series(rows)
     height = max(3.4, 1.4 + 0.48 * max(len(rows), 1))
     fig, ax = plt.subplots(figsize=(7.2, height), dpi=300)
     positions = list(range(len(labels)))
@@ -5391,6 +5511,14 @@ def _write_strain_growth_figures(rows: list[dict[str, Any]], out: Path) -> None:
         color=OKABE_ITO[2],
         label="Community",
     )
+    # A missing bar and a zero-height bar look identical, so every omission is labelled in place.
+    for index, (single_value, community_value) in enumerate(zip(single, community, strict=True)):
+        for value, y in ((single_value, index + offset), (community_value, index - offset)):
+            if math.isnan(value):
+                ax.text(
+                    0.0, y, " not evaluable", va="center", ha="left",
+                    fontsize=8, style="italic", color="#555555",
+                )
     ax.set_yticks(positions)
     ax.set_yticklabels(labels)
     ax.invert_yaxis()
@@ -5407,8 +5535,17 @@ def _write_strain_growth_figures(rows: list[dict[str, Any]], out: Path) -> None:
         )
     else:
         ax.set_xlabel(f"Growth rate ({UNIT_GROWTH})")
-    ax.set_title("Strain growth profile", loc="left", pad=10)
-    max_value = max(single + community, default=0.0)
+    # The omission must be visible on the figure itself: a reader who only ever sees the TIFF has
+    # no other way to learn that a member's leg was never solved.
+    title = "Strain growth profile"
+    if unmeasured:
+        title += (
+            f"  —  {len(unmeasured)} of {len(rows)} members not evaluable "
+            "(no bar drawn; see strain_growth.csv)"
+        )
+    ax.set_title(title, loc="left", pad=10)
+    finite = [value for value in single + community if math.isfinite(value)]
+    max_value = max(finite, default=0.0)
     if max_value > 0.0:
         ax.set_xlim(right=max_value * 1.08)
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.12), ncol=2, frameon=False)
@@ -5633,7 +5770,8 @@ def _select_spatial_frames(frames: list[Any]) -> list[Any]:
 
 
 def _write_host_search_figures(
-    rows: list[dict[str, Any]], out: Path, *, target: str, metric: str
+    rows: list[dict[str, Any]], out: Path, *, target: str, metric: str,
+    n_unevaluated: int = 0, n_total: int | None = None,
 ) -> None:
     plt = _load_matplotlib_pyplot()
     top = rows[:10]
@@ -5650,7 +5788,16 @@ def _write_host_search_figures(
         for idx, value in enumerate(values[::-1]):
             if abs(value) > 1e-12:
                 ax.text(value, idx, f" {value:.3g}", va="center", fontsize=10)
-    ax.set_title(f"Host-microbe combination ranking: {target}", loc="left", pad=12)
+    # R5 final P0-3: with the unevaluable candidates correctly excluded from the ranking, an empty
+    # or short bar set is all a reader of the figure alone would see. The omission is stated here
+    # for the same reason abundance-impact states its own.
+    title = f"Host-microbe combination ranking: {target}"
+    if n_unevaluated:
+        title += (
+            f"  —  {n_unevaluated} of {n_total if n_total is not None else n_unevaluated} "
+            "candidates not evaluable (excluded)"
+        )
+    ax.set_title(title, loc="left", pad=12)
     metric_unit = {
         "objective_value": UNIT_GROWTH,
         "target_transfer": UNIT_HOST_FLUX,
@@ -6780,10 +6927,19 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     write_sweep_parquet(rows, out / "sweep.parquet")
     _write_sweep_profiles(profile_rows, out / "sweep_profiles.parquet")
     _write_medium_summary(rows, out / "medium_summary.csv")
+    sweep_status = _sweep_run_status(rows)
+    sweep_warnings = _sweep_warnings(rows)
+    n_failed = sum(1 for row in rows if str(row.status) != "ok")
     _write_json_or_print(
         {
-            "status": "ok",
+            # R5 final P0-2: this was the literal "ok", never reassigned, so a grid in which every
+            # condition failed was certified ok by the summary, the manifest, `inspect-run` AND the
+            # exit code. `sweep.parquet` carried `status: failed` for every row all along.
+            "status": sweep_status,
             "n_runs": len(rows),
+            "n_ok": len(rows) - n_failed,
+            "n_failed": n_failed,
+            "warnings": sweep_warnings,
             "metric": args.metric,
             "fva": bool(args.fva or args.fva_metabolites is not None),
             "artifacts": [
@@ -6797,6 +6953,8 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         args.out,
         "sweep_summary.json",
     )
+    for warning in sweep_warnings:
+        print(f"  warning: {warning}")
     _emit_workflow_manifest(
         out,
         "sweep",
@@ -6823,11 +6981,48 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
                 ),
             },
         },
-        status="ok" if rows else "failed",
-        artifacts=["sweep_summary.json", "sweep.parquet", "sweep_profiles.parquet"],
-        summary={"n_runs": len(rows), "metric": args.metric},
+        # R5 final P0-2: `"ok" if rows else "failed"` made the `failed` branch reachable only for an
+        # EMPTY grid, because a failed condition stays in `rows` by contract (core/sweep.py).
+        status=sweep_status,
+        artifacts=[
+            "sweep_summary.json", "sweep.parquet", "sweep_profiles.parquet", "medium_summary.csv",
+        ],
+        warnings=sweep_warnings,
+        summary={
+            "n_runs": len(rows),
+            "n_ok": len(rows) - n_failed,
+            "n_failed": n_failed,
+            "metric": args.metric,
+        },
     )
-    return 0
+    return _exit_code_for_status(sweep_status, args)
+
+
+def _sweep_run_status(rows: list[Any]) -> str:
+    """Run-level tier of a sweep, derived from the per-condition `status` column.
+
+    A failed condition REMAINS in `rows` (core/sweep.py's no-drop contract), so any derivation that
+    only asks whether `rows` is non-empty can never report a failure.
+    """
+    n_failed = sum(1 for row in rows if str(row.status) != "ok")
+    if not rows or n_failed == len(rows):
+        return "failed"
+    return "degraded" if n_failed else "ok"
+
+
+def _sweep_warnings(rows: list[Any]) -> list[str]:
+    """Run-level warnings naming the conditions that carry no value."""
+    failed = [str(row.condition_id) for row in rows if str(row.status) != "ok"]
+    if not rows:
+        return ["the sweep grid was empty; no condition was evaluated and there is no result"]
+    if not failed:
+        return []
+    named = sorted(failed)
+    shown = ", ".join(named[:8]) + (f", … (+{len(named) - 8} more)" if len(named) > 8 else "")
+    return [
+        f"{len(failed)} of {len(rows)} sweep conditions did not solve and carry no value "
+        f"(see sweep.parquet.diagnostic): {shown}"
+    ]
 
 
 def _write_sweep_profiles(rows: list[dict[str, Any]], path: Path) -> None:
@@ -7685,6 +7880,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="입력 모델이 이미 BiGG namespace임을 명시적으로 확인",
     )
     us.add_argument("--allow-unknown-medium", action="store_true")
+    us.add_argument(
+        "--allow-failed-run", action="store_true", dest="allow_failed_run",
+        help="exit 0 even when every swept condition failed (default: exit 3, so a pipeline "
+        "gating on $? cannot mistake a written sweep.parquet for a result)",
+    )
     us.add_argument("--fva", action="store_true", help="include community FVA for each condition")
     us.add_argument(
         "--fva-metabolites",
