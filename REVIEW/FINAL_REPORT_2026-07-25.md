@@ -177,6 +177,37 @@ that `weight` values are unchanged.
 Gates after phase 4: **pytest 731 passed, 2 pre-existing skips, 0 failed**
 (+121 regression tests total), ruff clean, `golden verify` green.
 
+### Manifest coverage is 11 workflow kinds, not every command
+
+Stated precisely, because "every science command" overstates it. Covered:
+`model_pool_search`, `multi_target_model_pool_search`, `strain_growth`,
+`abundance_impact`, `gene_ko_search`, `host_microbe_bigg`, `host_search_bigg`,
+`host_ko_impact`, `sweep`, `dfba`, `model_quality` (11 kinds / 12 commands —
+`search` and `search-fixture` share a kind).
+
+**Still emitting no workflow manifest:** `host-map`, `publication-benchmark`,
+`dfba-fixture`, `dfba-sensitivity`, `spatial-preview`, `stats-*`,
+`sandbox-fixture`, `host-fixture`, `host-generic`, `host-benchmark`,
+`namespace-suggest`, `model-review`. Verified by running `host-map` — it writes
+`host_map_summary.json`, `host_exchange_map.csv` and `host_interface_map.json`
+but no `manifest.json`. Two of these matter more than the rest: `host-map`
+produces the interface-map decisions that every host run depends on, and
+`publication-benchmark` is the surface that claims to bundle the whole audit.
+
+Two structural caveats on the new envelope:
+
+1. **No drift gate.** `golden verify` (SC-5) protects the 11-component solve
+   hash, but nothing equivalent would catch a future change to the workflow
+   envelope's serialization silently altering workflow hashes.
+2. **It fingerprints inputs, not output bytes.** Two runs with identical
+   recorded inputs share a hash even if the outputs differ (e.g. solver
+   non-determinism), so it certifies provenance, not bit-identical results.
+
+`_emit_workflow_manifest` also catches broadly by design: a provenance bug
+reports the failure and returns no hash rather than fabricating one or
+destroying a finished analysis. That is the right trade-off, but it means a
+missing hash is a possible outcome and should be treated as a failure signal.
+
 **What genuinely remains is not a defect:** no human GEM ships, so every S3
 number is a surrogate — scenario 3 becomes publication-grade only with a real
 host model (Recon3D / Human-GEM) and a reviewed interface map. The bundled pool
