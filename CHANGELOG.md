@@ -11,6 +11,109 @@ semantic versioning for public releases.
   correct `cmig` workflow and enforces the scientific-validity guardrails, plus a
   `.claude-plugin/marketplace.json` making it installable following the anthropics/life-sciences
   marketplace pattern.
+
+### Documentation
+
+- **Skill/README guardrails synced with the round-5 hardening.** The skill layer predated the
+  round-5 scientific fixes and named none of their vocabulary, so following it faithfully could
+  still produce a wrong conclusion. Added, in `.claude/skills/cmig-metabolic-analysis/` and
+  mirrored in `README.md`:
+  - **Multi-target search.** `--targets` / `--target-preset scfa` / `--multi-metric` /
+    `--target-directions` were entirely undocumented. A "total SCFA" question answered with the
+    default `normalized_weighted` scalarisation collapses onto a single-metabolite specialist:
+    measured over the 5 bundled models, all 9 ranked candidates returned `ac=0, but=0, ppa=0,
+    succ=0`, and rank 1 (`iHN637+iSFV_1184`) was reported as `lac__D=17.44, ac=0` — while
+    `--multi-metric pareto` shows that same pair reaching `ac=27.75`. All three metrics were run
+    over the identical pool; the same pair is reported as `lac__D=17.44` (`normalized_weighted`),
+    `ac=8.19 + succ=10.41` (`carbon_equivalent`), or `ac=27.75` (`pareto` rank 1) — so
+    `normalized_weighted` claims lactate and no succinate while `carbon_equivalent` claims
+    succinate and no lactate, about one community on one medium. **`carbon_equivalent` is not an
+    escape from the collapse**: it returned `but=0, lac__D=0, lac__L=0, ppa=0` for all 9 of its
+    ranked candidates. The docs now state that the vertex collapse is a property of linear
+    scalarisation rather than of the weighting, so only `pareto` answers a "best overall"
+    question. The `pareto` **mode** (an N-dimensional epsilon-constraint frontier, any number of
+    targets) is distinguished from the `pareto` **column** on a scalarised ranking (computed only
+    for exactly 2 targets; `False` elsewhere means "not evaluated", not "dominated").
+  - **`edges.parquet.weight` is a per-taxon flux.** Comparing raw edge magnitudes inverts member
+    rankings; measured on a 2-member solve, acetate edges were `3.876` (abundance 0.1) vs `0.459`
+    (abundance 0.9) while the community contributions were `0.388` vs `0.413`. Documented the
+    reconstruction (exclude `cross_feeding`, sign by direction, multiply by abundance → equals
+    `profile.net_flux`) and pointed at the `edges.weight basis:` line `inspect-run` prints.
+  - **Custom-medium invalidation.** Pre-fix runs that used `--medium` must be re-run, the
+    `run_hash` will not reveal it, and `provenance.medium_policy` is the discriminator. Documented
+    the real cost of `--allow-unknown-medium` (exit 0, `status: degraded`, dropped nutrients, and a
+    `medium_checksum` still covering the full requested medium) and the namespace-alias input error.
+  - **dFBA interpretability.** `--close-untracked-uptake` was undocumented, so the previous advice
+    sent users to audit `--dt`/`--km` on an experiment where Km is not rate-limiting. On
+    `models/iML1515.xml` the naive recipe reports `status: completed` and a biomass number with
+    `n_untracked_uptake: 14`.
+  - **Exit-code contract** (`0` / `2` input error / `3` failed science) and `--allow-failed-run`,
+    which no skill or README text mentioned.
+  - **Two fingerprints:** `run_hash` certifies the inputs, `result_digest` certifies the answer;
+    `artifact_integrity`; `cmig golden verify-envelope`; and the honest scope note that `cmig solve`
+    emits no `result_digest`. Also documented `result_digest.cross_run_comparable` — digests are
+    comparable *between* runs only for `host_map`, so cross-run comparison elsewhere manufactures
+    false alarms.
+  - **`inspect-run`'s payload (`schema_version 1.2`)**: documented `status_source` and all ten of
+    its values, `degraded` as a tier, and `result_digest_absent_reason` with its four values. Stated
+    that **`unknown` is a real answer, not a tool failure** — a recognised summary recording no
+    run-level outcome now reports `status: unknown` / `status_source: no_status_signal` instead of a
+    fabricated `ok` — and that `acceptance.interpretable: false` is a **veto** that overrides a
+    rosier `manifest.status` and owns `status_source` when it wins, so the two can legitimately
+    disagree. Also flagged that the status vocabulary is **not closed**: `infeasible` and `stalled`
+    still reach `status` verbatim because the legacy alias table maps only `optimal`/`completed`, so
+    a gate matching just the four tiers will miss them.
+  - **`cmig host-ko-impact`** — a shipped workflow (GUI `Host / Knockout Impact`) that the skill's
+    routing table and per-command reference both omitted.
+  - `strain-growth --single-medium` (`model_default` reports native capability, not an interaction
+    effect), `abundance-impact --fva`, `--accept-unreviewed-map` and the D/L stereoisomer hazard it
+    waives, `--keep-host-uptake`, and the `search_unevaluated.csv` partition.
+- **Preflight step added** to the skill (`uv run cmig version && uv run cmig solvers`): a
+  genome-scale analysis can run 15+ minutes, and an environment missing the `engine` extra fails
+  only once it reaches the solve. Documented the subtler case it also catches — `uv run` resolves the
+  **nearest** project root, so running it from a git worktree or sibling checkout (each carrying its
+  own `pyproject.toml`) resolves a *different* project and provisions a fresh minimal `.venv` with no
+  `engine` extra; `cmig workflows` still succeeds there while every analysis command fails with
+  `… 는 엔진 stack 필요`, and that message names a fix that would sync the wrong project. Measured:
+  from the synced checkout `uv run` gives `…/CMIG/.venv` with `micom 0.39.0`; from a worktree of the
+  same repo it creates `…/CMIG-wt-*/.venv` with 14 packages and no micom. `uv run cmig …` remains the
+  documented invocation, matching the examples `cmig workflows` emits.
+- Documented that `cmig solvers` lists `highs` although no command's `--solver` accepts it, and that
+  the bundled `models/` pool is not a gut community (only *E. coli* is a common gut resident), so
+  results over it are a methods demonstration rather than gut biology.
+- Corrected stale multi-target artifact claims: multi-target `search` writes `pool_taxonomy.csv`,
+  `search_plot.tiff` and conditionally `search_unevaluated.csv`, and does **not** write
+  `search_member_matrix.csv` or `search_scatter.svg`.
+- **Corrected over-confident guardrails found by independent verification.** Each had asserted more
+  than the code supports:
+  - `--close-untracked-uptake` **must be paired with a complete `--initial`**, and
+    `dfba-sensitivity` accepts `--initial`. The previously prescribed example failed on the model it
+    named: exit 3, 4/4 rows stalled at `final_biomass 0.01` (the initial value — no dynamics), after
+    closing 22 exchanges. Supplying all 14 nutrients from a plain run's `untracked_uptake` gives
+    exit 0, `interpretable: True`, 4/4 completed, and a real step-size signal (0.0536 at dt 0.1 vs
+    0.0503 at dt 0.2). Both forms are now shown.
+  - `--allow-failed-run` is **not universal.** It is rejected by `dfba`, `model-quality`,
+    `publication-benchmark`, `spatial-preview` and `model-review` as an argparse error — which exits
+    **2**, the same code documented for a bad medium spec, so the docs now warn against debugging
+    the wrong thing.
+  - `--robustness-fva` is **silently inert in multi-target mode** (`cli/main.py:4151` returns to the
+    multi-target path before the flag is read; no columns, no warning, exit 0). It had been
+    prescribed *in that mode* as the remedy for the scalarisation collapse. Documented as a current
+    limitation, with `--multi-metric pareto` as the available route.
+  - `publication-benchmark` exposes **33 options** (previously undocumented) and accepts **no
+    `--close-untracked-uptake`**, so `publication_ready` cannot certify the dFBA guardrail; a
+    load-bearing dFBA endpoint must come from a separate `dfba-sensitivity` run.
+  - Recon3D loads in **~6–7 s**, not the ~30–60 s previously stated as "verified".
+  - The edge→`net_flux` reconstruction is **not exact for every metabolite**: 23/25 agreed to
+    <1e-9 while `mobd` and `btn` were off by ~1e-8 near the 1e-6 noise floor, and 19 of 44 edge
+    metabolites had no profile row at all.
+  - `per_target_capability_not_simultaneous` lives in **`flux_basis`**, not `diagnostic`.
+  - `inspect-run` exits **2** on an unusable directory (missing `--run-dir`, corrupt
+    `manifest.json`), not only 3 on `artifact_integrity: mismatch`.
+  - `status: degraded` is the **normal** search outcome when any candidate is unevaluable.
+  - Added `host_ko_impact.csv`, `gene-ko-search --rank-by {effect,remaining}` (which sets the whole
+    KO ordering), `host-search-bigg --include-currency-metabolites`, and
+    `strain-growth`'s `medium_metabolites_unavailable_to_member`.
 - Integrated publication benchmark with model quality, community, search, dFBA sensitivity, host
   scale/mapping/coupling, checksums, acceptance checks, and artifact manifests.
 - Annotation-aware host interface mapping and objective-fixed FVA transfer intervals.
