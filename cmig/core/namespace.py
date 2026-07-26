@@ -362,16 +362,31 @@ def suggest_namespace_decisions(
     return out
 
 
+# Compartment/exchange suffixes `_normalize_metabolite_id` strips, and the exchange-id prefix it
+# drops. Module-level so a caller that must *record* the normalization policy (the host-map
+# workflow manifest) reads it from the code rather than restating it — a restated policy would
+# drift silently, and then changing the normalizer would not move the hash it is supposed to
+# determine.
+NORMALIZE_EXCHANGE_PREFIX = "EX_"
+NORMALIZE_COMPARTMENT_SUFFIXES: tuple[str, ...] = ("_e", "_m", "_c", "_p", "_lumen", "_blood")
+
+
 def _normalize_metabolite_id(raw: str) -> str:
-    """Namespace 후보 비교용 느슨한 metabolite id 정규화."""
+    """Namespace 후보 비교용 느슨한 metabolite id 정규화.
+
+    Note the third step: a trailing `__<Uppercase>` chunk is dropped, which folds the D/L
+    stereoisomer marker (`glu__D` → `glu`). That is deliberate for *candidate suggestion*, but it
+    means a normalized match can pair chemically distinct molecules — which is why only exact
+    matches are auto-admitted downstream (host_map.HOST_MAP_INTERFACE_MAP_ADMITS).
+    """
     x = raw.strip()
-    if x.startswith("EX_"):
-        x = x[3:]
+    if x.startswith(NORMALIZE_EXCHANGE_PREFIX):
+        x = x[len(NORMALIZE_EXCHANGE_PREFIX):]
     if "__" in x and x.rsplit("__", 1)[-1]:
         maybe_member = x.rsplit("__", 1)[-1]
         if maybe_member and maybe_member[0].isupper():
             x = x.rsplit("__", 1)[0]
-    for suffix in ("_e", "_m", "_c", "_p", "_lumen", "_blood"):
+    for suffix in NORMALIZE_COMPARTMENT_SUFFIXES:
         if x.endswith(suffix):
             x = x[: -len(suffix)]
             break

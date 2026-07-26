@@ -414,7 +414,27 @@ def _cmd_inspect_run(args: argparse.Namespace) -> int:
     if payload["summary_file"]:
         print(f"summary_file: {payload['summary_file']}")
     if payload["run_hash"]:
-        print(f"run_hash: {payload['run_hash']}")
+        print(f"run_hash: {payload['run_hash']}   (certifies the INPUTS)")
+    verified = payload["result_digest"]
+    if verified is None:
+        print("result_digest: not recorded (manifest predates result digests)")
+    elif verified["match"]:
+        print(f"result_digest: {verified['actual']}   (certifies the ARTIFACT BYTES) — verified")
+    else:
+        # Loud, and on stderr, because this is the failure `run_hash` structurally cannot report:
+        # same inputs, different answer.
+        print("result_digest: MISMATCH", file=sys.stderr)
+        print(f"  recorded: {verified['recorded']}", file=sys.stderr)
+        print(f"  actual  : {verified['actual']}", file=sys.stderr)
+        for name in verified["changed_artifacts"]:
+            state = "MISSING" if name in verified["missing_artifacts"] else "changed"
+            print(f"  - {name}: {state}", file=sys.stderr)
+        print(
+            "  the artifacts beside this manifest are not the artifacts it fingerprinted. A "
+            "matching run_hash does NOT make this run reproduced: run_hash certifies the inputs, "
+            "result_digest certifies the answer, and they disagree.",
+            file=sys.stderr,
+        )
     print("artifacts:")
     for artifact in payload["artifacts"]:
         print(f"  - {artifact}")
@@ -460,9 +480,52 @@ def _inspect_run_dir(run_dir: Path) -> dict[str, Any]:
         "status_source": status_source,
         "summary_file": summary_file,
         "run_hash": run_hash,
+        "result_digest": _verify_result_digest(run_dir, manifest),
         "artifacts": _list_run_artifacts(run_dir),
         "manifest": _compact_manifest(manifest),
         "summary_keys": sorted(str(key) for key in summary.keys()),
+    }
+
+
+def _verify_result_digest(run_dir: Path, manifest: dict[str, Any]) -> dict[str, Any] | None:
+    """Recompute the recorded result digest from the artifacts on disk.
+
+    `run_hash` certifies the run's *inputs*, so it cannot notice that the answer changed — round-5
+    demonstrated three changes to the host-map matcher that rewrote the interface map under a
+    bit-identical `run_hash`. This is the check that sees them: it re-reads the declared artifacts
+    and compares. A mismatch means the files beside this manifest are not the files it fingerprinted
+    — the run was re-run with different code, or the artifacts were edited, truncated or deleted
+    afterwards. Returns None when the manifest predates `result_digest` (nothing to check, and
+    absence is reported rather than passed off as a match).
+    """
+    from cmig.core.workflow_manifest import artifact_result_digest
+
+    recorded = manifest.get("result_digest")
+    if not isinstance(recorded, dict) or not recorded.get("digest"):
+        return None
+    declared = manifest.get("artifacts")
+    actual = artifact_result_digest(
+        run_dir,
+        _string_or_none(manifest.get("workflow_kind")) or "",
+        [str(name) for name in declared] if isinstance(declared, list) else [],
+    )
+    recorded_files = recorded.get("artifacts") or {}
+    actual_files = actual["artifacts"]
+    changed = sorted(
+        set(recorded_files) | set(actual_files)
+        if not isinstance(recorded_files, dict)
+        else {
+            name for name in set(recorded_files) | set(actual_files)
+            if recorded_files.get(name) != actual_files.get(name)
+        }
+    )
+    return {
+        "recorded": recorded.get("digest"),
+        "actual": actual["digest"],
+        "match": recorded.get("digest") == actual["digest"],
+        "changed_artifacts": changed,
+        "missing_artifacts": actual["missing_artifacts"],
+        "cross_run_comparable": bool(recorded.get("cross_run_comparable")),
     }
 
 
@@ -543,6 +606,8 @@ def _compact_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         "manifest_scope",
         "workflow_kind",
         "run_hash",
+        # The answer-side fingerprint next to the input-side one, so a reader sees both claims.
+        "result_digest",
         "status",
         "artifacts",
         "inputs",
@@ -704,6 +769,42 @@ def _cmd_golden_verify(_: argparse.Namespace) -> int:
         print("→ golden 재캡처 필요 (python -m cmig.golden_fixture)", file=sys.stderr)
         return 2
     print("→ 모든 golden 이 설치 MICOM 버전과 일치 (승격 가능)")
+    return 0
+
+
+def _cmd_golden_verify_envelope(_: argparse.Namespace) -> int:
+    """Workflow-envelope serialization drift gate — the workflow-hash analogue of SC-5.
+
+    `golden verify` protects the frozen 11-component solve hash. This protects the *envelope*: a
+    change to how `cmig.core.workflow_manifest` serializes a kind silently rewrites every
+    previously published workflow run_hash of that kind, and nothing else would notice.
+    """
+    from cmig.core.workflow_envelope_golden import (
+        REBLESS_COMMAND,
+        _report_lines,
+        verify_envelope_golden,
+    )
+
+    report = verify_envelope_golden()
+    print("Workflow-envelope serialization gate:")
+    for kind in report["checked"]:
+        print(f"  [OK ] {kind}")
+    for line in _report_lines(report):
+        print(line.replace("  kind ", "  [DRIFT] kind ", 1) if line.startswith("  kind ") else line)
+    probe = "OK " if report["float_normalization_probe_ok"] else "DRIFT"
+    print(f"  [{probe}] float normalization probe (NaN / ±inf / -0.0 / rounding floor)")
+    for kind in report["uncovered"]:
+        # Not a failure by design: adding a kind must not break a build that left the envelope
+        # alone. It is still shown, because an unblessed kind is an unprotected kind.
+        print(f"  [NEW] {kind} — not yet covered; re-bless to protect it ({REBLESS_COMMAND})")
+    if not report["ok"]:
+        print(
+            "→ workflow-envelope drift: published workflow run_hashes no longer reproduce. "
+            f"Re-bless deliberately with `{REBLESS_COMMAND}`.",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"→ envelope serialization unchanged for {len(report['checked'])} workflow kinds")
     return 0
 
 
@@ -946,8 +1047,9 @@ def _cmd_host_map(args: argparse.Namespace) -> int:
         import pandas as pd
         from cobra.io import read_sbml_model
 
-        from cmig.core.host_map import build_host_map
+        from cmig.core.host_map import HOST_MAP_INTERFACE_MAP_ADMITS, build_host_map
         from cmig.core.model_pool import taxonomy_from_model_dir
+        from cmig.core.workflow_manifest import mapping_checksum
     except ImportError:
         print("host-map requires the engine stack: uv sync --extra engine", file=sys.stderr)
         return 2
@@ -992,10 +1094,78 @@ def _cmd_host_map(args: argparse.Namespace) -> int:
         f"{result.n_normalized} normalized / "
         f"{result.n_unmatched} unmatched (of {result.n_microbial_secretions} secretions) -> {out}"
     )
+    _emit_workflow_manifest(
+        out,
+        "host_map",
+        lambda: _host_map_hash_components(args, taxonomy, tax_dir),
+        # A map that matched nothing is not a usable pre-flight for coupling, so it is not "ok".
+        status="failed" if result.n_microbial_secretions == 0 else (
+            "degraded" if result.n_exact == 0 else "ok"
+        ),
+        artifacts=[
+            "host_exchange_map.csv", "host_interface_map.json", "host_map_summary.json",
+        ],
+        warnings=list(result.warnings),
+        summary={
+            "n_microbial_secretions": result.n_microbial_secretions,
+            "n_exact": result.n_exact,
+            "n_annotation": result.n_annotation,
+            "n_normalized": result.n_normalized,
+            "n_unmatched": result.n_unmatched,
+            "n_host_uptake_capable": result.n_host_uptake_capable,
+            "interface_map_checksum": mapping_checksum({
+                entry.metabolite: entry.host_exchange
+                for entry in result.entries
+                if entry.match_type in HOST_MAP_INTERFACE_MAP_ADMITS
+            }),
+        },
+    )
     return 0
 
 
+def _host_map_hash_components(
+    args: argparse.Namespace, taxonomy: Any, tax_dir: Path | None
+) -> dict[str, Any]:
+    """Determining inputs of an interface-map pre-flight.
+
+    `host-map` never solves, so nothing solver- or medium-dependent enters here; what it produces
+    is fixed by the host model bytes, the microbial pool bytes, and the matching/normalization
+    policy. That policy is read out of the code (`host_map_policy()`), not restated, so changing
+    the normalizer or the admit rules changes this hash.
+
+    This hash certifies the **inputs**, and that is a weaker claim than "the map cannot change
+    under a stable fingerprint" — a matcher change the policy probe does not exercise leaves it
+    unmoved. The map itself is certified by `result_digest` in the same manifest, which
+    fingerprints the artifact bytes; `cmig inspect-run` checks it.
+    """
+    from cmig.core.host_map import host_map_policy
+    from cmig.core.workflow_manifest import (
+        base_components,
+        medium_component,
+        pool_model_checksum,
+    )
+
+    components = base_components(
+        "host_map",
+        # host-map never invokes a solver, so the solver is not a determining input. Recorded as
+        # None here and by the publication-benchmark host_map leg, so the same host + pool
+        # fingerprints identically on both surfaces. Which models the pool contains — and so
+        # `--model-dir`/`--recursive`/`--taxonomy` — is carried by model_checksum.
+        solver_setting={"solver": None},
+        model_checksum=pool_model_checksum(taxonomy, base_dir=tax_dir),
+        medium=medium_component(None, "host_map_no_medium"),
+    )
+    components["host_spec"] = _host_spec_component(args)
+    components["map_spec"] = host_map_policy()
+    return components
+
+
 def _write_host_map_outputs(result: Any, out: Path) -> None:
+    from cmig.core.host_map import (
+        HOST_MAP_INTERFACE_MAP_ADMITS,
+        HOST_MAP_NEEDS_REVIEW_TYPES,
+    )
+
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "host_exchange_map.csv", "w", newline="") as f:
         writer = csv.DictWriter(
@@ -1022,7 +1192,8 @@ def _write_host_map_outputs(result: Any, out: Path) -> None:
     # chemically distinct metabolites. Putting them in the same flat dict as the 170 exact matches
     # meant passing the file through unedited silently coupled the wrong molecules.
     interface_map = {
-        e.metabolite: e.host_exchange for e in result.entries if e.match_type == "exact"
+        e.metabolite: e.host_exchange
+        for e in result.entries if e.match_type in HOST_MAP_INTERFACE_MAP_ADMITS
     }
     needs_review = {
         e.metabolite: {
@@ -1030,7 +1201,7 @@ def _write_host_map_outputs(result: Any, out: Path) -> None:
             "match_type": e.match_type,
             "reason": e.suggestion,
         }
-        for e in result.entries if e.match_type in ("annotation", "normalized")
+        for e in result.entries if e.match_type in HOST_MAP_NEEDS_REVIEW_TYPES
     }
     with open(out / "host_interface_map.json", "w") as f:
         json.dump(
@@ -4140,6 +4311,7 @@ def _host_spec_component(args: argparse.Namespace, interface_map: Any = None) ->
     handling all move the answer, and round-2 found none of them recorded anywhere.
     """
     from cmig.core.workflow_manifest import (
+        host_spec_component,
         mapping_checksum,
         optional_file_checksum,
     )
@@ -4147,27 +4319,21 @@ def _host_spec_component(args: argparse.Namespace, interface_map: Any = None) ->
     exclude = sorted(_parse_csv_strings(
         args.exclude_metabolites, flag="--exclude-metabolites"
     )) if getattr(args, "exclude_metabolites", None) else []
-    return {
-        "host_model": str(args.host),
-        "host_model_checksum": optional_file_checksum(args.host),
-        "host_objective": getattr(args, "host_objective", None),
-        "host_medium": str(args.host_medium) if getattr(args, "host_medium", None) else None,
-        "host_medium_checksum": optional_file_checksum(getattr(args, "host_medium", None)),
-        "microbe_medium": (
-            str(args.microbe_medium) if getattr(args, "microbe_medium", None) else None
-        ),
-        "microbe_medium_checksum": optional_file_checksum(getattr(args, "microbe_medium", None)),
-        "interface_map": (
-            str(args.interface_map) if getattr(args, "interface_map", None) else None
-        ),
-        "interface_map_checksum": mapping_checksum(interface_map),
-        "exchange_suffix": getattr(args, "exchange_suffix", None),
-        "exclude_metabolites": exclude,
-        "include_currency_metabolites": bool(
-            getattr(args, "include_currency_metabolites", False)
-        ),
-        "keep_host_uptake": bool(getattr(args, "keep_host_uptake", False)),
-    }
+    return host_spec_component(
+        host_model=args.host,
+        host_model_checksum=optional_file_checksum(args.host),
+        host_objective=getattr(args, "host_objective", None),
+        host_medium=getattr(args, "host_medium", None),
+        host_medium_checksum=optional_file_checksum(getattr(args, "host_medium", None)),
+        microbe_medium=getattr(args, "microbe_medium", None),
+        microbe_medium_checksum=optional_file_checksum(getattr(args, "microbe_medium", None)),
+        interface_map=getattr(args, "interface_map", None),
+        interface_map_checksum=mapping_checksum(interface_map),
+        exchange_suffix=getattr(args, "exchange_suffix", None),
+        exclude_metabolites=exclude,
+        include_currency_metabolites=getattr(args, "include_currency_metabolites", False),
+        keep_host_uptake=getattr(args, "keep_host_uptake", False),
+    )
 
 
 def _biomass_basis_component(args: argparse.Namespace) -> dict[str, Any]:
@@ -6448,6 +6614,10 @@ def build_parser() -> argparse.ArgumentParser:
     golden.add_parser("verify", help="MICOM-version golden regression gate (SC-5)").set_defaults(
         func=_cmd_golden_verify
     )
+    golden.add_parser(
+        "verify-envelope",
+        help="workflow-manifest envelope serialization drift gate (workflow-hash analogue of SC-5)",
+    ).set_defaults(func=_cmd_golden_verify_envelope)
     hf = sub.add_parser("host-fixture", help="synthetic host-microbe fixture → host_summary.json")
     hf.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     hf.add_argument("--maintenance-flux", type=float, default=1.0, dest="maintenance_flux")
