@@ -7,6 +7,31 @@ semantic versioning for public releases.
 
 ### Added
 
+- **Literature-grounded gut medium overlays** (`medium_presets/gut_overlay_*.csv`, 7 files) with a
+  tracked provenance document (`medium_presets/PROVENANCE_gut_media.md`), row-level provenance
+  (`medium_presets/provenance_rows.csv`), mirrored source data (`medium_presets/sources/`) and a
+  deterministic builder (`scripts/build_gut_media.py`, `--check`/`--report`). The reference pair comes
+  from AGORA Supplementary Table 12 (doi:10.1038/nbt.3703), which publishes the Western and high-fibre
+  diets directly in mmol gDW⁻¹ h⁻¹ so no unit conversion is needed; a second pair converts VMH
+  diet-designer exports from mmol person⁻¹ day⁻¹ via `v = D · f_colon / (B_gDW · 24)` with every
+  constant sourced or explicitly labelled an assumption, and agrees with the AGORA bound to 1.5×.
+- **Medium overlays now close the background, including oxygen.** `--medium` merges onto MICOM's
+  default, so any metabolite a file did not name kept a permissive bound — `EX_o2_m = 999999.0`, an
+  aerobic colon. Measured on a 3-member community, the legacy glucose-only preset gives community
+  growth 1.2678 h⁻¹ with the inherited oxygen and 0.6990 h⁻¹ with `EX_o2_m = 0.001`: an **81 %
+  overestimate**. Every shipped overlay now names oxygen at MICOM's published 0.001 and carries a
+  background-closure block (`uptake_limit = 0`) for every metabolite the model pool would otherwise
+  leave open; measured, nothing remains open that the overlay does not name. `--medium` is documented
+  as an overlay in `README.md`. A general fix needs `--exact-medium` in the CLI plus a
+  `medium_application_mode` manifest field — recorded in `PROVENANCE_gut_media.md` §9, not implemented.
+- **Fibre coverage of the bundled model pool measured and documented**: only 1 of AGORA's 24 fibre
+  entries (raffinose) has an exchange in any bundled model, so a "high fibre" run on this pool is not
+  a fibre-degradation experiment. `tests/test_medium_presets_gut.py` (18 tests, each mutation-verified)
+  re-derives every shipped number from the mirrored sources and checks aliasing, per-model coverage,
+  background closure, the anaerobic-O₂ term, the magnitude band and the PDF transcription.
+  The pre-existing `western_diet.csv` / `high_fiber.csv` are single-row glucose files with no cited
+  source, 134× and 76× the published AGORA bounds; retained only as a smoke fixture and documented as
+  not citable as diets.
 - Claude Code agent skill `cmig-metabolic-analysis` (`.claude/skills/`) that routes requests to the
   correct `cmig` workflow and enforces the scientific-validity guardrails, plus a
   `.claude-plugin/marketplace.json` making it installable following the anthropics/life-sciences

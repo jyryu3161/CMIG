@@ -364,7 +364,7 @@ If you already have a MICOM-compatible taxonomy CSV:
 ```bash
 uv run cmig solve \
   --taxonomy /path/to/taxonomy.csv \
-  --medium medium_presets/western_diet.csv \
+  --medium medium_presets/gut_overlay_agora_western.csv \
   --solver gurobi \
   --tradeoff-f 0.5 \
   --out runs/solve
@@ -468,9 +468,35 @@ and reviewed results are recorded in `docs/PUBLICATION_VALIDATION.md`.
 
 ## Medium Files
 
-Medium files can be CSV or JSON. Built-in examples live in `medium_presets/`.
-For user commands, pass them with `--medium`, `--host-medium`, or
-`--microbe-medium` depending on the workflow.
+Medium files are CSV (`exchange_id,uptake_limit`) or JSON, with `uptake_limit >= 0`
+an unsigned magnitude in **mmol gDW-1 h-1** applied as `lower_bound = -uptake_limit`.
+Pass them with `--medium`, `--host-medium`, or `--microbe-medium` depending on the
+workflow.
+
+**`--medium` is an overlay, not a replacement.** CMIG merges the file onto whatever
+the community already offers (`exact=False`), so any metabolite the file does not name
+keeps MICOM's permissive default — including `EX_o2_m = 999999.0`, i.e. an aerobic
+colon. Measured on a 3-member community, the legacy glucose-only preset gives
+community growth 1.2678 h⁻¹ with that inherited oxygen and 0.6990 h⁻¹ once oxygen is
+named at 0.001: an 81 % overestimate from one missing row. A `uptake_limit` of `0` is
+legal and is how a CSV closes an exchange under merge semantics.
+
+Presets live in `medium_presets/`. Prefer the literature-grounded gut overlays, which
+all name oxygen explicitly and carry a background-closure block:
+`gut_overlay_agora_western.csv` and `gut_overlay_agora_high_fiber.csv` (AGORA
+Supplementary Table 12, already in mmol gDW⁻¹ h⁻¹ — the reference pair),
+`gut_overlay_vmh_high_fiber.csv` / `gut_overlay_vmh_high_fat_low_carb.csv` (VMH diets,
+converted; the more sensitive contrast), `gut_overlay_micom_western.csv` (MICOM's
+published medium verbatim). Every value, its source, its unit conversion, its
+per-model exchange coverage and the fibre-coverage limitation are recorded in
+`medium_presets/PROVENANCE_gut_media.md`; each row's origin is in
+`medium_presets/provenance_rows.csv`. Regenerate with
+`python -m scripts.build_gut_media`.
+
+`western_diet.csv` and `high_fiber.csv` are single-row glucose files with no cited
+source, 134× and 76× the corresponding published AGORA bounds; they are retained only
+as a smoke fixture and **must not be cited as diets** (audit in
+`PROVENANCE_gut_media.md` §1).
 
 ## Solver Provenance
 
@@ -544,8 +570,8 @@ provenance tests, GUI offscreen smoke tests, and real workflow regressions.
 - `cmig/render/`: figure rendering helpers.
 - `cmig/render_r/`: R scripts and a pinned `renv.lock` for figure reproduction.
 - `tests/`: regression and workflow tests.
-- `scripts/`: release and distribution audits.
-- `medium_presets/`: example medium definitions.
+- `scripts/`: release/distribution audits and the gut-media builder.
+- `medium_presets/`: medium definitions, mirrored source data (`sources/`) and provenance.
 - `docs/`: design and project-management notes.
 
 ## License
