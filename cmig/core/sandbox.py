@@ -18,7 +18,10 @@ from cmig.core.delta import DeltaResult, compute_delta
 from cmig.core.diagnostics import Diagnostic, DiagnosticCode
 from cmig.core.engine import SolveResult
 from cmig.core.fva import FVARange
-from cmig.core.run_store import RunStore  # canonical 정의는 core/run_store (back-compat re-export)
+from cmig.core.run_store import (  # canonical 정의는 core/run_store (back-compat re-export)
+    RunStore,
+    validate_run_hash,
+)
 
 __all__ = [
     "RunStore", "InMemoryRunStore", "SandboxState", "BoundConstraint",
@@ -49,7 +52,9 @@ class InMemoryRunStore:
     def record_run(
         self, run_hash: str, result: SolveResult, *, micom_version: str | None = None
     ) -> None:
-        self.records.append((run_hash, result))
+        # R5-P3: the double enforces the same contract as FileSystemStore, so a test cannot
+        # certify a call that production would reject.
+        self.records.append((validate_run_hash(run_hash), result))
 
     @property
     def count(self) -> int:

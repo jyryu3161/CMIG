@@ -20,6 +20,7 @@ No solver required.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -43,6 +44,7 @@ from cmig.core.workflow_manifest import (
     workflow_components_for,
     write_workflow_manifest,
 )
+from cmig.golden_fixture import SOLVER_VARIANTS
 
 # ── the frozen contract ──────────────────────────────────────────────────────────
 
@@ -113,6 +115,93 @@ def test_shipped_golden_fixture_run_hash_is_unchanged():
     assert json.loads(config.read_text())["run_hash"] == GOLDEN_SOLVE_FIXTURE_RUN_HASH
 
 
+def test_every_shipped_golden_is_reproducible_from_its_own_recorded_components():
+    """The invariant that was never checked: a golden must re-derive from what it stores.
+
+    `test_shipped_golden_fixture_run_hash_is_unchanged` above pins the *gurobi* fixture only, and
+    `golden verify` (SC-5) compares nothing but `micom_version`, so nothing in the suite ever
+    re-derived a golden's hash from the components stored beside it. Each fixture records the
+    `golden_decimals` it was captured under, so that is the contract each is checked against.
+    """
+    import json
+    from pathlib import Path
+
+    from cmig.core.manifest import RunHashComponents, compute_run_hash
+
+    checked = 0
+    for solver in ("gurobi", "osqp"):
+        config = Path(f"fixtures/community_3_member/expected/{solver}/config.json")
+        if not config.exists():                   # fixture not present in a trimmed checkout
+            continue
+        payload = json.loads(config.read_text())
+        recomputed = compute_run_hash(
+            RunHashComponents(**payload["components"]), decimals=payload["golden_decimals"]
+        )
+        assert recomputed == payload["run_hash"], (
+            f"{solver} golden is internally inconsistent: its stored run_hash is not the hash of "
+            f"its own stored components at its own golden_decimals"
+        )
+        checked += 1
+    assert checked, "no golden fixture was available to check"
+
+
+@pytest.mark.parametrize("solver", SOLVER_VARIANTS)
+def test_each_shipped_golden_re_derives_its_own_run_hash_at_its_own_decimals(solver):
+    """Every shipped golden must reproduce its own published hash from its own stored components.
+
+    History, because this test replaced one that asserted the opposite. It was originally written
+    to pin the osqp golden as *stale*: captured at `golden_decimals: 4` while the builder
+    pre-rounded at 6, so `a422eb89…` was a stored artifact no code path reproduced, and its author
+    made it fail "the moment someone recaptures" so that the decision would be visible. Track P3
+    then repaired the fixture — correcting the three stored abundances to 4 decimals so it
+    reproduces itself again, *without* moving the published hash — which made the staleness pin
+    fail by design. Pinning a known-bad state is only useful until it is fixed; the invariant
+    underneath it is permanent, so that is what is asserted now.
+
+    Two things make this stronger than the state it replaced, both lessons of the round:
+
+    * It is parametrized over `SOLVER_VARIANTS` rather than naming solvers inline. The osqp
+      regression reached integration precisely because every hash pin in the suite was
+      gurobi-only; a pin that covers "whichever solvers exist" cannot acquire that blind spot
+      when a third variant is added.
+    * A declared variant may not silently skip. `xfail`-by-absence is how a fixture stops being
+      checked without anyone deciding to stop checking it.
+    """
+    import json
+    from pathlib import Path
+
+    from cmig.core.manifest import RunHashComponents, compute_run_hash
+
+    config = Path(f"fixtures/community_3_member/expected/{solver}/config.json")
+    if not config.exists():                       # trimmed checkout: no fixtures shipped at all
+        available = [
+            s for s in SOLVER_VARIANTS
+            if Path(f"fixtures/community_3_member/expected/{s}/config.json").exists()
+        ]
+        assert not available, (
+            f"{solver} is a declared solver variant but ships no golden, while {available} do — "
+            "a variant that cannot be checked must not be declared"
+        )
+        pytest.skip("no golden fixtures present in this checkout")
+
+    payload = json.loads(config.read_text())
+    decimals = payload["golden_decimals"]
+    components = RunHashComponents(**payload["components"])
+
+    assert compute_run_hash(components, decimals=decimals) == payload["run_hash"], (
+        f"the {solver} golden is internally inconsistent: its published run_hash is not the hash "
+        f"of the components stored beside it at its own golden_decimals={decimals}. Either the "
+        "components were edited without recapturing, or the hash was."
+    )
+
+    # Guard on the guard (CC-22's mandatory "would this catch deletion?" audit): the assertion
+    # above must be discriminating, not satisfied by any components at all.
+    perturbed = replace(components, tradeoff_f=float(components.tradeoff_f) + 0.25)
+    assert compute_run_hash(perturbed, decimals=decimals) != payload["run_hash"], (
+        "the re-derivation above is vacuous — a changed input produced the published hash"
+    )
+
+
 def test_solve_hash_is_stable_across_repeated_computation():
     assert compute_run_hash(_known_components()) == compute_run_hash(_known_components())
 
@@ -126,8 +215,24 @@ def test_solve_hash_still_responds_to_its_own_inputs():
 
 
 def test_canonicalize_floats_is_the_same_normalization_the_solve_hash_uses():
-    """The envelope shares one float rule with the solve hash rather than inventing a second."""
-    assert canonicalize_floats(1.0 / 3.0) == round(1.0 / 3.0, DEFAULT_FLOAT_DECIMALS)
+    """The envelope shares one float rule with the solve hash rather than inventing a second.
+
+    R5-P3 CC-4 changed *what* that shared rule is: a value that six decimals represent exactly
+    still serializes as that number (which is why the frozen fixture hashes did not move), and
+    only a value rounding would destroy keeps its exact form.
+    """
+    from cmig.core.manifest import RunHashComponents, canonical_payload
+
+    assert canonicalize_floats(0.333333) == round(0.333333, DEFAULT_FLOAT_DECIMALS)
+
+    # Same input, both code paths, same serialization.
+    components = RunHashComponents(
+        model_checksum="m", medium_checksum="d", member_set=["a"],
+        abundance={}, bounds={"R": [0.0, 1.0 / 3.0]}, tradeoff_f=0.5,
+        solver_setting={}, micom_version="0", cmig_core_version="0",
+        namespace_mapping_decisions=[], flux_normalization_method="pfba",
+    )
+    assert canonical_payload(components)["bounds"]["R"][1] == canonicalize_floats(1.0 / 3.0)
     assert canonicalize_floats(float("nan")) == "NaN"
     assert canonicalize_floats(float("inf")) == "Infinity"
     assert canonicalize_floats(-0.0) == 0.0          # signed-zero collapse preserved
@@ -186,6 +291,100 @@ def test_search_kinds_record_target_and_search_policy():
         assert "target_spec" in WORKFLOW_HASH_COMPONENTS[kind]
         assert "search_spec" in WORKFLOW_HASH_COMPONENTS[kind]
         assert "growth_fraction" in WORKFLOW_HASH_COMPONENTS[kind]
+
+
+def test_the_two_commands_round_5_added_have_a_kind():
+    """Round-4's report named these as the two coverage gaps that mattered."""
+    assert "host_map" in WORKFLOW_HASH_COMPONENTS
+    assert "publication_benchmark" in WORKFLOW_HASH_COMPONENTS
+
+
+def test_host_map_records_the_host_the_pool_and_the_matching_policy():
+    """host-map never solves; the host model, the pool and the policy are all that determine it."""
+    components = WORKFLOW_HASH_COMPONENTS["host_map"]
+    assert "host_spec" in components
+    assert "map_spec" in components
+    assert "model_checksum" in components
+
+
+def test_a_bundling_kind_records_what_it_bundled():
+    """A bundle that recorded only its own arguments would certify runs it never saw."""
+    assert "bundle_spec" in WORKFLOW_HASH_COMPONENTS["publication_benchmark"]
+
+
+def test_host_spec_has_one_shape_shared_by_every_kind_that_records_it():
+    """Five kinds hash `host_spec`; a second literal would eventually disagree with the first."""
+    from cmig.core.workflow_manifest import host_spec_component
+
+    keys = set(host_spec_component(host_model=None, host_model_checksum=None))
+    assert keys == {
+        "host_model", "host_model_checksum", "host_objective",
+        "host_medium", "host_medium_checksum",
+        "microbe_medium", "microbe_medium_checksum",
+        "interface_map", "interface_map_checksum",
+        "exchange_suffix", "exclude_metabolites",
+        "include_currency_metabolites", "keep_host_uptake",
+    }
+    for kind in (
+        "host_microbe_bigg", "host_search_bigg", "host_ko_impact", "host_map",
+        "publication_benchmark",
+    ):
+        assert "host_spec" in WORKFLOW_HASH_COMPONENTS[kind]
+
+
+def test_the_same_file_at_a_different_path_is_the_same_host_spec():
+    """Round-5 P2: identical bytes reached by a different path fingerprinted as a different run.
+
+    Every path in `host_spec` has a checksum companion that already pins the content, so hashing
+    the path made the reader's directory layout a scientific input: re-running a published
+    `host-map` with an absolute path, or from another working directory, produced a different
+    `run_hash` from identical science and looked like a failed reproduction.
+    """
+    from cmig.core.workflow_manifest import host_spec_component
+
+    relative = host_spec_component(
+        host_model="models/host.xml", host_model_checksum="sha256:1",
+        host_medium="diet/med.csv", host_medium_checksum="sha256:2",
+        microbe_medium="diet/mic.csv", microbe_medium_checksum="sha256:3",
+        interface_map="maps/iface.json", interface_map_checksum="sha256:4",
+    )
+    absolute = host_spec_component(
+        host_model="/elsewhere/models/host.xml", host_model_checksum="sha256:1",
+        host_medium="/elsewhere/diet/med.csv", host_medium_checksum="sha256:2",
+        microbe_medium="/elsewhere/diet/mic.csv", microbe_medium_checksum="sha256:3",
+        interface_map="/elsewhere/maps/iface.json", interface_map_checksum="sha256:4",
+    )
+    assert relative == absolute
+    assert relative["host_model"] == "host.xml"
+    # …but different bytes are still a different run: the checksum, not the path, carries identity.
+    other_bytes = host_spec_component(
+        host_model="models/host.xml", host_model_checksum="sha256:different",
+    )
+    assert other_bytes != relative
+
+
+def test_host_spec_component_records_an_unexposed_option_rather_than_dropping_it():
+    """An absent key and an inert default are different hashes; only the latter is honest."""
+    from cmig.core.workflow_manifest import host_spec_component
+
+    minimal = host_spec_component(host_model="h.xml", host_model_checksum="sha256:1")
+    assert minimal["keep_host_uptake"] is False
+    assert minimal["exclude_metabolites"] == []
+    assert minimal["interface_map_checksum"] is None
+    # ... and it is order-insensitive where order is not meaningful.
+    assert host_spec_component(
+        host_model="h.xml", host_model_checksum="sha256:1", exclude_metabolites=["b", "a"],
+    )["exclude_metabolites"] == ["a", "b"]
+
+
+def test_bundle_component_hashes_child_hashes_not_just_child_kinds():
+    """The documented decision: the bundle hash includes what it certified."""
+    from cmig.core.workflow_manifest import bundle_component
+
+    one = bundle_component([{"kind": "dfba", "artifacts_dir": "dfba", "run_hash": "a" * 64}])
+    other = bundle_component([{"kind": "dfba", "artifacts_dir": "dfba", "run_hash": "b" * 64}])
+    assert one["bundle_hash_includes_child_hashes"] is True
+    assert one != other
 
 
 def test_kinds_wrapping_a_community_solve_embed_its_hash():
@@ -279,10 +478,23 @@ def test_kind_mismatch_between_argument_and_component_is_rejected():
         compute_workflow_hash("dfba", _dfba_components(workflow_kind="sweep"))
 
 
-def test_float_noise_below_the_rounding_floor_does_not_move_the_hash():
+def test_a_determining_input_below_the_rounding_floor_still_moves_the_hash():
+    """Contract change, R5-P3 CC-4 (was: "float noise below the rounding floor does not move the
+    hash").
+
+    ``dfba_spec.dt`` is a user-supplied parameter that determines the answer, not a number that
+    came out of a solve, so two different values of it are two different runs. Under the old rule
+    *every* input below 5e-7 collapsed onto 0.0, which meant a solver tolerance of 1e-7 and one of
+    4e-7 shared a run_hash — "same hash" no longer implied "same inputs", which is the one claim
+    the manifest exists to make. Solver noise is now absorbed where it enters (the CLI rounds
+    solve-derived abundances before they become components) instead of by blurring every input.
+    """
     baseline = compute_workflow_hash("dfba", _dfba_components())
-    noisy = _dfba_components(dfba_spec={"dt": 0.1 + 1e-12, "t_end": 10.0, "km": 0.01})
-    assert compute_workflow_hash("dfba", noisy) == baseline
+    nudged = _dfba_components(dfba_spec={"dt": 0.1 + 1e-12, "t_end": 10.0, "km": 0.01})
+    assert compute_workflow_hash("dfba", nudged) != baseline
+
+    # An identical input is of course still identical.
+    assert compute_workflow_hash("dfba", _dfba_components()) == baseline
 
 
 def test_non_finite_floats_serialize_deterministically():

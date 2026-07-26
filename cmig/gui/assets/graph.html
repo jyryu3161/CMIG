@@ -51,9 +51,20 @@
           cy.fit(undefined, fitPadding);
         });
         // 부호 범례 상시 (§11)
+        // R5-P3: built with textContent rather than innerHTML. Today `legend` is a module
+        // constant (graph_data.SIGN_LEGEND) so nothing user- or model-derived reaches it, but a
+        // future change that puts a metabolite name in the legend would otherwise turn this into
+        // DOM XSS. The adjacent gate text already uses textContent.
         const legend = document.getElementById('legend');
-        legend.innerHTML = (payload.legend || [])
-          .map(l => `<div><b>${l.symbol}</b> ${l.meaning}</div>`).join('');
+        legend.textContent = '';
+        (payload.legend || []).forEach(l => {
+          const row = document.createElement('div');
+          const symbol = document.createElement('b');
+          symbol.textContent = String(l.symbol);
+          row.appendChild(symbol);
+          row.appendChild(document.createTextNode(' ' + String(l.meaning)));
+          legend.appendChild(row);
+        });
         // Gate UI (FR-1b.3)
         if (payload.gate) {
           const g = document.getElementById('gate');

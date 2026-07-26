@@ -16,7 +16,7 @@ import math
 import os
 import platform as platform_lib
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ from cmig import CMIG_CORE_VERSION
 from cmig.core.golden import DEFAULT_DECIMALS
 from cmig.core.interactions import CROSS_FEEDING_ALLOCATION_METHOD
 from cmig.core.manifest import RunHashComponents, RunManifest, canonical_json
+from cmig.core.medium_spec import MEDIUM_POLICY
 
 KNOWN_SOLVE_ARTIFACTS = frozenset({
     "nodes.parquet",
@@ -32,6 +33,31 @@ KNOWN_SOLVE_ARTIFACTS = frozenset({
     "matrix.parquet",
     "target_summary.json",
 })
+
+
+def prune_stale_artifacts(
+    out_dir: str | Path, known: Iterable[str], written: Iterable[str]
+) -> list[str]:
+    """Remove artifacts a previous run left in ``out_dir`` that this run did not produce.
+
+    An artifact emitted only under some condition (``search_unevaluated.csv`` when candidates
+    could not be evaluated, ``matrix.parquet`` when a matrix exists) survives into the next run
+    that reuses the same ``--out`` unless somebody deletes it. The result is a directory whose
+    manifest describes run 2 while an orphan file from run 1 sits beside it contradicting it —
+    R5-P3 CC-3 observed a `search_unevaluated.csv` asserting that the current run's rank-1 member
+    was unevaluable.
+
+    ``known`` is the complete set of names the writer may emit; ``written`` is what it actually
+    emitted this time. Returns the sorted names removed, so callers can report them.
+    """
+    out = Path(out_dir)
+    removed: list[str] = []
+    for name in sorted(set(known) - set(written)):
+        stale = out / name
+        if stale.exists():
+            stale.unlink()
+            removed.append(name)
+    return removed
 
 
 def file_checksum(path: str | Path) -> str:
@@ -97,13 +123,19 @@ def build_run_components(
     namespace_decisions: Sequence[str] = (),
     analysis_settings: dict[str, Any] | None = None,
     dependency_versions: dict[str, str] | None = None,
+    decimals: int = DEFAULT_DECIMALS,
 ) -> RunHashComponents:
     """임의 taxonomy+medium solve → run_hash 11구성요소 (cmig solve 용, 단일 canonical).
 
     golden_fixture._run_hash_components 와 동일 계약 — fixture 고정값 대신 인자로 받는다.
+
+    ``decimals`` **must equal the precision these components will be hashed at.** abundance 는
+    solve 산출값이므로 여기서 잡음을 흡수하지만, hash 가 쓰는 자릿수와 다르게 반올림하면 그
+    값이 hash 자릿수 기준 고정점이 아니게 되어 published hash 가 움직인다
+    (golden_fixture._run_hash_components 의 osqp 회귀 참조).
     """
     abundance = {
-        k: round(v, DEFAULT_DECIMALS)
+        k: round(v, decimals)
         for k, v in sorted(result.abundances.items())
         if v is not None
     }
@@ -127,6 +159,17 @@ def build_run_components(
         # 주장하지 않도록 결과가 들고 온 실제 정규화 방식을 기록한다(run_hash 도 이에 따라 달라짐).
         flux_normalization_method=getattr(result, "flux_normalization_method", "pfba"),
     )
+
+
+def solve_provenance(provenance: dict[str, Any] | None) -> dict[str, Any]:
+    """Provenance block of a solve manifest, with `medium_policy` stamped by the WRITER.
+
+    Writer-last, deliberately. The previous spelling was ``{"medium_policy": MEDIUM_POLICY,
+    **(provenance or {})}``, which let a caller passing its own `medium_policy` key silently win —
+    contradicting the adjacent comment's claim that no solve path can omit it. No caller does today;
+    the ordering is what makes the claim true rather than merely currently unfalsified.
+    """
+    return {**(provenance or {}), "medium_policy": MEDIUM_POLICY}
 
 
 def write_solve_output(
@@ -191,6 +234,13 @@ def write_solve_output(
         )
         payload = {
             "manifest_schema_version": "2.0",
+            # Says which hash this is. `run_hash` here is the frozen 11-component solve hash;
+            # a workflow envelope writes `manifest_scope: "workflow"` over a different component
+            # set entirely. Consumers used to distinguish the two by the *absence* of the key,
+            # which is not a fact a reader can check — round-5 flagged the claim "manifest scope
+            # `solve`" as naming a key that did not exist. Outside the hash: it names the payload,
+            # it is not an input to it, so no published run_hash moves.
+            "manifest_scope": "solve",
             "run_hash": manifest.run_hash,                       # compute_run_hash
             "float_decimals": manifest.float_decimals,
             # canonical_json 은 비유한 float sentinel·정렬·allow_nan=False (결정적·재현)
@@ -224,8 +274,37 @@ def write_solve_output(
                     "transfer; cross_feeding weights are a mass-conserving proportional "
                     "allocation, not a measurement"
                 ),
+                # Round-5 opus F3 / codex F2: `edges.weight` is the raw micom member exchange,
+                # which is a PER-TAXON rate, while `profile.net_flux` in the same run directory is
+                # a COMMUNITY-level rate. Two units lived in one run with nothing distinguishing
+                # them, so a rare member's edge looks larger than an abundant member's (measured:
+                # 84.57 at abundance 0.1 vs 12.29 at abundance 0.9 for the same CO2 edge). The
+                # value is not changed here — that requires re-blessing the frozen golden
+                # edges.parquet — but the basis is now stated so it cannot be misread.
+                #
+                # The identity below is stated in full because a shorter phrasing was read two
+                # different ways by two reviewers. `weight` is a MAGNITUDE (>= 0): its direction
+                # lives in `edge_type` and in the source/target ordering, so a naive
+                # sum(abundance * weight) does NOT reconstruct the net exchange (measured on a
+                # 0.25/0.75 pair: naive 1.25 vs true 0.75). Restoring the sign from `edge_type`
+                # and excluding the allocated cross_feeding rows does (0.75 == 0.75).
+                "weight_unit": "mmol gDW_taxon^-1 h^-1 (PER-TAXON; multiply by the member's "
+                               "abundance for a community-basis rate)",
+                "weight_basis": "per_taxon_unweighted",
+                "weight_is_magnitude": True,
+                "weight_basis_note": (
+                    "edges.weight is NOT comparable to profile.net_flux, which is community-basis "
+                    "(mmol gDW_community^-1 h^-1). Reconstruction, per metabolite: take only "
+                    "edge_type in {secretion, uptake} (cross_feeding rows are an allocation, not "
+                    "a measured exchange, and must be excluded); give each row the sign of its "
+                    "direction (+ for secretion, - for uptake); multiply each by the abundance of "
+                    "the member endpoint; the sum equals that metabolite's profile.net_flux. "
+                    "Summing the unsigned weights, or including cross_feeding, does NOT."
+                ),
             },
-            "provenance": provenance or {},
+            # NOT hashed (round 5, blocker 5): marks which medium semantics produced this run.
+            # Stamped by the writer, not the caller, so no solve path can omit it.
+            "provenance": solve_provenance(provenance),
             "sweep": sweep,
             "figure_specs": figure_specs or [],
             "platform": manifest.platform,
@@ -238,10 +317,7 @@ def write_solve_output(
         # manifest.json is the commit marker. Remove any stale marker before publishing artifacts.
         if manifest_path.exists():
             manifest_path.unlink()
-        for stale in KNOWN_SOLVE_ARTIFACTS - set(artifacts):
-            stale_path = out / stale
-            if stale_path.exists():
-                stale_path.unlink()
+        prune_stale_artifacts(out, KNOWN_SOLVE_ARTIFACTS, artifacts)
         for artifact in artifacts:
             os.replace(tmp / artifact, out / artifact)
         os.replace(tmp / "manifest.json", manifest_path)

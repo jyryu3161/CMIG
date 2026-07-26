@@ -362,20 +362,53 @@ def suggest_namespace_decisions(
     return out
 
 
-def _normalize_metabolite_id(raw: str) -> str:
-    """Namespace 후보 비교용 느슨한 metabolite id 정규화."""
-    x = raw.strip()
-    if x.startswith("EX_"):
-        x = x[3:]
-    if "__" in x and x.rsplit("__", 1)[-1]:
-        maybe_member = x.rsplit("__", 1)[-1]
-        if maybe_member and maybe_member[0].isupper():
-            x = x.rsplit("__", 1)[0]
-    for suffix in ("_e", "_m", "_c", "_p", "_lumen", "_blood"):
+# Compartment/exchange suffixes `_normalize_metabolite_id` strips, and the exchange-id prefix it
+# drops. Module-level so a caller that must *record* the normalization policy (the host-map
+# workflow manifest) reads it from the code rather than restating it — a restated policy would
+# drift silently, and then changing the normalizer would not move the hash it is supposed to
+# determine.
+NORMALIZE_EXCHANGE_PREFIX = "EX_"
+NORMALIZE_COMPARTMENT_SUFFIXES: tuple[str, ...] = ("_e", "_m", "_c", "_p", "_lumen", "_blood")
+
+# BiGG encodes stereochemistry as a trailing ``__<single uppercase letter>`` (``lac__D`` vs
+# ``lac__L``). Those are *different molecules with different transporters*, so the descriptor is
+# part of the metabolite identity and must never be stripped: collapsing them lets a reviewed
+# D-isomer interface mapping match L-isomer availability and open the D exchange, fabricating host
+# uptake and biomass. A MICOM member suffix (``ac_e__Bacteroides``) is a taxon *name*, so it is
+# always longer than one character — that length is the discriminator. The explicit set below is a
+# belt-and-braces guard for the descriptors BiGG actually uses.
+STEREO_DESCRIPTORS = frozenset({"D", "L", "R", "S"})
+
+
+def _strip_compartment_suffix(x: str) -> str:
+    for suffix in NORMALIZE_COMPARTMENT_SUFFIXES:
         if x.endswith(suffix):
-            x = x[: -len(suffix)]
-            break
-    return x.lower()
+            return x[: -len(suffix)]
+    return x
+
+
+def _normalize_metabolite_id(raw: str) -> str:
+    """Namespace 후보 비교용 느슨한 metabolite id 정규화.
+
+    ``EX_`` prefix, compartment suffix, MICOM member(taxon) suffix 를 제거하되 BiGG
+    stereochemistry descriptor(``__D``/``__L``/``__R``/``__S``)는 **보존**한다 — 이는 대사체
+    정체성의 일부이며, 제거하면 D/L 이성질체가 같은 id 로 붕괴해 잘못된 host exchange 가 열린다.
+
+    Normalized(non-exact) match 는 여전히 후보 제안일 뿐이므로 downstream 에서는 exact match 만
+    자동 admit 된다 (host_map.HOST_MAP_INTERFACE_MAP_ADMITS).
+    """
+    x = raw.strip()
+    if x.startswith(NORMALIZE_EXCHANGE_PREFIX):
+        x = x[len(NORMALIZE_EXCHANGE_PREFIX):]
+    head, separator, tail = x.rpartition("__")
+    if separator and head and tail:
+        # ``tail`` may still carry a compartment suffix (``D_e`` in ``lac__D_e``), so strip that
+        # before deciding whether the token is a taxon name or a stereo descriptor.
+        token = _strip_compartment_suffix(tail)
+        is_stereo = len(token) <= 1 or token.upper() in STEREO_DESCRIPTORS
+        if token and token[0].isupper() and not is_stereo:
+            x = head
+    return _strip_compartment_suffix(x).lower()
 
 
 def decisions_to_jsonable(decisions: list[NamespaceDecision]) -> list[dict[str, Any]]:

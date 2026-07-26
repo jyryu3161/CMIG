@@ -462,7 +462,19 @@ def run_host_microbe(
     return host_res, host_impact(secretion, host_res)
 
 
-from cmig.core.host_coupling import (  # noqa: E402
-    run_bigg_host_microbe as run_bigg_host_microbe,
-)
-from cmig.core.host_coupling import solve_bigg_host as solve_bigg_host  # noqa: E402
+_HOST_COUPLING_REEXPORTS = ("run_bigg_host_microbe", "solve_bigg_host")
+
+
+def __getattr__(name: str) -> object:
+    """Lazy re-export of the BiGG host-coupling entry points.
+
+    ``cmig.core.host_coupling`` imports from this module at import time, so a module-level
+    re-export here made ``import cmig.core.host_coupling`` (as the *first* import) raise
+    ``ImportError: cannot import name 'run_bigg_host_microbe' from partially initialized module``.
+    Resolving on attribute access breaks the cycle without changing the public surface.
+    """
+    if name in _HOST_COUPLING_REEXPORTS:
+        from cmig.core import host_coupling
+
+        return getattr(host_coupling, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

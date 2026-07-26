@@ -25,14 +25,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from cmig import CMIG_CORE_VERSION
 from cmig.core.manifest import DEFAULT_FLOAT_DECIMALS, canonicalize_floats
+from cmig.core.medium_spec import MEDIUM_POLICY
 
-WORKFLOW_MANIFEST_SCHEMA_VERSION = "1.0"
+# 1.1 (R5-P3 CC-4): the float canonicalization changed from "always round to six decimals" to
+# "round only when rounding is lossless, otherwise keep the exact value". Under 1.0 a
+# growth_fraction of 0.5000001 and one of 0.5000004, a target weight of 1e-7 and one of 4e-7, and
+# a solver tolerance of 1.1e-7 and one of 4.4e-7 all produced identical envelope hashes, which
+# defeats the manifest's central claim. Envelope hashes computed under 1.0 are therefore NOT
+# comparable to hashes computed under 1.1; the version is what makes that visible rather than
+# silent. The frozen 11-component solve hash is unaffected — see cmig.core.manifest._round_floats.
+WORKFLOW_MANIFEST_SCHEMA_VERSION = "1.1"
 
 # ── component vocabulary ───────────────────────────────────────────────────────
 # Every name a per-kind tuple may use. Declared once so a typo in a kind tuple fails at import
@@ -57,6 +67,8 @@ WORKFLOW_COMPONENT_VOCABULARY: frozenset[str] = frozenset({
     "sweep_spec",
     "dfba_spec",
     "quality_spec",
+    "map_spec",                   # host-map matching policy + id-normalization rules
+    "bundle_spec",                # the sub-runs a bundling command certifies (kinds + hashes)
 })
 
 # Shared prefix. Spelled out here once; each kind still declares its full tuple below and asserts
@@ -96,6 +108,17 @@ WORKFLOW_HASH_COMPONENTS: dict[str, tuple[str, ...]] = {
     "sweep": _BASE + ("tradeoff_f", "sweep_spec"),
     "dfba": _BASE + ("dfba_spec",),
     "model_quality": _BASE + ("quality_spec",),
+    # `host-map` does not solve, but it decides the interface map every host run then depends on.
+    # What determines that map: the host model bytes, the microbial pool bytes (model_checksum),
+    # and the matching/normalization policy (map_spec) — nothing else.
+    "host_map": _BASE + ("host_spec", "map_spec"),
+    # `publication-benchmark` bundles sub-runs and claims to certify them, so its hash covers both
+    # its own arguments and the identity of what it bundled (bundle_spec carries each child's kind
+    # and run_hash). A bundle over a different set of runs is a different bundle.
+    "publication_benchmark": _BASE + (
+        "tradeoff_f", "target_spec", "search_spec", "quality_spec", "dfba_spec",
+        "host_spec", "biomass_basis", "bundle_spec",
+    ),
 }
 
 # Per-kind arity assertions. Each number is the deliberate size of that kind's contract; changing a
@@ -112,6 +135,8 @@ _EXPECTED_ARITY: dict[str, int] = {
     "sweep": 8,
     "dfba": 7,
     "model_quality": 7,
+    "host_map": 8,
+    "publication_benchmark": 14,
 }
 
 assert set(_EXPECTED_ARITY) == set(WORKFLOW_HASH_COMPONENTS), (
@@ -197,6 +222,71 @@ def compute_workflow_hash(
     ).hexdigest()
 
 
+# ── result digest: the answer side of the fingerprint ──────────────────────────
+# `run_hash` certifies the *inputs*. That is a claim about what was asked, not about what came
+# back, and round-5 verification showed the difference is exploitable: three changes to
+# `build_host_map` — capping the reported entries, capping the host index, dropping currency
+# metabolites — each rewrote the real interface map (67 entries → 22, → 62) with `run_hash`,
+# `map_spec` and the matching-behaviour digest all bit-identical. Certifying an implementation
+# from the input side cannot be completed: `map_spec.match_behavior` measures one small synthetic
+# instance, so anything keyed on scale or on real BiGG vocabulary is invisible to it, and a fixture
+# can only cover decision points somebody has already written.
+#
+# `result_digest` closes that from the other side by fingerprinting the artifact bytes the run
+# actually produced. It is **additive and outside the hash**: no published `run_hash` moves, and
+# the envelope golden is untouched. What it buys is that two runs sharing a `run_hash` but
+# differing in `result_digest` become *detectable* rather than silently equivalent — which is
+# precisely the false negative. `cmig inspect-run` recomputes it from the files on disk and says so
+# loudly when they disagree, which also catches an edited or truncated artifact after the fact.
+#
+# Be precise about what each one certifies:
+#   run_hash      — these inputs, under this serialization contract.
+#   result_digest — these output bytes.
+# Neither implies the other, and that is the point.
+RESULT_DIGEST_SCHEMA_VERSION = "1.0"
+
+#: Kinds whose declared artifacts are byte-deterministic for identical inputs, so
+#: ``result_digest`` is comparable *across* runs and not merely within one. Verified by running the
+#: command twice and diffing (`host_map`: artifacts byte-identical, nothing timestamped). A kind is
+#: not listed until that has actually been measured — a kind whose artifacts embed a timestamp, a
+#: figure raster or a parquet write id would differ between two identical runs, and claiming
+#: comparability for it would manufacture false alarms. Unlisted kinds still get a digest; it
+#: certifies *those bytes* and is still checked by `inspect-run`.
+DETERMINISTIC_ARTIFACT_KINDS: frozenset[str] = frozenset({"host_map"})
+
+
+def artifact_result_digest(
+    out_dir: str | Path, kind: str, artifacts: list[str] | None
+) -> dict[str, Any]:
+    """sha256 over the artifact bytes a run produced, plus a per-artifact breakdown.
+
+    A declared artifact that is absent or unreadable is recorded in ``missing_artifacts`` rather
+    than skipped: a run that failed to write half its outputs must not digest the same as one that
+    wrote them all.
+    """
+    out = Path(out_dir)
+    digests: dict[str, str] = {}
+    missing: list[str] = []
+    for name in sorted(artifacts or []):
+        path = out / name
+        try:
+            digests[name] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            missing.append(name)
+    combined = json.dumps(
+        {"artifacts": digests, "missing_artifacts": sorted(missing)},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    )
+    return {
+        "result_digest_schema_version": RESULT_DIGEST_SCHEMA_VERSION,
+        "algorithm": "sha256",
+        "digest": "sha256:" + hashlib.sha256(combined.encode("utf-8")).hexdigest(),
+        "artifacts": digests,
+        "missing_artifacts": sorted(missing),
+        "cross_run_comparable": kind in DETERMINISTIC_ARTIFACT_KINDS,
+    }
+
+
 @dataclass(frozen=True)
 class WorkflowManifest:
     """Workflow manifest. ``env_lock`` is recorded but excluded from the hash [HASH-ENVLOCK]."""
@@ -211,6 +301,8 @@ class WorkflowManifest:
     env_lock: str | None = None
     platform: dict[str, str] = field(default_factory=dict)
     float_decimals: int = DEFAULT_FLOAT_DECIMALS
+    #: Outside the hash by construction — see the note above `RESULT_DIGEST_SCHEMA_VERSION`.
+    result_digest: dict[str, Any] | None = None
 
     @property
     def run_hash(self) -> str:
@@ -227,6 +319,13 @@ class WorkflowManifest:
             "components": canonical_workflow_payload(
                 self.kind, self.components, decimals=self.float_decimals
             ),
+            # NOT a hash component, deliberately (round 5, blocker 5). The CC-11 fix changed what
+            # a `--medium` run computes without moving `run_hash` (measured: solve growth
+            # 0.881561 -> 1.125065 under an identical hash), and the discontinuity cannot be
+            # recorded in a component because `cmig_core_version` is frozen. This marker lets a
+            # consumer tell the two eras apart mechanically. `hash_components` above is the
+            # authority on what is hashed, so adding a payload key here cannot move a run_hash.
+            "medium_policy": MEDIUM_POLICY,
             "status": self.status,
             "diagnostic": self.diagnostic,
             "warnings": list(self.warnings),
@@ -234,6 +333,7 @@ class WorkflowManifest:
             "env_lock": self.env_lock,
             "platform": self.platform,
             "artifacts": sorted(self.artifacts),
+            "result_digest": self.result_digest,
         }
 
 
@@ -252,6 +352,7 @@ def build_workflow_manifest(
     diagnostic: str | None = None,
     warnings: list[str] | None = None,
     summary: dict[str, Any] | None = None,
+    result_digest: dict[str, Any] | None = None,
 ) -> WorkflowManifest:
     """Assemble a manifest, deriving env_lock and platform from the running interpreter."""
     import platform as platform_lib
@@ -265,6 +366,7 @@ def build_workflow_manifest(
         diagnostic=diagnostic,
         warnings=list(warnings or []),
         summary=summary or {},
+        result_digest=result_digest,
         env_lock=_env_lock(dependencies if isinstance(dependencies, dict) else {}),
         platform={
             "os": platform_lib.system().lower(),
@@ -285,20 +387,40 @@ def write_workflow_manifest(
     warnings: list[str] | None = None,
     summary: dict[str, Any] | None = None,
 ) -> str:
-    """Write ``manifest.json`` for a workflow run and return its run_hash."""
+    """Write ``manifest.json`` for a workflow run and return its run_hash.
+
+    Called after the run's artifacts are on disk, so the result digest fingerprints what this run
+    actually produced. `manifest.json` itself is never one of them — it carries the digest.
+    """
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
     manifest = build_workflow_manifest(
         kind, components,
         status=status, artifacts=artifacts, diagnostic=diagnostic,
         warnings=warnings, summary=summary,
+        result_digest=artifact_result_digest(out, kind, artifacts),
     )
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "manifest.json").write_text(
-        json.dumps(
-            manifest.to_payload(), indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False
-        )
-        + "\n"
-    )
+    payload = json.dumps(
+        manifest.to_payload(), indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False
+    ) + "\n"
+    # R5-P3 (opus F4 / codex F8): `write_text` truncates the destination before it writes, so a
+    # failure part-way through replaced the previous run's manifest with unparseable JSON — the
+    # run's only reproducibility record, destroyed by a re-run that itself failed. Stage into the
+    # same directory (so os.replace stays on one filesystem and is therefore atomic) and swap.
+    # This is the pattern io.solve_output already uses for the solve path.
+    fd, tmp_name = tempfile.mkstemp(dir=out, prefix=".manifest.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, out / "manifest.json")
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return manifest.run_hash
 
 
@@ -349,11 +471,50 @@ def medium_component(
     }
 
 
-def pool_model_checksum(taxonomy: Any) -> str:
-    """Model-bytes + taxonomy-metadata fingerprint for a model pool."""
+def pool_model_checksum(taxonomy: Any, *, base_dir: str | Path | None = None) -> str:
+    """Model-bytes + taxonomy-metadata fingerprint for a model pool.
+
+    ``base_dir`` resolves taxonomy ``file`` columns recorded relative to the taxonomy csv, the way
+    the commands that load those models already do; without it a relative pool would fingerprint
+    as "model file missing" and the manifest would be skipped.
+    """
     from cmig.io.solve_output import taxonomy_model_checksum
 
-    return taxonomy_model_checksum(taxonomy)
+    return taxonomy_model_checksum(taxonomy, base_dir=base_dir)
+
+
+def bundle_component(children: list[dict[str, Any]]) -> dict[str, Any]:
+    """The sub-runs a bundling command certifies: each child's kind, run_hash and output location.
+
+    **The bundle hash includes the child hashes, deliberately.** A bundle is a claim about a
+    specific set of runs, so two bundles assembled from identical arguments but certifying
+    different sub-runs are not the same scientific object and must not share a fingerprint.
+    Recording only the bundling command's own arguments would let a bundle hash stand for runs it
+    never saw. It also gives a reader the inverse direction: from the bundle manifest alone they
+    can tell *which* runs were certified and check each child's own ``manifest.json``.
+
+    A child whose manifest could not be written is recorded with ``run_hash: None`` rather than
+    dropped — the bundle then hashes differently from one where every child was fingerprinted,
+    which is honest: that bundle certifies less.
+    """
+    normalized = [
+        {
+            "kind": str(child["kind"]),
+            "run_hash": None if child.get("run_hash") is None else str(child["run_hash"]),
+            "artifacts_dir": str(child.get("artifacts_dir") or ""),
+            "status": str(child.get("status") or "ok"),
+        }
+        for child in children
+    ]
+    # Sorted, so the bundle identity is the *set* of certified runs rather than the incidental
+    # order the benchmark happened to execute them in.
+    normalized.sort(key=lambda item: (item["kind"], item["artifacts_dir"], item["run_hash"] or ""))
+    return {
+        "bundle_hash_includes_child_hashes": True,
+        "n_children": len(normalized),
+        "child_kinds": sorted({item["kind"] for item in normalized}),
+        "children": normalized,
+    }
 
 
 def optional_file_checksum(path: str | Path | None) -> str | None:
@@ -364,6 +525,65 @@ def optional_file_checksum(path: str | Path | None) -> str | None:
 
     candidate = Path(path)
     return file_checksum(candidate) if candidate.exists() else f"missing:{candidate}"
+
+
+def _file_identity(path: str | Path | None) -> str | None:
+    """The hashable identity of a supplied file: its name, never the path used to reach it.
+
+    Paired with the checksum recorded beside it — together they say *which file*, without making
+    the reader's directory layout part of the scientific fingerprint.
+    """
+    return Path(path).name if path else None
+
+
+def host_spec_component(
+    *,
+    host_model: str | Path | None,
+    host_model_checksum: str | None,
+    host_objective: str | None = None,
+    host_medium: str | Path | None = None,
+    host_medium_checksum: str | None = None,
+    microbe_medium: str | Path | None = None,
+    microbe_medium_checksum: str | None = None,
+    interface_map: str | Path | None = None,
+    interface_map_checksum: str | None = None,
+    exchange_suffix: str | None = None,
+    exclude_metabolites: list[str] | None = None,
+    include_currency_metabolites: bool = False,
+    keep_host_uptake: bool = False,
+) -> dict[str, Any]:
+    """Everything about the host side that changes the host objective, in one shape.
+
+    One builder rather than a per-command dict literal: `host_spec` is hashed by five kinds now
+    (`host_microbe_bigg`, `host_search_bigg`, `host_ko_impact`, `host_map`,
+    `publication_benchmark`), and a second literal would eventually disagree with the first about
+    which key holds which fact — at which point two runs of the same experiment stop sharing a
+    hash for no scientific reason. Keys are fixed and always present; an option a command does not
+    expose records as its inert default rather than being dropped.
+
+    **File identity is the bytes, not the location.** Every path recorded here has a checksum
+    companion that already pins its content, so the path is provenance. Recording it verbatim made
+    the *same file* fingerprint differently depending on where the reader kept it or which
+    directory they ran from — round-5 measured `c5a6c402…` from a relative host path and
+    `b52137b2…` from the absolute path to the identical bytes, so a faithful reproduction looked
+    like a failed one. Only the file name is hashed: enough to keep the manifest readable, stable
+    under a move or a change of working directory.
+    """
+    return {
+        "host_model": _file_identity(host_model),
+        "host_model_checksum": host_model_checksum,
+        "host_objective": host_objective,
+        "host_medium": _file_identity(host_medium),
+        "host_medium_checksum": host_medium_checksum,
+        "microbe_medium": _file_identity(microbe_medium),
+        "microbe_medium_checksum": microbe_medium_checksum,
+        "interface_map": _file_identity(interface_map),
+        "interface_map_checksum": interface_map_checksum,
+        "exchange_suffix": exchange_suffix,
+        "exclude_metabolites": sorted(exclude_metabolites or []),
+        "include_currency_metabolites": bool(include_currency_metabolites),
+        "keep_host_uptake": bool(keep_host_uptake),
+    }
 
 
 def mapping_checksum(mapping: dict[str, Any] | None) -> str | None:

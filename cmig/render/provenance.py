@@ -9,6 +9,8 @@ import platform
 from pathlib import Path
 from typing import Any
 
+from cmig.io.atomic import atomic_write_text
+
 RENV_LOCK = Path(__file__).resolve().parent.parent / "render_r" / "renv.lock"
 
 
@@ -105,8 +107,8 @@ def write_render_provenance(
         payload["runtime"]["matplotlib"] = matplotlib_version
 
     sidecar = out.with_name(out.name + ".render_provenance.json")
-    sidecar.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True) + "\n",
-        encoding="utf-8",
+    # R5-P3 V3: a failed rewrite must not replace a good provenance record with a partial one.
+    atomic_write_text(
+        sidecar, json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
     )
     return sidecar

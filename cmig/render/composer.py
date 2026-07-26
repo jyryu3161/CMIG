@@ -36,6 +36,25 @@ JOURNAL_PRESETS: dict[str, tuple[float, float, int]] = {
 }
 
 PANEL_KINDS = ("network", "heatmap", "chord")
+
+# Round 5: the network/chord panels render `edges.parquet.weight`, which is a PER-TAXON magnitude
+# (mmol gDW_taxon^-1 h^-1), NOT the community-basis rate that `profile.net_flux` and every other
+# figure in the run directory use. A reader compares figures, not manifests, so the basis has to
+# be on the figure itself — otherwise a rare member's edge simply looks bigger than an abundant
+# member's (measured: 84.57 at abundance 0.1 vs 12.29 at abundance 0.9 for the same CO2 edge).
+EDGE_WEIGHT_BASIS_CAPTION = (
+    "edge width = per-taxon flux (mmol gDW_taxon^-1 h^-1), not abundance-weighted"
+)
+EDGE_WEIGHT_PANEL_KINDS = frozenset({"network", "chord"})
+
+
+def panel_title_with_basis(spec: PanelSpec) -> str:
+    """Title actually rendered: edge panels carry the weight basis, others are unchanged."""
+    if spec.kind not in EDGE_WEIGHT_PANEL_KINDS:
+        return spec.title
+    if EDGE_WEIGHT_BASIS_CAPTION in spec.title:
+        return spec.title
+    return f"{spec.title} — {EDGE_WEIGHT_BASIS_CAPTION}"
 PANEL_CSV_COLUMNS: dict[str, tuple[str, ...]] = {
     "network": ("source_id", "target_id", "weight", "edge_type"),
     "chord": ("source_id", "target_id", "weight"),
@@ -73,12 +92,14 @@ class PanelSpec:
 
 
 def _csv_cell(col: str, value: Any) -> Any:
+    # R5-P3: significant figures, not decimal places — see render.client._csv_cell. `.6f` sent
+    # every heatmap value / network weight below 5e-7 to R as a hard zero.
     if col != "value" and col != "weight":
         return "" if value is None else value
     if value is None:
         return ""
     v = float(value)
-    return "" if not math.isfinite(v) else f"{v:.6f}"
+    return "" if not math.isfinite(v) else f"{v:.12g}"
 
 
 def _write_panel_csv(kind: str, rows: list[dict[str, Any]], path: Path) -> None:
@@ -123,7 +144,8 @@ class FigureComposer:
                 str(self._rscript), str(script),
                 "--data", str(data_csv), "--out", str(out), "--format", spec.format,
                 "--width", str(spec.width_in), "--height", str(spec.height_in),
-                "--dpi", str(spec.dpi), "--title", spec.title, "--seed", str(spec.seed),
+                "--dpi", str(spec.dpi), "--title", panel_title_with_basis(spec),
+                "--seed", str(spec.seed),
                 "--rlib", str(_RLIB),
             ]
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False)

@@ -499,6 +499,22 @@ Golden-version gate:
 uv run cmig golden verify
 ```
 
+Workflow-envelope gate — `golden verify` protects the frozen 11-component
+`community_solve` hash; this protects the workflow-manifest serialization every
+other command's `run_hash` is derived from. Needs no solver and no license:
+
+```bash
+uv run cmig golden verify-envelope
+```
+
+If it reports drift, the serialization changed and every previously published
+workflow `run_hash` of the listed kinds now derives differently from identical
+inputs. Re-bless only when that is intended, and record it as a contract change:
+
+```bash
+uv run python -m cmig.core.workflow_envelope_golden
+```
+
 The test suite includes headless core tests, MICOM-backed tests, solver
 provenance tests, GUI offscreen smoke tests, and real workflow regressions.
 

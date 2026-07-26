@@ -134,6 +134,14 @@ class DfbaSensitivityRow:
     max_concentration_residual: float
     max_biomass_residual: float
     relative_biomass_error_to_finest_dt: float
+    # Round 5 (opus F4): each grid run can determine that its own result is NOT interpretable as a
+    # tracked-substrate/Km experiment (growth fed by untracked, never-depleting default-medium
+    # substrates). Dropping that verdict here made the audit certify exactly the runs it exists to
+    # catch, so the row carries it. `untracked_uptake` is the structured verdict; `warnings` also
+    # carries purely informational notes (e.g. "closed N untracked uptake exchanges"), so the
+    # acceptance decision keys on the former, never on warning truthiness.
+    untracked_uptake: dict[str, float] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -417,6 +425,8 @@ def run_dfba_sensitivity(
                 max_concentration_residual=audit.max_concentration_residual,
                 max_biomass_residual=audit.max_biomass_residual,
                 relative_biomass_error_to_finest_dt=relative_error,
+                untracked_uptake=dict(result.untracked_uptake),
+                warnings=list(result.warnings),
             )
         )
     return DfbaSensitivityResult(rows=rows, source_config=config)

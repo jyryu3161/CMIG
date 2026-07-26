@@ -21,8 +21,19 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
 
 # 직렬화 canonical 값 (OD-19). UI 표시 라벨 = "QP-only approximate".
-FluxReportStatus = Literal["full", "qp_only_approximate"]
-FLUX_REPORT_LABEL = {"full": "Full (LP pFBA)", "qp_only_approximate": "QP-only approximate"}
+# round 5 F5: "full" 의 라벨은 문자 그대로 "Full (LP pFBA)" 다. 그런데 이 값은 solver 이름만으로
+# 정해졌기 때문에 (a) pFBA stage 가 실패해 비-parsimonious FBA 로 재시도된 run 과 (b) solve 자체가
+# 실패해 flux 가 하나도 없는 run 까지 "pFBA flux 분포"라고 주장했다. 비-parsimonious community FBA
+# 벡터는 고도로 축퇴된 최적면 위의 임의의 한 꼭짓점이므로 — 거기서 파생된 모든 member↔pool
+# exchange 와 cross-feeding edge 가 임의의 대표값이다 — 이를 pFBA 로 표기하면 run 전체의 방법을
+# 잘못 기술하게 된다. 이제 실제로 생산된 flux 를 따라간다.
+FluxReportStatus = Literal["full", "fba_non_parsimonious", "qp_only_approximate", "none"]
+FLUX_REPORT_LABEL = {
+    "full": "Full (LP pFBA)",
+    "fba_non_parsimonious": "Full flux, NON-parsimonious (pFBA stage failed)",
+    "qp_only_approximate": "QP-only approximate",
+    "none": "No flux (solve failed)",
+}
 
 # B1: MICOM 은 stage 가 non-optimal 로 끝나도 primal 을 무조건 읽으므로(micom/solution.py) 위임이
 # status 대신 예외를 던진다. pFBA stage 만 실패하는 경우가 있어 pfba=False 로 1회 재시도하고,
@@ -113,7 +124,9 @@ def solver_failed_result(
 
     호출자가 이미 가진 `status != "optimal"` 분기를 그대로 태울 수 있게 빈 flux dict 를 돌려준다.
     """
-    growth_solver, flux_solver, flux_report = _solver_split(cmig_solver)
+    growth_solver, flux_solver, _report = _solver_split(cmig_solver)
+    # No flux vector was produced at all, so no flux-report tier can honestly be claimed.
+    flux_report: FluxReportStatus = "none"
     return SolveResult(
         objective=0.0,
         member_growth={},
@@ -274,6 +287,10 @@ class MicomEngine:
 
         # solver 분리 기록 (§4.2 [SOLVER-SPLIT]).
         growth_solver, flux_solver, flux_report = _solver_split(cmig_solver)
+        # F5: the report tier must describe the flux that actually exists, not the solver name.
+        # `_solver_split` cannot know that the pFBA stage fell back to plain FBA.
+        if flux_report == "full" and flux_normalization != "pfba":
+            flux_report = "fba_non_parsimonious"
         # F4: 진단을 (DiagnosticCode, message) 로 수집 → diagnostic_from_parts 구조화.
         # 위임 단계에서 이미 수집된 원인(pFBA fallback 등)을 앞에 유지한다.
         diag_parts: list[tuple[DiagnosticCode, str]] = list(solve_causes or [])

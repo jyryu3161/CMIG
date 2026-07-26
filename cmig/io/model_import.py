@@ -93,22 +93,45 @@ def _biomass_reactions(model: Any) -> list[str]:
     These are *objective terms*, not necessarily biomass reactions — see
     :func:`objective_structure_warning`. A single-term objective is the usual biomass case; a
     multi-term objective means the reported "growth" is an arbitrary objective value.
+
+    R5-P3 (codex F3): this used to swallow every exception and return ``[]``. COBRA already
+    returns an empty mapping when a model has no objective — measured, it does not raise — so the
+    catch never served its stated purpose and instead turned a genuine introspection failure into
+    the scientific claim "no objective reaction detected; this model cannot report growth". A
+    failure to *look* is not a finding about the model, so it propagates.
     """
     from cobra.util.solver import linear_reaction_coefficients
-    try:
-        coeffs = linear_reaction_coefficients(model)
-        return sorted(str(r.id) for r in coeffs)
-    except Exception:                            # objective 미설정 등 → 빈 목록(강제 추정 금지)
-        return []
+
+    coeffs = linear_reaction_coefficients(model)
+    return sorted(str(r.id) for r in coeffs)
 
 
-def objective_structure_warning(n_objective_terms: int) -> str | None:
+# A biomass reaction is identified by name because SBML carries no machine-readable "this is the
+# growth reaction" flag. Every bundled GEM that has one uses a `BIOMASS_*` id, and `growth` covers
+# the other common convention. This is a *hint*, so failing it produces a warning, never a refusal.
+_BIOMASS_NAME_HINTS: tuple[str, ...] = ("biomass", "growth")
+
+
+def _looks_like_biomass(reaction: object) -> bool:
+    text = f"{getattr(reaction, 'id', '')} {getattr(reaction, 'name', '') or ''}".lower()
+    return any(hint in text for hint in _BIOMASS_NAME_HINTS)
+
+
+def objective_structure_warning(
+    n_objective_terms: int, objective_reactions: object = None
+) -> str | None:
     """Warn when an objective is not a single biomass-like reaction (A-B9).
 
     iAF987 ships with a 283-term linear objective, so its optimum is not a growth rate at all —
     yet it was counted as "283 biomass reactions", passed the has-biomass check silently, and was
     reported and plotted under the label "Growth rate". A multi-term objective is legal and
     sometimes intended; it just cannot be read as growth without saying so.
+
+    Round 5 (blocker 3): counting terms is not sufficient. A **one-term** objective on a demand or
+    exchange reaction is also not growth, and it slipped through silently — `strain-growth`
+    reported a `DM_ac` flux of 10.0 as growth with `status: ok` and no warning at all. Pass
+    ``objective_reactions`` (the cobra reactions carrying a non-zero objective coefficient) to get
+    the single-term checks too; omitting it preserves the original count-only behaviour.
     """
     if n_objective_terms == 0:
         return "no objective reaction detected; this model cannot report growth"
@@ -117,7 +140,25 @@ def objective_structure_warning(n_objective_terms: int) -> str | None:
             f"objective has {n_objective_terms} terms; not a single biomass reaction — "
             "reported growth is an objective value, not a growth rate"
         )
-    return None
+    reactions = list(objective_reactions or [])
+    if len(reactions) != 1:
+        return None
+    reaction = reactions[0]
+    # Name first: `DM_biomass_c` / `EX_biomass_e` as the objective is a documented modelling
+    # pattern (a demand on a biomass pseudo-metabolite) and IS growth, so the boundary check must
+    # not veto it. What it catches is a boundary reaction with no biomass identity at all.
+    if _looks_like_biomass(reaction):
+        return None
+    if getattr(reaction, "boundary", False):
+        return (
+            f"objective is the boundary reaction {getattr(reaction, 'id', '?')} "
+            "(exchange/demand/sink) with no biomass identity; a boundary flux is a transport "
+            "rate, NOT a growth rate — reported growth is an objective value"
+        )
+    return (
+        f"objective reaction {getattr(reaction, 'id', '?')} is not identifiable as a biomass "
+        "reaction; reported growth is an objective value, not a confirmed growth rate"
+    )
 
 
 def import_model(path: str | Path) -> ModelSummary:
@@ -128,6 +169,13 @@ def import_model(path: str | Path) -> ModelSummary:
     fmt = detect_model_format(p)
     model = load_cobra_model(p)
     exchanges = sorted(str(r.id) for r in model.exchanges)
+    try:
+        biomass_reactions = _biomass_reactions(model)
+    except Exception as e:                       # noqa: BLE001 - optlang/cobra expose open sets
+        raise ModelImportError(
+            f"objective 검사 실패 ({p.name}): {type(e).__name__}: {e}. "
+            "이 모델의 objective 구조를 읽을 수 없어 growth 보고 가능 여부를 판단할 수 없습니다."
+        ) from e
     return ModelSummary(
         model_id=str(model.id) or p.stem,
         source_format=fmt,
@@ -136,7 +184,7 @@ def import_model(path: str | Path) -> ModelSummary:
         n_metabolites=len(model.metabolites),
         n_genes=len(model.genes),
         exchanges=exchanges,
-        biomass_reactions=_biomass_reactions(model),
+        biomass_reactions=biomass_reactions,
     )
 
 

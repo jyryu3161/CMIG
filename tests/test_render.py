@@ -106,19 +106,40 @@ def test_matplotlib_fallback_uses_label_palette(tmp_path):
 
 
 def test_render_client_passes_project_rlib(monkeypatch, tmp_path):
+    """R5-P3 CC-1.
+
+    Two things made this test unable to certify anything:
+
+    1. It monkeypatched ``subprocess.run`` *globally*, so it also intercepted the ``uname -p``
+       that ``platform.platform()`` shells out to on macOS from ``write_render_provenance``.
+       In full-suite order something had already warmed the platform cache and the stray call
+       never happened; run in isolation it did, and the fake blew up on ``cmd.index("--out")``.
+       The fake now only answers for the R invocation and passes everything else through.
+    2. It asserted ``rlib.endswith("/CMIG/.Rlib")``, which hardcodes the main checkout's
+       directory name and fails in any worktree. The real contract is that the R library lives
+       at the project root next to the package, so assert exactly that.
+    """
+    import cmig.render.client as render_client
+
+    real_run = subprocess.run
     seen: dict[str, list[str]] = {}
 
     def fake_run(cmd, **kwargs):
-        seen["cmd"] = list(cmd)
-        Path(cmd[cmd.index("--out") + 1]).write_text("<svg/>")
+        argv = list(cmd)
+        if "--rlib" not in argv:                 # not the R render call — let it really run
+            return real_run(cmd, **kwargs)
+        seen["cmd"] = argv
+        Path(argv[argv.index("--out") + 1]).write_text("<svg/>")
         stdout = "CMIG_R_VERSION\tR version 4.3.2\nCMIG_R_PACKAGE\tggplot2\t3.5.2\n"
-        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     out = tmp_path / "profile.svg"
     RenderClient(rscript="/usr/bin/Rscript").render([], FigureSpec(format="svg"), out)
     rlib = seen["cmd"][seen["cmd"].index("--rlib") + 1]
-    assert rlib.endswith("/CMIG/.Rlib")
+    expected = Path(render_client.__file__).resolve().parents[2] / ".Rlib"
+    assert rlib == str(expected)
+    assert Path(rlib).name == ".Rlib"
     provenance = json.loads(out.with_name("profile.svg.render_provenance.json").read_text())
     assert provenance["runtime"]["r_version"] == "R version 4.3.2"
     assert provenance["runtime"]["r_packages"] == {"ggplot2": "3.5.2"}
