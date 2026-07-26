@@ -48,27 +48,31 @@ def _member_model(name: str, *, exchanges: dict[str, float]) -> cobra.Model:
     return model
 
 
-class _FakeCommunity:
-    """Only the `medium` surface strain-growth touches, in the `_m` namespace."""
+def _community_model() -> cobra.Model:
+    """The community stand-in, in the `_m` namespace — a REAL cobra model, not a medium dict.
 
-    def __init__(self) -> None:
-        self._medium = dict(COMMUNITY_MEDIUM)
-        self.exchanges = [
-            cobra.Reaction(exchange_id) for exchange_id in COMMUNITY_MEDIUM
-        ]
-
-    @property
-    def medium(self) -> dict[str, float]:
-        return dict(self._medium)
-
-    @medium.setter
-    def medium(self, value: dict[str, float]) -> None:
-        self._medium = dict(value)
+    Round 6 (track B): this was a hand-rolled double exposing a settable ``medium`` dict and
+    metabolite-less ``exchanges``. Both are fictions. ``medium`` is a *derived* view of the
+    reaction bounds in cobra, and a boundary reaction with no metabolites has no supplying
+    direction at all — so the double could not represent the thing the medium code manipulates,
+    and it accepted an application that moved no bound. This file's own preamble already records
+    that "a too-thin fake let through last time"; the same lesson applies one layer down.
+    """
+    model = cobra.Model("community")
+    reactions = []
+    for exchange_id, open_uptake in COMMUNITY_MEDIUM.items():
+        metabolite = cobra.Metabolite(exchange_id.removeprefix("EX_"), compartment="m")
+        reaction = cobra.Reaction(exchange_id)
+        reaction.add_metabolites({metabolite: -1})
+        reaction.bounds = (-open_uptake, 1000.0)
+        reactions.append(reaction)
+    model.add_reactions(reactions)
+    return model
 
 
 class _FakeEngine:
     def __init__(self, *, single_status: str = "optimal") -> None:
-        self.community = _FakeCommunity()
+        self.community = _community_model()
 
     def build_community(self, _taxonomy, cmig_solver="gurobi"):
         return self.community

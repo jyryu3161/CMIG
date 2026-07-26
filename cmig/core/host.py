@@ -69,6 +69,11 @@ class HostSolveResult:
     lumen_uptake_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
     attribution_method: str = "objective_fixed_fva"
     flux_unit: str = "mmol gDW_host^-1 h^-1"
+    # Round 6 (track B): what the solve actually closed on the host's boundary, measured rather
+    # than intended. `None` on paths that do not isolate (`solve_host`, `solve_generic_host`).
+    # A solve that left mass sources open must be able to say so; see `run_bigg_host_microbe`,
+    # which turns this into a warning, and the manifest provenance that records it.
+    boundary_isolation: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +135,13 @@ class BiggHostMicrobeResult:
     warnings: list[str]
     community_secretion: dict[str, float] = field(default_factory=dict)
     coupling_scale: CouplingScale | None = None
+    # Round 6 [P1]: round 5's objective-structure guard reached `strain-growth` and `model-quality`
+    # and none of the three host-coupling commands, so `--host-objective` stayed optional and a
+    # transport or demand reaction could be published as `host_objective` with no caveat anywhere
+    # (RECON1 ships `S6T14g`, a Golgi sulfotransferase, as its default objective). All three
+    # commands go through `run_bigg_host_microbe`, so the guard is called once, here.
+    objective_warning: str | None = None
+    objective_reactions: list[str] = field(default_factory=list)
 
 
 def _met_from_host_exchange(exchange_id: str) -> str:
@@ -352,23 +364,65 @@ def solve_host(
     feasible(status optimal) AND biomass>0 (제로-biomass host 는 non-viable 계약).
     lumen_availability: {metabolite: 가용 flux}(미생물 community 분비량). 미생물 SCFA → host 흡수.
     """
+    from cmig.core.boundary import (
+        boundary_reactions,
+        close_boundary_supply,
+        set_supply_limit,
+        supply_capacity,
+    )
     from cmig.core.single_model import _require_lp
     _require_lp(solver)
     with host:
         from cmig.core.single_model import set_model_solver
         set_model_solver(host, solver)
         ex_ids = {r.id for r in host.reactions}
+        # Round 6 (track B, P2): this function implements CMIG's 2-interface contract — the lumen
+        # is closed by default and only what the microbes secreted may enter, while the blood
+        # interface stays open. A model with no `_lumen` ids cannot express that contract, so the
+        # loop below closed NOTHING and the LP ran with the model's entire boundary open. Recon3D
+        # has `ATPM`, so it passed the maintenance check and returned `viable=True` with a
+        # phantom-fed objective — a wrong number, not an error. Reachable from no CLI path today,
+        # but the next person to wire one would have inherited it silently.
+        host_boundary = boundary_reactions(host)
+        lumen_boundary = [
+            str(r.id) for r in host_boundary
+            if _interface_of(str(r.id)) is HostInterface.LUMEN
+        ]
+        # The trap, stated precisely: an `EX_*` reaction CMIG cannot classify as lumen or blood is
+        # an exchange interface this contract does not model, and if it can supply mass it feeds
+        # the LP invisibly. Recon3D has 1560 of them, all open, so `solve_host` closed nothing,
+        # passed the ATPM check (Recon3D has `ATPM`) and returned `viable=True` off a background it
+        # never declared. Refusing is the only honest answer: the right entry point for a generic
+        # GEM is `solve_generic_host` or `solve_bigg_host`, both of which say what they assume.
+        unclassified = sorted(
+            str(r.id) for r in host_boundary
+            if str(r.id).startswith("EX_")
+            and _interface_of(str(r.id)) is HostInterface.UNKNOWN
+            and supply_capacity(r) > 0.0
+        )
+        if unclassified:
+            from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
+
+            diag = diagnostic_from_parts([(
+                DiagnosticCode.HOST_INTERFACE_ABSENT,
+                f"{len(unclassified)} host exchange reactions can supply mass but belong to "
+                "neither the _lumen nor the _blood interface, e.g. "
+                f"{unclassified[:5]}; the 2-interface contract cannot classify them, so this "
+                "solve would be fed by an undeclared background. Use solve_generic_host (reports "
+                "the model as-is) or the BiGG coupling path (solve_bigg_host, which isolates the "
+                "whole boundary) for a generic GEM.",
+            )])
+            return HostSolveResult(False, "infeasible", 0.0, [], {}, diag)
         # [정직성] lumen interface 는 **기본 폐쇄**(uptake=0) — 미생물이 실제 분비한 것만 흡수 가능.
-        # availability 미포함 대사체를 phantom 흡수하지 않도록 모든 EX_*_lumen lower_bound=0 먼저.
-        for r in host.reactions:
-            if r.id.startswith("EX_") and _interface_of(r.id) is HostInterface.LUMEN:
-                r.lower_bound = 0.0
+        # Closed against `model.boundary` restricted to the lumen, so a `SK_*_lumen` sink is closed
+        # too; the old `EX_`-prefixed loop over `host.reactions` could not see one.
+        close_boundary_supply(host, only=lumen_boundary)
         # lumen uptake 한계: 가용 대사체만 EX_<met>_lumen lower_bound = -available 개방.
         for met, avail in lumen_availability.items():
             ex = f"EX_{met}_lumen"
             flux = _availability_flux(avail, label=f"lumen_availability[{met!r}]")
             if ex in ex_ids:
-                host.reactions.get_by_id(ex).lower_bound = -flux
+                set_supply_limit(host.reactions.get_by_id(ex), flux)
         # viability: ATP maintenance ≥ 임계 (명시 강제). upper < 임계면 동반 상향(bound 역전 방지).
         if maintenance_reaction in ex_ids:
             mr = host.reactions.get_by_id(maintenance_reaction)

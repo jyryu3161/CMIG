@@ -18,7 +18,7 @@ from typing import Any, Literal
 from cmig.core.diagnostics import Diagnostic, DiagnosticCode, parse_diagnostic
 from cmig.core.engine import MicomEngine
 from cmig.core.interactions import build_tidy
-from cmig.core.medium_spec import apply_medium_checked, load_medium, medium_checksum
+from cmig.core.medium_spec import load_medium, medium_application_report, medium_checksum
 from cmig.core.namespace import (
     NamespaceDecision,
     evaluate_gate,
@@ -144,11 +144,20 @@ class EngineService:
             community = self._engine.build_community(effective_taxonomy, cmig_solver=solver)
             original_bounds = None
             unknown_medium: list[str] = []
+            medium_application: dict[str, Any] = {}
             try:
                 if spec is not None:
-                    _, unknown_medium = apply_medium_checked(
+                    # Round 6 (track B, instance 1): the same single application path, but the
+                    # record of HOW it was applied is now kept. A merge leaves undeclared
+                    # boundary reactions open — measured on the shipped `western_diet.csv`,
+                    # `EX_o2_m` stayed at 999999 and community growth came out 1.2677557 against
+                    # 0.6990206751 with oxygen closed. The count travels into the manifest's
+                    # non-hashed provenance so a reader can see it without re-running anything.
+                    translation = medium_application_report(
                         community, spec, strict=strict_medium
-                    )  # MICOM public API
+                    )
+                    unknown_medium = list(translation.unmatched)
+                    medium_application = translation.as_provenance()
                 if bounds:
                     from cmig.core.sandbox import BoundConstraint, apply_bounds
 
@@ -206,6 +215,8 @@ class EngineService:
                             "applied_mappings": [asdict(item) for item in applied_mappings],
                         },
                         "analysis_settings": analysis_settings,
+                        # Non-hashed: which medium semantics ran, and what a merge left open.
+                        **medium_application,
                     },
                 )
                 return SolveOutcome.from_manifest(

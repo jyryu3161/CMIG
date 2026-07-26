@@ -7,34 +7,22 @@ fixture, so these tests validate honest generic-GEM handling instead of pretendi
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import pytest
+from _gem_fixtures import human_gem_path, human_gem_skip_reason
 
 from cmig.core.host import solve_generic_host, summarize_host_model
 
 cobra = pytest.importorskip("cobra")
 
-
-_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _recon3d_path() -> Path:
-    env_path = os.environ.get("CMIG_RECON3D_PATH")
-    if env_path:
-        return Path(env_path).expanduser()
-    for candidate in (_ROOT / "fixtures" / "Recon3D.xml", _ROOT / "Recon3D.xml"):
-        if candidate.exists():
-            return candidate
-    return _ROOT / "fixtures" / "Recon3D.xml"
-
-
-_RECON3D = _recon3d_path()
-
+# Round 6 (P2): the resolution order used to be `$CMIG_RECON3D_PATH`, `fixtures/`, `./` — none of
+# which is where the download script puts the file, so these tests skipped for the entire life of
+# the project and the skip read as a pass. The order now lives in `_gem_fixtures` and includes
+# `data/gems`, and `test_round6_boundary_regressions` asserts that entry directly, so removing it
+# fails a test instead of silently re-skipping this module.
+_RECON3D = human_gem_path("Recon3D.xml")
 
 pytestmark = pytest.mark.skipif(
-    not _RECON3D.exists(), reason="Recon3D.xml fixture is not present"
+    _RECON3D is None, reason=human_gem_skip_reason("Recon3D.xml")
 )
 
 

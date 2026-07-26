@@ -11,7 +11,7 @@ cobra 는 lazy import — 엔진 stack 없는 환경에서도 cmig 패키지 imp
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -52,6 +52,12 @@ class MinimalMediumResult:
     achieved_growth: float           # returned medium을 재solve한 검증 성장률
     essential_components: list[str]  # full candidate medium leave-one-out verified
     oxygen_mode: str = "aerobic"     # {aerobic, anaerobic} — O₂ 포함/제외
+    #: Round 6 (track B): boundary reactions whose SBML bounds FORCE mass supply, so they could
+    #: not be closed before the MILP ran. Non-empty means the reported medium is not the model's
+    #: only nutrient source — measured on `iAF987`, whose `EX_ac_e [-8.88, -6.84]` and
+    #: `EX_fe3_e [-67.37, -49.21]` require uptake. Empty is the normal case and the only one in
+    #: which "minimal medium" is a complete answer.
+    forced_supply: dict[str, float] = field(default_factory=dict)
 
 
 def _load_cobra() -> Any:
@@ -142,13 +148,24 @@ def minimal_medium_cardinality(
             f"solver '{solver}' MILP capability 부재/미가용 (§2 capability matrix). "
             f"가용 MILP solver: {[n for n, c in capability_matrix().items() if c.supports('MILP')]}"
         )
+    # Round 6 (track B, instance 5): every medium assignment below used to go through
+    # ``model.medium``, whose setter closes ``frozenset(self.exchanges)`` and therefore cannot
+    # close a sink or a demand. On a model whose objective can be fed by an open sink that made the
+    # MILP return a **zero-component** "minimal medium" which then passed its own re-solve
+    # validation — an empty nutrient set certified as sufficient. Isolation now goes through
+    # ``cmig.core.boundary`` against ``model.boundary``, so "minimal medium" means minimal.
+    from cmig.core.boundary import isolate_boundary
+
+    def _set_exact_medium(target: Any, bounds: dict[str, float]) -> dict[str, float]:
+        return dict(isolate_boundary(target, bounds, strict_unmatched=False).forced_supply)
+
     with model as working:
         working.solver = solver           # context가 solver/bounds/medium을 원본에 남기지 않음
         candidate_medium = dict(working.medium)
         if oxygen_mode == "anaerobic":
             # Oxygen is a solve constraint, not a label applied after an aerobic MILP.
             candidate_medium.pop(O2_EXCHANGE, None)
-        working.medium = candidate_medium
+        forced = _set_exact_medium(working, candidate_medium)
 
         series = minimal_medium(
             working, min_objective_value=min_objective_value, minimize_components=True
@@ -169,7 +186,7 @@ def minimal_medium_cardinality(
 
         # Re-solve the exact medium that will be returned. A post-processed support that does not
         # achieve the declared growth threshold is never published as a successful result.
-        working.medium = bounds
+        _set_exact_medium(working, bounds)
         achieved_raw = working.slim_optimize(error_value=float("nan"))
         achieved = float(achieved_raw)
         tolerance = 1e-7 * max(1.0, abs(min_objective_value))
@@ -187,7 +204,7 @@ def minimal_medium_cardinality(
         for exchange_id in sorted(bounds):
             leave_one_out = dict(candidate_medium)
             leave_one_out.pop(exchange_id, None)
-            working.medium = leave_one_out
+            _set_exact_medium(working, leave_one_out)
             value = float(working.slim_optimize(error_value=float("nan")))
             if not math.isfinite(value) or value + tolerance < min_objective_value:
                 essential.append(exchange_id)
@@ -201,6 +218,7 @@ def minimal_medium_cardinality(
         achieved_growth=achieved,
         essential_components=essential,
         oxygen_mode=oxygen_mode,
+        forced_supply=forced,
     )
 
 

@@ -32,8 +32,27 @@ from pathlib import Path
 from typing import Any
 
 from cmig import CMIG_CORE_VERSION
+from cmig.core.boundary import BOUNDARY_ISOLATION_POLICY
 from cmig.core.manifest import DEFAULT_FLOAT_DECIMALS, canonicalize_floats
 from cmig.core.medium_spec import MEDIUM_POLICY
+
+#: **Non-hashed** provenance markers, stamped into every manifest by the writer.
+#:
+#: Each one records a semantics change that moved published answers WITHOUT moving `run_hash`.
+#: That cannot be expressed as a hash component — `cmig_core_version` is frozen and
+#: `hash_components` is the authority on what is hashed — so the marker is the only mechanical way
+#: a consumer can tell two eras apart. Round 5 established the pattern with `medium_policy`.
+#:
+#: This is a **single source of truth on purpose.** Round 5 had to add `medium_policy` to
+#: `cmig.cli.main._compact_manifest`'s whitelist by hand, and `host_isolation_policy` was later
+#: added to a manifest *without* that step — so it landed in `manifest.json` and `inspect-run`
+#: returned `None` for it, i.e. the marker existed and no reader could see it. `_compact_manifest`
+#: now derives its keys from this mapping, so a marker added here reaches `inspect-run` by
+#: construction and cannot be half-added again.
+NON_HASHED_PROVENANCE_MARKERS: dict[str, str] = {
+    "medium_policy": MEDIUM_POLICY,
+    "boundary_isolation_policy": BOUNDARY_ISOLATION_POLICY,
+}
 
 # 1.1 (R5-P3 CC-4): the float canonicalization changed from "always round to six decimals" to
 # "round only when rounding is lossless, otherwise keep the exact value". Under 1.0 a
@@ -325,7 +344,7 @@ class WorkflowManifest:
             # recorded in a component because `cmig_core_version` is frozen. This marker lets a
             # consumer tell the two eras apart mechanically. `hash_components` above is the
             # authority on what is hashed, so adding a payload key here cannot move a run_hash.
-            "medium_policy": MEDIUM_POLICY,
+            **NON_HASHED_PROVENANCE_MARKERS,
             "status": self.status,
             "diagnostic": self.diagnostic,
             "warnings": list(self.warnings),

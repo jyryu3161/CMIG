@@ -52,4 +52,7 @@ def test_all_codes_present():
     assert {c.value for c in DiagnosticCode} == {
         "infeasible", "unbounded", "solver_error", "capability_missing",
         "gate_blocked", "medium_unapplied", "members_missing", "host_maintenance_absent",
+        # Round 6 (track B): a host model whose exchange interface CMIG cannot classify would
+        # otherwise be solved against an undeclared background and reported as viable.
+        "host_interface_absent",
     }

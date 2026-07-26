@@ -24,6 +24,90 @@ semantic versioning for public releases.
 
 ### Changed
 
+- **BREAKING (scientific): isolation is now computed against `model.boundary`, not
+  `model.exchanges` or `model.medium`.** CMIG closed what it *enumerated*, and every enumeration it
+  used is a strict subset of what can supply mass. `cobra` exposes three views and only one is
+  complete: `model.boundary == exchanges ∪ sinks ∪ demands`. Measured on Recon3D (cobra 0.31.1):
+
+  ```
+  boundary 1806 = exchanges 1560 + sinks 101 + demands 145
+  boundary able to supply mass: 1655, of which 95 are NOT in model.exchanges, each at lb = -1000
+  ```
+
+  This was one defect in five places, rediscovered in three separate review rounds. All five now
+  route through one primitive, `cmig/core/boundary.py`, whose invariant is *after isolation, no
+  boundary reaction may supply mass except the explicitly declared ones, at their declared bounds*
+  — asserted generically (`boundary_isolation_violations`) across Recon3D, RECON1, iML1515, iYO844
+  and iHN637 by driving the production paths.
+
+  **Published numbers move. Measured on Recon3D with `BIOMASS_reaction` as the host objective and
+  the bundled 3-member pool (`iML1515+iYO844+iHN637`, `cooperative_tradeoff f=0.5`, Gurobi):**
+
+  | | host `BIOMASS_reaction` | illegal suppliers | supplying at the optimum |
+  |---|---|---|---|
+  | before (closed `host.exchanges`) | `368.0102475464423` | 95 | 1 `EX_`, 33 `SK_`/`DM_` |
+  | before, microbial availability **ZEROED** | `368.01024754644214` | 95 | — |
+  | after (closes `model.boundary`) | `0.0` | **0** | 0 |
+
+  The two "before" values differ by ~2 ULP, not bit-identically — an earlier report overstated
+  that — but the substance stands: **the published host objective was independent of the
+  microbiome.** `0.0` is the correct answer, because this pool delivers only acetate, ethanol and
+  currency metabolites to a generic human cell model.
+
+  `apply_medium_translated(exact=True)` was likewise not exact: it assigned `model.medium`, and
+  cobra's own setter computes `exchange_rxns = frozenset(self.exchanges)` and turns off only those.
+  It now isolates the whole boundary, so `exact` means exact for the first time. `minimal_medium`
+  inherited the same defect and could return a **zero-component** "minimal medium" that passed its
+  own re-solve validation; it now refuses (`MILPInfeasibleError`) rather than certifying an empty
+  nutrient set, and records any `forced_supply` it could not close. `dfba
+  --close-untracked-uptake` could be fed by a sink with `untracked_uptake: {}` and `warnings: []`;
+  it now closes and reports against the boundary, restoring the round-2 D5 guarantee.
+
+  A merged medium (`--medium` without exact semantics) is still an *overlay* on MICOM's permissive
+  default: measured on the shipped `medium_presets/western_diet.csv`, `EX_o2_m` stayed at
+  `999999.0` and community growth came out `1.2677557` against `0.6990206751` with oxygen closed —
+  an **81 % overestimate from one absent row**. That mode is unchanged by default, but it is no
+  longer silent: `medium_application_mode` and `n_undeclared_boundary_suppliers` are recorded in
+  the solve manifest's non-hashed provenance, and `search` states the count in its warnings.
+
+  **Non-hashed provenance marker:** `boundary_isolation_policy`, value `boundary_reactions_v1` (the
+  prior era is `exchange_view_v0` and has no key at all). It is stamped by the *writer* on both
+  solve and workflow manifests, and `cmig inspect-run` shows it — verified end-to-end. The marker
+  set now lives in one mapping (`workflow_manifest.NON_HASHED_PROVENANCE_MARKERS`) that
+  `_compact_manifest` also reads, because that whitelist had already swallowed one marker
+  (`host_isolation_policy` reached `manifest.json` and `inspect-run` returned `None` for it).
+
+  **Frozen hashes are unmoved:** gurobi `29844e2910360332…cef29ab`, osqp `a422eb89d019f917…404d3d9d`;
+  `golden verify-envelope` 13/13.
+
+  **Action required:** any run that reported a host objective, a "defined medium" result, a minimal
+  medium, or a `--close-untracked-uptake` dFBA on a model with sinks or demands is suspect. Human
+  GEMs (Recon3D, Human-GEM, RECON1-class) ship them; the bundled microbial GEMs do not, so runs
+  confined to `models/` are unaffected. A manifest with no `boundary_isolation_policy` key is from
+  the old era.
+
+- **BREAKING (scientific): host-coupling id resolution is case-preserving.** `run_bigg_host_microbe`
+  built a host exchange id from the **raw** metabolite id and `solve_bigg_host` from the
+  **lowercased** one. Measured: `matched_exchanges {'lac__D': 'EX_lac__D_e'}` was published while
+  the LP opened `EX_lac__d_e`, which does not exist — host biomass `0.0`, `warnings: []`. BiGG
+  metabolite ids are case-sensitive, so both sides now call one resolver
+  (`host_coupling.host_exchange_resolver`) and the reported map and the applied bounds agree by
+  construction. With a reviewed map the same input now gives `5.0`.
+
+- Round 5's objective-structure guard now reaches the host-coupling commands. `--host-objective` is
+  optional, so `host-microbe-bigg`, `host-search-bigg` and `host-ko-impact` published
+  `host_objective` computed on whatever the SBML shipped, with no caveat anywhere (RECON1's default
+  objective is `S6T14g`, a Golgi sulfotransferase whose optimum is `0.0`). The guard is called once
+  in `run_bigg_host_microbe`, which all three commands go through, and its verdict travels as
+  `objective_warning` plus a `warnings` entry.
+
+- `solve_host` refuses a model whose exchange interface it cannot classify. It implements the
+  `_lumen`/`_blood` contract by closing the lumen; Recon3D exposes 1560 `EX_*` reactions in neither
+  interface, so the closure matched none of them and the LP ran with the whole boundary open —
+  and because Recon3D has `ATPM` it passed the maintenance check and returned `viable=True` off a
+  phantom-fed objective. It now returns `host_interface_absent` and names `solve_generic_host` /
+  `solve_bigg_host` as the right entry points for a generic GEM.
+
 - **BREAKING (scientific): `--medium` now actually applies.** `apply_medium_checked` gated on
   `model.medium`, which lists only *currently open* uptakes, so a closed exchange could never be
   opened — roughly 90% of nutrients (acetate, butyrate, lactate, succinate, glycerol) were

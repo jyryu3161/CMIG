@@ -670,6 +670,20 @@ def _list_run_artifacts(run_dir: Path, *, limit: int = 200) -> list[str]:
 
 
 def _compact_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Project a manifest onto the keys `inspect-run` publishes.
+
+    This is a **whitelist**, which is a standing hazard: a marker added to a manifest but not to
+    this list lands in `manifest.json` and `inspect-run` returns nothing for it, so the marker
+    exists and no reader can see it. That happened twice — round 5 had to add `medium_policy` by
+    hand, and `host_isolation_policy` was added to a manifest without this step. Round 6 removes
+    the coupling by construction: the non-hashed policy markers come from the same mapping the
+    writers stamp them from (`NON_HASHED_PROVENANCE_MARKERS`), so adding one there reaches
+    `inspect-run` with no second edit. `host_isolation_policy` is listed explicitly below because
+    it is stamped by a concurrent track's writer rather than by that mapping — it is a *reader*
+    concession, not a licence to keep adding markers by hand.
+    """
+    from cmig.core.workflow_manifest import NON_HASHED_PROVENANCE_MARKERS
+
     keys = [
         "manifest_schema_version",
         "manifest_scope",
@@ -687,12 +701,24 @@ def _compact_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         # answer depended on without opening the file.
         "hash_components",
         "components",
+        # Round 6 audit of this whitelist against real manifests found two more keys a manifest
+        # records and no reader could see. Both are of the same class as the policy markers — the
+        # manifest knows something about how to interpret its own numbers and dropped it.
+        #   float_decimals: the precision the reported `run_hash` was computed at. Two runs with
+        #     different values are not comparable, and `inspect-run` could not show which was used.
+        #   sweep: which sweep condition this directory IS. Round 5 found a sweep republishing one
+        #     point's value under another's condition_id; a reader has to be able to see the axis
+        #     values beside the hash.
+        "float_decimals",
+        "sweep",
         # R5 final P2-a: these four were dropped by the whitelist, so `inspect-run` — the step
         # SKILL.md mandates for every run — could not show the `medium_unapplied` diagnostic naming
         # dropped nutrients, nor `medium_policy`/`provenance.medium_policy`, the marker this round
         # created specifically so a reader could tell pre-fix from post-fix medium semantics apart.
         # `summary_keys` listed the key names but never their values, so `summary` joins them.
-        "medium_policy",
+        *NON_HASHED_PROVENANCE_MARKERS,
+        # Stamped by the host-coupling writer on a concurrent track, not by the mapping above.
+        "host_isolation_policy",
         "provenance",
         "diagnostic",
         "warnings",
@@ -1153,7 +1179,17 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
             "community_growth": _finite_or_none(float(result.community_growth)),
             "host_objective": _finite_or_none(float(result.host_result.biomass)),
             "host_status": result.host_result.status,
+            # A host objective of 0.0 under `status: optimal` is a real answer ("the pool feeds the
+            # host nothing it can use"), and it is indistinguishable from a failure unless
+            # viability travels with it. `inspect-run` shows this summary verbatim.
+            "host_viable": bool(result.host_result.viable),
             "n_matched_exchanges": len(result.matched_exchanges),
+            # Non-hashed: the isolation actually applied, so a reader of `inspect-run` can tell a
+            # closed-background host objective from an open-background one without re-running.
+            "host_boundary_isolated": bool(
+                (result.host_result.boundary_isolation or {}).get("isolated")
+            ),
+            "host_objective_warning": result.objective_warning,
         },
     )
     return _exit_code_for_status(host_run_status, args)
@@ -3636,6 +3672,12 @@ def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> l
             "lumen_uptake": result.host_result.lumen_uptake,
             "lumen_uptake_ranges": result.host_result.lumen_uptake_ranges,
             "flux_unit": result.host_result.flux_unit,
+            # Round 6 (track B): whether the host's background was actually closed is what decides
+            # whether this objective is a statement about the microbiome. Published beside the
+            # number, not only as prose in `warnings`.
+            "boundary_isolation": result.host_result.boundary_isolation,
+            "objective_reactions": result.objective_reactions,
+            "objective_warning": result.objective_warning,
         },
         "coupling_scale": (
             None if result.coupling_scale is None else result.coupling_scale.__dict__
