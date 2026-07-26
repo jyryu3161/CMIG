@@ -12,7 +12,6 @@ import hashlib
 import html
 import json
 import math
-import os
 import random
 import sys
 import tempfile
@@ -25,6 +24,7 @@ from cmig.core.manifest import DEFAULT_FLOAT_DECIMALS
 from cmig.core.solver import capability_matrix
 from cmig.core.targets import TARGET_PRESETS
 from cmig.io.atomic import atomic_write_text
+from cmig.io.gem_paths import default_human_gem_path
 
 DEFAULT_DFBA_INITIAL_CONCENTRATIONS = {
     "EX_glc__D_e": 10.0,
@@ -678,9 +678,11 @@ def _compact_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     hand, and `host_isolation_policy` was added to a manifest without this step. Round 6 removes
     the coupling by construction: the non-hashed policy markers come from the same mapping the
     writers stamp them from (`NON_HASHED_PROVENANCE_MARKERS`), so adding one there reaches
-    `inspect-run` with no second edit. `host_isolation_policy` is listed explicitly below because
-    it is stamped by a concurrent track's writer rather than by that mapping — it is a *reader*
-    concession, not a licence to keep adding markers by hand.
+    `inspect-run` with no second edit.
+
+    Round-6 integration closed the loop: `host_isolation_policy` was briefly listed here by hand,
+    as a reader concession while its writer lived on another branch. It is now a member of that
+    mapping instead, so there is exactly one place to add a marker and no way to half-add one.
     """
     from cmig.core.workflow_manifest import NON_HASHED_PROVENANCE_MARKERS
 
@@ -717,8 +719,6 @@ def _compact_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         # created specifically so a reader could tell pre-fix from post-fix medium semantics apart.
         # `summary_keys` listed the key names but never their values, so `summary` joins them.
         *NON_HASHED_PROVENANCE_MARKERS,
-        # Stamped by the host-coupling writer on a concurrent track, not by the mapping above.
-        "host_isolation_policy",
         "provenance",
         "diagnostic",
         "warnings",
@@ -1012,6 +1012,11 @@ def _cmd_host_generic(args: argparse.Namespace) -> int:
             "n_exchanges": summary.n_exchanges,
             "compartments": summary.compartments,
             "objective_reactions": summary.objective_reactions,
+            # R6-H: without this the smoke solve reported Recon3D's maintenance optimum of
+            # 755.003 as `objective_value` with nothing anywhere saying it is not a growth rate.
+            "objective_warning": summary.objective_warning,
+            "n_boundary_reactions": summary.n_boundary_reactions,
+            "n_nonexchange_boundary_uptake": summary.n_nonexchange_boundary_uptake,
             "exchange_examples": summary.exchange_examples,
             "has_lumen_blood_interfaces": summary.has_lumen_blood_interfaces,
         },
@@ -7223,8 +7228,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hg.add_argument(
         "--model",
-        default=os.environ.get("CMIG_RECON3D_PATH", "Recon3D.xml"),
-        help="SBML/XML host model path (default: $CMIG_RECON3D_PATH or ./Recon3D.xml)",
+        # R6-H: `data/gems/` (where scripts/download_human_gems.py puts the model) is now part
+        # of the search order, so a downloaded Recon3D is found without setting anything.
+        default=default_human_gem_path("Recon3D"),
+        help="SBML/XML host model path (default: $CMIG_RECON3D_PATH, else $CMIG_GEM_DIR, else "
+        "data/gems/Recon3D.xml, else fixtures/Recon3D.xml, else ./Recon3D.xml)",
     )
     hg.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     hg.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
@@ -7234,8 +7242,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hb.add_argument(
         "--model",
-        default=os.environ.get("CMIG_RECON3D_PATH", "Recon3D.xml"),
-        help="SBML/XML host model path (default: $CMIG_RECON3D_PATH or ./Recon3D.xml)",
+        # R6-H: `data/gems/` (where scripts/download_human_gems.py puts the model) is now part
+        # of the search order, so a downloaded Recon3D is found without setting anything.
+        default=default_human_gem_path("Recon3D"),
+        help="SBML/XML host model path (default: $CMIG_RECON3D_PATH, else $CMIG_GEM_DIR, else "
+        "data/gems/Recon3D.xml, else fixtures/Recon3D.xml, else ./Recon3D.xml)",
     )
     hb.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     hb.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")

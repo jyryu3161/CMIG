@@ -30,6 +30,25 @@ from cmig.core.sign import Scope, convert
 
 DEFAULT_BIGG_COUPLING_EXCLUDE = frozenset({"h", "h2o", "co2"})
 
+#: Which boundary reactions ``close_unlisted_uptake`` closes to isolate the host. Round 6 (track H)
+#: changed this from `model.exchanges` to every boundary reaction, which **moved published host
+#: objectives without moving any `run_hash`** — measured on Recon3D: `host-microbe-bigg`
+#: `host_objective` 368.010247546 -> 0.0 under the identical `run_hash 60b4409749abdb98…`, with only
+#: `result_digest` recording the change (5e0878dd… -> 9e22bffa…). This is exactly the situation
+#: round 5 introduced `medium_policy` for: the discontinuity cannot live in a hash component
+#: because `cmig_core_version` is frozen, so it is stamped as a non-hashed provenance marker
+#: instead.
+#:
+#: Relationship to :data:`cmig.core.boundary.BOUNDARY_ISOLATION_POLICY`, since round 6 produced
+#: both and they are **not** duplicates: this one dates *the host-coupling answer* (did
+#: `close_unlisted_uptake` close only exchanges, or the whole boundary?), while
+#: `boundary_isolation_policy` dates *the primitive* every isolation site now shares (medium
+#: application, dFBA, minimal medium, the 2-interface host contract). A reader of a
+#: `host_microbe_bigg` manifest needs the first to interpret `host_objective`; a reader of a
+#: `solve` manifest needs the second to interpret a medium. Both are in
+#: :data:`cmig.core.workflow_manifest.NON_HASHED_PROVENANCE_MARKERS`, so both reach `inspect-run`.
+HOST_ISOLATION_POLICY = "all_boundary_uptake_v2"   # was: model_exchanges_only_v1
+
 
 def host_exchange_resolver(
     exchange_ids: set[str],
@@ -121,7 +140,14 @@ def solve_bigg_host(
         # objective (368.01) was measured to be the same with microbial availability ZEROED, with
         # 36 `SK_*` reactions supplying mass at the optimum and 0 `EX_`. Isolation is now written
         # against `model.boundary`, which is the complete set.
+        #
+        # The concurrent human-GEM track fixed the same defect with a local loop over
+        # `host.reactions`. This keeps the shared primitive (one place, direction-aware, and
+        # byte-identical arithmetic to cobra's `set_active_bound`) and keeps that track's *output*:
+        # `isolation_warnings` below names the sinks/demands that were closed, which is what makes
+        # the isolation visible to a caller holding only a `HostSolveResult`.
         isolation_record: dict[str, Any] | None = None
+        isolation_warnings: list[str] = []
         if close_unlisted_uptake:
             closure = close_boundary_supply(host)
             isolation_record = {
@@ -130,6 +156,17 @@ def solve_bigg_host(
                 "n_open_suppliers": len(closure.opened),
                 "n_open_non_exchange_suppliers": 0,
             }
+            if closure.non_exchange_closed:
+                isolation_warnings.append(
+                    f"{len(closure.non_exchange_closed)} non-exchange boundary reactions "
+                    "(cobra sinks/demands) also had uptake closed so the host is isolated; "
+                    f"first: {list(closure.non_exchange_closed[:5])}"
+                )
+            if closure.forced_supply:
+                isolation_warnings.append(
+                    "host background could not be fully closed — these boundary reactions' bounds "
+                    f"FORCE mass supply: {sorted(closure.forced_supply)}"
+                )
         else:
             # `--keep-host-uptake` deliberately does NOT isolate: leaving the background open is a
             # legitimate diagnostic mode. Doing it *silently* is not, so the count travels with
@@ -149,6 +186,14 @@ def solve_bigg_host(
                     1 for supply in open_suppliers.values() if not supply.is_exchange
                 ),
             }
+            if open_suppliers:
+                # R6-H's phrasing, kept verbatim: `--keep-host-uptake` is legal, and the objective
+                # it produces must say on its own face that it is unattributed.
+                isolation_warnings.append(
+                    f"host uptake was NOT closed (--keep-host-uptake): {len(open_suppliers)} "
+                    "boundary reactions can still supply mass, so this host objective is not "
+                    "attributable to the microbial availability"
+                )
 
         exchange_availability: dict[str, float] = {}
         microbial_caps: dict[str, float] = {}
@@ -211,6 +256,9 @@ def solve_bigg_host(
             return HostSolveResult(
                 False, status, 0.0, [], {}, diagnostic,
                 boundary_isolation=isolation_record,
+                # A failed host LP still has to disclose what its background was, otherwise the
+                # only run that can never be re-inspected is the one that went wrong.
+                warnings=list(isolation_warnings),
             )
 
         fluxes = {str(reaction_id): float(value) for reaction_id, value in solution.fluxes.items()}
@@ -258,6 +306,7 @@ def solve_bigg_host(
             lumen_uptake=lumen_uptake,
             lumen_uptake_ranges=microbial_ranges,
             boundary_isolation=isolation_record,
+            warnings=list(isolation_warnings),
         )
 
 
@@ -435,6 +484,19 @@ def run_bigg_host_microbe(
             f"mass supply: {sorted(isolation['forced_supply'])}; the host objective is only "
             "partly attributable to the microbial community"
         )
+    # R6-H: host-LP facts must reach the top-level summary too, not only the host block. The two
+    # prefixes below are the ones the run-level block above already states, in a richer form (it
+    # adds how many of the open suppliers are sinks/demands), so re-emitting them here would put
+    # two paraphrases of one fact in the same list. Everything else the host LP recorded — notably
+    # *which* sinks/demands were closed — is stated nowhere else and travels up.
+    _RESTATED_AT_RUN_LEVEL = (
+        "host uptake was NOT closed",
+        "host background could not be fully closed",
+    )
+    warnings.extend(
+        warning for warning in host_result.warnings
+        if not warning.startswith(_RESTATED_AT_RUN_LEVEL)
+    )
     # B6: host LP 실패는 최상위 요약에서 조용히 사라져서는 안 된다(status 파생 + warning 양쪽).
     if host_result.status != "optimal":
         warnings.append(

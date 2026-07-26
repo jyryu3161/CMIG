@@ -74,6 +74,12 @@ class HostSolveResult:
     # A solve that left mass sources open must be able to say so; see `run_bigg_host_microbe`,
     # which turns this into a warning, and the manifest provenance that records it.
     boundary_isolation: dict[str, Any] | None = None
+    # R6-H: the same facts in prose, for a caller that reads `HostSolveResult` directly rather
+    # than the manifest — e.g. that the host was left connected to non-exchange boundary
+    # suppliers, so the objective is not attributable to the microbial availability. Derived from
+    # `boundary_isolation` by the solver so the two can never disagree; `diagnostic` stays
+    # reserved for failures.
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -106,6 +112,15 @@ class HostModelSummary:
     objective_reactions: list[str]
     exchange_examples: list[str]
     has_lumen_blood_interfaces: bool
+    # R6-H: recording the objective *id* is not enough. Recon3D ships `BIOMASS_maintenance` and
+    # optimizes to 755.003 — a maintenance rate — while RECON1 ships the transport reaction
+    # `S6T14g`. Both were summarized here with no statement that the optimum is not growth, so
+    # the structure verdict travels with the summary.
+    objective_warning: str | None = None
+    n_boundary_reactions: int = 0
+    # Boundary reactions cobra does NOT classify as exchanges (its `sinks`/`demands`) that can
+    # still inject mass. On Recon3D there are 95 such `SK_*` reactions at lower_bound = -1000.
+    n_nonexchange_boundary_uptake: int = 0
 
 
 @dataclass(frozen=True)
@@ -254,12 +269,48 @@ def classify_host_exchanges(fluxes: dict[str, float]) -> list[InterfaceFlux]:
     return out
 
 
+def nonexchange_boundary_uptake(host: Any) -> list[str]:
+    """Boundary reactions outside ``model.exchanges`` that can still supply mass to the host.
+
+    cobra splits boundary reactions into ``exchanges``, ``sinks`` and ``demands``. Only the first
+    set is what CMIG's host coupling used to close, so on a real human GEM the host stayed
+    connected to free mass through the other two: Recon3D has 246 non-exchange boundary reactions
+    and 95 of them sit at ``lower_bound = -1000``, enough to build biomass with no microbes and no
+    declared medium at all. Measured, that made the coupled host objective indistinguishable
+    (368.0102475464… to 15 significant figures) with and without any microbial availability.
+
+    Round-6 integration: this is answered by :mod:`cmig.core.boundary`, the shared primitive, rather
+    than by a second local enumeration. The difference is not cosmetic — the original test here was
+    ``lower_bound < 0``, which cannot see a boundary reaction written ``--> met`` (a demand that
+    supplies at *positive* flux). ``supply_capacity`` reads the direction off the stoichiometry, so
+    the count is the same 95 on Recon3D and correct on a model where the two disagree.
+    """
+    from cmig.core.boundary import exposes_boundary, mass_supplying_boundary
+
+    if not exposes_boundary(host):
+        # Not a cobra model (a test double, or a model built without the boundary accessor). The
+        # honest answer for something whose boundary cannot be enumerated is "none known", not a
+        # guess from id prefixes — an id-prefix guess is the enumeration mistake this fixes.
+        return []
+    return sorted(
+        supply.reaction_id
+        for supply in mass_supplying_boundary(host).values()
+        if not supply.is_exchange
+    )
+
+
 def summarize_host_model(host: Any, *, exchange_examples: int = 10) -> HostModelSummary:
     """Summarize a cobra-compatible host model without assuming CMIG lumen/blood IDs."""
     from cobra.util.solver import linear_reaction_coefficients
 
+    from cmig.core.boundary import boundary_reactions, exposes_boundary
+    from cmig.io.model_import import objective_structure_warning
+
     exchanges = [r for r in host.reactions if str(r.id).startswith("EX_")]
-    objective = [str(r.id) for r in linear_reaction_coefficients(host)]
+    objective_coefficient_reactions = sorted(
+        linear_reaction_coefficients(host), key=lambda reaction: str(reaction.id)
+    )
+    objective = [str(r.id) for r in objective_coefficient_reactions]
     has_interfaces = any(
         _interface_of(str(r.id)) is not HostInterface.UNKNOWN for r in exchanges
     )
@@ -275,6 +326,14 @@ def summarize_host_model(host: Any, *, exchange_examples: int = 10) -> HostModel
         objective_reactions=objective,
         exchange_examples=[str(r.id) for r in exchanges[:exchange_examples]],
         has_lumen_blood_interfaces=has_interfaces,
+        objective_warning=objective_structure_warning(
+            len(objective), objective_coefficient_reactions
+        ),
+        n_boundary_reactions=(
+            len(boundary_reactions(host)) if exposes_boundary(host)
+            else len([r for r in host.reactions if bool(getattr(r, "boundary", False))])
+        ),
+        n_nonexchange_boundary_uptake=len(nonexchange_boundary_uptake(host)),
     )
 
 
@@ -340,6 +399,16 @@ def benchmark_generic_host(host: Any, *, solver: str = "gurobi") -> HostBenchmar
         warnings.append(
             "host model has no CMIG lumen/blood exchange convention; quantitative coupling "
             "requires mapping before microbe-host flux constraints"
+        )
+    # R6-H: the objective structure verdict has to reach the benchmark payload. Without it this
+    # command reported Recon3D's maintenance optimum of 755.003 with an empty warnings list.
+    if summary.objective_warning:
+        warnings.append(summary.objective_warning)
+    if summary.n_nonexchange_boundary_uptake:
+        warnings.append(
+            f"{summary.n_nonexchange_boundary_uptake} boundary reactions outside "
+            "model.exchanges (cobra sinks/demands) can supply mass to this host; an objective "
+            "value from this model is not attributable to a declared medium alone"
         )
     if result.status != "optimal":
         warnings.append(f"host LP solve status is {result.status}")

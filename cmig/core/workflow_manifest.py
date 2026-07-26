@@ -33,6 +33,7 @@ from typing import Any
 
 from cmig import CMIG_CORE_VERSION
 from cmig.core.boundary import BOUNDARY_ISOLATION_POLICY
+from cmig.core.host_coupling import HOST_ISOLATION_POLICY
 from cmig.core.manifest import DEFAULT_FLOAT_DECIMALS, canonicalize_floats
 from cmig.core.medium_spec import MEDIUM_POLICY
 
@@ -49,9 +50,18 @@ from cmig.core.medium_spec import MEDIUM_POLICY
 #: returned `None` for it, i.e. the marker existed and no reader could see it. `_compact_manifest`
 #: now derives its keys from this mapping, so a marker added here reaches `inspect-run` by
 #: construction and cannot be half-added again.
+#: Round-6 integration: `host_isolation_policy` was created by the concurrent human-GEM track and
+#: stamped directly into `to_payload()`, which is exactly the half-added shape described above — so
+#: it is folded into this mapping instead of being restated. Adding it here (rather than in the
+#: writer and again in the reader's whitelist) is what makes it reach `inspect-run`.
 NON_HASHED_PROVENANCE_MARKERS: dict[str, str] = {
     "medium_policy": MEDIUM_POLICY,
     "boundary_isolation_policy": BOUNDARY_ISOLATION_POLICY,
+    # Host isolation moved from `model.exchanges` to every boundary uptake, which took Recon3D's
+    # `host-microbe-bigg` host objective from 368.010247546 to 0.0 under a bit-identical
+    # `run_hash`. Stamped on every workflow kind, not just the host ones, so a consumer can date
+    # any manifest without knowing which kinds solve a host.
+    "host_isolation_policy": HOST_ISOLATION_POLICY,
 }
 
 # 1.1 (R5-P3 CC-4): the float canonicalization changed from "always round to six decimals" to
