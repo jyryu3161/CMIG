@@ -33,6 +33,13 @@ fixtures/Recon3D.xml
 fixtures/Recon3D.xml.gz
 fixtures/Human-GEM*.xml
 fixtures/human_models/
+# data/gems/ is the tracked download destination of scripts/download_human_gems.py. The model
+# bytes are gitignored (large, and BiGG's licence is non-commercial so CMIG must not redistribute
+# them); the provenance manifest and README are tracked.
+data/gems/*.xml
+data/gems/*.xml.gz
+!data/gems/GEM_SOURCES.json
+!data/gems/README.md
 
 # Evaluation run outputs and scratch: regenerate with `cmig <workflow> --out ...`.
 # These hold large TIFF/parquet artifacts and are not source.

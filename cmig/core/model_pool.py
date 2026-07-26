@@ -157,7 +157,12 @@ def diagnose_model_pool(taxonomy: Any, target_metabolite: str) -> list[PoolModel
                 )
             )
             warnings: list[str] = []
-            objective_warning = objective_structure_warning(len(summary.biomass_reactions))
+            # R6-H: ids are passed, not only their count — count-only skipped the single-term
+            # checks, so a pool member whose objective is a transport or maintenance reaction
+            # was diagnosed as ready with no objective warning.
+            objective_warning = objective_structure_warning(
+                len(summary.biomass_reactions), summary.biomass_reactions
+            )
             if objective_warning:
                 warnings.append(objective_warning)
             if target_metabolite not in exchange_mets:

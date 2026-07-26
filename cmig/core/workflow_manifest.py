@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from cmig import CMIG_CORE_VERSION
+from cmig.core.host_coupling import HOST_ISOLATION_POLICY
 from cmig.core.manifest import DEFAULT_FLOAT_DECIMALS, canonicalize_floats
 from cmig.core.medium_spec import MEDIUM_POLICY
 
@@ -326,6 +327,12 @@ class WorkflowManifest:
             # consumer tell the two eras apart mechanically. `hash_components` above is the
             # authority on what is hashed, so adding a payload key here cannot move a run_hash.
             "medium_policy": MEDIUM_POLICY,
+            # Same reasoning as `medium_policy` above, for the same class of event. Round 6 made
+            # host isolation close every boundary uptake rather than only `model.exchanges`, which
+            # took Recon3D's `host-microbe-bigg` host objective from 368.010247546 to 0.0 under a
+            # bit-identical `run_hash`. Stamped on every workflow, not just the host ones, so a
+            # consumer can date any manifest without knowing which kinds solve a host.
+            "host_isolation_policy": HOST_ISOLATION_POLICY,
             "status": self.status,
             "diagnostic": self.diagnostic,
             "warnings": list(self.warnings),

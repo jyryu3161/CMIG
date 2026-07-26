@@ -23,6 +23,16 @@ from cmig.core.sign import Scope, convert
 
 DEFAULT_BIGG_COUPLING_EXCLUDE = frozenset({"h", "h2o", "co2"})
 
+#: Which boundary reactions ``close_unlisted_uptake`` closes to isolate the host. Round 6 (track H)
+#: changed this from `model.exchanges` to every boundary reaction, which **moved published host
+#: objectives without moving any `run_hash`** — measured on Recon3D: `host-microbe-bigg`
+#: `host_objective` 368.010247546 -> 0.0 under the identical `run_hash 60b4409749abdb98…`, with only
+#: `result_digest` recording the change (5e0878dd… -> 9e22bffa…). This is exactly the situation
+#: round 5 introduced `medium_policy` for: the discontinuity cannot live in a hash component
+#: because `cmig_core_version` is frozen, so it is stamped as a non-hashed provenance marker
+#: instead. See ``HOST_ISOLATION_POLICY`` in the manifest payload.
+HOST_ISOLATION_POLICY = "all_boundary_uptake_v2"   # was: model_exchanges_only_v1
+
 
 def solve_bigg_host(
     host: Any,
@@ -73,10 +83,25 @@ def solve_bigg_host(
             exchange_id: metabolite
             for metabolite, exchange_id in normalized_interface.items()
         }
+        closed_nonexchange_boundary: list[str] = []
         if close_unlisted_uptake:
-            for reaction in exchange_reactions:
-                if reaction.lower_bound < 0:
-                    reaction.lower_bound = 0.0
+            # R6-H (P0): this used to iterate `host.exchanges` only. cobra splits boundary
+            # reactions into exchanges/sinks/demands, so on a real human GEM the sinks stayed
+            # open and the host kept an unlimited free supply of mass: Recon3D has 95 `SK_*`
+            # reactions at lower_bound = -1000. Measured consequence before this fix — the coupled
+            # host objective was **bit-identical with and without any microbial availability**
+            # (BIOMASS_reaction = 368.01024754644214 both ways), because 36 sinks were pouring in
+            # amino acids, NAD and bile acids at the -1000 bound while zero EX_ reactions carried
+            # uptake. `host-microbe-bigg` therefore published a headline `host_objective` for a
+            # host-microbe coupling run that the microbes provably did not affect.
+            # Closing every boundary uptake is what `close_unlisted_uptake` already claimed to do;
+            # the availability loop below re-opens exactly the listed exchanges.
+            for reaction in host.reactions:
+                if not bool(reaction.boundary) or float(reaction.lower_bound) >= 0.0:
+                    continue
+                if str(reaction.id) not in exchange_ids:
+                    closed_nonexchange_boundary.append(str(reaction.id))
+                reaction.lower_bound = 0.0
 
         exchange_availability: dict[str, float] = {}
         microbial_caps: dict[str, float] = {}
@@ -167,6 +192,26 @@ def solve_bigg_host(
                     label=signed.label.value,
                 )
             )
+        warnings: list[str] = []
+        if closed_nonexchange_boundary:
+            warnings.append(
+                f"{len(closed_nonexchange_boundary)} non-exchange boundary reactions "
+                "(cobra sinks/demands) also had uptake closed so the host is isolated; "
+                f"first: {closed_nonexchange_boundary[:5]}"
+            )
+        if not close_unlisted_uptake:
+            open_suppliers = [
+                str(r.id)
+                for r in host.reactions
+                if bool(r.boundary) and float(r.lower_bound) < 0.0
+                and str(r.id) not in exchange_availability
+            ]
+            if open_suppliers:
+                warnings.append(
+                    f"host uptake was NOT closed (--keep-host-uptake): {len(open_suppliers)} "
+                    "boundary reactions can still supply mass, so this host objective is not "
+                    "attributable to the microbial availability"
+                )
         return HostSolveResult(
             viable=objective_value > 1e-9,
             status=status,
@@ -174,6 +219,7 @@ def solve_bigg_host(
             interface_fluxes=interface_fluxes,
             lumen_uptake=lumen_uptake,
             lumen_uptake_ranges=microbial_ranges,
+            warnings=warnings,
         )
 
 
@@ -301,6 +347,8 @@ def run_bigg_host_microbe(
         warnings.append(
             "biomass basis is validation-only; result is not publication-ready"
         )
+    # R6-H: host-LP facts must reach the top-level summary too, not only the host block.
+    warnings.extend(host_result.warnings)
     # B6: host LP 실패는 최상위 요약에서 조용히 사라져서는 안 된다(status 파생 + warning 양쪽).
     if host_result.status != "optimal":
         warnings.append(
