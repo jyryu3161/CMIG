@@ -21,7 +21,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from cmig.core.diagnostics import Diagnostic
-from cmig.core.manifest import DEFAULT_FLOAT_DECIMALS
 
 # AggregationStore sweep.parquet 스키마 버전 (schema §6.1 첫 컬럼·OD-46, tidy 와 독립).
 SWEEP_SCHEMA_VERSION = "1.0"
@@ -179,13 +178,19 @@ def _axis_str(axis_values: dict[str, Any], kind: str) -> str | None:
 
 
 def _axis_tradeoff_f(axis_values: dict[str, Any]) -> float | None:
-    """tradeoff_f 축 값 → A17 rounding float(미지정/비유한=null). (TC-3 canonical)"""
+    """tradeoff_f 축 값 → float(미지정/비유한=null). (TC-3 canonical)
+
+    R5-P3 V2: 예전에는 여기서 6자리 반올림을 했다. tradeoff_f 는 **사용자가 준 답을 결정하는
+    입력**이지 solve 산출 잡음이 아니다. 반올림하면 서로 다른 두 sweep point 가 parquet 에
+    똑같은 0.5 로 기록되어, 캐시가 한 점의 값을 다른 점 이름으로 republish 해도 산출물이 그
+    사실을 드러낼 방법이 없어진다. 기록은 받은 값 그대로 한다(비유한만 null).
+    """
     if "tradeoff_f" not in axis_values or axis_values["tradeoff_f"] is None:
         return None
     v = float(axis_values["tradeoff_f"])
     if not math.isfinite(v):                       # 비유한은 null (float 컬럼은 sentinel 불가)
         return None
-    return round(v, DEFAULT_FLOAT_DECIMALS)
+    return v
 
 
 def write_sweep_parquet(rows: list[SweepRow], path: str | Path) -> None:

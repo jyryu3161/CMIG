@@ -10,9 +10,27 @@ FileSystemStore 가 이를 *구현*(service → core 방향). core 가 service �
 
 from __future__ import annotations
 
+import re
 from typing import Protocol, runtime_checkable
 
 from cmig.core.engine import SolveResult
+
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def validate_run_hash(run_hash: str) -> str:
+    """Enforce the RunStore contract: a run_hash is a canonical SHA-256 hex digest.
+
+    R5-P3 (codex F13): FileSystemStore built ``root / run_hash`` from an unchecked string, so
+    ``../escaped`` created a directory outside the store root. The rule lives here, next to the
+    Protocol, so every implementation enforces the same thing — a test double that accepts what
+    production rejects is how a contract violation reaches production untested.
+    """
+    if _SHA256_RE.fullmatch(run_hash) is None:
+        raise ValueError(
+            f"run_hash must be a 64-character lowercase SHA-256 hex digest, got {run_hash!r}"
+        )
+    return run_hash
 
 
 @runtime_checkable

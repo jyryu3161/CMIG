@@ -112,11 +112,86 @@ def test_build_run_components_threads_analysis_and_dependency_provenance_into_ha
     assert compute_run_hash(base) != compute_run_hash(solver_upgrade)
 
 
-def test_float_rounding_absorbs_noise():
-    # 6 decimal 이하 잡음은 동일 hash (alternate-optima 흡수)
+def test_a_determining_input_below_six_decimals_still_changes_the_hash():
+    """Contract change, R5-P3 CC-4 (was: "float rounding absorbs noise").
+
+    ``tradeoff_f`` is a user-supplied parameter that determines the answer, not a number that came
+    out of a solve, so two different values are two different runs. The old rule mapped *every*
+    input below 5e-7 onto 0.0, which meant a solver tolerance of 1e-7 and one of 4e-7 — measurably
+    different objectives — shared a run_hash. Alternate-optima noise is still absorbed, but where
+    it enters: the callers that build components from a solve result (io.solve_output
+    .build_run_components, golden_fixture._run_hash_components, and the CLI's workflow component
+    builders) round the solve-derived values before hashing them.
+    """
     h1 = compute_run_hash(_components(tradeoff_f=0.5))
     h2 = compute_run_hash(_components(tradeoff_f=0.5 + 1e-9))
-    assert h1 == h2
+    assert h1 != h2
+    assert compute_run_hash(_components(tradeoff_f=0.5)) == h1   # still deterministic
+
+
+def _solve_result(abundances):
+    """A minimal stand-in for engine.SolveResult, as build_run_components consumes it."""
+    return SimpleNamespace(
+        abundances=abundances,
+        members=sorted(abundances),
+        growth_solver="gurobi",
+        flux_solver="gurobi",
+        flux_normalization_method="pfba",
+    )
+
+
+def test_solve_derived_values_are_rounded_by_their_builder_not_by_the_hash():
+    """The other half of the contract above: noise absorption moved, it did not disappear.
+
+    This must exercise the *builder*. An earlier version of this test rounded both inputs itself
+    and never called one, so it would have passed even if every builder's rounding were deleted —
+    and the thing it was supposed to guard (a solve-derived value reaching the hash unrounded) is
+    exactly the failure mode that later moved the osqp golden hash.
+    """
+    kwargs = dict(
+        model_checksum="m-abc",
+        medium_checksum="med-123",
+        tradeoff_f=0.5,
+        micom_version="0.33.0",
+        dependency_versions={"micom": "0.33.0"},
+    )
+    noisy = build_run_components(_solve_result({"a": 1.0 / 3.0 + 1e-12, "b": 2.0 / 3.0}), **kwargs)
+    clean = build_run_components(_solve_result({"a": 1.0 / 3.0, "b": 2.0 / 3.0}), **kwargs)
+
+    # The builder is what absorbs the noise: it hands the hash a six-decimal value.
+    assert noisy.abundance == clean.abundance
+    assert noisy.abundance["a"] == round(1.0 / 3.0, 6)
+    assert compute_run_hash(noisy) == compute_run_hash(clean)
+
+    # And the guard that makes the above meaningful: had the builder NOT rounded, the hash would
+    # have separated them — so this test fails if the rounding is removed.
+    unrounded_noisy = _components(abundance={"a": 1.0 / 3.0 + 1e-12, "b": 2.0 / 3.0})
+    unrounded_clean = _components(abundance={"a": 1.0 / 3.0, "b": 2.0 / 3.0})
+    assert compute_run_hash(unrounded_noisy) != compute_run_hash(unrounded_clean)
+
+
+def test_builder_rounds_at_the_decimals_it_is_asked_to_hash_at():
+    """The osqp regression, in unit form.
+
+    A builder that pre-rounds at a *different* precision than the hash uses produces a value that
+    is not a fixed point at the hash's decimals, so it takes the lossless branch and moves the
+    published hash. The builder must therefore round at the decimals it will be hashed at.
+    """
+    result = _solve_result({"a": 1.0 / 3.0, "b": 2.0 / 3.0})
+    for decimals in (2, 4, 6):
+        components = build_run_components(
+            result,
+            model_checksum="m",
+            medium_checksum="d",
+            tradeoff_f=0.5,
+            micom_version="0.33.0",
+            dependency_versions={},
+            decimals=decimals,
+        )
+        for member, value in components.abundance.items():
+            assert round(value, decimals) == value, (
+                f"abundance[{member}]={value!r} is not a fixed point at decimals={decimals}"
+            )
 
 
 def test_env_lock_not_in_payload():
@@ -149,16 +224,21 @@ def test_round_floats_normalizes_negative_zero():
 
     from cmig.core.manifest import _round_floats
 
-    nz = _round_floats(-1e-9, 6)
+    # R5-P3 CC-4 narrowed this: the guarantee is about *signed zero*, which is what could make one
+    # value serialize two ways. -1e-9 is no longer collapsed onto zero at all (it is a distinct
+    # value, and collapsing it is exactly the collision CC-4 removed), so the probe is -0.0 itself.
+    nz = _round_floats(-0.0, 6)
     assert nz == 0.0
     assert math.copysign(1.0, nz) == 1.0  # +0.0, not -0.0
     # normal values are untouched by the `+ 0.0` normalization
     assert _round_floats(1.234567, 6) == 1.234567
     assert _round_floats(-2.5, 6) == -2.5
     # a structure containing -0.0 hashes identically to one containing +0.0
-    a = _components(bounds={"EX_x": [-1e-9, 1.0]})
+    a = _components(bounds={"EX_x": [-0.0, 1.0]})
     b = _components(bounds={"EX_x": [0.0, 1.0]})
     assert compute_run_hash(a) == compute_run_hash(b)
+    # and a genuinely different near-zero bound is now distinguishable
+    assert compute_run_hash(_components(bounds={"EX_x": [-1e-9, 1.0]})) != compute_run_hash(b)
 
 
 def test_golden_round_normalizes_negative_zero():

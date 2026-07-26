@@ -192,11 +192,18 @@ def _profile_label(row: dict[str, Any], *, eps: float = 1e-12) -> str | None:
 
 
 _CSV_FLOAT_COLS = ("net_flux", "ui_flux")
-_CSV_DECIMALS = 6
+# R5-P3 (opus F10 / codex F2): this was `.6f` — six *decimal places*, not six significant
+# figures — so every |flux| < 5e-7 was handed to R as exactly 0.000000 while the separately
+# written `label` column still said "secretion". The bar was drawn with zero length under a
+# secretion label, and the matplotlib fallback (which uses the original floats) disagreed with
+# the R renderer for the same requested figure. `.12g` is significant-figure based and is the
+# same format the CLI's own `_finite_csv` already uses, so the renderers and the CSV exports now
+# agree on one serialization.
+_CSV_SIGNIFICANT_DIGITS = 12
 
 
 def _csv_cell(col: str, value: Any) -> Any:
-    """CSV 셀 직렬화 (TC-7): float 컬럼은 고정 자릿수 반올림(결정성),
+    """CSV 셀 직렬화 (TC-7): float 컬럼은 고정 유효자릿수(결정성),
     None/비유한(NaN/inf)은 빈 문자열(R read.csv → NA). 'nan'/'inf' 문자열 방출 금지.
     """
     if col not in _CSV_FLOAT_COLS:
@@ -206,7 +213,7 @@ def _csv_cell(col: str, value: Any) -> Any:
     v = float(value)
     if not math.isfinite(v):          # NaN/inf → NA (가짜 0 금지·R 오파싱 방지)
         return ""
-    return f"{v:.{_CSV_DECIMALS}f}"
+    return f"{v:.{_CSV_SIGNIFICANT_DIGITS}g}"
 
 
 def _write_csv(rows: list[dict[str, Any]], path: Path) -> None:

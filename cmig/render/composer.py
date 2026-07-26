@@ -73,12 +73,14 @@ class PanelSpec:
 
 
 def _csv_cell(col: str, value: Any) -> Any:
+    # R5-P3: significant figures, not decimal places — see render.client._csv_cell. `.6f` sent
+    # every heatmap value / network weight below 5e-7 to R as a hard zero.
     if col != "value" and col != "weight":
         return "" if value is None else value
     if value is None:
         return ""
     v = float(value)
-    return "" if not math.isfinite(v) else f"{v:.6f}"
+    return "" if not math.isfinite(v) else f"{v:.12g}"
 
 
 def _write_panel_csv(kind: str, rows: list[dict[str, Any]], path: Path) -> None:

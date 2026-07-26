@@ -65,10 +65,17 @@ def _load_cobra() -> Any:
 
 
 def _is_blocked(model: Any, ex_id: str) -> bool:
-    """구조적 blocked(bound (0,0)) — exchange 가 flux 를 못 싣는 경우. (full FVA-blocked 아님)"""
+    """구조적 blocked(bound (0,0)) — exchange 가 flux 를 못 싣는 경우. (full FVA-blocked 아님)
+
+    R5-P3 (codex F4): 예전에는 **모든** 예외를 "이 영양소는 못 쓴다"로 해석했다. cobra 의
+    `DictList.get_by_id` 는 없는 id 에 대해 KeyError 만 낸다(측정 확인). 따라서 그 외의
+    예외(backend 오류·API drift 등)를 함께 삼키면, 무관한 오류가 조용히 minimal medium 에서
+    물 같은 필수 영양소를 빼버리고 **과학적으로 다른 배지**를 만들어낸다. 실제로 없을 때만
+    제외하고, 나머지는 올라가게 둔다.
+    """
     try:
         rxn = model.reactions.get_by_id(ex_id)
-    except Exception:  # noqa: BLE001 - cobra get_by_id 다양한 예외
+    except KeyError:
         return True               # 모델에 없으면 사용 불가 = 제외
     return bool(rxn.lower_bound == 0 and rxn.upper_bound == 0)
 

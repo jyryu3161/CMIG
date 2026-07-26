@@ -33,17 +33,23 @@ def test_preview_does_not_write_store():
     assert res.state is SandboxState.PREVIEW
 
 
+# R5-P3: the RunStore contract (a run_hash is a canonical SHA-256 digest) is now enforced by
+# InMemoryRunStore as well as FileSystemStore, so the double cannot certify a call production
+# would reject. This was a readability placeholder, not a behaviour under test.
+RUN_HASH = "e" * 64
+
+
 def test_commit_promotes_to_artifact():
     """Apply/Save: commit 시에만 store.record_run + run_hash 승격."""
     store = InMemoryRunStore()
     base = _result({"ac": 5.0})
     constrained = _result({"ac": 8.0})
     res = evaluate_sandbox(
-        base, constrained, state=SandboxState.COMMITTED, store=store, run_hash="rh-123",
+        base, constrained, state=SandboxState.COMMITTED, store=store, run_hash=RUN_HASH,
     )
     assert store.count == 1                  # 1 artifact 승격
     assert res.committed is True
-    assert res.run_hash == "rh-123"
+    assert res.run_hash == RUN_HASH
 
 
 def test_commit_requires_run_hash():

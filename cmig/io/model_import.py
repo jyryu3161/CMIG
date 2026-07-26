@@ -93,13 +93,17 @@ def _biomass_reactions(model: Any) -> list[str]:
     These are *objective terms*, not necessarily biomass reactions — see
     :func:`objective_structure_warning`. A single-term objective is the usual biomass case; a
     multi-term objective means the reported "growth" is an arbitrary objective value.
+
+    R5-P3 (codex F3): this used to swallow every exception and return ``[]``. COBRA already
+    returns an empty mapping when a model has no objective — measured, it does not raise — so the
+    catch never served its stated purpose and instead turned a genuine introspection failure into
+    the scientific claim "no objective reaction detected; this model cannot report growth". A
+    failure to *look* is not a finding about the model, so it propagates.
     """
     from cobra.util.solver import linear_reaction_coefficients
-    try:
-        coeffs = linear_reaction_coefficients(model)
-        return sorted(str(r.id) for r in coeffs)
-    except Exception:                            # objective 미설정 등 → 빈 목록(강제 추정 금지)
-        return []
+
+    coeffs = linear_reaction_coefficients(model)
+    return sorted(str(r.id) for r in coeffs)
 
 
 def objective_structure_warning(n_objective_terms: int) -> str | None:
@@ -128,6 +132,13 @@ def import_model(path: str | Path) -> ModelSummary:
     fmt = detect_model_format(p)
     model = load_cobra_model(p)
     exchanges = sorted(str(r.id) for r in model.exchanges)
+    try:
+        biomass_reactions = _biomass_reactions(model)
+    except Exception as e:                       # noqa: BLE001 - optlang/cobra expose open sets
+        raise ModelImportError(
+            f"objective 검사 실패 ({p.name}): {type(e).__name__}: {e}. "
+            "이 모델의 objective 구조를 읽을 수 없어 growth 보고 가능 여부를 판단할 수 없습니다."
+        ) from e
     return ModelSummary(
         model_id=str(model.id) or p.stem,
         source_format=fmt,
@@ -136,7 +147,7 @@ def import_model(path: str | Path) -> ModelSummary:
         n_metabolites=len(model.metabolites),
         n_genes=len(model.genes),
         exchanges=exchanges,
-        biomass_reactions=_biomass_reactions(model),
+        biomass_reactions=biomass_reactions,
     )
 
 

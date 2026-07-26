@@ -110,35 +110,64 @@ def test_tc2_sweep_has_six_axis_columns(tmp_path):
     assert t.column("axis_abundance").to_pylist() == [None]   # 미지정 축=null
 
 
-def test_tc3_sweep_tradeoff_f_canonical_rounding(tmp_path):
-    """TC-3: axis_tradeoff_f 가 A17 rounding + 비유한은 null(비결정 직렬화 제거)."""
+def test_tc3_sweep_tradeoff_f_records_the_value_it_was_given(tmp_path):
+    """TC-3: axis_tradeoff_f 는 받은 값 그대로 + 비유한은 null(비결정 직렬화 제거).
+
+    R5-P3 V2 contract change (was: "axis_tradeoff_f 가 A17 rounding"). ``tradeoff_f`` is a
+    user-supplied parameter that determines the answer, not solver-output noise. Rounding it meant
+    two genuinely different sweep points were recorded as the same 0.5 — and since the sweep cache
+    key rounded identically, one point's result could be republished under the other's identity
+    with the artifact unable to show it. The determinism guarantee TC-3 actually protects (no NaN
+    token, stable serialization) is unchanged and still asserted below.
+    """
     out = tmp_path / "sweep.parquet"
     write_sweep_parquet([
-        _row({"tradeoff_f": 0.5 + 1e-9}, condition_id="cond-0000"),  # 잡음 → 반올림
+        _row({"tradeoff_f": 0.5 + 1e-9}, condition_id="cond-0000"),
         _row({"tradeoff_f": math.nan}, condition_id="cond-0001"),    # 비유한 → null
+        _row({"tradeoff_f": 0.5}, condition_id="cond-0002"),
     ], out)
     vals = pq.read_table(out).column("axis_tradeoff_f").to_pylist()
-    assert vals[0] == 0.5                       # 6 decimal 반올림으로 잡음 흡수
+    assert vals[0] == 0.5 + 1e-9                # 받은 값 그대로 (반올림으로 뭉개지 않는다)
     assert vals[1] is None                      # NaN → null (NaN 토큰 방출 안 함)
+    assert vals[2] == 0.5
+    assert vals[0] != vals[2], "두 개의 서로 다른 sweep point 가 같은 값으로 기록되면 안 된다"
 
 
 # ── render/client.py ──────────────────────────────────────────────────────────
 
 def test_tc7_csv_nonfinite_becomes_na(tmp_path):
-    """TC-7: _write_csv 가 NaN/inf/None → '' (R NA), float 고정 자릿수(결정성)."""
+    """TC-7: _write_csv 가 NaN/inf/None → '' (R NA), float 결정적 자릿수.
+
+    R5-P3 contract change: the format is now 12 *significant figures* (`.12g`), not 6 decimal
+    places (`.6f`). `.6f` sent every |flux| < 5e-7 to R as exactly 0.000000 while the `label`
+    column still said "secretion" — a zero-length bar under a secretion label — and it disagreed
+    with the matplotlib fallback, which plots the original floats. `.12g` is the same format the
+    CLI's `_finite_csv` already uses, so one serialization now covers both. The TC-7 guarantee
+    itself (no `nan`/`inf` tokens, deterministic output) is unchanged and still asserted.
+    """
     from cmig.render.client import _write_csv
 
     out = tmp_path / "d.csv"
-    _write_csv([
+    rows = [
         {"metabolite": "ac", "net_flux": math.nan, "ui_flux": 1.0, "label": "secretion"},
         {"metabolite": "glc", "net_flux": float("inf"), "ui_flux": None, "label": "uptake"},
         {"metabolite": "o2", "net_flux": -2.0 + 1e-12, "ui_flux": 2.0, "label": "uptake"},
-    ], out)
+        {"metabolite": "tiny", "net_flux": 3.7e-7, "ui_flux": 3.7e-7, "label": "secretion"},
+    ]
+    _write_csv(rows, out)
     text = out.read_text()
     assert "nan" not in text.lower() and "inf" not in text.lower(), "NaN/inf 토큰 방출(TC-7 회귀)"
     lines = text.strip().splitlines()
-    # o2 net_flux 가 고정 자릿수 -2.000000 (결정적)
-    assert any("-2.000000" in ln for ln in lines)
+    # o2 net_flux: 12 유효자릿수로 결정적 직렬화
+    assert any(ln.startswith("o2,-2,") for ln in lines), lines
+    # 그리고 solver 잡음 수준 아래가 아닌 미소 flux 는 더 이상 0 으로 뭉개지지 않는다.
+    tiny_line = next(ln for ln in lines if ln.startswith("tiny,"))
+    assert "3.7e-07" in tiny_line, tiny_line
+
+    # 결정성: 같은 입력 → 같은 바이트
+    again = tmp_path / "d2.csv"
+    _write_csv(rows, again)
+    assert again.read_bytes() == out.read_bytes()
 
 
 def test_profile_render_passes_rlib_to_rscript(tmp_path, monkeypatch):
@@ -149,12 +178,20 @@ def test_profile_render_passes_rlib_to_rscript(tmp_path, monkeypatch):
     from cmig.render.client import FigureSpec, RenderClient
 
     captured = {}
+    # R5-P3 CC-1 (same defect as tests/test_render.py::test_render_client_passes_project_rlib):
+    # `cmig.render.client.subprocess` IS the stdlib subprocess module, so patching `.run` on it is
+    # global. write_render_provenance calls platform.platform(), which on macOS shells out to
+    # `uname -p` — in full-suite order the platform cache is already warm and the call never
+    # happens, but in isolation it hits this fake. Answer only for the R invocation.
+    real_run = subprocess.run
 
-    def fake_run(cmd, capture_output, text, check):
-        captured["cmd"] = cmd
-        out = Path(cmd[cmd.index("--out") + 1])
-        out.write_text("<svg></svg>\n")
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+    def fake_run(cmd, *args, **kwargs):
+        argv = list(cmd)
+        if "--rlib" not in argv:
+            return real_run(cmd, *args, **kwargs)
+        captured["cmd"] = argv
+        Path(argv[argv.index("--out") + 1]).write_text("<svg></svg>\n")
+        return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr("cmig.render.client.subprocess.run", fake_run)
     out = RenderClient(rscript="Rscript").render(

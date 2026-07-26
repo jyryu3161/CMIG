@@ -19,6 +19,7 @@ from contextlib import closing
 from pathlib import Path
 
 from cmig.core.engine import SolveResult
+from cmig.core.run_store import validate_run_hash
 
 # stdlib sqlite3 meta-index (WAL·멱등). run_hash = single-canonical(manifest 파생).
 _SCHEMA = """
@@ -60,7 +61,12 @@ class FileSystemStore:
 
         run_hash 는 **인자**(재계산 안 함). NaN objective → NULL.
         micom_version 은 caller 가 manifest/engine 에서 명시 주입한다.
+
+        R5-P3 (codex F13): `self.root / run_hash` 는 caller 를 신뢰했으므로 `../escaped` 같은
+        값이 store root 바깥에 디렉토리를 만들고 그 경로를 SQLite 에 기록했다. 계약상 run_hash
+        는 canonical SHA-256 이므로, 계약을 여기서 강제한다.
         """
+        validate_run_hash(run_hash)
         run_dir = self.root / run_hash
         run_dir.mkdir(parents=True, exist_ok=True)
         obj = result.objective if result.objective == result.objective else None  # NaN→NULL

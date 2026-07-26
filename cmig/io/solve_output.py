@@ -16,7 +16,7 @@ import math
 import os
 import platform as platform_lib
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,31 @@ KNOWN_SOLVE_ARTIFACTS = frozenset({
     "matrix.parquet",
     "target_summary.json",
 })
+
+
+def prune_stale_artifacts(
+    out_dir: str | Path, known: Iterable[str], written: Iterable[str]
+) -> list[str]:
+    """Remove artifacts a previous run left in ``out_dir`` that this run did not produce.
+
+    An artifact emitted only under some condition (``search_unevaluated.csv`` when candidates
+    could not be evaluated, ``matrix.parquet`` when a matrix exists) survives into the next run
+    that reuses the same ``--out`` unless somebody deletes it. The result is a directory whose
+    manifest describes run 2 while an orphan file from run 1 sits beside it contradicting it —
+    R5-P3 CC-3 observed a `search_unevaluated.csv` asserting that the current run's rank-1 member
+    was unevaluable.
+
+    ``known`` is the complete set of names the writer may emit; ``written`` is what it actually
+    emitted this time. Returns the sorted names removed, so callers can report them.
+    """
+    out = Path(out_dir)
+    removed: list[str] = []
+    for name in sorted(set(known) - set(written)):
+        stale = out / name
+        if stale.exists():
+            stale.unlink()
+            removed.append(name)
+    return removed
 
 
 def file_checksum(path: str | Path) -> str:
@@ -97,13 +122,19 @@ def build_run_components(
     namespace_decisions: Sequence[str] = (),
     analysis_settings: dict[str, Any] | None = None,
     dependency_versions: dict[str, str] | None = None,
+    decimals: int = DEFAULT_DECIMALS,
 ) -> RunHashComponents:
     """임의 taxonomy+medium solve → run_hash 11구성요소 (cmig solve 용, 단일 canonical).
 
     golden_fixture._run_hash_components 와 동일 계약 — fixture 고정값 대신 인자로 받는다.
+
+    ``decimals`` **must equal the precision these components will be hashed at.** abundance 는
+    solve 산출값이므로 여기서 잡음을 흡수하지만, hash 가 쓰는 자릿수와 다르게 반올림하면 그
+    값이 hash 자릿수 기준 고정점이 아니게 되어 published hash 가 움직인다
+    (golden_fixture._run_hash_components 의 osqp 회귀 참조).
     """
     abundance = {
-        k: round(v, DEFAULT_DECIMALS)
+        k: round(v, decimals)
         for k, v in sorted(result.abundances.items())
         if v is not None
     }
@@ -238,10 +269,7 @@ def write_solve_output(
         # manifest.json is the commit marker. Remove any stale marker before publishing artifacts.
         if manifest_path.exists():
             manifest_path.unlink()
-        for stale in KNOWN_SOLVE_ARTIFACTS - set(artifacts):
-            stale_path = out / stale
-            if stale_path.exists():
-                stale_path.unlink()
+        prune_stale_artifacts(out, KNOWN_SOLVE_ARTIFACTS, artifacts)
         for artifact in artifacts:
             os.replace(tmp / artifact, out / artifact)
         os.replace(tmp / "manifest.json", manifest_path)

@@ -252,11 +252,18 @@ def compare_effective_media(
 
 
 def medium_checksum(spec: MediumSpec | None) -> str:
-    """결정적 medium 체크섬 (run_hash 구성요소). None → default sentinel(하위호환)."""
+    """결정적 medium 체크섬 (run_hash 구성요소). None → default sentinel(하위호환).
+
+    R5-P3 V1: 예전에는 uptake 값을 6자리로 반올림했다. medium 은 사용자가 파일로 준 **답을
+    결정하는 입력**이므로, 1e-6 아래에서 다른 두 배지가 같은 checksum → 같은 run_hash 를
+    받으면 "같은 hash = 같은 입력" 이라는 manifest 의 주장이 깨진다 (CC-4 와 동일한 결함이
+    canonicalizer 가 아니라 checksum builder 안에 숨어 있던 것). 값은 그대로 해싱한다 —
+    `json.dumps` 의 float 직렬화는 repr 기반이라 정확히 round-trip 한다.
+    """
     if spec is None:
         return "micom_default_medium"
     payload = json.dumps(
-        {k: round(float(v), _DECIMALS) for k, v in sorted(spec.uptake.items())},
+        {k: float(v) for k, v in sorted(spec.uptake.items())},
         sort_keys=True, ensure_ascii=True, allow_nan=False,
     )
     return "medium:" + hashlib.sha256(payload.encode()).hexdigest()

@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,7 +34,14 @@ from typing import Any
 from cmig import CMIG_CORE_VERSION
 from cmig.core.manifest import DEFAULT_FLOAT_DECIMALS, canonicalize_floats
 
-WORKFLOW_MANIFEST_SCHEMA_VERSION = "1.0"
+# 1.1 (R5-P3 CC-4): the float canonicalization changed from "always round to six decimals" to
+# "round only when rounding is lossless, otherwise keep the exact value". Under 1.0 a
+# growth_fraction of 0.5000001 and one of 0.5000004, a target weight of 1e-7 and one of 4e-7, and
+# a solver tolerance of 1.1e-7 and one of 4.4e-7 all produced identical envelope hashes, which
+# defeats the manifest's central claim. Envelope hashes computed under 1.0 are therefore NOT
+# comparable to hashes computed under 1.1; the version is what makes that visible rather than
+# silent. The frozen 11-component solve hash is unaffected — see cmig.core.manifest._round_floats.
+WORKFLOW_MANIFEST_SCHEMA_VERSION = "1.1"
 
 # ── component vocabulary ───────────────────────────────────────────────────────
 # Every name a per-kind tuple may use. Declared once so a typo in a kind tuple fails at import
@@ -293,12 +302,25 @@ def write_workflow_manifest(
     )
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "manifest.json").write_text(
-        json.dumps(
-            manifest.to_payload(), indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False
-        )
-        + "\n"
-    )
+    payload = json.dumps(
+        manifest.to_payload(), indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False
+    ) + "\n"
+    # R5-P3 (opus F4 / codex F8): `write_text` truncates the destination before it writes, so a
+    # failure part-way through replaced the previous run's manifest with unparseable JSON — the
+    # run's only reproducibility record, destroyed by a re-run that itself failed. Stage into the
+    # same directory (so os.replace stays on one filesystem and is therefore atomic) and swap.
+    # This is the pattern io.solve_output already uses for the solve path.
+    fd, tmp_name = tempfile.mkstemp(dir=out, prefix=".manifest.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, out / "manifest.json")
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return manifest.run_hash
 
 

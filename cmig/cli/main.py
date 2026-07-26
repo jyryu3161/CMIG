@@ -21,8 +21,10 @@ from pathlib import Path
 from typing import Any
 
 from cmig import CMIG_CORE_VERSION
+from cmig.core.manifest import DEFAULT_FLOAT_DECIMALS
 from cmig.core.solver import capability_matrix
 from cmig.core.targets import TARGET_PRESETS
+from cmig.io.atomic import atomic_write_text
 
 DEFAULT_DFBA_INITIAL_CONCENTRATIONS = {
     "EX_glc__D_e": 10.0,
@@ -404,7 +406,11 @@ def _cmd_inspect_run(args: argparse.Namespace) -> int:
     if not run_dir.exists() or not run_dir.is_dir():
         print(f"run directory not found: {run_dir}", file=sys.stderr)
         return 2
-    payload = _inspect_run_dir(run_dir)
+    try:
+        payload = _inspect_run_dir(run_dir)
+    except CorruptRunArtifactError as e:
+        print(f"{e} (in {run_dir})", file=sys.stderr)
+        return 2
     if args.format == "json":
         print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False))
         return 0
@@ -514,14 +520,30 @@ def _resolve_run_status(
     return "unknown", "unknown"
 
 
+class CorruptRunArtifactError(ValueError):
+    """A run artifact exists but cannot be read as the JSON object it is supposed to be."""
+
+
 def _load_json_object(path: Path) -> dict[str, Any] | None:
+    """Load a run artifact as a JSON object. ``None`` only when the file is absent.
+
+    R5-P3 (codex F11): this used to collapse "absent", "unreadable", "syntactically invalid" and
+    "valid JSON of the wrong type" into a single ``None``, so ``inspect-run`` reported a corrupt
+    manifest as an unknown run and exited 0 — a directory that cannot be trusted looked exactly
+    like one that simply predates manifests. Absence stays ``None`` because the caller genuinely
+    probes for optional files; corruption is now an error.
+    """
     if not path.exists():
         return None
     try:
         loaded = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    return loaded if isinstance(loaded, dict) else None
+    except (OSError, json.JSONDecodeError) as e:
+        raise CorruptRunArtifactError(f"invalid {path.name}: {e}") from e
+    if not isinstance(loaded, dict):
+        raise CorruptRunArtifactError(
+            f"invalid {path.name}: expected a JSON object, got {type(loaded).__name__}"
+        )
+    return loaded
 
 
 def _list_run_artifacts(run_dir: Path, *, limit: int = 200) -> list[str]:
@@ -625,7 +647,11 @@ def _cmd_solve(args: argparse.Namespace) -> int:
     if not (0.0 < args.tradeoff_f <= 1.0):
         print(f"--tradeoff-f 는 0<f≤1 (받음: {args.tradeoff_f})", file=sys.stderr)
         return 2
-    taxonomy = pd.read_csv(tax_path)
+    try:
+        taxonomy = _read_taxonomy_csv(pd, tax_path)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
     # AF-5: taxonomy 필수 컬럼 검증(micom Community 입력 계약) — solve 전 fail-fast.
     missing_cols = {"id", "file"} - set(taxonomy.columns)
     if missing_cols:
@@ -687,7 +713,7 @@ def _cmd_solve(args: argparse.Namespace) -> int:
 
 
 def _cmd_golden_verify(_: argparse.Namespace) -> int:
-    """MICOM-version golden regression gate (SC-5)."""
+    """MICOM-version + published-run_hash golden regression gate (SC-5)."""
     try:
         from cmig.golden_fixture import verify_golden_versions
     except ImportError:  # pragma: no cover
@@ -695,15 +721,23 @@ def _cmd_golden_verify(_: argparse.Namespace) -> int:
         return 2
     report = verify_golden_versions()
     all_ok = True
-    print("MICOM-version golden regression (SC-5):")
+    print("MICOM-version + run_hash golden regression (SC-5):")
     for solver, r in report.items():
         mark = "OK " if r["ok"] else "MISMATCH"
         all_ok = all_ok and bool(r["ok"])
         print(f"  [{mark}] {solver:24} golden={r['recorded']} installed={r['installed']}")
+        # R5-P3: the hash is the thing the fixture exists to protect, so it is gated and shown.
+        published = str(r["published_run_hash"] or "-")
+        hash_mark = "OK " if r["hash_ok"] else "MOVED"
+        print(f"      [{hash_mark}] run_hash {published[:16]}…")
+        if not r["hash_ok"]:
+            print(f"            recomputed {str(r['recomputed_run_hash'])[:16]}…")
     if not all_ok:
-        print("→ golden 재캡처 필요 (python -m cmig.golden_fixture)", file=sys.stderr)
+        print(
+            "→ golden 재캡처/재검증 필요 (python -m cmig.golden_fixture)", file=sys.stderr
+        )
         return 2
-    print("→ 모든 golden 이 설치 MICOM 버전과 일치 (승격 가능)")
+    print("→ 모든 golden 이 설치 MICOM 버전·published run_hash 와 일치 (승격 가능)")
     return 0
 
 
@@ -714,7 +748,8 @@ def _write_json_or_print(payload: dict[str, Any], out: str | None, filename: str
         return
     d = Path(out)
     d.mkdir(parents=True, exist_ok=True)
-    (d / filename).write_text(text + "\n")
+    # R5-P3 V3: publish atomically so a failed re-run cannot truncate the previous artifact.
+    atomic_write_text(d / filename, text + "\n")
     print(f"{filename} → {d}")
 
 
@@ -917,8 +952,14 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
                 "host_microbe_bigg", args, taxonomy,
                 medium=_host_medium_component(args),
             ),
+            # R5-P3: NOT rounded. An earlier revision rounded this on the theory that
+            # coupling_scale is solve-derived; it is not — core.host._coupling_scale builds it
+            # from --microbial-biomass-gdw / --host-biomass-gdw before any solve runs, and
+            # microbe_to_host_ratio is a pure function of those two. Rounding an argv-supplied,
+            # answer-determining value is the CC-4 collision, not a fix for it.
             "abundances": {
-                str(k): v for k, v in sorted((result.coupling_scale.__dict__ or {}).items())
+                str(k): v
+                for k, v in sorted((result.coupling_scale.__dict__ or {}).items())
                 if isinstance(v, (int, float))
             } if result.coupling_scale else {},
             "tradeoff_f": float(args.tradeoff_f),
@@ -1102,8 +1143,11 @@ def _cmd_render_figure(args: argparse.Namespace) -> int:
         return 2
     try:
         bundle = TidyBundle.read(run_dir)
-    except OSError as e:
-        print(f"failed to read run: {e}", file=sys.stderr)
+    except (OSError, ValueError) as e:
+        # R5-P3 (codex F10): only OSError was caught, so a corrupt parquet (pyarrow.ArrowInvalid)
+        # or a wrong schema (tidy.TidyContractError) reached the user as a raw traceback on a
+        # default, non-debug path. Both subclass ValueError.
+        print(f"failed to read run {run_dir}: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
 
     spec = FigureSpec(
@@ -1732,7 +1776,8 @@ def _write_host_ko_impact_outputs(result: Any, out: Path) -> None:
         "warnings": result.warnings,
         "artifacts": ["host_ko_impact.csv", "host_ko_impact_summary.json"],
     }
-    (out / "host_ko_impact_summary.json").write_text(
+    atomic_write_text(
+        out / "host_ko_impact_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
 
@@ -1845,16 +1890,22 @@ def _evaluate_ko_target(
             "diagnostic": rank.diagnostic,
         }
     except Exception as e:
+        # R5-P3 CC-2: same contract as the "knockout left no evaluable consortium" branch above.
+        # `-baseline.score` is a finite, large-magnitude, entirely plausible effect size that was
+        # never measured — and since _write_gene_ko_search_outputs numbers every row it is given,
+        # it reached gene_ko_rankings.csv as the single largest suppression in the screen. A
+        # knockout that could not be evaluated has no effect size; NaN says so, and _finite_csv
+        # renders it as an empty cell.
         return {
             "gene": ko_id,
             "member": member_id,
             "evaluation_status": "failed",
-            "score": 0.0,
-            "score_delta": -baseline.score,
-            "target_flux": 0.0,
-            "target_flux_delta": -baseline.target_flux,
-            "community_growth": 0.0,
-            "community_growth_delta": -baseline.community_growth,
+            "score": float("nan"),
+            "score_delta": float("nan"),
+            "target_flux": float("nan"),
+            "target_flux_delta": float("nan"),
+            "community_growth": float("nan"),
+            "community_growth_delta": float("nan"),
             "status": "failed",
             "diagnostic": str(e),
         }
@@ -2072,7 +2123,10 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             members=members,
             target=args.target,
             member=args.member,
-            n_genes_evaluated=len(rows),
+            # V4: "evaluated" means "produced a result". Attempts that raised are reported
+            # separately rather than being folded into the evaluated count.
+            n_genes_evaluated=_n_ko_evaluated(rows),
+            n_genes_attempted=len(rows),
             n_genes_total=sum(member_totals.values()),
             ko_level=ko_level,
             gene_selection=args.gene_selection,
@@ -2093,13 +2147,21 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
     )
     for warning in warnings:
         print(f"  warning: {warning}")
-    if rows:
-        best = rows[0]
+    # V4: only announce a rank 1 that was actually evaluated. A screen in which every knockout
+    # failed used to print "rank 1 (largest effect)" for a gene that was never knocked out.
+    ranked = [row for row in rows if row.get("evaluation_status") == "ok"]
+    if ranked:
+        best = ranked[0]
         label = "largest effect" if args.rank_by == "effect" else "highest remaining flux"
         print(
             f"  rank 1 ({label}): {best['member']}:{best['gene']} "
             f"delta={float(best['score_delta']):.4g} "
             f"remaining={float(best['score']):.4g}"
+        )
+    elif rows:
+        print(
+            f"  no knockout could be evaluated ({len(rows)} attempted); "
+            "gene_ko_rankings.csv has no ranked rows"
         )
     _emit_workflow_manifest(
         out,
@@ -2460,17 +2522,22 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
                         "growth": result.member_growth.get(member_id),
                     })
             except Exception as e:
+                # R5-P3 CC-2: a sweep point that did not solve has no measurement. The previous
+                # zeros were indistinguishable from a measured community collapse — and the figure
+                # plotted them as exactly that, a clean line through a point nobody computed.
+                # `None` propagates as a blank CSV cell, a null in the JSON, and (below) an
+                # omitted point in the figure.
                 rows.append({
                     "target_member": args.member,
                     "target_abundance": fraction,
                     "target": args.target,
-                    "community_growth": 0.0,
+                    "community_growth": None,
                     "target_member_growth": None,
-                    "target_member_exchange": 0.0,
-                    "community_target_exchange": 0.0,
-                    "target_influence_share": 0.0,
-                    "target_secretion_share": 0.0,
-                    "target_member_contribution": 0.0,
+                    "target_member_exchange": None,
+                    "community_target_exchange": None,
+                    "target_influence_share": None,
+                    "target_secretion_share": None,
+                    "target_member_contribution": None,
                     "community_target_fva_lo": None,
                     "community_target_fva_hi": None,
                     "fva_status": "not_run",
@@ -2520,6 +2587,46 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ko_ranks(rows: list[dict[str, Any]]) -> list[int | str]:
+    """Ordinal rank per KO row — only for rows that were actually evaluated.
+
+    R5-P3 V4: every row used to be numbered by ``enumerate(rows, start=1)``, so a knockout that
+    raised still occupied an ordinal position, and a screen in which *everything* failed printed
+    "rank 1 (largest effect)" for a gene nobody knocked out. Rank is a claim about a measured
+    effect; a row with no effect size gets no rank. Ok rows keep consecutive numbering so a
+    failure does not punch a hole in the ranking either.
+    """
+    ranks: list[int | str] = []
+    evaluated = 0
+    for row in rows:
+        if row.get("evaluation_status") == "ok":
+            evaluated += 1
+            ranks.append(evaluated)
+        else:
+            ranks.append("")
+    return ranks
+
+
+def _n_ko_evaluated(rows: list[dict[str, Any]]) -> int:
+    """How many knockouts actually produced a result (V4: failures are not evaluations)."""
+    return sum(1 for row in rows if row.get("evaluation_status") == "ok")
+
+
+def _gene_ko_summary_status(rows: list[dict[str, Any]]) -> str:
+    """Run tier derived from the knockout rows.
+
+    R5-P3 (opus F12a): the summary carried a literal ``"status": "ok"`` that was never
+    reassigned, so a screen in which every knockout failed still published "ok" to anyone who
+    opened the JSON directly.
+    """
+    if not rows:
+        return "failed"
+    n_ok = sum(1 for row in rows if row.get("evaluation_status") == "ok")
+    if n_ok == 0:
+        return "failed"
+    return "ok" if n_ok == len(rows) else "degraded"
+
+
 def _write_gene_ko_search_outputs(
     rows: list[dict[str, Any]],
     out: Path,
@@ -2530,6 +2637,7 @@ def _write_gene_ko_search_outputs(
     member: str | None,
     n_genes_evaluated: int,
     n_genes_total: int,
+    n_genes_attempted: int | None = None,
     ko_level: str,
     gene_selection: str,
     seed: int,
@@ -2556,7 +2664,8 @@ def _write_gene_ko_search_outputs(
             ],
         )
         writer.writeheader()
-        for rank, row in enumerate(rows, start=1):
+        # V4: only evaluated knockouts get an ordinal; a failed row's rank cell stays blank.
+        for rank, row in zip(_ko_ranks(rows), rows, strict=True):
             writer.writerow({
                 "rank": rank,
                 "member": row["member"],
@@ -2572,7 +2681,7 @@ def _write_gene_ko_search_outputs(
                 "diagnostic": row["diagnostic"] or "",
             })
     payload = {
-        "status": "ok",
+        "status": _gene_ko_summary_status(rows),
         "members": list(members),
         "member": member,
         "screening_scope": "single_member" if member else "all_members",
@@ -2585,6 +2694,11 @@ def _write_gene_ko_search_outputs(
             "diagnostic": baseline.diagnostic,
         },
         "n_genes_evaluated": n_genes_evaluated,
+        # V4: attempts that raised are not evaluations; both numbers are published so a screen
+        # cannot look complete when part of it failed.
+        "n_genes_attempted": (
+            n_genes_evaluated if n_genes_attempted is None else n_genes_attempted
+        ),
         "n_genes_total": n_genes_total,
         "ko_level": ko_level,
         "gene_selection": gene_selection,
@@ -2593,7 +2707,7 @@ def _write_gene_ko_search_outputs(
         "warnings": list(warnings),
         "top_ranked": [
             {
-                "rank": rank,
+                "rank": rank or None,          # V4: no ordinal for a knockout with no result
                 "member": row["member"],
                 "gene": row["gene"],
                 "score": _finite_or_none(float(row["score"])),
@@ -2608,7 +2722,7 @@ def _write_gene_ko_search_outputs(
                 "evaluation_status": row["evaluation_status"],
                 "diagnostic": row["diagnostic"],
             }
-            for rank, row in enumerate(rows, start=1)
+            for rank, row in zip(_ko_ranks(rows), rows, strict=True)
         ],
         "artifacts": [
             "gene_ko_rankings.csv",
@@ -2617,7 +2731,8 @@ def _write_gene_ko_search_outputs(
             "gene_ko_plot.tiff",
         ],
     }
-    (out / "gene_ko_summary.json").write_text(
+    atomic_write_text(
+        out / "gene_ko_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_gene_ko_figures(
@@ -2764,7 +2879,8 @@ def _write_strain_growth_outputs(
             "strain_growth_plot.tiff",
         ],
     }
-    (out / "strain_growth_summary.json").write_text(
+    atomic_write_text(
+        out / "strain_growth_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_strain_growth_figures(rows, out)
@@ -2905,7 +3021,8 @@ def _write_abundance_impact_outputs(
             "abundance_impact_plot.tiff",
         ],
     }
-    (out / "abundance_impact_summary.json").write_text(
+    atomic_write_text(
+        out / "abundance_impact_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_abundance_impact_figures(rows, out, target_member=target_member, target=target)
@@ -3023,10 +3140,12 @@ def _write_host_search_bigg_outputs(
             "host_search_plot.tiff",
         ] + (["host_search_unevaluated.csv"] if unevaluated else []),
     }
-    (out / "host_search_summary.json").write_text(
+    atomic_write_text(
+        out / "host_search_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_host_search_figures(rows, out, target=target, metric=metric)
+    _prune_stale_workflow_artifacts(out, KNOWN_HOST_SEARCH_ARTIFACTS, payload["artifacts"])
 
 
 def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> None:
@@ -3187,7 +3306,8 @@ def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> N
             "host_microbe_bigg_summary.json",
         ] + interaction_artifacts + figure_artifacts,
     }
-    (out / "host_microbe_bigg_summary.json").write_text(
+    atomic_write_text(
+        out / "host_microbe_bigg_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
 
@@ -4071,6 +4191,7 @@ def _write_multi_target_outputs(
     with open(out / "search_summary.json", "w") as f:
         json.dump(summary, f, indent=2, allow_nan=False)
     _write_multi_target_figure(result, out / "search_plot.svg")
+    _prune_stale_workflow_artifacts(out, KNOWN_SEARCH_ARTIFACTS, summary["artifacts"])
 
 
 def _search_hash_components(
@@ -4261,8 +4382,12 @@ def _strain_growth_hash_components(
             },
         ),
     )
+    # R5-P3 CC-4: these abundances come *out* of the solve, so they carry solver noise. The
+    # canonicalizer no longer rounds (an input that determines the answer must not be blurred), so
+    # noise absorption has to happen where the noise enters — exactly as
+    # io.solve_output.build_run_components already does for the 11-component solve hash.
     components["abundances"] = {
-        str(member): value
+        str(member): round(float(value), DEFAULT_FLOAT_DECIMALS)
         for member, value in sorted((community_result.abundances or {}).items())
         if value is not None
     }
@@ -4482,6 +4607,41 @@ def _write_pool_diagnostics_csv(diagnostics: list[Any], path: Path) -> None:
             })
 
 
+# R5-P3 CC-3: every artifact these writers may emit, including the conditional ones. A re-run
+# into the same --out must not leave the previous run's copy behind to contradict it. Mirrors
+# io.solve_output.KNOWN_SOLVE_ARTIFACTS and uses the same helper.
+KNOWN_SEARCH_ARTIFACTS = frozenset({
+    "pool_taxonomy.csv",
+    "pool_diagnostics.csv",
+    "search_rankings.csv",
+    "search_member_matrix.csv",
+    "search_unevaluated.csv",
+    "search_summary.json",
+    "search_plot.svg",
+    "search_plot.tiff",
+    "search_scatter.svg",
+    "search_scatter.tiff",
+})
+KNOWN_HOST_SEARCH_ARTIFACTS = frozenset({
+    "host_search_rankings.csv",
+    "host_search_unevaluated.csv",
+    "host_search_summary.json",
+    "host_search_plot.svg",
+    "host_search_plot.tiff",
+})
+
+
+def _prune_stale_workflow_artifacts(
+    out: Path, known: frozenset[str], written: list[str]
+) -> None:
+    """Delete a previous run's conditional artifacts that this run did not produce."""
+    from cmig.io.solve_output import prune_stale_artifacts
+
+    removed = prune_stale_artifacts(out, known, written)
+    if removed:
+        print(f"  removed stale artifact(s) from a previous run: {', '.join(removed)}")
+
+
 def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     taxonomy.to_csv(out / "pool_taxonomy.csv", index=False)
@@ -4639,13 +4799,15 @@ def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], ou
             "search_summary.json",
         ] + (["search_unevaluated.csv"] if result.unevaluated else []),
     }
-    (out / "search_summary.json").write_text(
+    atomic_write_text(
+        out / "search_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_search_svg(result, out / "search_plot.svg")
     _write_search_scatter_svg(result, out / "search_scatter.svg")
     _write_search_tiff(result, out / "search_plot.tiff")
     _write_search_scatter_tiff(result, out / "search_scatter.tiff")
+    _prune_stale_workflow_artifacts(out, KNOWN_SEARCH_ARTIFACTS, payload["artifacts"])
 
 
 # P1-F: publication figure constants, shared by every writer so the outputs agree.
@@ -4804,7 +4966,8 @@ def _write_dfba_outputs(
             "dfba_summary.json",
         ],
     }
-    (out / "dfba_summary.json").write_text(
+    atomic_write_text(
+        out / "dfba_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_dfba_figure(rows, out / "dfba_timecourse.svg", out / "dfba_timecourse.tiff")
@@ -4938,6 +5101,26 @@ def _write_strain_growth_figures(rows: list[dict[str, Any]], out: Path) -> None:
     plt.close(fig)
 
 
+def _abundance_impact_plot_series(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Sweep points that may be plotted, plus how many were dropped.
+
+    R5-P3 CC-2: this used to filter on ``target_abundance`` alone and never consult ``status``,
+    so a point whose solve raised was drawn as a genuine measurement. A point is plottable only
+    if it actually solved.
+    """
+    plottable = sorted(
+        (
+            row for row in rows
+            if _optional_float(row.get("target_abundance")) is not None
+            and str(row.get("status")) == "optimal"
+        ),
+        key=lambda row: float(row["target_abundance"]),
+    )
+    return plottable, len(rows) - len(plottable)
+
+
 def _write_abundance_impact_figures(
     rows: list[dict[str, Any]],
     out: Path,
@@ -4946,33 +5129,26 @@ def _write_abundance_impact_figures(
     target: str,
 ) -> None:
     plt = _load_matplotlib_pyplot()
-    valid_rows = sorted(
-        (row for row in rows if _optional_float(row.get("target_abundance")) is not None),
-        key=lambda row: float(row["target_abundance"]),
-    )
+    valid_rows, n_dropped = _abundance_impact_plot_series(rows)
     x = [float(row["target_abundance"]) for row in valid_rows]
-    community_growth = [_optional_float(row.get("community_growth")) or 0.0 for row in valid_rows]
-    member_growth = [
-        _optional_float(row.get("target_member_growth")) or 0.0 for row in valid_rows
-    ]
-    member_flux = [
-        _optional_float(row.get("target_member_exchange")) or 0.0 for row in valid_rows
-    ]
-    community_flux = [
-        _optional_float(row.get("community_target_exchange")) or 0.0 for row in valid_rows
-    ]
-    influence = [
-        _optional_float(row.get("target_influence_share")) or 0.0 for row in valid_rows
-    ]
+    # `or 0.0` would turn a legitimate None (or a non-finite value) back into a fabricated zero,
+    # so every series is read through _optional_float and left as None; matplotlib renders None
+    # as a gap in the line rather than a point on the axis.
+    community_growth = [_optional_float(row.get("community_growth")) for row in valid_rows]
+    member_growth = [_optional_float(row.get("target_member_growth")) for row in valid_rows]
+    member_flux = [_optional_float(row.get("target_member_exchange")) for row in valid_rows]
+    community_flux = [_optional_float(row.get("community_target_exchange")) for row in valid_rows]
+    influence = [_optional_float(row.get("target_influence_share")) for row in valid_rows]
     fig, axes = plt.subplots(3, 1, figsize=(7.2, 7.4), dpi=300, sharex=True)
     axes[0].plot(x, community_growth, color=OKABE_ITO[0], marker="o", label="Community")
     axes[0].plot(x, member_growth, color=OKABE_ITO[2], marker="o", label=target_member)
     axes[0].set_ylabel(f"Growth rate ({UNIT_GROWTH})")
-    axes[0].set_title(
-        f"Abundance sensitivity: {target_member}",
-        loc="left",
-        pad=10,
-    )
+    # The omission must be visible on the figure itself. A reader who only ever sees the SVG has
+    # no other way to learn that part of the sweep was never evaluated.
+    title = f"Abundance sensitivity: {target_member}"
+    if n_dropped:
+        title += f"  —  {n_dropped} of {len(rows)} points not evaluable (omitted)"
+    axes[0].set_title(title, loc="left", pad=10)
     axes[0].legend(frameon=False, loc="best")
     _polish_matplotlib_axes(axes[0], grid_axis="y")
     axes[1].plot(x, member_flux, color=OKABE_ITO[3], marker="o", label=f"{target_member} {target}")
@@ -4984,7 +5160,10 @@ def _write_abundance_impact_figures(
     axes[2].set_xlabel(f"{target_member} abundance")
     axes[2].set_ylabel("Abundance-weighted\nsecretion share (fraction)")
     _add_panel_letters(axes)
-    axes[2].set_ylim(bottom=0.0, top=min(1.0, max(0.1, max(influence, default=0.0) * 1.25)))
+    finite_influence = [value for value in influence if value is not None]
+    axes[2].set_ylim(
+        bottom=0.0, top=min(1.0, max(0.1, max(finite_influence, default=0.0) * 1.25))
+    )
     _polish_matplotlib_axes(axes[2], grid_axis="y")
     _save_screening_figure(
         fig,
@@ -5041,7 +5220,8 @@ def _write_spatial_preview_outputs(
             "spatial_summary.json",
         ],
     }
-    (out / "spatial_summary.json").write_text(
+    atomic_write_text(
+        out / "spatial_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_spatial_heatmap(
@@ -5719,7 +5899,7 @@ def _load_pool_taxonomy(
         path = Path(taxonomy_path)
         if not path.exists():
             raise ValueError(f"taxonomy file not found: {path}")
-        taxonomy = pd.read_csv(path)
+        taxonomy = _read_taxonomy_csv(pd, path)
     else:
         taxonomy = taxonomy_from_model_dir(model_dir, recursive=recursive)
     missing_cols = {"id", "file"} - set(taxonomy.columns)
@@ -5729,6 +5909,18 @@ def _load_pool_taxonomy(
     if len(ids) != len(set(ids)):
         raise ValueError("taxonomy id values must be unique")
     return taxonomy
+
+
+def _read_taxonomy_csv(pd: Any, path: Path) -> Any:
+    """Read a taxonomy CSV, turning pandas' parser errors into an actionable message.
+
+    R5-P3 (codex F10): an empty or truncated taxonomy CSV used to reach the user as a raw
+    ``pandas.errors.EmptyDataError`` traceback on a default, non-debug code path.
+    """
+    try:
+        return pd.read_csv(path)
+    except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError) as e:
+        raise ValueError(f"taxonomy CSV 를 읽을 수 없음 ({path}): {type(e).__name__}: {e}") from e
 
 
 def _taxonomy_with_member_fraction(taxonomy: Any, member_id: str, fraction: float) -> Any:
@@ -5937,20 +6129,28 @@ def _sweep_condition_content_key(
     and the fva flags (which change the recorded profile). Because this is a faithful superset
     of the run_hash components, two conditions sharing this key are guaranteed to produce an
     identical solve, so replaying the cached result is exact rather than an approximation.
+
+    R5-P3 V2: that guarantee was false. ``tradeoff_f`` was rounded to 6 decimals and ``abundance``
+    to 9, so `--tradeoff-fs 0.5000001,0.5000004` produced ONE key: the second point's solve was
+    skipped and the first point's value *and run_hash* were republished under the second point's
+    condition_id — a number attributed to inputs it was never computed for. A cache key for
+    answer-determining inputs must be exact. It may be finer than the run_hash (that only costs a
+    redundant solve); it must never be coarser (that publishes a wrong number). `json.dumps`
+    serializes floats with `repr`, which round-trips exactly, so dropping the rounding is enough.
     """
     from cmig.io.solve_output import file_checksum
 
     abundance = None
     if "abundance" in getattr(taxonomy_variant, "columns", []):
         abundance = sorted(
-            (str(r["id"]), round(float(r["abundance"]), 9))
+            (str(r["id"]), float(r["abundance"]))
             for r in taxonomy_variant.to_dict("records")
         )
     parts = {
         "model_checksum": model_checksum,
         "abundance": abundance,
         "solver": solver,
-        "tradeoff_f": round(float(tradeoff_f), 6),
+        "tradeoff_f": float(tradeoff_f),
         "medium": None if medium_path is None else file_checksum(Path(medium_path)),
         "bounds": None if bounds is None else json.dumps(bounds, sort_keys=True),
         "fva": bool(fva),

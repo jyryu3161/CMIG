@@ -1,9 +1,9 @@
 {
   "components": {
     "abundance": {
-      "Escherichia_coli_1": 0.333333,
-      "Escherichia_coli_2": 0.333333,
-      "Escherichia_coli_3": 0.333333
+      "Escherichia_coli_1": 0.3333,
+      "Escherichia_coli_2": 0.3333,
+      "Escherichia_coli_3": 0.3333
     },
     "bounds": {},
     "cmig_core_version": "0.1.0",

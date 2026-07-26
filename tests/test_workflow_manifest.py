@@ -126,8 +126,24 @@ def test_solve_hash_still_responds_to_its_own_inputs():
 
 
 def test_canonicalize_floats_is_the_same_normalization_the_solve_hash_uses():
-    """The envelope shares one float rule with the solve hash rather than inventing a second."""
-    assert canonicalize_floats(1.0 / 3.0) == round(1.0 / 3.0, DEFAULT_FLOAT_DECIMALS)
+    """The envelope shares one float rule with the solve hash rather than inventing a second.
+
+    R5-P3 CC-4 changed *what* that shared rule is: a value that six decimals represent exactly
+    still serializes as that number (which is why the frozen fixture hashes did not move), and
+    only a value rounding would destroy keeps its exact form.
+    """
+    from cmig.core.manifest import RunHashComponents, canonical_payload
+
+    assert canonicalize_floats(0.333333) == round(0.333333, DEFAULT_FLOAT_DECIMALS)
+
+    # Same input, both code paths, same serialization.
+    components = RunHashComponents(
+        model_checksum="m", medium_checksum="d", member_set=["a"],
+        abundance={}, bounds={"R": [0.0, 1.0 / 3.0]}, tradeoff_f=0.5,
+        solver_setting={}, micom_version="0", cmig_core_version="0",
+        namespace_mapping_decisions=[], flux_normalization_method="pfba",
+    )
+    assert canonical_payload(components)["bounds"]["R"][1] == canonicalize_floats(1.0 / 3.0)
     assert canonicalize_floats(float("nan")) == "NaN"
     assert canonicalize_floats(float("inf")) == "Infinity"
     assert canonicalize_floats(-0.0) == 0.0          # signed-zero collapse preserved
@@ -279,10 +295,23 @@ def test_kind_mismatch_between_argument_and_component_is_rejected():
         compute_workflow_hash("dfba", _dfba_components(workflow_kind="sweep"))
 
 
-def test_float_noise_below_the_rounding_floor_does_not_move_the_hash():
+def test_a_determining_input_below_the_rounding_floor_still_moves_the_hash():
+    """Contract change, R5-P3 CC-4 (was: "float noise below the rounding floor does not move the
+    hash").
+
+    ``dfba_spec.dt`` is a user-supplied parameter that determines the answer, not a number that
+    came out of a solve, so two different values of it are two different runs. Under the old rule
+    *every* input below 5e-7 collapsed onto 0.0, which meant a solver tolerance of 1e-7 and one of
+    4e-7 shared a run_hash — "same hash" no longer implied "same inputs", which is the one claim
+    the manifest exists to make. Solver noise is now absorbed where it enters (the CLI rounds
+    solve-derived abundances before they become components) instead of by blurring every input.
+    """
     baseline = compute_workflow_hash("dfba", _dfba_components())
-    noisy = _dfba_components(dfba_spec={"dt": 0.1 + 1e-12, "t_end": 10.0, "km": 0.01})
-    assert compute_workflow_hash("dfba", noisy) == baseline
+    nudged = _dfba_components(dfba_spec={"dt": 0.1 + 1e-12, "t_end": 10.0, "km": 0.01})
+    assert compute_workflow_hash("dfba", nudged) != baseline
+
+    # An identical input is of course still identical.
+    assert compute_workflow_hash("dfba", _dfba_components()) == baseline
 
 
 def test_non_finite_floats_serialize_deterministically():

@@ -30,6 +30,18 @@ def _result(objective: float = 0.42, status: str = "optimal") -> SolveResult:
     )
 
 
+# R5-P3 (codex F13): ``record_run`` now enforces the contract it always documented — a run_hash
+# is a canonical SHA-256 hex digest — because treating an arbitrary string as a path component let
+# ``../escaped`` create a directory outside the store root. These fixtures used short placeholders
+# purely for readability; production callers have always passed ``compute_run_hash`` output
+# (cmig/service/engine_service.py builds it, cmig/core/sandbox.py forwards it). Rejection of a
+# non-digest is covered by tests/test_round5_p3_io_exception.py.
+HASH_A = "a" * 64
+HASH_B = "b" * 64
+HASH_NAN = "c" * 64
+HASH_COMMIT = "d" * 64
+
+
 def test_filesystem_store_satisfies_runstore_protocol(tmp_path):
     """SC-S4: FileSystemStore 가 core RunStore Protocol 충족 + sandbox re-export 동일 객체."""
     store = FileSystemStore(tmp_path)
@@ -40,15 +52,15 @@ def test_filesystem_store_satisfies_runstore_protocol(tmp_path):
 def test_record_run_then_cache_lookup_hit(tmp_path):
     """SC-S2: record_run 후 cache_lookup hit(meta dict) + run_dir 생성."""
     store = FileSystemStore(tmp_path)
-    store.record_run("abc123", _result(objective=0.42), micom_version="0.39.0")
-    row = store.cache_lookup_by_run_hash("abc123")
+    store.record_run(HASH_A, _result(objective=0.42), micom_version="0.39.0")
+    row = store.cache_lookup_by_run_hash(HASH_A)
     assert row is not None
-    assert row["run_hash"] == "abc123" and row["status"] == "optimal"
+    assert row["run_hash"] == HASH_A and row["status"] == "optimal"
     assert abs(float(row["objective"]) - 0.42) < 1e-9
     assert row["flux_solver"] == "gurobi"
     assert row["micom_version"] == "0.39.0"
-    assert (tmp_path / "abc123").is_dir()
-    assert row["run_dir"] == str(tmp_path / "abc123")
+    assert (tmp_path / HASH_A).is_dir()
+    assert row["run_dir"] == str(tmp_path / HASH_A)
 
 
 def test_cache_lookup_miss_returns_none(tmp_path):
@@ -59,16 +71,16 @@ def test_cache_lookup_miss_returns_none(tmp_path):
 def test_record_run_idempotent(tmp_path):
     """동일 run_hash 2회 → 1 row 유지(INSERT OR IGNORE, 첫 기록 보존)."""
     store = FileSystemStore(tmp_path)
-    store.record_run("h", _result(objective=1.0))
-    store.record_run("h", _result(objective=2.0))   # ignored
-    assert abs(float(store.cache_lookup_by_run_hash("h")["objective"]) - 1.0) < 1e-9
+    store.record_run(HASH_B, _result(objective=1.0))
+    store.record_run(HASH_B, _result(objective=2.0))   # ignored
+    assert abs(float(store.cache_lookup_by_run_hash(HASH_B)["objective"]) - 1.0) < 1e-9
 
 
 def test_record_run_nan_objective_stored_null(tmp_path):
     """NaN objective → NULL(직렬화 안전)."""
     store = FileSystemStore(tmp_path)
-    store.record_run("nanrun", _result(objective=math.nan))
-    assert store.cache_lookup_by_run_hash("nanrun")["objective"] is None
+    store.record_run(HASH_NAN, _result(objective=math.nan))
+    assert store.cache_lookup_by_run_hash(HASH_NAN)["objective"] is None
 
 
 def test_sandbox_commit_via_filesystem_store(tmp_path):
@@ -78,10 +90,10 @@ def test_sandbox_commit_via_filesystem_store(tmp_path):
     store = FileSystemStore(tmp_path)
     res = evaluate_sandbox(
         _result(objective=0.4), _result(objective=0.3),
-        state=SandboxState.COMMITTED, store=store, run_hash="commit1", micom_version="0.39.0",
+        state=SandboxState.COMMITTED, store=store, run_hash=HASH_COMMIT, micom_version="0.39.0",
     )
-    assert res.committed and res.run_hash == "commit1"
-    row = store.cache_lookup_by_run_hash("commit1")
+    assert res.committed and res.run_hash == HASH_COMMIT
+    row = store.cache_lookup_by_run_hash(HASH_COMMIT)
     assert row is not None
     assert row["micom_version"] == "0.39.0"
 
