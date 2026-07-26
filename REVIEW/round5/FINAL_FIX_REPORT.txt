@@ -1,0 +1,391 @@
+CMIG ROUND-5 FINAL FIX REPORT — the last four defects
+Fixer    : Claude Opus 5
+Worktree : /Users/jaeyongryu/orca/CMIG-wt-integration (branch round5/integration)
+Base     : 88cf8e9   →   commit b62fa8f  (one commit, not pushed)
+Date     : 2026-07-26
+Env      : PYTHONPATH=<integration worktree>; cmig resolved to
+           /Users/jaeyongryu/orca/CMIG-wt-integration/cmig/__init__.py (verified)
+           interpreter /Users/jaeyongryu/orca/CMIG/.venv/bin/python, licensed Gurobi
+           QT_QPA_PLATFORM=offscreen
+
+Files changed (4): cmig/cli/main.py, cmig/io/solve_output.py, CHANGELOG.md,
+                   tests/test_round5_final_fixes.py (new, 28 tests)
+/Users/jaeyongryu/orca/CMIG and every other worktree: untouched (only read-only
+`git log`/`git status` were run there). Nothing pushed.
+
+
+================================================================================
+0. HEADLINE
+================================================================================
+All four items FIXED, plus the reviewer's item 5 (PARTIAL → closed) and the
+`solve_output` provenance-ordering nit.
+
+  item                                          status   tests   reproduction
+  1 [P0] strain-growth figure fabricates zeros   FIXED      7    RV-2 closed
+  2 [P0] sweep reports ok over an all-failed run FIXED      7    RV-1 closed
+  3 [P0] host-search-bigg ranks non-optimal LP   FIXED      5    RV-3 closed
+  4 [P1] inspect-run certifies unchecked bytes   FIXED      8    RV-4/RV-7 closed
+  5 [P2] _compact_manifest drops the signals     FIXED      3    RV-5 closed
+  + solve provenance writer-last ordering        FIXED      1    (reviewer's nit)
+
+Gates: ruff clean · 1041 passed / 2 skipped / 0 failed (baseline 1013 + 28 new) ·
+green in shuffled file order · `golden verify` exit 0 with BOTH frozen hashes
+intact · `golden verify-envelope` 13/13 + float probe, exit 0.
+
+No frozen contract moved. `artifacts`, `status`, `warnings` and the new
+`artifact_integrity` are all outside both hash contracts, verified empirically:
+the sweep run_hash (00750a1f…) and the host-search run_hash (3f6c1985…) are
+byte-identical before and after the fix in the same reproduction.
+
+
+================================================================================
+1. METHOD — test first, then revert to prove the test is load-bearing
+================================================================================
+For every item: the failing test was written and captured failing BEFORE the fix,
+then after the fix the fix was REVERTED in place and the tests re-run to answer
+"would this fail if the behaviour it names were deleted?".
+
+Captured failing first: 25 of the 28 new tests failed against 88cf8e9. The other
+three are deliberate negative controls that must pass both before and after
+(`…figure_makes_no_such_claim_when_everything_solved`,
+ `…figure_makes_no_such_claim_when_everything_evaluated`,
+ `test_an_optimal_host_lp_is_still_ranked_ok`) — they exist so the new annotations
+and the new failure derivation cannot become false-alarm generators.
+
+Mutation results (each fix reverted in isolation, tests re-run):
+
+  MUTATION 1  `_measured_growth` → `return number if number is not None else 0.0`
+    FAILED test_an_unmeasured_strain_growth_leg_is_nan_not_a_fabricated_zero
+    FAILED test_a_nonfinite_growth_is_also_treated_as_unmeasured
+    FAILED test_a_failed_community_leg_is_also_not_drawn_as_zero
+    FAILED test_the_strain_growth_figure_says_a_member_was_not_evaluable
+
+  MUTATION 2  sweep summary literal "ok" + `"ok" if rows else "failed"` +
+              `return 0` + warnings no longer printed
+    FAILED test_an_all_failed_sweep_is_reported_failed_everywhere
+    FAILED test_a_partly_failed_sweep_is_degraded_and_still_exits_zero
+    FAILED test_an_all_failed_sweep_can_be_waived_explicitly
+
+  MUTATION 3  `evaluation_status = "ok"` (the original literal)
+    FAILED test_a_non_optimal_host_lp_is_not_ranked_as_an_ok_candidate
+    FAILED test_a_non_optimal_host_lp_publishes_no_number_at_all
+    FAILED test_the_host_search_figure_paints_no_failed_candidate_in_the_ok_colour
+
+  MUTATION 4a `artifacts=["host_search_summary.json","host_search_rankings.csv"]`
+    FAILED test_the_workflow_manifest_declares_the_figures_the_summary_advertises
+    FAILED test_a_fabricated_figure_no_longer_passes_result_digest
+
+  MUTATION 4b tamper no longer touches status / exit code / json
+    FAILED test_a_tampered_declared_artifact_makes_inspect_run_report_a_failed_run
+    FAILED test_a_tampered_declared_artifact_makes_inspect_run_exit_non_zero
+    FAILED test_the_json_format_is_not_silent_about_a_tampered_artifact
+
+  MUTATION 5  `_compact_manifest` whitelist loses the five keys again
+    FAILED test_inspect_run_surfaces_the_medium_policy_marker_of_a_workflow_run
+    FAILED test_inspect_run_surfaces_warnings_diagnostic_and_summary_values
+    FAILED test_inspect_run_surfaces_the_solve_manifests_provenance
+
+  MUTATION 6  `{"medium_policy": …, **provenance}` (caller wins again)
+    FAILED test_a_caller_cannot_overwrite_the_writer_stamped_medium_policy
+
+No mutation was silent. Every new assertion is discriminating against the defect
+it names. Note MUTATION 2 left the two helper unit tests passing, correctly — they
+test `_sweep_run_status`/`_sweep_warnings` directly, and it is the three
+end-to-end tests that prove the WIRING, which is what the defect was.
+
+No existing test was weakened, deleted or relaxed. Zero existing assertions were
+edited; the only pre-existing behaviour a test encoded that changed is
+`_cmd_inspect_run`'s return value, and no existing test asserted on it
+(`test_the_text_report_names_which_claim_failed` calls it and discards the result).
+
+
+================================================================================
+2. ITEM 1 [P0] — strain-growth figure fabricated zeros
+================================================================================
+Site: cmig/cli/main.py:5374-5375 (pre-fix)
+    single    = [_optional_float(row.get("single_growth")) or 0.0 for row in rows]
+    community = [_optional_float(row.get("community_member_growth")) or 0.0 …]
+
+Fix (cmig/cli/main.py, `_measured_growth` + `_strain_growth_plot_series`):
+  * a leg is a number only when its own status is "optimal" AND the value is
+    finite; otherwise NaN, and matplotlib draws no bar for NaN;
+  * the community leg of the same member is KEPT when it did solve, so the fix
+    drops the fabrication rather than the measurement;
+  * every omitted bar is labelled " not evaluable" at x=0 in italic grey — a
+    missing bar and a zero-height bar are visually identical, so the omission has
+    to be named in place;
+  * the title gains "N of M members not evaluable (no bar drawn; see
+    strain_growth.csv)" — modelled on `_abundance_impact_plot_series`, whose
+    warning comment sat 80 lines below the defect;
+  * the x-limit is computed from finite values only (`max` over NaN would poison
+    it).
+
+Measured before/after on the reviewer's exact row shape:
+  before  series -> ([0.0, 0.8, 0.0], [0.5, 0.6, 0.0])   'not evaluable': False
+  after   series -> ([nan, 0.8, 0.0], [0.5, 0.6, 0.0], ['strainA'])
+                    'not evaluable': True
+                    '1 of 3 members not evaluable': True
+The discrimination that matters is in the third element: strainC's genuinely
+MEASURED zero is still 0.0 and is not annotated.
+
+
+================================================================================
+3. THE `or 0.0` AUDIT — how many of the "7" needed fixing
+================================================================================
+CORRECTION TO THE BRIEF: `or 0.0` appears **3** times in cmig/cli/main.py, not 7
+— two code sites (5374, 5375, both fixed) and one occurrence inside the
+abundance-impact fix COMMENT at 5454 that names the pattern in prose. Repo-wide
+there are 19 occurrences across 6 files. I audited all 19.
+
+  2 of 19 needed fixing — both in cli/main.py, both are item 1.
+
+The other 17, each checked rather than assumed:
+
+  cmig/core/interaction_figures.py  441, 463, 526, 565, 567, 600, 601 — CLEARED.
+    The rows are CSV rows read back by `_read_csv`, so the `or` operates on the
+    *string*: "nan" is truthy, therefore a NaN flux survives as NaN and is never
+    converted to 0.0. A genuinely blank cell would raise ValueError at the
+    ADJACENT unguarded `float(row["flux"])` (line 467) / `float(r["transfer_flux"])`
+    (605) rather than silently plotting a zero — i.e. the failure mode is a crash,
+    not a fabrication. `_render_contribution`'s `> 1e-12` filter drops NaN rows
+    (NaN > x is False), which is an honest omission.
+  cmig/render/client.py  156, 158, 186 — CLEARED. `render_profile` feeds
+    `bundle.profile.to_pylist()`, and `core/interactions.build_tidy` builds
+    `net_flux` from `result.external_exchange[metab]` after dropping no-flow rows,
+    so the value is a non-null float by construction. NaN would again survive
+    (truthy).
+  cmig/gui/graph_view.py  136, 163, 206 — CLEARED. `weight` is typed `float` in
+    `EDGES_SCHEMA` and built from a `list[tuple[..., float, ...]]`, non-null by
+    construction. 136 and 163 are a sort key and an aggregation, not a published
+    measurement.
+  cmig/gui/graph_data.py  100 — CLEARED. A filter threshold comparison, not a
+    number shown to a user.
+  cmig/core/pair.py  63 — CLEARED (agrees with the reviewer): `analyze_pair` /
+    `pair_matrix_rows` have no caller outside tests.
+  cmig/gui/app.py  762 — CLEARED (agrees with the reviewer): unreachable as a
+    displayed number because `viable` gates on `biomass > 1e-9`.
+
+To stop the pattern returning, `test_no_cli_expression_reintroduces_the_or_zero_default`
+walks the AST of cli/main.py and fails on any `BoolOp(Or)` whose right-hand side
+is a numeric zero constant. It is parsed, not grepped, so the prose explaining the
+defect does not trip it and an `or 0` written any other way still does. (It caught
+my own explanatory docstring on the first run, which is how I know it works.)
+
+
+================================================================================
+4. ITEM 2 [P0] — sweep reported ok over an all-failed run
+================================================================================
+Sites: cmig/cli/main.py:6786 (summary literal) and :6826 (manifest derivation).
+
+Fix:
+  * new `_sweep_run_status(rows)` — all failed or empty → "failed"; some failed →
+    "degraded"; none failed → "ok". The docstring records WHY the old form could
+    not work: a failed condition remains in `rows` by `core/sweep.py`'s no-drop
+    contract, so asking whether `rows` is non-empty can never report a failure;
+  * new `_sweep_warnings(rows)` — names the failed condition ids (first 8 + a
+    count), or says the grid was empty;
+  * `sweep_summary.json` gains `status` (derived), `n_ok`, `n_failed`, `warnings`;
+  * the manifest gets `status=sweep_status` and `warnings=sweep_warnings`;
+  * warnings are printed to stdout;
+  * `return _exit_code_for_status(sweep_status, args)` — exit 3 on all-failed;
+  * `--allow-failed-run` registered on the `sweep` subparser (it was the one
+    command with no gate at all — reviewer's P1-e). The waiver changes the exit
+    code, never the recorded status, and a test pins that.
+  * `medium_summary.csv` added to the declared artifacts (it was written but
+    undeclared).
+
+RV-1 re-run, verbatim command, same models:
+  BEFORE  parquet failed,failed | summary ok | manifest ok | inspect-run ok | exit 0 | no warning
+  AFTER   parquet failed,failed | summary failed (n_ok=0 n_failed=2)
+          summary warnings: "2 of 2 sweep conditions did not solve and carry no
+                             value (see sweep.parquet.diagnostic): cond-0000, cond-0001"
+          manifest failed + warnings | inspect-run failed | exit 3
+          stderr: "analysis failed: artifacts were written … pass --allow-failed-run"
+          run_hash 00750a1fd4079196… — UNCHANGED
+
+
+================================================================================
+5. ITEM 3 [P0] — host-search-bigg ranked a non-optimal host LP as ok
+================================================================================
+Site: cmig/cli/main.py:1543.
+
+Fix, on the SUCCESS branch (which is where the defect lives, because
+`core/host_coupling.py:127` RETURNS `HostSolveResult(False, status, 0.0, …)`
+rather than raising):
+  * `evaluation_status = _worst_status(_run_status_from_solve(community_status),
+                                       _run_status_from_solve(host_status))`
+    — the same derivation the sibling `host-microbe-bigg` already used at
+    main.py:3545, so the two commands stop disagreeing;
+  * when it is not "ok", `score`, `host_objective_value` and `target_transfer`
+    are NaN, not 0.0 — `_finite_csv` renders blank and `_finite_or_none` renders
+    null, so nothing is published; `community_growth` is NaN only if the COMMUNITY
+    leg failed (an optimal community growth is a real measurement and is kept);
+  * a human-readable `diagnostic` naming both solve statuses is attached, so the
+    `unevaluated` CSV explains itself;
+  * the `except` branch's four fabricated `0.0`s also became NaN — a candidate
+    whose evaluation raised measured nothing either;
+  * `_write_host_search_figures` now takes `n_unevaluated`/`n_total` and titles
+    "N of M candidates not evaluable (excluded)". I added this beyond the brief
+    because with the failures correctly excluded, an empty or short bar set is all
+    a reader of the figure alone would see — "a figure that cannot be drawn
+    honestly must be annotated rather than drawn clean" applies to the absence too.
+
+RV-3 re-run (real SBML on disk, `run_bigg_host_microbe` stubbed to return a
+non-optimal host LP — stubbed because the defect is unreachable by making the
+solve raise):
+  BEFORE  status ok | n_candidates_failed 0 | warnings [] | exit 0
+          top_ranked [(1, [consumer, producer], 0.0, 'ok')] | unevaluated []
+          figure #3182bd (ok blue) True
+  AFTER   status failed | n_candidates_failed 1 | 2 warnings | exit 3
+          top_ranked [] | unevaluated [{… 'not evaluated: community solve
+            status=optimal, host solve status=infeasible; the host objective is
+            not a result'}]
+          figure #3182bd False | figure says "1 of 1 candidates not evaluable"
+          host_search_rankings.csv: zero rows
+          run_hash 3f6c1985ae0bfd79… — UNCHANGED
+
+
+================================================================================
+6. ITEM 4 [P1] — inspect-run certified artifact bytes it did not check
+================================================================================
+I took the "make the claim true" option, not the "narrow the claim" option.
+
+(a) Declaring the figures — and reconciling the two lists.
+Root cause was structural: each `_write_*_outputs` built an accurate `artifacts`
+list into its summary JSON, while each `_cmd_*` passed an independently maintained
+literal to `_emit_workflow_manifest`. Two lists, one directory, guaranteed to
+drift. Fix: every writer now RETURNS the list it wrote, and the manifest declares
+exactly that list. Ten writers and twelve emit sites:
+
+  host_microbe_bigg · host_map · host_search_bigg · host_ko_impact ·
+  gene_ko_search · strain_growth · abundance_impact · dfba ·
+  model_pool_search · multi_target_search   (+ sweep, handled in item 2)
+
+Now single-sourced, so the manifest cannot omit a figure again without the summary
+omitting it too. Verified: `sorted(manifest["artifacts"]) == sorted(summary["artifacts"])`
+is asserted by test. `run_hash` does not move (`artifacts` is a payload key, not a
+hash component; empirically confirmed above). `result_digest` values DO move for
+every kind that writes a figure — that is the point, and only `host_map` is in
+`DETERMINISTIC_ARTIFACT_KINDS`, and host_map writes no figures, so no
+cross-run-comparable claim is affected.
+
+RV-4 re-run: `printf '<svg>FABRICATED FIGURE</svg>' > host_search_plot.svg`
+  BEFORE  result_digest … "(certifies the ARTIFACT BYTES) — verified", tampered
+          file listed under `artifacts:` in the same output, exit 0
+  AFTER   result_digest: MISMATCH (stderr) · "- host_search_plot.svg: changed"
+          status: failed (source: result_digest_mismatch) · exit 3
+
+(b) A detected tamper now reaches status, exit code and JSON.
+  * `_inspect_run_dir` gains `artifact_integrity: verified | mismatch |
+    not_recorded`, and on `mismatch` sets `status="failed"`,
+    `status_source="result_digest_mismatch"`. Nothing is hidden: the manifest's own
+    recorded status stays readable under `manifest.status`, and a test pins that;
+  * the loud stderr block moved OUT of the text-only branch, so `--format json`
+    (the form SKILL.md mandates) now emits it too — stderr does not corrupt the
+    JSON document on stdout;
+  * new `_inspect_run_exit_code`: 3 on mismatch, 0 otherwise. Deliberately narrow
+    — a failed *solve* still exits 0 from `inspect-run`, because inspect-run
+    reports on a run rather than re-judging it, and the exit contract for a failed
+    solve belongs to the command that produced it. A tampered artifact set is
+    different in kind: the directory cannot be inspected as the run it claims to
+    be. The docstring records this reasoning;
+  * payload `schema_version` 1.0 → 1.1;
+  * absence of the field stays `not_recorded` and exit 0 — absence is not evidence
+    of tampering, and a test pins that too.
+
+RV-7 re-run, `--format json`:
+  BEFORE  status "ok", result_digest.match false, NOTHING on stderr, exit 0
+  AFTER   status "failed" (source result_digest_mismatch),
+          artifact_integrity "mismatch", result_digest.match false,
+          full MISMATCH block on stderr, exit 3
+  Control (untampered): artifact_integrity "verified", exit 0.
+
+ANSWER TO THE BRIEF'S QUESTION: yes — a tampered DECLARED artifact now affects
+both the exit status (3) and the JSON output (`artifact_integrity: "mismatch"`
+plus `status: "failed"`, and the stderr block is emitted in JSON mode).
+
+
+================================================================================
+7. ITEM 5 [P2] + the provenance nit
+================================================================================
+`_compact_manifest` gained five keys: `medium_policy`, `provenance`, `diagnostic`,
+`warnings`, `summary`. The last one closes the reviewer's observation that
+`summary_keys` listed key names but never their values.
+
+RV-5 re-run: `solve --medium med_bogus.csv --allow-unknown-medium`, then
+`inspect-run --format json`:
+  BEFORE  neither the diagnostic nor provenance surfaced; only status: degraded
+  AFTER   provenance.medium_policy = "exchange_reactions_by_metabolite_v2"
+          diagnostic = {"code": "medium_unapplied",
+                        "detail": {"exchange_ids": ["EX_totallybogus_m"]}, …}
+
+`cmig/io/solve_output.py`: extracted `solve_provenance(provenance)` returning
+`{**(provenance or {}), "medium_policy": MEDIUM_POLICY}` — writer LAST. The old
+spelling put the writer's value first, so a caller passing its own `medium_policy`
+would have silently won, contradicting the adjacent comment's claim that no solve
+path can omit it. No caller does today; the ordering is what makes the claim true
+rather than merely currently unfalsified.
+
+
+================================================================================
+8. GATES
+================================================================================
+  ruff check cmig tests ................ All checks passed (exit 0)
+  pytest tests/ -p no:randomly ......... 1041 passed, 2 skipped, 0 failed
+                                         (baseline 1013/2/0 + 28 new = 1041)
+  pytest, shuffled FILE order .......... 1041 passed, 2 skipped, 0 failed
+  cmig golden verify ................... exit 0
+        [OK] gurobi golden=0.39.0 installed=0.39.0  run_hash 29844e2910360332…
+        [OK] osqp   golden=0.39.0 installed=0.39.0  run_hash a422eb89d019f917…
+  cmig golden verify-envelope .......... exit 0, 14 [OK] lines
+                                         (13 workflow kinds + the float probe)
+  git status --porcelain ............... clean after commit
+
+DISCLOSURE ON "RANDOMIZED ORDER": `pytest-randomly` is NOT installed in
+/Users/jaeyongryu/orca/CMIG/.venv (`importlib.metadata` shows `pytest` as the only
+pytest-related distribution; `-p randomly` raises ModuleNotFoundError). The
+`-p no:randomly` in earlier logs was therefore defensive and inert. To exercise
+cross-file order dependence anyway — the class of the two genuine order-dependent
+tests found this round (CC-1/CC-5) — I shuffled the 100 test FILES with a fixed
+seed and passed them in that order. Green. This is weaker than per-test
+randomization and I am flagging it rather than reporting a gate I did not run.
+
+
+================================================================================
+9. JUDGEMENT CALLS, STATED SO THEY CAN BE OVERRULED
+================================================================================
+1. Item 1 keeps the member's ROW and drops only the unmeasured bar, instead of
+   omitting the member entirely as abundance-impact does. Reason: a member's
+   community leg often solves when its alone leg does not; omitting the row would
+   discard a real measurement to hide a fabricated one. The count in the title is
+   "members not evaluable", i.e. members with at least one unmeasured leg.
+2. Item 3 sets `community_growth` to NaN only when the COMMUNITY solve failed, not
+   whenever the row is unevaluable. An optimal community growth is a real number
+   even when the host LP is infeasible, and blanking it would be the same class of
+   error in the other direction.
+3. `inspect-run` exits non-zero ONLY on an artifact mismatch, not on
+   `status: failed`. Widening it would change the exit code of every inspection of
+   a legitimately-failed run and is a separate decision; I kept the blast radius
+   to the defect. Recorded in `_inspect_run_exit_code`'s docstring.
+4. On a mismatch I overwrite the reported `status` rather than adding a parallel
+   field only. The reviewer's instruction was explicit ("stop reporting `status: ok`
+   over it") and a gate written against `status` is the documented consumer. The
+   manifest's own status is not lost — it is in `manifest.status`, and a test pins
+   its continued visibility.
+5. I added the host-search figure annotation (§5) beyond the brief's letter,
+   because excluding the failures made the figure silent rather than wrong, and the
+   binding ruling covers silence.
+6. I did NOT touch the reviewer's remaining P1/P2 findings that were out of scope:
+   P1-c (`n_candidates_evaluated` counts cache entries), P1-d (gene-KO all-failed
+   manifest tier), P1-e for the three commands other than sweep, P2-b/c
+   (`community_growth = 0` for an arm that never ran, in host_ko_impact.csv and the
+   multi-target `search_unevaluated.csv`), P2-d (dFBA figure carries no status).
+   P2-b and P2-c are the same class as item 3 and are the obvious next candidates;
+   they are one-line changes each but sit in writers with their own goldens, so I
+   left them for a deliberate pass rather than smuggling them in here.
+
+CHANGELOG.md gained seven entries under `### Fixed`, including the three
+user-visible exit-code changes (`sweep` and `host-search-bigg` can now exit 3 where
+they exited 0; `inspect-run` exits 3 on a tampered artifact set) and the note that
+`result_digest` values move for every kind that writes a figure while no
+`run_hash` moves.

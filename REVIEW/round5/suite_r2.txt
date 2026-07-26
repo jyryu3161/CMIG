@@ -1,0 +1,54 @@
+........................................................................ [  9%]
+........................................................................ [ 18%]
+........................................................................ [ 28%]
+........................................................................ [ 37%]
+........................................................................ [ 46%]
+........................................................................ [ 56%]
+............................ss.................F........................ [ 65%]
+........................................................................ [ 75%]
+........................................................................ [ 84%]
+........................................................................ [ 93%]
+..............................................                           [100%]
+=================================== FAILURES ===================================
+_________________ test_tc3_sweep_tradeoff_f_canonical_rounding _________________
+
+tmp_path = PosixPath('/private/var/folders/ms/sx754_r951x77jlgckb9vyx00000gn/T/pytest-of-jaeyongryu/pytest-463/test_tc3_sweep_tradeoff_f_cano0')
+
+    def test_tc3_sweep_tradeoff_f_canonical_rounding(tmp_path):
+        """TC-3: axis_tradeoff_f 가 A17 rounding + 비유한은 null(비결정 직렬화 제거)."""
+        out = tmp_path / "sweep.parquet"
+        write_sweep_parquet([
+            _row({"tradeoff_f": 0.5 + 1e-9}, condition_id="cond-0000"),  # 잡음 → 반올림
+            _row({"tradeoff_f": math.nan}, condition_id="cond-0001"),    # 비유한 → null
+        ], out)
+        vals = pq.read_table(out).column("axis_tradeoff_f").to_pylist()
+>       assert vals[0] == 0.5                       # 6 decimal 반올림으로 잡음 흡수
+        ^^^^^^^^^^^^^^^^^^^^^
+E       assert 0.500000001 == 0.5
+
+tests/test_review_regressions.py:121: AssertionError
+=============================== warnings summary ===============================
+tests/test_cli_solve.py::test_solve_fixture_osqp_records_approximate_flux_solver
+tests/test_cli_solve.py::test_solve_fixture_osqp_run_hash_matches_canonical_and_differs_from_gurobi
+tests/test_cli_solve.py::test_solve_fixture_osqp_run_hash_matches_canonical_and_differs_from_gurobi
+tests/test_community_fva.py::test_cli_solve_fixture_osqp_fva_graceful_rc2
+tests/test_engine_golden.py::test_golden_regression_per_solver[osqp]
+tests/test_engine_golden.py::test_flux_report_metadata_per_solver[osqp-None-qp_only_approximate]
+tests/test_round5_p3_io_exception.py::test_golden_builder_rounds_at_the_decimals_its_hash_uses[osqp]
+  /Users/jaeyongryu/orca/CMIG/.venv/lib/python3.12/site-packages/osqp/interface.py:405: PendingDeprecationWarning: The default value of raise_error will change to True in the future.
+    warnings.warn(
+
+tests/test_dfba.py::test_dfba_glucose_depletes_and_nonnegative
+tests/test_dfba.py::test_dfba_infeasible_after_depletion_is_explicit
+tests/test_host.py::test_host_non_viable_without_microbiome
+tests/test_host.py::test_host_non_viable_explicit
+  /Users/jaeyongryu/orca/CMIG/.venv/lib/python3.12/site-packages/cobra/util/solver.py:554: UserWarning: Solver status is 'infeasible'.
+    warn(f"Solver status is '{status}'.", UserWarning)
+
+tests/test_stats.py::test_umap_embed
+  /Users/jaeyongryu/orca/CMIG/.venv/lib/python3.12/site-packages/umap/umap_.py:1952: UserWarning: n_jobs value 1 overridden to 1 by setting random_state. Use no seed for parallelism.
+    warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_review_regressions.py::test_tc3_sweep_tradeoff_f_canonical_rounding

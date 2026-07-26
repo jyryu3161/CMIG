@@ -1,0 +1,33 @@
+........................................................................ [  9%]
+........................................................................ [ 19%]
+........................................................................ [ 28%]
+........................................................................ [ 38%]
+........................................................................ [ 47%]
+........................................................................ [ 57%]
+............................ss.......................................... [ 67%]
+........................................................................ [ 76%]
+........................................................................ [ 86%]
+........................................................................ [ 95%]
+...............................                                          [100%]
+=============================== warnings summary ===============================
+tests/test_cli_solve.py::test_solve_fixture_osqp_records_approximate_flux_solver
+tests/test_cli_solve.py::test_solve_fixture_osqp_run_hash_matches_canonical_and_differs_from_gurobi
+tests/test_cli_solve.py::test_solve_fixture_osqp_run_hash_matches_canonical_and_differs_from_gurobi
+tests/test_community_fva.py::test_cli_solve_fixture_osqp_fva_graceful_rc2
+tests/test_engine_golden.py::test_golden_regression_per_solver[osqp]
+tests/test_engine_golden.py::test_flux_report_metadata_per_solver[osqp-None-qp_only_approximate]
+  /Users/jaeyongryu/orca/CMIG/.venv/lib/python3.12/site-packages/osqp/interface.py:405: PendingDeprecationWarning: The default value of raise_error will change to True in the future.
+    warnings.warn(
+
+tests/test_dfba.py::test_dfba_glucose_depletes_and_nonnegative
+tests/test_dfba.py::test_dfba_infeasible_after_depletion_is_explicit
+tests/test_host.py::test_host_non_viable_without_microbiome
+tests/test_host.py::test_host_non_viable_explicit
+  /Users/jaeyongryu/orca/CMIG/.venv/lib/python3.12/site-packages/cobra/util/solver.py:554: UserWarning: Solver status is 'infeasible'.
+    warn(f"Solver status is '{status}'.", UserWarning)
+
+tests/test_stats.py::test_umap_embed
+  /Users/jaeyongryu/orca/CMIG/.venv/lib/python3.12/site-packages/umap/umap_.py:1952: UserWarning: n_jobs value 1 overridden to 1 by setting random_state. Use no seed for parallelism.
+    warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html

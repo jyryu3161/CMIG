@@ -1,0 +1,693 @@
+CMIG ROUND-5 TOP-LEVEL FINAL REVIEW
+Reviewer : Claude Opus 5 (final gate; wrote none of this code)
+Worktree : /Users/jaeyongryu/orca/CMIG-wt-integration @ 88cf8e9 (round5/integration)
+Date     : 2026-07-26
+Env      : PYTHONPATH=<integration worktree>, cmig resolved to
+           /Users/jaeyongryu/orca/CMIG-wt-integration/cmig/__init__.py (verified)
+           interpreter /Users/jaeyongryu/orca/CMIG/.venv/bin/python, licensed Gurobi
+Tracked files modified by this review: NONE (git status --porcelain empty at exit).
+All experiments ran in `git archive HEAD | tar -x` copies under the session scratchpad.
+
+
+================================================================================
+0. VERDICT
+================================================================================
+
+THE MERGE IS SAFE TO LAND ON `main`. THE RELEASE AS CURRENTLY DESCRIBED IS NOT.
+
+Two separable judgements, because conflating them would give the wrong answer:
+
+(a) Is the composed merge correct?  YES, and I could not break it.
+    - No composition failure. Verified mechanically across all six multi-track
+      files, not by reading (section 1).
+    - Envelope re-bless justified line by line, every mover traced to a specific
+      character-level cause, every non-mover proved to have no cause (section 4).
+    - All seven contract changes sound; the replacement tests are strictly
+      stronger than what they replaced, mutation-verified (section 5).
+    - Every claimed gate reproduced independently (section 6).
+
+(b) Is the round's central claim — "the fabricated-default / dropped-signal class
+    is closed" — true of the merged tree?  NO.
+    Three P0-class instances of exactly that class are live, reproduced
+    end-to-end through the real CLI on real GEMs, and named in NO known-open list
+    (section 2, section 3).
+
+WHAT BLOCKS: not the merge, the release text. FINAL_REPORT_ROUND5.md states the
+class as "Three separate sites substituted a plausible default for a failure" and
+presents them as closed. There are at least six sites; three survive and two of
+those three write publication artifacts (a TIFF and a ranked CSV). Shipping that
+sentence tells a publishing researcher the class is closed when it is not.
+
+WHY BLOCKING THE MERGE WOULD BE THE WRONG CALL: all three surviving P0s are
+BYTE-IDENTICAL ON `main` (evidence in section 2). They are pre-existing, not
+regressions from this merge. Holding the branch leaves `main` carrying these three
+*plus* everything this branch fixes. Landing it is strictly protective.
+
+MINIMUM TO CLEAR THE RELEASE GATE (either is acceptable):
+  1. Fix them. strain-growth is ~2 lines and the corrected pattern already exists
+     80 lines below it in the same file; sweep is ~2 lines; host-search ~5. OR
+  2. Add all three to "Known open, deliberately" with the reproductions below, and
+     correct the "three separate sites" sentence to say the sweep was partial.
+Option 1 is cheap enough that option 2 is hard to justify for strain-growth and
+sweep specifically.
+
+
+================================================================================
+1. COMPOSITION FAILURES — NONE FOUND (this is a measured result, not a reading)
+================================================================================
+
+Method. For each of the six files touched by more than one track, I extracted
+every line each track ADDED relative to `main`, normalized leading whitespace,
+and set-differenced against the merged HEAD file. A fix that was reverted or
+half-applied shows up as an added line absent from the merge. Every residual was
+then explained individually.
+
+  file                          P1 lost   P3 lost   P4 lost
+  cmig/cli/main.py                15/180    22/222     0/166
+  cmig/core/medium_spec.py          0/87      0/8         --
+  cmig/core/namespace.py            1/31        --      4/16
+  cmig/core/workflow_manifest.py     0/8     0/29     0/162
+  cmig/io/solve_output.py           0/31     0/29       0/7
+  tests/test_workflow_manifest.py     --     0/28    22/115
+
+Every residual accounted for, and each is a DELIBERATE substitution ruled on in
+advance (CC-26 / MERGE_REPORT §1b, §3a):
+
+* main.py, P1's 15: the gene-KO region. P1's inline status expression was replaced
+  by P3's named `_gene_ko_summary_status`; P1's `if evaluated_rows: best =
+  evaluated_rows[0]` by P3's equivalent `ranked` filter; `n_failed` dropped (ruff
+  F841). I checked the two status expressions are not merely similar:
+    P1: "failed" if rows and n_failed == len(rows) else "degraded" if n_failed else "ok"
+    P3: if not rows: return "failed"; n_ok==0 -> "failed"; n_ok==len(rows) -> "ok"; else "degraded"
+  They agree on every populated input and DIFFER on empty rows: P1 -> "ok",
+  P3 -> "failed". The merge took P3's, i.e. the more conservative one. Correct.
+* main.py, P3's 22: the whole `_ko_ranks` helper (blank-string sentinel), dropped
+  in favour of P1's `_ko_ranked_rows` (rank-0 sentinel). Ruled in MERGE_REPORT §1b.
+* namespace.py, P1's 1: `NORMALIZE_COMPARTMENT_SUFFIXES = (...)` — present in the
+  merge with P4's `tuple[str, ...]` annotation. Same value.
+* namespace.py, P4's 4: exactly the docstring paragraph CC-26 ordered DELETED
+  (the "folding glu__D -> glu is deliberate" rationalisation), plus the
+  still-true auto-admit clause, which is present in the merge in P1's wording.
+  Instructed outcome.
+* test_workflow_manifest.py, P4's 22: entirely
+  `test_the_osqp_golden_is_stale_against_the_current_float_decimals_contract`,
+  which CC-27 ruled must be rewritten. Replacement audited in section 5.
+
+Gene-KO specifically (the item the brief called out). Exactly ONE coherent
+implementation survived, and it does both required things:
+  - `_ko_ranked_rows` (main.py:2846) gives rank 0 to any row with
+    evaluation_status != "ok"; every scientific field is NaN, rendered blank by
+    `_finite_csv`. No negated baseline anywhere.
+  - `top_ranked` (main.py:2972-2990) is filtered to evaluation_status == "ok";
+    failures go to a separate `unevaluated` block (main.py:2992).
+  - The "rank 1 (largest effect)" headline is suppressed when nothing evaluated
+    (main.py:2405-2419), with an explicit "no knockout could be evaluated" branch.
+I independently confirmed the merge agent's deviation on hunks 5-7 was correct:
+`cmig/gui/builder.py:678` and `cmig/cli/main.py:582` both iterate `top_ranked`
+without inspecting `rank`, so P3's `rank: None` rows would have been consumed as
+results. P1's structural filter is the right choice.
+
+Also checked and clean:
+* `MEDIUM_POLICY` is stamped by the WRITER in both hash contracts' payloads
+  (`io/solve_output.py:294` non-hashed `provenance`; `core/workflow_manifest.py:326`
+  non-hashed payload key) and is absent from both component sets. Verified present
+  in a real run's manifest.json: `provenance.medium_policy:
+  "exchange_reactions_by_metabolite_v2"`. One nit: solve_output writes
+  `{"medium_policy": MEDIUM_POLICY, **(provenance or {})}`, so a caller passing
+  its own `medium_policy` key would silently win, which contradicts the adjacent
+  comment "stamped by the writer, so no solve path can omit it". No caller does
+  today. Cosmetic; worth a `**` order swap.
+* Medium single-path: every consumer now routes through
+  `apply_medium_translated`. `apply_medium_checked` delegates with `exact=False`
+  (merge semantics), and `strain-growth` also uses `exact=False` for the
+  community leg — so the two do NOT diverge on merge-vs-replace, which was my
+  main worry when I saw `exact` exposed. `exact=True` is used only for the
+  single-model legs, which is what "same defined medium on both legs" requires.
+* `exchange_metabolite` is a plain rpartition("_"), NOT the stereo-folding
+  normalizer, so the alias-contradiction check is stereo-correct by construction
+  and does not depend on P1's fix.
+* `prune_stale_artifacts` (CC-3) covers all three conditional-artifact writers:
+  host_search (writer 3361 / prune 3425), search (4435 / 4506), multi-target
+  (4998 / 5117). No writer left uncovered.
+* `host_microbe_bigg` has no `map_spec` component, which looked like a CC-12-class
+  hole. It is not: `_host_spec_component` folds `mapping_checksum(interface_map)`
+  into `host_spec`, so the map CONTENTS are hashed. Cleared.
+
+
+================================================================================
+2. DEFECT-CLASS SWEEP — THREE P0s SURVIVE, ALL PRE-EXISTING ON main
+================================================================================
+
+I swept for the CLASS, not the reported instances, and cross-checked two
+independent sweeps against my own reproduction. Both sweeps converged on P0-1
+independently of me, which is why I trust it hardest.
+
+--------------------------------------------------------------------------------
+P0-1  `strain-growth` figure turns "never measured" into a measured zero
+      cmig/cli/main.py:5374-5375
+--------------------------------------------------------------------------------
+    single    = [_optional_float(row.get("single_growth")) or 0.0 for row in rows]
+    community = [_optional_float(row.get("community_member_growth")) or 0.0 for row in rows]
+
+`_optional_float` (main.py:3028) returns None for None AND for non-finite. `None
+or 0.0` -> 0.0. There is no `single_status` filter and no annotation of omissions.
+
+This is VERBATIM the pattern this round fixed for abundance-impact, and the fix
+comment sits 80 lines below it at main.py:5454-5456: "`or 0.0` would turn a
+legitimate None (or a non-finite value) back into a fabricated zero". The
+abundance-impact figure additionally titles the omission
+("N of M points not evaluable (omitted)"). strain-growth got neither.
+
+Every other layer of the same command IS honest: CSV writes a blank cell
+(`_csv_float_or_blank`, main.py:3080), JSON writes null, the summary tier degrades,
+a run-level warning names the member, and the GUI table renders an em dash. Only
+the figure fabricates — and the figure is the artifact that goes in the manuscript
+(`strain_growth_plot.svg` + a 600-dpi `.tiff`, both advertised in
+payload["artifacts"], main.py:3152-3157).
+
+REPRODUCED (RV-2, section 3). Scientific misreading: a zero-height "Single model"
+bar beside a real "Community" bar reads as "this strain cannot grow alone but
+grows in the community" — an obligate-syntrophy / cross-feeding claim — from a
+solve that never happened.
+
+Not covered by any test: tests/test_strain_growth_medium_basis.py:126
+monkeypatches `_write_strain_growth_figures` to a no-op.
+
+--------------------------------------------------------------------------------
+P0-2  `sweep` certifies an ALL-FAILED grid as status "ok"
+      cmig/cli/main.py:6786 (summary literal) and :6826 (manifest status)
+--------------------------------------------------------------------------------
+    {"status": "ok", "n_runs": len(rows), ...}          # 6786, hard-coded
+    status="ok" if rows else "failed",                  # 6826; rows INCLUDES failures
+    # no warnings= passed; _cmd_sweep returns 0 unconditionally
+
+`cmig/core/sweep.py:48` gives every condition row `status in {ok, failed}` plus a
+`diagnostic`, and failed conditions REMAIN in `rows`. So the `["failed"]` branch is
+reachable only when the grid is empty.
+
+This is the identical defect P3 fixed in `_gene_ko_summary_status` ("the summary
+carried a literal "status": "ok" that was never reassigned"). It survives in sweep.
+
+REPRODUCED end-to-end (RV-1, section 3) with an ordinary user action — no
+patching, no perturbation. This is the worst of the three: EVERY presentation
+layer says ok, and the run is stamped with a run_hash and a "verified"
+result_digest.
+
+--------------------------------------------------------------------------------
+P0-3  `host-search-bigg` ranks and plots a non-optimal host LP as an ok result
+      cmig/cli/main.py:1543
+--------------------------------------------------------------------------------
+    "evaluation_status": "ok",     # hard-coded in the SUCCESS branch
+
+`cmig/core/host_coupling.py:127` RETURNS (does not raise) for a non-optimal host
+LP: `HostSolveResult(False, status, 0.0, [], {}, diagnostic)`. So the success
+branch is taken, `host_objective = float(result.host_result.biomass) = 0.0`
+(main.py:1527), and `score = 0.0`.
+
+`evaluation_status` is the ONLY field consulted by the ranked/unevaluated partition
+(main.py:1573-1574), by the figure colour (main.py:5645-5647), and by the summary
+status (main.py:3375-3378). `host_status`, `community_status` and the per-row
+`warnings` cell are written to the CSV and read by nothing.
+
+REPRODUCED (RV-3, section 3). The row's own warnings cell literally reads "the
+reported host objective is not a result" while the figure paints it in the
+"evaluated ok" blue and the summary says ok.
+
+Contrast with the sibling `host-microbe-bigg`, which derives status from the solve
+status (main.py:3545-3548) and stamps a "NOT A RESULT" banner on its figures
+(main.py:3524-3541). host-search-bigg is the inconsistent one, so this is an
+oversight rather than a design decision.
+
+--------------------------------------------------------------------------------
+ALL THREE ARE PRE-EXISTING ON `main` — checked, not assumed
+--------------------------------------------------------------------------------
+  $ git show main:cmig/cli/main.py | rg 'single_growth.*or 0\.0'
+    4891:    single = [_optional_float(row.get("single_growth")) or 0.0 for row in rows]
+  $ git show HEAD:cmig/cli/main.py | rg 'single_growth.*or 0\.0'
+    5374:    single = [_optional_float(row.get("single_growth")) or 0.0 for row in rows]
+
+  main:cmig/cli/main.py:6265  "status": "ok",   / :6306 status="ok" if rows else "failed"
+  main:cmig/cli/main.py:1289  "evaluation_status": "ok",
+
+None of the three is a regression from this merge. None appears in
+FINAL_REPORT_ROUND5.md "Known open, deliberately".
+
+--------------------------------------------------------------------------------
+P1 / P2 findings of the same class
+--------------------------------------------------------------------------------
+P1-a  `result_digest` says "certifies the ARTIFACT BYTES — verified" while NO
+      workflow declares its publication figures. Enumerated every `artifacts=[...]`
+      passed to `_emit_workflow_manifest` (main.py:1113, 1186, 1657, 1891, 2435,
+      2665, 2836, 3734, 3909, 4164, 4365, 6827): not one contains a `.svg` or
+      `.tiff`. `artifact_result_digest` only digests DECLARED names. Meanwhile the
+      summary payload's own `artifacts` field DOES list the figures, so the two
+      lists in one run directory disagree. REPRODUCED (RV-4): a `gene_ko_plot.svg`
+      overwritten with `<svg>FABRICATED FIGURE</svg>` still yields
+      "result_digest: ... — verified", with the tampered file listed under
+      `artifacts:` in the same output.
+P1-b  `inspect-run` reports `status: ok` and EXITS 0 on a detected result_digest
+      MISMATCH. In `--format json` the loud stderr block is not emitted at all
+      (main.py: the block is inside the text branch only) — the only signal is
+      `result_digest.match: false` buried in the payload, next to `status: "ok"`.
+      A gate written against `status` or `$?` accepts a run whose artifacts are not
+      the artifacts its manifest fingerprinted. REPRODUCED (RV-7).
+P1-c  `search` publication figure caption asserts the completeness the summary
+      denies: `evaluated {n_candidates_evaluated}/{n_candidates_total} candidates`
+      (main.py:5831, 5906). But `n_candidates_evaluated = len(cache)`
+      (core/search_product.py:406) and `_evaluate_members` RETURNS a failed
+      `PoolRank` rather than raising (search_product.py:297-307), so it is cached
+      and counted. A 20-candidate screen with 5 unevaluable prints "evaluated
+      20/20". Verified by code path; not run (needs an induced search failure).
+P1-d  gene-KO all-failed screen: `gene_ko_summary.json` says "failed"
+      (`_gene_ko_summary_status`), the workflow manifest says "degraded"
+      (main.py:2432, `_worst_status` over per-row "degraded" — "failed" is
+      unreachable unless rows is empty), and `_resolve_run_status` prefers the
+      manifest, so `inspect-run` reports "degraded". Compounding: the manifest
+      records `knockout_spec.n_evaluated = len(rows)` and `summary.n_evaluated =
+      len(rows)` — ATTEMPTS — while the summary's own `n_genes_evaluated` uses
+      `_n_ko_evaluated` (results only), contradicting the rule stated at
+      main.py:2364-2367. I found this independently before the sweep agent did.
+P1-e  `--allow-failed-run` is registered for strain-growth (7295),
+      abundance-impact (7331) and gene-ko-search (7410), but all three
+      `return 0` unconditionally (2673, 2843, 2443) and never call
+      `_exit_code_for_status`. `sweep` has no gate at all. A flag documented as
+      the failure escape hatch on commands that cannot fail.
+P2-a  `inspect-run`'s `_compact_manifest` (main.py:645-664) whitelists 12 keys and
+      drops `diagnostic`, `warnings` and `provenance`. Consequence: the
+      `medium_unapplied` diagnostic naming dropped nutrients is invisible, and so
+      is `provenance.medium_policy` — the marker this round created specifically so
+      a researcher could tell pre-fix from post-fix medium runs is not surfaced by
+      the tool's own inspection command. `summary_keys` lists the key names but
+      never their values.
+P2-b  `host_ko_impact.csv` writes `community_growth = 0` for an arm that never ran
+      (main.py:1797) while `host_objective`/`target_transfer` correctly use NaN —
+      two of three metrics honest, one fabricated, in one statement.
+P2-c  multi-target `search_unevaluated.csv` writes `community_growth = 0` for a
+      combo whose solve raised (core/search_product.py:658 -> main.py:4443). The
+      single-target writer got this right (members/status/diagnostic only).
+P2-d  `dfba_timecourse.svg/.tiff` carry no `status`, no `warnings`, no
+      `n_untracked_uptake`, and annotate " final <biomass>" even for an aborted
+      integration. The CC-6 GUI fix landed correctly (views.py:320-352 reads both
+      fields, flags the status cell, and the `--close-untracked-uptake` control is
+      exposed at views.py:183) — but the figure the GUI then DISPLAYS and a user
+      exports has none of it.
+
+Cleared after checking (not findings): `core/pair.py:63` fabricates a 0.0 but
+`analyze_pair`/`pair_matrix_rows` have no caller outside tests; `gui/app.py:762`
+`or 0.0` is unreachable as a displayed number because `viable` gates on
+`biomass > 1e-9`; `interaction_figures.py` `float(... or 0.0)` sites are behind a
+`flux > NOISE_FLOOR` guard NaN cannot pass; abundance-impact, gene-KO, dfba CLI
+status derivation, host-microbe-bigg, model-quality and publication-benchmark are
+honest.
+
+
+================================================================================
+3. REVERSE VALIDATION — 7 combinations built, 5 reproduced
+================================================================================
+All commands run from the session scratchpad with PYTHONPATH pointed at the
+integration worktree, real Gurobi, models from the repo's models/.
+
+--------------------------------------------------------------------------------
+RV-1  ALL-FAILED SWEEP CERTIFIED "ok"                            *** REPRODUCED ***
+--------------------------------------------------------------------------------
+  printf 'exchange_id,uptake_limit\nEX_totallybogus_m,10.0\nEX_glc__D_m,20.0\n' > med_bogus.csv
+  cmig sweep --taxonomy tax2.csv --mediums med_bogus.csv \
+             --tradeoff-fs 0.4,0.6 --assume-bigg-namespace --out out_sweepfail
+  # note: NO --allow-unknown-medium, i.e. the default strict path
+
+  sweep.parquet  (the honest layer)
+    condition_id  status  value   diagnostic
+    cond-0000     failed  NaN     {"code":"solver_error",...}
+    cond-0001     failed  NaN     {"code":"solver_error",...}
+
+  sweep_summary.json  status: ok      n_runs: 2
+  manifest.json       status: ok      warnings: []      diagnostic: None
+  cmig inspect-run    status: ok (source: manifest)
+                      result_digest: sha256:15a3617a… — verified
+  CLI stdout          "sweep_summary.json → out_sweepfail" + a run_hash. No warning.
+  exit code           0   (both the sweep and inspect-run)
+
+  Every condition failed. Four presentation layers say ok. Reached by a plain
+  medium file, no flags, no patching.
+
+--------------------------------------------------------------------------------
+RV-2  strain-growth FIGURE FABRICATES A ZERO BAR                 *** REPRODUCED ***
+--------------------------------------------------------------------------------
+  Drove the real writer with the exact row shape main.py:2503/2564-2568 produces
+  when a member's alone-solve raises (single_growth=None, single_status="failed"):
+
+    _optional_float(None)          or 0.0  ->  0.0
+    _optional_float(float("nan"))  or 0.0  ->  0.0
+    cli._write_strain_growth_figures(rows, out)
+
+    strain_growth_plot.svg written (9672 bytes)
+      mentions "failed"        : False
+      mentions "not evaluable" : False
+      mentions "omitted"       : False
+
+  strainA (never measured) and a genuinely-zero strain render as identical
+  zero-height bars, with no count of dropped members anywhere on the figure.
+  The CSV for the same row is blank (`_csv_float_or_blank`), so the layers
+  actively disagree.
+
+--------------------------------------------------------------------------------
+RV-3  host-search-bigg RANKS AN INFEASIBLE HOST LP               *** REPRODUCED ***
+--------------------------------------------------------------------------------
+  Drove `_write_host_search_bigg_outputs` with the exact row main.py:1542-1554
+  builds when solve_bigg_host returns HostSolveResult(False,"infeasible",0.0,…):
+
+    summary status        : ok
+    n_candidates_failed   : 0
+    run-level warnings    : []
+    top_ranked            : [(1,[A,B],1.2), (2,[C,D],0.8), (3,[E,F],0.0)]
+    unevaluated block     : []
+    figure colour #3182bd ("evaluated ok" blue) : True
+    figure colour #bdbdbd (grey/failed)         : False
+    figure mentions "infeasible"                : False
+    _exit_code_for_status(status)                : 0
+
+  host_search_rankings.csv row 3:
+    3,E+F,0,0,infeasible,False,ac,0,0.9,optimal,
+    host solve was not optimal (status=infeasible); the reported host objective
+    is not a result,ok,
+
+  The row carries its own refutation and nothing reads it. Reading delivered to
+  the researcher: "consortium E+F gives the host no benefit (0)". Never measured.
+
+--------------------------------------------------------------------------------
+RV-4  A FABRICATED FIGURE PASSES result_digest "verified"         *** REPRODUCED ***
+--------------------------------------------------------------------------------
+  cmig gene-ko-search --taxonomy tax2b.csv --members iHN637,iYO844 \
+       --member iHN637 --target ac --max-genes 3 --out out_ko
+  printf '<svg>FABRICATED FIGURE</svg>' > out_ko/gene_ko_plot.svg
+  cmig inspect-run --run out_ko --format text
+
+    status: ok (source: manifest)
+    result_digest: sha256:85c9a49b… (certifies the ARTIFACT BYTES) — verified
+    artifacts:
+      - gene_ko_plot.svg          <-- the tampered file, listed, and "verified"
+    exit 0
+
+  Cause: manifest.artifacts = ['gene_ko_rankings.csv','gene_ko_summary.json'];
+  summary.artifacts = the same two PLUS gene_ko_plot.svg/.tiff;
+  result_digest.artifacts = the manifest's two. No workflow declares its figures.
+
+--------------------------------------------------------------------------------
+RV-5  A DROPPED NUTRIENT IS SILENT ON EVERY SURFACE A USER READS  *** PARTIAL ***
+--------------------------------------------------------------------------------
+  cmig solve --taxonomy tax2.csv --medium med_bogus.csv \
+             --allow-unknown-medium --assume-bigg-namespace --out out_bogus
+
+  stdout: "solve 완료 (solver=gurobi, medium=custom) → out_bogus
+           run_hash: c9997757… growth: 1.8885
+           warning: pfba_stage_failed; …"
+    -> says medium=custom, never says a requested nutrient was not applied.
+
+  manifest.json IS honest:
+    diagnostic.detail.warning = {"code":"medium_unapplied",
+                                 "detail":{"exchange_ids":["EX_totallybogus_m"]}}
+    provenance.medium_policy   = "exchange_reactions_by_metabolite_v2"
+
+  cmig inspect-run: surfaces NEITHER — `_compact_manifest` drops `diagnostic` and
+  `provenance`. Only `status: degraded` hints at it.
+
+  PARTIAL: the data layer is honest (the CC-11 fix works, and the user did opt in
+  with --allow-unknown-medium). The two layers a user actually reads are silent.
+  This is P2-a made concrete.
+
+--------------------------------------------------------------------------------
+RV-6  SWEEP CACHE REPLAY BELOW THE ROUNDING FLOOR            *** DID NOT REPRODUCE ***
+--------------------------------------------------------------------------------
+  cmig sweep --taxonomy tax2.csv --tradeoff-fs 0.5000001,0.5000004 \
+             --assume-bigg-namespace --out out_sweep
+
+    condition_id  axis_tradeoff_f   run_hash
+    cond-0000     '0.5000001'       5d1f72ca4498504c…
+    cond-0001     '0.5000004'       e6b88a3c3c48ff36…
+
+  Two distinct solves, two distinct hashes, full precision preserved in the
+  artifact. The CC-22 / V2 fix holds. Good.
+
+--------------------------------------------------------------------------------
+RV-7  TAMPERED DECLARED ARTIFACT: CAUGHT, BUT status ok / exit 0  *** REPRODUCED ***
+--------------------------------------------------------------------------------
+  cmig host-map --host models/iHN637.xml --taxonomy tax1.csv --out out_hostmap
+  # flip one row of host_exchange_map.csv from unmatched/False to exact/True
+  cmig inspect-run --run out_hostmap_tampered --format text
+
+    result_digest: MISMATCH                                    <-- correct, loud
+      recorded: sha256:60c75129…   actual: sha256:ad0f7df3…
+      - host_exchange_map.csv: changed
+      "…a matching run_hash does NOT make this run reproduced…"
+    status: ok (source: manifest)                              <-- contradicts it
+    exit 0
+
+  --format json: `result_digest.match: false` alongside `status: "ok"`, NOTHING on
+  stderr, exit 0.
+
+  The detection mechanism works and is well worded. Its own headline verdict field
+  and exit code do not participate.
+
+
+================================================================================
+4. ENVELOPE RE-BLESS — AUDITED LINE BY LINE, FULLY JUSTIFIED
+================================================================================
+Diffed the pre-merge golden (scratchpad round5/envelope_golden_before.json,
+captured at 45540d9) against cmig/core/workflow_envelope_golden.json at HEAD, and
+computed the CHARACTER-LEVEL edit script for every kind whose hash moved.
+
+13 kinds before, 13 after, identical kind set. 8 moved, 5 did not.
+
+EVERY MOVER, with its complete edit script (nothing else changed in any of them):
+
+  abundance_impact    5980c46d -> bded1760   insert '"f64:' / '4'->'35"' / ':"f64' / '7'->'65"'
+  host_ko_impact      f216ff74 -> 5a255ba7   (identical 4-edit shape)
+  host_microbe_bigg   404a03b0 -> e5acd04e   (identical 4-edit shape)
+  strain_growth       a4c78711 -> 4cd3fbcb   (identical 4-edit shape)
+      all four: abundances {0.333334, 0.666667} -> {"f64:0.3333335","f64:0.6666665"}
+  gene_ko_search      0ab21a22 -> a57b747e   insert '"f64:' / '5"'
+  model_pool_search   d3a05165 -> d31f4394   (identical 2-edit shape)
+  multi_target_...    e832203b -> ae7edefc   (identical 2-edit shape)
+      all three: growth_fraction 0.123456 -> "f64:0.1234565"
+  host_map            9f5ae817 -> ebc7396d   ONE edit: 'tru' -> 'fals'
+  float probe         85f660e1 -> 55609758   at_rounding_floor 0.123456 -> "f64:0.1234565"
+                                             below_rounding_floor 0.1 -> "f64:0.10000000000100001"
+
+So: 7 kinds moved for cause A (P3's lossless f64: canonicalization), 1 kind for
+cause B (the host_map policy boolean), and the float probe for cause A. That is
+exactly the claim in MERGE_REPORT §4, and the edit scripts contain NOTHING ELSE —
+no kind moved for an unexplained reason.
+
+NON-MOVERS — proved, not assumed. For each I enumerated `f64:` tokens, checked for
+`map_spec`, and tested every float literal for 6-decimal exactness:
+
+  kind                    f64  map_spec  floats                              non-6dp-exact
+  dfba                     0    False    0.1 0.2 0.1 10.0 0.01 0.01 10.0      NONE
+  host_search_bigg         0    False    0.5 1.5 0.25                          NONE
+  model_quality            0    False    (none)                                NONE
+  publication_benchmark    0    False    0.5 0.1 0.2 0.1 10.0 0.01 0.01 10.0
+                                         1.5 0.25                              NONE
+  sweep                    0    False    0.5 0.25 0.5 0.75                     NONE
+
+Every float in all five is exactly representable at 6 decimals, so cause A cannot
+apply; none records map_spec, so cause B cannot apply. They genuinely should not
+have moved. `host_map` is the ONLY kind carrying map_spec (verified across all 13),
+which is exactly why it is the only kind that moved for cause B and why it has
+zero f64 tokens.
+
+publication_benchmark specifically: component list confirmed as
+[workflow_kind, cmig_core_version, dependency_versions, solver_setting,
+ model_checksum, medium, tradeoff_f, target_spec, search_spec, quality_spec,
+ dfba_spec, host_spec, biomass_basis, bundle_spec] — no map_spec, and the golden's
+bundle_spec carries synthetic child hashes, so the policy flip cannot reach it.
+Real runs DO carry a real host_map child hash and therefore do move; the CHANGELOG
+says so. Consistent.
+
+Also recorded and verified: workflow_manifest_schema_version 1.0 -> 1.1;
+envelope_golden_schema_version and float_decimals unchanged.
+
+The `uppercase_stereoisomer_suffix_folded` flip is implemented as a MEASUREMENT
+(`_normalize_metabolite_id("lac__D_e") == _normalize_metabolite_id("lac__L_e")`)
+rather than a literal. That is the right call — this field went stale exactly once
+by being a restatement — and I confirmed observed values {folded: False,
+case_folded: True}.
+
+VERDICT ON ITEM 4: no unexplained movement, no unjustified stasis. Clean.
+
+
+================================================================================
+5. THE SEVEN CONTRACT CHANGES — NONE WEAKENED A REAL GUARANTEE
+================================================================================
+The two replaced tests were the ones worth attacking, so I mutation-tested them:
+restored the original defect in a `git archive HEAD` copy and checked the
+replacement fires.
+
+3a  osqp staleness pin -> test_each_shipped_golden_re_derives_its_own_run_hash_
+    at_its_own_decimals.  STRONGER, by inspection of the code:
+      - parametrized over cmig.golden_fixture.SOLVER_VARIANTS instead of naming
+        solvers inline (the exact blind spot that let the osqp regression reach
+        integration — every prior hash pin was gurobi-only);
+      - a declared variant may NOT silently skip: absence asserts that no other
+        variant ships a golden either, so xfail-by-absence is impossible;
+      - carries its own anti-vacuity guard (a perturbed tradeoff_f must not
+        reproduce the published hash).
+    The original asserted a transient bad state and was written to fail on repair.
+    The replacement asserts the permanent invariant. Correct trade.
+
+3b  PINNED_BEHAVIOR_DIGEST re-pin + the perturbation that went inert + the probe
+    assertion that had been pinning the defect.  MUTATION-VERIFIED.
+    Reverted `_normalize_metabolite_id` to the pre-round-5 folding body:
+      lac__D_e -> lac | lac__L_e -> lac | FOLDED: True
+    Guards that fired:
+      test_the_pinned_behaviour_digest_has_not_moved                      FAILED
+      test_a_matcher_change_moves_the_behaviour_digest
+        [normalizer_folds_the_stereo_descriptor]                          FAILED
+      test_a_matcher_change_moves_the_host_map_run_hash
+        [normalizer_folds_the_stereo_descriptor]                          FAILED
+      test_the_probe_fixture_still_distinguishes_every_decision_point     FAILED
+        (diff shows "+ normalized" — ste__D_e folds back onto the host's bare
+         ste_e, i.e. the replaced assertion is load-bearing exactly as claimed)
+      + 14 tests in test_round5_domain_accuracy.py
+      + 4 envelope drift-gate tests
+    The replacement perturbation `normalizer_folds_the_stereo_descriptor` is the
+    pre-round-5 implementation verbatim, so it is a direct regression canary for
+    the P0 rather than a proxy. It fires because if production folds, the
+    perturbation stops perturbing. That is the right construction.
+
+3c  the float probe assertion that had been pinning CC-4.  MUTATION-VERIFIED.
+    Forced `_round_floats` back to always-round-6:
+      canonicalize_floats(1e-7,6) -> 0.0 ; (4e-7,6) -> 0.0 ; COLLIDE: True
+    Guards that fired (11 total), including the replaced one:
+      test_the_float_probe_covers_the_cases_json_cannot_store             FAILED
+      test_a_determining_input_below_the_rounding_floor_still_moves_the_hash FAILED
+      test_a_determining_input_below_six_decimals_still_changes_the_hash  FAILED
+      test_solve_derived_values_are_rounded_by_their_builder_not_by_the_hash FAILED
+      + 7 envelope-golden / manifest tests
+    The original assertion (`below_rounding_floor == 0.1`) pinned the DEFECT. The
+    replacement pins the fix AND asserts the values no longer equal what they used
+    to be rounded onto. Strictly stronger.
+
+3d  the two test_round5_p3_io_exception.py tests updated for the rank sentinel
+    ("" -> 0) as a consequence of taking P1's KO schema. The asserted PROPERTY is
+    unchanged ("a failed knockout is not given a rank and is not counted as
+    evaluated"); the JSON assertion moved from "null ordinal inside top_ranked" to
+    the stronger "not in top_ranked at all, present under unevaluated", and an
+    assertion that score_delta is blank was ADDED. Net strengthening.
+
+3e  CHANGELOG corrections. Verified `result_digest` appears 5 times and the CC-7
+    entry with the BREAKING note is present.
+
+Nothing was deleted. No test was weakened. Every replacement is discriminating
+against the defect it inherited.
+
+
+================================================================================
+6. GATES — ALL CLAIMS REPRODUCED INDEPENDENTLY
+================================================================================
+  ruff check cmig tests ............... All checks passed (exit 0)
+  pytest tests/ -q -p no:randomly ..... exit 0, ZERO FAILED/ERROR lines.
+        Summary line was suppressed by the -q plugin, so I counted the progress
+        characters directly: Counter({'.': 1013, 's': 2}) -> 1013 passed,
+        2 skipped, 0 failed. Matches the claim exactly.
+  cmig golden verify .................. exit 0
+        [OK] gurobi golden=0.39.0 installed=0.39.0  run_hash 29844e2910360332…
+        [OK] osqp   golden=0.39.0 installed=0.39.0  run_hash a422eb89d019f917…
+  cmig golden verify-envelope ......... 13/13 kinds OK + float probe, exit 0
+  git status --porcelain .............. empty (I modified nothing)
+
+Not re-verified because the coordinator confirmed them personally and I found no
+reason to doubt them: the frozen gurobi hash via a real solve-fixture; lac__D_e ->
+lac__d vs lac__L_e -> lac__l with EX_ac_m__Escherichia_coli -> ac;
+uppercase_stereoisomer_suffix_folded == false (though I did observe this value
+directly via host_map_policy() while auditing the envelope); the gene-KO writer
+schema deviation (independently re-derived in section 1).
+
+
+================================================================================
+7. THE THREE JUDGEMENT QUESTIONS
+================================================================================
+
+Q: Are the deferrals defensible as a set?
+A: The five ON the list are, individually and as a set. `edges.parquet.weight` is
+   the only one a publishing researcher could be harmed by, and the reasoning for
+   deferring the VALUE (re-blessing a frozen golden on both solvers, two reviewers
+   proposing incompatible `abundance is None` contracts, neither patch scaling the
+   FVA bounds) is sound, with a unit disclosure landed in the manifest and echoed
+   by inspect-run. I would not have closed it in this pass either.
+   THE PROBLEM IS NOT THE LIST, IT IS WHAT IS ABSENT FROM IT. The three P0s in
+   section 2 are not on it, and the report's "three separate sites" sentence reads
+   as a complete enumeration of the class. Two of the three write publication
+   artifacts. That is the gap.
+
+Q: Is the run_hash / result_digest split documented where a user will meet it?
+A: At the point of use, YES and well: `inspect-run` prints "(certifies the
+   INPUTS)" and "(certifies the ARTIFACT BYTES)" inline, and the mismatch message
+   is the clearest sentence in the codebase. In the reference docs, NO —
+   `result_digest` appears in CHANGELOG.md (5×) and nowhere in README.md, docs/,
+   or .claude/skills/cmig-metabolic-analysis/SKILL.md. SKILL.md tells an agent to
+   run `inspect-run --format json` as the mandated verification step (line 55)
+   without telling it that `status` and the exit code both ignore
+   `result_digest.match` (P1-b). That combination is how a verification step
+   passes a tampered run.
+
+Q: Does the GUI now tell the same truth as the CLI?
+A: In the places specifically fixed, yes, and properly. The CC-6 dFBA fix is real:
+   `load_dfba_summary` reads `warnings` and `n_untracked_uptake`, flags the status
+   cell rather than printing plain "completed", and the `--close-untracked-uptake`
+   control is exposed (views.py:183, wired at app.py:1241) so the user can make
+   the run interpretable instead of only being told it is not. The CC-8 argv race
+   fix is correct. strain-growth's GUI table honestly renders an em dash where the
+   figure fabricates a zero.
+   Outside those places the pattern recurs. The GUI displays
+   `dfba_timecourse.svg`, which carries none of the warning it just rendered
+   (P2-d). The results table is built from `top_ranked` only (gui/app.py:1780), so
+   gene-KO `unevaluated` rows reach the user only as a forwarded warning string.
+   The honest answer is "in the places that were specifically fixed", and the
+   remaining gaps are figures and side-partitions rather than numbers.
+
+
+================================================================================
+8. WHAT I CHECKED AND FOUND CLEAN (so a later round need not redo it)
+================================================================================
+* All six multi-track files, by mechanical lost-line analysis (section 1).
+* Exactly one gene-KO implementation; NaN + suppressed headline + unevaluated
+  block; both `top_ranked` consumers confirmed to exist.
+* Medium single-path: every consumer routed through `apply_medium_translated`;
+  merge-vs-exact semantics do not diverge between solve and strain-growth.
+* `exchange_metabolite` is stereo-correct independently of P1's fix.
+* `prune_stale_artifacts` covers all three conditional-artifact writers.
+* `host_microbe_bigg`'s missing map_spec is not a hole — the map contents are
+  hashed via `host_spec.interface_map_checksum`.
+* `MEDIUM_POLICY` absent from both hash contracts, present in both payloads,
+  observed in a real manifest.
+* Envelope re-bless: character-level for all 8 movers, exactness-proof for all 5
+  non-movers.
+* Contract changes 3a-3e, two of them by mutation test.
+* result_digest correctly detects a tampered DECLARED artifact.
+* Sweep cache replay below the rounding floor: fixed, verified by a real run.
+* All four gates.
+
+
+================================================================================
+9. RECOMMENDED ORDER OF WORK
+================================================================================
+Before release (blocking the release text, not the merge):
+  1. main.py:5374-5375 — filter on `single_status`/finiteness and title the
+     omission, copying `_abundance_impact_plot_series` verbatim. ~2 lines + a test.
+  2. main.py:6786 and :6826 — derive the sweep status from the per-condition
+     `status` column and pass the failures as warnings; call
+     `_exit_code_for_status`. ~4 lines + a test.
+  3. main.py:1543 — derive `evaluation_status` from `host_result.status` /
+     `community_status` instead of hard-coding "ok". ~5 lines + a test.
+  4. If any of 1-3 is not done, add it to "Known open, deliberately" with the
+     reproduction, and reword the "Three separate sites" sentence.
+Next round:
+  5. Declare figures in the manifest `artifacts` lists, or stop saying "certifies
+     the ARTIFACT BYTES" (P1-a). Reconcile the two `artifacts` lists per run.
+  6. Make `inspect-run` non-zero on a result_digest mismatch, and stop reporting
+     `status: ok` over it. Emit the mismatch in JSON mode too. Update SKILL.md.
+  7. Surface `warnings`/`diagnostic`/`provenance` in `_compact_manifest`.
+  8. `n_candidates_evaluated` should count successes, not cache entries (P1-c).
+  9. Wire `--allow-failed-run` on the three commands that advertise it (P1-e).
+ 10. gene-KO: make an all-failed screen "failed" in the manifest too, and make
+     `n_evaluated` mean results everywhere (P1-d).

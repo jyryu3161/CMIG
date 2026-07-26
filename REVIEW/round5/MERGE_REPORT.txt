@@ -1,0 +1,389 @@
+CMIG round-5 final integration merge — report
+=============================================
+Worktree : /Users/jaeyongryu/orca/CMIG-wt-integration
+Branch   : round5/integration
+Commit   : 88cf8e9  "Merge branch 'review/p1-domain' into round5/integration"
+Parents  : 45540d9 (main+P3+P2+P4)  +  e84f5f3 (review/p1-domain)
+Not pushed. Not merged into main. No other worktree touched.
+
+
+1. CONFLICT RESOLUTION
+======================
+
+1a. cmig/core/namespace.py — COMBINE (per CC-26)
+------------------------------------------------
+KEPT from P4:
+  - NORMALIZE_EXCHANGE_PREFIX and NORMALIZE_COMPARTMENT_SUFFIXES as module
+    constants, with P4's comment explaining that the host-map workflow
+    manifest reads the normalization policy from code rather than restating
+    it (a restated policy drifts silently).
+  - P4's `tuple[str, ...]` annotation on NORMALIZE_COMPARTMENT_SUFFIXES.
+
+TAKEN from P1:
+  - STEREO_DESCRIPTORS = frozenset({"D","L","R","S"})
+  - _strip_compartment_suffix() helper
+  - the rewritten _normalize_metabolite_id body (rpartition-based; strips a
+    trailing __<token> only when the token is a plausible taxon name, i.e.
+    length > 1 and not a stereo descriptor).
+
+DELETED (as instructed):
+  P4's docstring paragraph asserting that folding `glu__D` -> `glu` is
+  "deliberate for *candidate suggestion*". That statement is false after
+  P1's fix and is the exact rationalisation that let CC-7 survive four
+  review rounds. Replaced by P1's text, which states why the descriptor is
+  part of metabolite identity and must be preserved.
+
+  One clause of the deleted paragraph was retained because it is still true
+  and load-bearing: that a normalized (non-exact) match is only a candidate,
+  so only exact matches are auto-admitted downstream
+  (host_map.HOST_MAP_INTERFACE_MAP_ADMITS). It is now stated as a fact about
+  admission policy rather than as a justification for folding.
+
+
+1b. cmig/cli/main.py — 7 hunks
+------------------------------
+Hunk 1 — _cmd_inspect_run printing.  COMBINED.
+  P3/P4 print run_hash with "(certifies the INPUTS)" plus the full
+  result_digest verification block (match / MISMATCH with per-artifact
+  breakdown on stderr). P1 prints the `edges.weight basis` disclosure from
+  the manifest's edge_attribution.
+  Both are purely additive prints and neither side may lose a behaviour, so
+  both are kept: result_digest block first, then edge-weight basis, then
+  artifacts.
+
+Hunks 2+3 — the failed-KO row.  ONE VERSION, comments merged.
+  P1 and P3 independently produced identical behaviour (NaN in every
+  scientific field instead of 0.0 / -baseline.score). Kept P1's local
+  `nan = float("nan")` binding and merged the two comments: P1's contributes
+  the concrete measured consequence ("the reported -12.15 effect was just the
+  baseline with a minus sign") and the sort/render mechanics; P3's
+  contributes that the writer numbered every row it was given, so the value
+  reached gene_ko_rankings.csv as the screen's largest suppression.
+
+Hunk 4 — the "rank 1 (largest effect)" headline.  TOOK P3 (as ruled).
+    ranked = [row for row in rows if row.get("evaluation_status") == "ok"]
+    if ranked: best = ranked[0]
+  Note: in the merged tree the two sides are behaviourally equivalent, because
+  P1's `evaluated_rows` partition (main.py:2353, a non-conflicting region) is
+  already present and P1's `if evaluated_rows:` suppresses the headline too.
+  P3's form was taken per the ruling; it is also self-contained.
+
+Hunks 5-7 — the KO artifact writer.  Judged on merits; P1's schema wins,
+P3's helpers kept.
+  Kept from P3: _n_ko_evaluated (called from a non-conflicting region at
+    main.py:2385, and independently tested) and _gene_ko_summary_status
+    (independently tested at test_round5_p3_io_exception.py:164-173).
+    Both are behaviourally identical to P1's inline equivalents but are
+    named and directly covered.
+  Kept from P1: _ko_ranked_rows -> (rank, row) with rank 0 == "no rank";
+    CSV writes 0 for an unevaluated row; JSON `top_ranked` contains ONLY
+    evaluated rows; unevaluated rows are published in their own
+    `unevaluated` block.
+  Dropped: P3's _ko_ranks (blank-string rank sentinel).
+
+  Why P1's schema, against the general "P3 is the superset" note: for these
+  three hunks P1's is the superset, and the difference is a real behaviour,
+  not a style choice.
+    - Under P3's shape a failed knockout still sits inside `top_ranked` with
+      rank None. Two consumers iterate `top_ranked` WITHOUT inspecting rank:
+      cmig/gui/builder.py:678 (the results table) and
+      cmig/cli/main.py:582 (_resolve_run_status, which derives a run's status
+      from the statuses in top_ranked, and treats an empty top_ranked as
+      "failed"). A failure parked there with a null ordinal is still read as
+      a result by both. P1's filter makes that structurally impossible.
+    - The `unevaluated` block is a behaviour P3's version does not have.
+    - rank 0 is the sentinel every other CMIG ranked artifact already uses
+      (core/search_product.py:506, 597, 852 and the three other `unevaluated`
+      blocks at main.py:3439, 4522, 5113). One rule for "was this row
+      measured?" across the product beats one rule per subcommand.
+  Also removed a now-unused `n_failed` local (ruff F841) left behind by
+  taking P3's derived-status helper.
+
+  Consequence: two P3 tests pinned the blank-rank shape and were updated
+  deliberately (section 3 below). No test was deleted or weakened.
+
+
+2. MAP_SPEC POLICY FIELD
+========================
+`uppercase_stereoisomer_suffix_folded` flipped true -> false in
+cmig/core/host_map.py host_map_policy().
+
+Done as a measurement rather than a literal:
+    "uppercase_stereoisomer_suffix_folded": (
+        _normalize_metabolite_id("lac__D_e") == _normalize_metabolite_id("lac__L_e")
+    ),
+    "case_folded": (
+        _normalize_metabolite_id("AC_e") == _normalize_metabolite_id("ac_e")
+    ),
+Rationale: this field is hashed, and it went stale exactly once — it recorded
+the CC-7 defect as though it were policy and kept recording it after the fix.
+A restated policy can go stale; an asked one cannot. This matches the module's
+own stated design philosophy ("a described policy cannot certify an artifact;
+a measured one can"). Observed values now: folded=False, case_folded=True.
+
+Also corrected a comment on HOST_MAP_NEEDS_REVIEW_TYPES that still claimed the
+needs_review bucket includes "D/L stereoisomer swaps" — it cannot any more,
+because the normalizer no longer pairs lac__D with lac__L.
+
+
+3. TESTS UPDATED (each justified individually; none deleted)
+============================================================
+
+3a. tests/test_workflow_manifest.py
+    test_the_osqp_golden_is_stale_against_the_current_float_decimals_contract
+      -> test_each_shipped_golden_re_derives_its_own_run_hash_at_its_own_decimals
+    Why: P4 wrote it to pin the stale fixture and to fail "the moment someone
+    recaptures". P3 repaired the fixture (corrected the three stored
+    abundances to 4 decimals so it reproduces itself, WITHOUT moving the
+    published hash), so the pin failed by design.
+    Replacement asserts the permanent invariant: every shipped golden
+    re-derives its own stored run_hash from its own stored components at its
+    own recorded golden_decimals. Strengthened beyond the state it replaced:
+      - parametrized over cmig.golden_fixture.SOLVER_VARIANTS rather than
+        naming solvers inline (the osqp regression reached integration
+        precisely because every hash pin in the suite was gurobi-only);
+      - a declared variant may not silently skip — if some variants ship a
+        golden and one does not, that is an assertion failure, not a skip;
+      - an anti-vacuity guard (CC-22's mandatory "would this catch deletion?"
+        audit): a perturbed tradeoff_f must NOT reproduce the published hash.
+    P3's aggregate test_every_shipped_golden_is_reproducible_from_its_own_
+    recorded_components was left in place — deleting another track's test at
+    merge time is not the merger's call, and it is a valid independent
+    formulation.
+
+3b. tests/test_host_map_behavior_digest.py
+    (i) PINNED_BEHAVIOR_DIGEST re-pinned:
+          sha256:70782b1b107b175ca04ef4ce9407ca072349e58a5cb9d14e26f925ce0bbb3b86
+        -> sha256:36059e16f8322762d50c8abfcbe6f2542f9410f7e30f6f5f2be2f2d10b425357
+        This is the drift gate working: P1's fix changes what
+        _normalize_metabolite_id does to the probe's D/L ids, so map_spec and
+        every host_map / publication_benchmark run_hash move with it. The
+        test's own message demands exactly this procedure (update the pin,
+        re-bless, record in the changelog). Verified the digest is a behaviour
+        probe and not a source-text hash: it was bit-identical before and
+        after my comment-only edits to host_map_probe.py.
+    (ii) Perturbation `normalizer_folds_every_stereo_suffix` went INERT.
+        It perturbed by upper-casing the input (raw.replace("__d_","__D_")),
+        which only changed the output while case was the discriminator. The
+        fixed normalizer preserves the descriptor in either case, so the
+        perturbation stopped perturbing anything and its two parametrized
+        tests failed. Replaced with `normalizer_folds_the_stereo_descriptor`,
+        which is the pre-round-5 implementation verbatim — a direct regression
+        canary for the P0 itself. Both parametrized tests pass against it.
+    (iii) test_the_probe_fixture_still_distinguishes_every_decision_point
+        asserted entries["ste__D_e"].match_type == "normalized", i.e. it
+        pinned the defect (ste__D_e folding onto the host's bare ste_e).
+        Now asserts BOTH ste__D_e and ste__d_e are "unmatched", with a comment
+        stating that either of them matching EX_ste_e means the D/L-collapsing
+        normalizer is back. The assertion remains load-bearing: the host still
+        offers bare `ste_e`, so a regression to folding flips it immediately.
+        Fixture comments in cmig/core/host_map_probe.py updated to match
+        (they still described the folding behaviour as intended).
+
+3c. tests/test_workflow_envelope_golden.py
+    test_the_float_probe_covers_the_cases_json_cannot_store asserted
+      values["below_rounding_floor"] == 0.1   # "noise under the 6-decimal floor"
+    That pins the CC-4 defect: six-decimal canonicalization mapped every input
+    below the floor onto one serialization, so a run at solver tolerance 1e-7
+    and one at 1e-9 shared a run_hash while producing different numbers.
+    Updated to the post-P3 contract: below_rounding_floor and at_rounding_floor
+    now serialize as "f64:0.10000000000100001" / "f64:0.1234565", plus explicit
+    assertions that they no longer equal the values they used to be rounded
+    onto. Docstring records why the frozen solve hashes survived the change
+    (a six-decimal-exact value still serializes bare; only a value rounding
+    would destroy takes the f64: branch).
+
+3d. tests/test_round5_p3_io_exception.py — two tests, consequence of 1b.
+    test_failed_gene_ko_row_is_not_given_a_rank_or_counted_as_evaluated:
+      switched from _ko_ranks to _ko_ranked_rows; the "no rank" sentinel read
+      changes from "" to 0. The property asserted is unchanged.
+    test_gene_ko_artifacts_do_not_rank_a_knockout_that_failed:
+      CSV rank cell "" -> "0"; the JSON assertion moves from "the failed row
+      has a null ordinal inside top_ranked" to "the failed row is not in
+      top_ranked at all and appears under unevaluated". Also added an
+      assertion that its score_delta cell is blank (no fabricated delta),
+      which the original did not check.
+    Both docstrings carry a merge note explaining the sentinel decision, so
+    the choice is encoded rather than remembered.
+
+3e. CHANGELOG.md
+    - Replaced the now-false "Known open — the osqp golden fixture is stale
+      and is not fixed here" entry with an accurate account: P3 made it
+      self-consistent WITHOUT moving the published hash a422eb89…, golden
+      verify now compares hashes, and the invariant is tested per solver
+      variant.
+    - Added the CC-7 entry: the D/L destruction, its mechanism, its
+      consequence (host grows on a molecule it cannot transport), and the
+      BREAKING note that host_map / publication_benchmark run_hashes move
+      because uppercase_stereoisomer_suffix_folded flipped and the behaviour
+      digest moved 70782b1b -> 36059e16.
+    - Added a gene-KO entry (neither P1 nor P3 wrote one, and the artifact
+      schema is user-visible).
+
+
+4. ENVELOPE RE-BLESS — exactly one, and what moved
+==================================================
+Command: python -m cmig.core.workflow_envelope_golden   (run once)
+
+MOVED (8 kinds + the float probe):
+
+  Cause A — P3's lossless `f64:` canonicalization (7 kinds).
+  The golden component fixtures feed values that six decimals cannot
+  represent exactly, so they now take the lossless branch instead of being
+  silently rounded. Verified by enumerating the f64: tokens per kind:
+
+    abundance_impact                5980c46d -> bded1760
+    host_ko_impact                  f216ff74 -> 5a255ba7
+    host_microbe_bigg               404a03b0 -> e5acd04e
+    strain_growth                   a4c78711 -> 4cd3fbcb
+        all four: abundances {m_a: 0.333334, m_b: 0.666667}
+        -> {"f64:0.3333335", "f64:0.6666665"}
+
+    gene_ko_search                  0ab21a22 -> a57b747e
+    model_pool_search               d3a05165 -> d31f4394
+    multi_target_model_pool_search  e832203b -> ae7edefc
+        all three: growth_fraction 0.123456 -> "f64:0.1234565"
+
+  Cause B — the host-map policy flip (1 kind).
+    host_map                        (input fixture) -> ebc7396d
+    Character-level diff of the canonical JSON before/after is exactly
+    `tru` -> `fals`, i.e. the single field
+    map_spec.id_normalization.uppercase_stereoisomer_suffix_folded.
+    Note the golden's map_spec.match_behavior.digest is the synthetic
+    placeholder "sha256:4444" / probe_version "golden", so the real probe
+    digest movement (section 3b) does NOT reach this fixture — the boolean
+    is the whole delta here.
+
+  Cause A also — the float normalization probe.
+    float_normalization_probe       85f660e1 -> 55609758
+    at_rounding_floor 0.123456 -> "f64:0.1234565" and
+    below_rounding_floor 0.1 -> "f64:0.10000000000100001".
+    This probe exists specifically to detect this class of change, so its
+    firing is the designed outcome.
+
+  Also recorded in the golden file: workflow_manifest_schema_version
+  1.0 -> 1.1 (P3's envelope schema bump, which the golden had not yet
+  captured). envelope_golden_schema_version and float_decimals unchanged.
+
+UNCHANGED (5 kinds) — and why, checked rather than assumed:
+    dfba, host_search_bigg, model_quality, sweep, publication_benchmark
+  None of their fixtures contains a float that six-decimal rounding would
+  destroy (zero `f64:` tokens after the re-bless), and none records map_spec.
+  publication_benchmark specifically: its component list is
+  [workflow_kind, cmig_core_version, dependency_versions, solver_setting,
+   model_checksum, medium, tradeoff_f, target_spec, search_spec, quality_spec,
+   dfba_spec, host_spec, biomass_basis, bundle_spec] — no map_spec, and its
+  bundle_spec fixture carries synthetic child hashes, so the host-map policy
+  change does not reach the golden. Real publication_benchmark runs DO carry
+  a real host_map child hash and therefore do move; the CHANGELOG says so.
+
+
+5. GATES
+========
+  ruff check cmig tests ................ All checks passed (exit 0)
+  pytest tests/ ........................ 1013 passed, 2 skipped, 0 failed
+                                         (138 s)
+  pytest tests/ (randomized order) ..... 1013 passed, 2 skipped, 0 failed
+                                         (141 s)  — test_service_is_qt_independent
+                                         passes; CC-30 item 7 resolved by the
+                                         re-bless, no third order-dependent test.
+  cmig golden verify ................... exit 0
+        [OK] gurobi  golden=0.39.0 installed=0.39.0  run_hash 29844e2910360332…
+        [OK] osqp    golden=0.39.0 installed=0.39.0  run_hash a422eb89d019f917…
+  cmig golden verify-envelope .......... exit 0, 13/13 kinds OK + float probe
+
+  Baseline before this work was 9 failures (8 envelope-golden pending
+  re-bless + 1 osqp staleness pin). Every additional failure encountered was
+  diagnosed to a deliberate contract change and is documented in section 3:
+  4 in test_host_map_behavior_digest.py, 1 in test_workflow_envelope_golden.py,
+  2 in test_round5_p3_io_exception.py. No failure was left unexplained and
+  none was resolved by deleting or weakening a test.
+
+
+6. INVARIANT CHECKS (observed values)
+=====================================
+
+I1. Frozen gurobi hash, END TO END via a real solve-fixture
+    $ cmig solve-fixture --solver gurobi --out <tmp>
+      run_hash: 29844e29103603324d118cc9a8b9ae4fa2a79070418860cfc2ed70095cef29ab
+      FROZEN MATCH: True
+    (read from the written manifest.json, not from a unit test)
+
+I2. osqp golden under P3's hash-comparing golden verify
+      [OK ] osqp   golden=0.39.0 installed=0.39.0
+            [OK ] run_hash a422eb89d019f917…
+      full value a422eb89d019f917f7fc334db8e9a2eff7d89ce49031ccbf215df7bd404d3d9d
+      re-derived from its own stored components at golden_decimals=4 by
+      test_each_shipped_golden_re_derives_its_own_run_hash_at_its_own_decimals
+
+I3. Medium fix survives — same --medium file, solve vs strain-growth
+    Community iHN637 + iYO844, abundance 0.5/0.5, gurobi. Community growth
+    taken as the abundance-weighted sum from solve's nodes.parquet, and as
+    strain_growth_summary.json's community_growth.
+
+      medium {EX_ac_m:10, EX_glc__D_m:20, EX_o2_m:20}
+        solve         1.041074482797675
+        strain-growth 1.041074482797675      IDENTICAL
+      medium {EX_ac_m:10}
+        solve         0.828364532514885
+        strain-growth 0.828364532514885      IDENTICAL
+      medium {EX_ac_m:10, EX_glc__D_m:20}
+        solve         1.888492301787822
+        strain-growth 1.888492301787822      IDENTICAL
+      medium_presets/western_diet.csv  {EX_glc__D_m:20}
+        solve         1.888492301806459
+        strain-growth 1.888492301806459      IDENTICAL
+
+    HONEST CAVEAT: I could not reproduce P1's literal figure
+    1.125065287885022. That number is a property of P1's specific medium
+    file, which is not committed to the tree (CC-19 records it alongside
+    EX_ac_m=10.0, but an acetate-only medium on this pair gives 0.828364
+    here, so their file or parameters differed). What the invariant actually
+    asserts — that the two subcommands apply the same medium and return the
+    same physics — is verified bit-identically on four independent media,
+    which is strictly more evidence than one reproduced constant. The
+    semantics are additionally pinned by
+    tests/test_round5_domain_accuracy.py::test_checked_and_translated_media_agree_exactly.
+
+I4. Stereochemistry
+      lac__D_e                  -> lac__d
+      lac__L_e                  -> lac__l          D != L : True
+      glc__D_e                  -> glc__d
+      arab__D_e / arab__L_e     -> arab__d / arab__l
+      ala__D_e  / ala__L_e      -> ala__d  / ala__l
+      EX_glc__D_m               -> glc__d
+      ac_e                      -> ac
+      EX_ac_m__Escherichia_coli -> ac              (taxon suffix still stripped)
+      host_map_policy()["id_normalization"] =
+        {uppercase_stereoisomer_suffix_folded: False, case_folded: True}
+
+I5. Conflicting namespace aliases refused
+      medium {EX_glc__D_m: 3.0, EX_glc__D_e: 20.0}
+      cmig solve         -> exit 2
+      cmig strain-growth -> exit 2
+      stderr: "medium spec requests conflicting uptake limits for the same
+      metabolite (namespace aliases): ['glc__D <- {EX_glc__D_e=20.0,
+      EX_glc__D_m=3.0}']. Resolve the duplicate rows — refusing rather than
+      silently picking one, because the choice would change the result
+      without changing the medium checksum."
+
+
+7. NOTES FOR THE COORDINATOR
+============================
+* The only place I departed from the letter of the merge checklist is
+  cli/main.py hunks 5-7, where I took P1's KO artifact schema instead of
+  P3's. The checklist explicitly delegated the remaining hunks ("judge each
+  on its merits"), and the deciding fact is that two consumers iterate
+  top_ranked without inspecting rank. Reasoning is in section 1b and encoded
+  in the two updated test docstrings.
+* The behaviour digest and the envelope host_map hash moved for two
+  DIFFERENT reasons that are easy to conflate: the digest moved because the
+  real normalizer changed; the envelope golden's host_map hash moved only
+  because of the boolean, since that fixture stores a placeholder digest.
+  Both are correct, but a future reader checking one against the other
+  should not expect them to move together.
+* CC-30 item 7 is resolved: test_service_is_qt_independent passes in
+  full-suite order both with and without random ordering, after the re-bless.
+  It is not a third order-dependent test, consistent with CC-29's retraction.
+* Nothing pushed; round5/integration has no upstream. main untouched.
+  /Users/jaeyongryu/orca/CMIG and all other worktrees untouched.

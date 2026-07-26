@@ -1,0 +1,595 @@
+# P4 fix — closing the host-map hash/output decoupling (Claude Opus 5, FIXER)
+
+Worktree /Users/jaeyongryu/orca/CMIG-wt-followup, branch feat/p4-manifest-drift, uncommitted.
+`import cmig` -> /Users/jaeyongryu/orca/CMIG-wt-followup/cmig/__init__.py (shadow verified).
+No commit / push / merge. No scratch directories left in the worktree.
+
+NOTE ON THIS FILE'S NAME: a hook blocked the Write tool from creating `report_fix.md`
+("Subagents should return findings as text"). Per the brief's fallback, the report is here as
+`report_fix.txt`, and the essentials are also in the agent's final response.
+
+## 0. Headline
+
+The coupling is closed. Both perturbations the verifier demonstrated end-to-end now move the
+host_map run_hash, and so do ten more covering every remaining decision point in the matching
+path. Of 12 source perturbations run through the real CLI on real GEMs, 0 change the output under
+an unchanged run_hash (before the fix: 2 did; in a second narrower harness, 3 of 4 did).
+
+                                    pre-fix run_hash        post-fix run_hash     output
+baseline (iHN637 + iYO844)          c5a6c402...c66257a5     37a9e83f...f0350344   67/6/0/155
+P-I secretion crit -> reversible    c5a6c402...c66257a5     7738c575...db763d46   ifmap 67 -> 11,
+                                    (IDENTICAL)             (MOVED)               needs_review 6 -> 0
+P-B annotation/normalized swapped   c5a6c402...c66257a5     27a0cb16...afdc934d   all 6 D/L
+                                    (IDENTICAL)             (MOVED)               entries relabelled
+
+Both pre-fix values were reproduced independently in this session, not copied from the report.
+The artifacts are unchanged by the fix itself: on the same host+pool the CSV and interface map are
+byte-identical before and after, and summary.interface_map_checksum stays sha256:263176e4...
+Only the fingerprint over them moved, once, deliberately.
+
+## 1. Triage
+
+F1 [P0] matching behaviour changeable under a bit-identical run_hash   ACCEPT-MODIFIED
+  Defect confirmed and reproduced exactly (c5a6c402...c66257a5 on both sides, interface_map
+  67 -> 11, summary.interface_map_checksum 263176e4... -> e27db1bd...). Second break reproduced
+  too: all 6 D/L entries relabelled annotation -> normalized under an unmoved hash.
+  MODIFIED because I rejected the proposed inspect.getsource mechanism -- see section 3.
+
+F2 [P2] host_spec hashes the host-model path string                    ACCEPT   fixed
+F3 [P2] _child_solve_run_hash does not validate manifest scope         ACCEPT   fixed
+F4 [P2] claim "manifest scope solve" names a key that does not exist   ACCEPT   fixed
+F5 [P2] base_dir mismatch breaks relative taxonomies in pub-benchmark  REJECT   see section 5
+NEW     envelope drift gate did not notice an edited component fixture ACCEPT   fixed (mine)
+
+Everything in the verifier's "Checked and found CORRECT" was left alone.
+
+## 2. Reproducing the P0 before touching anything
+
+  $ cmig host-map --host models/iHN637.xml --taxonomy tax2.csv --out pi_before
+  host-map complete: 67 exact / 6 annotation / 0 normalized / 155 unmatched (of 228 secretions)
+    run_hash: c5a6c402dfa84b4d4f757014b768f741d2a03482f1928dbdc2b8a887c66257a5
+    interface_map entries: 67   needs_review: 6
+    summary ifmap checksum: sha256:263176e4d9ca356b45d296e8ebbc36fca955455df2baf53644d688c6aab1bec3
+
+  # host_map.py:156  `if float(rxn.upper_bound) <= 0.0:`
+  #              ->  `... <= 0.0 or float(rxn.lower_bound) >= 0.0:`
+  $ cmig host-map ... --out pi_after
+  host-map complete: 11 exact / 0 annotation / 0 normalized / 1 unmatched (of 12 secretions)
+    run_hash: c5a6c402dfa84b4d4f757014b768f741d2a03482f1928dbdc2b8a887c66257a5
+  IDENTICAL: True
+
+Second break, pre-fix source, swapping the annotation/normalized branch bodies:
+
+  PRE-FIX P-B run_hash BEFORE: c5a6c402dfa84b4d...c66257a5
+  PRE-FIX P-B run_hash AFTER : c5a6c402dfa84b4d...c66257a5     IDENTICAL: True
+  needs_review relabelled:
+    ala__L_e   annotation -> normalized  EX_ala__D_e
+    arab__D_e  annotation -> normalized  EX_arab__L_e
+    cys__D_e   annotation -> normalized  EX_cys__L_e
+    glcn__D_e  annotation -> normalized  EX_glcn_e
+    glu__D_e   annotation -> normalized  EX_glu__L_e
+    met__D_e   annotation -> normalized  EX_met__L_e
+
+Every source edit was guarded by a before/after shasum and restored byte-exactly.
+
+## 3. Mechanism: why not inspect.getsource
+
+Evaluated against four criteria; rejected on two, then measured the alternative.
+
+                                raw getsource  AST-normalized  bytecode   behavioural probe
+comment/reflow/docstring edit   MOVES (false)  invariant       invariant  invariant
+needs .py at runtime            YES            yes             no         NO
+stable under -O / -OO           yes            yes             NO (-OO)   YES
+stable across CPython versions  yes            NO (ast.dump)   NO         YES
+coverage                        total          total           total      probe-limited (mitigated)
+
+(a) Over-sensitivity, measured. Comment-only edit inside build_host_map, no behaviour change:
+      behavioural digest     : 6f6f8b856d9ae500 -> 6f6f8b856d9ae500   moved=no
+      inspect.getsource hash : 22dbbd37357355b4 -> c9647e78d9729965   moved=YES
+    A fingerprint that fires on cosmetics invalidates every published host-map hash on a typo fix.
+    Readers learn to ignore it and maintainers re-bless reflexively -- the same failure the gate
+    exists to prevent, arriving by another route.
+
+(b) Source availability, measured. getsource DOES work from a wheel and from zipimport
+    (zipimporter implements get_source), so those two concerns from the brief do not bite. It
+    raises on a bytecode-only install:
+      removed 72 .py files, kept .pyc only
+      loaded from: .../sourceless/cmig/core/host_map.pyc
+      behavioural digest  : sha256:6f6f8b856d9ae50070edd865f8c7763620c8e56ab00b4631745b75cd2092667f
+      inspect.getsource   : OSError - could not get source code
+    This matters because of P4's own design choice: the envelope golden was shipped inside the
+    package "so the gate runs wherever the tests run, rather than skipping on a trimmed checkout."
+    A fingerprint that raises on a trimmed install reintroduces exactly that hole -- worse, at
+    manifest-emission time rather than gate time.
+
+    And -O / -OO:
+      default: sha256:6f6f8b856d9ae50070edd865f8c7763620c8e56ab00b4631745b75cd2092667f
+      -O     : sha256:6f6f8b856d9ae50070edd865f8c7763620c8e56ab00b4631745b75cd2092667f
+      -OO    : sha256:6f6f8b856d9ae50070edd865f8c7763620c8e56ab00b4631745b75cd2092667f
+
+WHAT I DID INSTEAD: measure the matcher rather than read it. cmig/core/host_map_probe.py runs the
+REAL build_host_map and the REAL id normalizer over a frozen synthetic host and two-member pool,
+and hashes everything they produced -- counts, every field of every entry (including the
+suggestion strings that reach host_exchange_map.csv), the warnings, and a 22-element
+id-normalization vector. The digest goes into map_spec["match_behavior"].
+
+The stubs are duck-typed (build_host_map only reads .exchanges/.reactions/.id/.metabolites/
+.lower_bound/.upper_bound/.annotation), so the probe needs no cobra and costs microseconds. It is
+deliberately UNCACHED -- a cache would hand a stale answer to the tests that verify the digest
+tracks the implementation.
+
+The cost of this mechanism is coverage, and I paid it explicitly. The probe fixture is built
+case-by-case from the verifier's own ten-perturbation matrix, one designed case per decision
+point, and test_the_probe_fixture_still_distinguishes_every_decision_point asserts each case still
+bites -- narrowing the fixture fails a test rather than quietly narrowing the guarantee. That test
+earned its keep immediately: my first fixture had no metabolite reachable by BOTH annotation and
+normalized, so a pure HOST_MAP_MATCH_ORDER reorder did not change probe output and the test
+failed. I added `ord_e` (the exact shape of the real D/L break) and it bites.
+
+I also made the four inert fields LOAD-BEARING, so the manifest stops asserting things it does not
+enforce: HOST_MAP_MATCH_ORDER now drives the strategy loop, HOST_MAP_SECRETION_CRITERION names a
+predicate in a table that build_host_map looks up, HOST_MAP_ANNOTATION_SOURCES drives the
+annotation index build, and HOST_MAP_ANNOTATION_REQUIRES_UNIQUE_TARGET drives the uniqueness test.
+annotation_sources' recorded strings are rendered from the new structured constant, so that
+field's serialized value is byte-identical to before.
+
+Two map_spec fields remain descriptions (match_policy_version, and id_normalization's
+uppercase_stereoisomer_suffix_folded / case_folded). They are now labelled as such in the
+docstring, and they ARE covered by the digest -- the id vector contains lac__D_e / lac__L_e /
+ste__d_e / MixedCase_e, so a change to either behaviour moves the hash.
+
+## 4. What changed
+
+4.1 P0 -- cmig/core/host_map_probe.py (new)
+    Frozen probe fixture + matching_behavior_digest() + match_behavior_component(). Module
+    docstring records the mechanism decision and the measurements above.
+    `python -m cmig.core.host_map_probe` prints the digest (for re-pinning the canary).
+
+4.2 P0 -- cmig/core/host_map.py
+    :44-77   constants restructured; _secretes_when_upper_bound_gt_0 + _SECRETION_CRITERIA
+             registry; HOST_MAP_ANNOTATION_SOURCES becomes (level, key) pairs;
+             HOST_MAP_ANNOTATION_REQUIRES_UNIQUE_TARGET added.
+    :83-115  host_map_policy() records match_behavior; docstring separates determining inputs
+             from descriptions and says why.
+    :143-183 _host_exchange_index drives the annotation index from the constants.
+    :186-260 build_host_map looks the secretion predicate up by name and iterates
+             HOST_MAP_MATCH_ORDER over a per-strategy candidate dict instead of a hard-coded
+             if/elif chain.
+
+    BEHAVIOUR-PRESERVATION CHECK (this is a refactor of the matcher, so it needed proving):
+      counts identical        : True  (67 exact / 6 annotation / 0 normalized / 155 unmatched)
+      host_exchange_map.csv   : byte-identical
+      host_interface_map.json : byte-identical
+      interface_map_checksum  : sha256:263176e4... unchanged on both sides
+
+4.3 P2 fixes
+    F2  cmig/core/workflow_manifest.py:423-431, 458-480 -- new _file_identity(); host_spec hashes
+        Path(x).name for host_model, host_medium, microbe_medium, interface_map. Each already
+        carries a checksum companion pinning the bytes, so the path was fragility with no identity
+        value. Applied to all four for consistency -- one shape, one rule.
+    F3  cmig/service/publication_benchmark.py:185-205 -- _child_solve_run_hash refuses a
+        positively workflow-scoped manifest. Manifests written before manifest_scope existed carry
+        no key and are still accepted, so old run directories keep working.
+    F4  cmig/io/solve_output.py:192-199 -- the solve manifest writes manifest_scope: "solve".
+        Outside the hash (it names the payload, it is not an input to it), so NO solve run_hash
+        moves -- asserted by the test.
+
+4.4 NEW FINDING I CLOSED: the drift gate did not notice an edited fixture
+    verify_envelope_golden re-derives from the STORED input in the JSON, so editing
+    _COMPONENT_FIXTURES left the golden pinning a shape the code no longer produced while the gate
+    still reported 13/13 OK. I hit this directly: after adding match_behavior to the fixture,
+    `golden verify-envelope` was still green.
+      workflow_envelope_golden.py:267-283 -- a stored input that no longer equals the declared
+        fixture is now drift. Checked LAST, so a widened/narrowed contract still reports its own,
+        more specific reason (missing determining components / outside its contract).
+      workflow_envelope_golden.py:156-166 -- golden_components() now deep-copies. It was handing
+        out references into _COMPONENT_FIXTURES, so a caller that edited a returned component
+        silently redefined the golden's reference inputs for the rest of the process. My new test
+        tripped it.
+    After the fix the gate fires as it should:
+      [DRIFT] kind 'host_map': stored input no longer matches the declared component fixture
+      -> workflow-envelope drift: ... Re-bless deliberately with
+         `python -m cmig.core.workflow_envelope_golden`.   rc=2
+
+4.5 CHANGELOG.md -- four "Fixed" entries, led by the breaking one. The gate's own error message
+    tells the operator to say so in the changelog; this is that.
+
+## 5. F5 rejected, with evidence
+
+The claim is that publication_benchmark.py:344 calls taxonomy_model_checksum(taxonomy) without
+base_dir, so a relative taxonomy fails. LINE 339 RESOLVES THE TAXONOMY FIRST
+(_resolve_taxonomy(config.taxonomy, config.taxonomy_base_dir) -> absolute, existence-checked), so
+line 344 never sees a relative path. Measured on a real relative layout:
+
+  benchmark (resolved, then no base_dir): sha256:91e7d08534bd9b0c421e8d4bbb74c45c9fa4f06155bfa807fec59135aa97a86c
+  cli       (raw, base_dir=csv dir)     : sha256:91e7d08534bd9b0c421e8d4bbb74c45c9fa4f06155bfa807fec59135aa97a86c
+  EQUAL: True
+  without _resolve_taxonomy -> ValueError taxonomy model 파일 없음: pool/iYO844.xml
+
+The last line is the verifier's observed error; it only appears when line 344 is called in
+isolation without line 339 -- which is how a component-level reconstruction would call it, and is
+what the verifier was doing. taxonomy_model_checksum hashes id + file BYTES + metadata and never
+the path, which is also why C6 cross-surface equality holds. No code change.
+
+## 6. Regression tests -- before (fail) / after (pass)
+
+6.1 The P0 property, expressible against BOTH versions. Four matcher changes monkeypatched at the
+    names build_host_map resolves, measured through _host_map_hash_components +
+    compute_workflow_hash on the synthetic host+pool:
+
+    ===== BEFORE the fix (pristine host_map.py + namespace.py) =====
+      sole_metabolite_rule_relaxed           run_hash moves: False
+      exchange_discovery_by_prefix           run_hash moves: False
+      normalizer_stops_case_folding          run_hash moves: False
+      match_order                            run_hash moves: True
+      => 3 of 4 matcher changes leave the run_hash UNCHANGED
+    ===== AFTER the fix =====
+      ... all four: True
+      => 0 of 4 matcher changes leave the run_hash UNCHANGED
+
+    (match_order moved pre-fix only because the constant was RECORDED -- it was inert, so the hash
+    moved while behaviour did not. Post-fix it moves AND changes behaviour.)
+
+6.2 tests/test_host_map_behavior_digest.py (new, 28 tests)
+    - test_the_pinned_behaviour_digest_has_not_moved -- literal canary
+      sha256:6f6f8b85...2092667f. This catches the perturbations no monkeypatch can express: the
+      first-wins setdefault tie-break in _host_exchange_index, the lower_bound < 0 uptake test,
+      the exact wording of a suggestion written into the CSV.
+    - 10 matcher perturbations x 2 (digest moves; host_map run_hash moves).
+    - test_the_descriptive_map_spec_fields_are_no_longer_the_only_guard -- asserts every described
+      field is byte-identical while match_behavior moves.
+    - test_the_recorded_match_order_is_the_order_that_runs /
+      ..._secretion_criterion_names_the_predicate_that_runs /
+      ..._annotation_policy_drives_the_annotation_index -- the constants are load-bearing.
+    - test_the_probe_fixture_still_distinguishes_every_decision_point -- the guard on the guard.
+
+6.3 P2 tests
+    - tests/test_workflow_manifest.py::test_the_same_file_at_a_different_path_is_the_same_host_spec
+      relative and absolute forms of four paths give an identical host_spec, while different bytes
+      still give a different one. Fails before, passes after.
+    - tests/test_publication_benchmark_manifest.py::
+      test_a_workflow_scope_manifest_is_never_carried_as_the_community_solve_hash -- solve /
+      legacy / workflow, three cases. Fails before, passes after.
+    - tests/test_workflow_envelope_golden.py::
+      test_editing_a_component_fixture_without_reblessing_breaks_the_gate -- monkeypatches the
+      fixture, asserts the gate fires on host_map only. Fails before (gate stayed green), passes
+      after.
+
+6.4 DELIBERATE TEST CONTRACT CHANGE
+    tests/test_publication_benchmark_manifest.py:159 asserted the NEGATIVE
+    payload.get("manifest_scope") != "workflow" because no positive fact existed. Now that the
+    solve manifest states its scope, it asserts payload["manifest_scope"] == "solve" plus
+    "manifest_scope" not in payload["components"] (i.e. it stayed out of the hash). Strengthened,
+    not weakened. NO TEST WAS WEAKENED ANYWHERE IN THIS PASS.
+
+## 7. Full attack matrix against the fixed code
+
+Real CLI, real GEMs (host iHN637, pool iYO844), source edited -> __pycache__ cleared -> run ->
+restored. "output moved" = the three artifacts' combined sha256 changed.
+
+  BASELINE run_hash      : 37a9e83f58a103f08bfed24eba9f31f0da4188e49b45019a63f9873cf0350344
+  BASELINE interface_map : 67 entries, 6 needs_review
+
+  perturbation                                   output moved  run_hash moved  verdict
+  P-A  secretion ub > 0 -> >= 0                          True            True  OK
+  P-B  swap annotation/normalized index (impl)          False            True  OK
+  P-B2 reorder HOST_MAP_MATCH_ORDER (constant)           True            True  OK
+  P-C  annotation unique-target requirement dropped     False            True  OK
+  P-D  drop reaction-level annotation fallback          False            True  OK
+  P-E  exact.setdefault -> last-wins assignment         False            True  OK
+  P-F  _sole_metabolite_id len == 1 -> >= 1             False            True  OK
+  P-G  normalizer drops case folding                    False            True  OK
+  P-H  stereo fold: uppercase-only -> always            False            True  OK
+  P-I  secretion criterion -> require reversible         True            True  OK  [67->11, 6->0]
+  P-J  _iter_exchanges -> EX_ prefix scan               False            True  OK
+  P-K  host_can_uptake lb < 0 -> <= 0                    True            True  OK
+
+  perturbations that changed the output under an unchanged run_hash: NONE
+
+ON THE 8 THE VERIFIER COULD NOT MAKE BITE: P-C..P-H and P-J are still output-neutral on this model
+pair -- that is a property of iHN637/iYO844, not of the fix. What changed is that the hash now
+moves anyway, because the probe fixture contains the models they need. That is the stronger
+outcome: the guarantee no longer depends on which GEMs a user happens to run.
+
+COVERED: all 10 of the verifier's perturbations, plus P-B2 (the constant, now load-bearing) and
+P-K (host_can_uptake), which the verifier did not construct.
+
+NOT COVERED -- stated honestly. The digest is a MEASUREMENT, so it can only catch behaviour the
+probe fixture exercises. A change to a code path with no representative in the fixture would still
+slip. I mitigated this three ways -- one designed case per decision point drawn from the
+verifier's matrix, a test asserting each case still bites, and the pinned digest canary -- but I
+cannot claim source-level totality, and I would rather say so than overstate it. Two things I did
+not attempt: perturbing cobra's own model API underneath the matcher (out of scope), and a full
+end-to-end publication-benchmark run against a perturbed matcher (the host_map leg builds
+identical components to the standalone command, verified by C6, and the suite covers it).
+
+## 8. Gates
+
+  $ ruff check cmig tests
+  All checks passed!
+
+  $ mypy cmig
+  Found 2 errors in 1 file (checked 72 source files)
+    both pre-existing, cmig/cli/main.py:1697 (HostKoDelta sort key) -- untouched here.
+    (An interim version of mine added a 3rd; fixed before finishing.)
+
+  $ python -m cmig.cli.main golden verify
+    [OK ] gurobi  golden=0.39.0 installed=0.39.0
+    [OK ] osqp    golden=0.39.0 installed=0.39.0
+  rc=0
+
+  $ python -m cmig.cli.main golden verify-envelope
+    13 kinds + float normalization probe all [OK ]
+  -> envelope serialization unchanged for 13 workflow kinds
+  rc=0
+
+  $ python -m pytest -q tests/
+  outcome counts: {'.': 851, 's': 2, 'F': 1}   TOTAL COLLECTED: 854
+  851 passed / 2 skipped / 1 failed. The single failure is the pre-existing, P3-owned
+  tests/test_render.py::test_render_client_passes_project_rlib (see below).
+  Verifier's pre-fix baseline was 823 collected (820 passed / 2 skipped / 1 failed);
+  this pass adds 31 tests -> 820 + 31 = 851 passing. No test regressed.
+
+FROZEN CONTRACT: INTACT.
+  29844e29103603324d118cc9a8b9ae4fa2a79070418860cfc2ed70095cef29ab unchanged;
+  `git status fixtures/` empty (neither golden fixture file touched); RUN_HASH_COMPONENTS untouched.
+
+ENVELOPE RE-BLESS -- exactly what moved and why
+  `python -m cmig.core.workflow_envelope_golden`, deliberately, after the gate fired.
+
+    host_map            989b6207bc8bbe92... -> 4cd3fd31caed9b3c...   MOVED
+    other 12 kinds                                                    unchanged
+    float normalization probe                                         unchanged
+
+  ONLY host_map MOVED. map_spec appears in exactly one kind's component tuple, and the golden's
+  fixture for it grew the match_behavior sub-key. publication_benchmark's GOLDEN hash did NOT
+  move: its tuple has no map_spec -- it reaches the host-map leg through bundle_spec, whose golden
+  fixture uses synthetic child hashes ("aaaa"). This differs from the brief's expectation, so to
+  be precise about the real-world blast radius:
+
+    - Envelope golden: host_map only.
+    - Real published run_hashes: host_map AND publication_benchmark both move --
+      publication_benchmark's bundle_spec carries the real child host_map run_hash, which moved.
+      Plus every kind recording host_spec with a non-trivial path (host_microbe_bigg,
+      host_search_bigg, host_ko_impact, host_map, publication_benchmark) moves once from the F2 fix.
+
+  The fixture value for host_spec was deliberately NOT changed to a bare filename: it is
+  synthetic, "golden/host.xml" exercises the same serialization, and changing it would have moved
+  five golden hashes to no purpose. The gate is about serialization; the science is pinned by
+  host_map_probe's own canary.
+
+KNOWN PRE-EXISTING FAILURE
+  tests/test_render.py::test_render_client_passes_project_rlib fails in this worktree.
+  tests/test_render.py:121 asserts rlib.endswith("/CMIG/.Rlib"), false in any checkout not
+  literally named CMIG. `git status cmig/render/ tests/test_render.py` -> empty; neither file is in
+  this branch's diff. This is CC-1 / CC-5, owned by track P3. Not caused by, and not touched by,
+  this pass.
+
+## 9. Deferred
+
+- medium.source and quality_spec.sources path strings (the verifier's "same argument applies").
+  Real, same class as F2, but the blast radius is EVERY kind rather than the five host kinds, and
+  track P3 is concurrently rewriting medium handling (CC-11 -- apply_medium_checked being rerouted
+  through apply_medium_translated). Two passes changing the same component in the same window is
+  how a merge silently loses one of them.
+  OWNER: whoever lands P3's medium fix, as a follow-on in the same change.
+- optional_file_checksum returns f"missing:{path}" on a missing file, putting a full path back
+  into the hash -- but only for runs that are already broken. Cosmetic by comparison; noted, not
+  fixed.
+- tests/test_render.py -- P3 owns both its defects.
+
+
+================================================================================
+# ADDENDUM — second fix pass: fingerprinting the ANSWER (result_digest)
+================================================================================
+
+Two independent verifiers broke the input-side fingerprint again, by disjoint attacks. Both are
+reproduced below against my own code, and both are now caught.
+
+## 1. The breaks, reproduced
+
+Opus verifier — scale and real BiGG vocabulary (host iHN637 / iML1515, pool iYO844):
+
+  perturbation                                   ifmap    run_hash  match_behavior
+  A1  cap reported entries at 100                67 -> 22  unmoved   unmoved
+  A2  cap host index build at 100 (on iML1515)  144 -> 73  unmoved   unmoved
+  A4  drop currency metabolites co2/h2o/h/nh4/pi 67 -> 62  unmoved   unmoved
+
+  base run_hash 49d362dc8f138b82…  identical across base / A1 / A4
+  match_behavior sha256:6f6f8b85…  identical across base / A1 / A4
+
+Codex verifier — bound regimes (host iAF987, pool iYO844). One-line host-exchange eligibility
+change (`skip when upper_bound <= 0`):
+
+  interface_map  40 -> 38, ac_e and fe3_e removed
+  run_hash       9d7d80f80b415598…  IDENTICAL
+  match_behavior sha256:6f6f8b85…   IDENTICAL
+
+  Root cause exactly as reported: every host reaction in the probe fixture had upper_bound=1000 and
+  lower_bound in {-1000, 0}. Confirmed the real bounds on disk — iAF987 has exactly two exchanges
+  with a non-positive upper bound, EX_ac_e [-8.88, -6.84] and EX_fe3_e [-67.37, -49.21].
+
+Opus broke it on scale/vocabulary; codex broke it on bound regimes. Two models, two disjoint blind
+spots, one root cause: a finite synthetic fixture cannot enumerate the input space. Certifying an
+implementation from the input side cannot be completed. That is the argument for moving the
+guarantee to the answer side, and it is evidence rather than preference.
+
+## 2. What I built: result_digest
+
+`cmig/core/workflow_manifest.py` — `artifact_result_digest(out_dir, kind, artifacts)`: sha256 over
+the artifact bytes a run produced, plus a per-artifact breakdown and an explicit
+`missing_artifacts` list (a run that failed to write half its outputs must not digest the same as
+one that wrote them all). Emitted for every workflow kind by `write_workflow_manifest`, so both
+surfaces — `cli.main._emit_workflow_manifest` and `publication_benchmark._BundleRecorder.emit` —
+get it without a second code path.
+
+ADDITIVE, exactly as directed. `result_digest` is not in `components` and not in `hash_components`;
+`compute_workflow_hash` is untouched. Pinned by
+`test_the_result_digest_is_additive_and_never_enters_the_input_hash`: two runs with wildly
+different artifacts produce the same run_hash, and the recomputed hash still equals it.
+
+`cross_run_comparable` is a *measured* claim, not an assumption: true only for kinds whose
+artifacts have been verified byte-deterministic across two real runs. Currently `host_map` only
+(verified: identical result_digest and byte-identical manifest across two runs). Unlisted kinds
+still get a digest and are still checked by inspect-run; they are simply not advertised as
+diffable across runs, because a figure raster or a parquet write id would manufacture false alarms.
+
+`cmig/cli/main.py` — `_verify_result_digest` recomputes from the files on disk; `inspect-run`
+reports it and names which claim failed:
+
+  run_hash: 49d362dc…   (certifies the INPUTS)
+  result_digest: sha256:4521ad31…   (certifies the ARTIFACT BYTES) — verified
+
+  ... and on a tampered run, to stderr:
+  result_digest: MISMATCH
+    recorded: sha256:4521ad31…
+    actual  : sha256:c0e4f82c…
+    - host_interface_map.json: changed
+    the artifacts beside this manifest are not the artifacts it fingerprinted. A matching run_hash
+    does NOT make this run reproduced: run_hash certifies the inputs, result_digest certifies the
+    answer, and they disagree.
+
+## 3. Acceptance matrix — all four independently-discovered breaks
+
+  break                                  found by  pair              ifmap      run_hash  behav   result_digest
+  A1  cap reported entries at 100        Opus      iHN637+iYO844     67 -> 22   unmoved   unmoved  MOVED
+  A2  cap host index build at 100        Opus      iML1515+iYO844   144 -> 73   unmoved   unmoved  MOVED
+  A4  currency-metabolite filter         Opus      iHN637+iYO844     67 -> 62   unmoved   unmoved  MOVED
+  eligibility by host upper bound        codex     iAF987+iYO844     40 -> 38   MOVED*    MOVED*   MOVED
+
+  * after widening the probe fixture (below). Before widening: both unmoved, result_digest MOVED.
+
+  4 / 4 caught by result_digest. 1 / 4 additionally caught on the input side.
+  "output changed but NOTHING in the manifest moved" -> NONE, on every pair tested.
+
+## 4. Probe fixture widened (best-effort input-side signal, NOT the guarantee)
+
+Added three host exchanges carrying the real iAF987 bound regimes the fixture structurally could
+not observe — EX_nposub_e [-8.88, -6.84] (negative upper bound), EX_zeroub_e [-67.37, 0.0] (upper
+bound exactly zero), EX_midlb_e [-12.5, 1000.0] (intermediate negative uptake bound) — with member
+counterparts so they are actually reached. Two new perturbation cases cover the class
+(`host_eligibility_by_upper_bound`, `uptake_must_be_fully_open`), and the decision-point test now
+asserts the regimes are reachable, so the blind spot cannot silently return.
+
+Digest re-pinned: sha256:6f6f8b85… -> sha256:70782b1b107b175ca04ef4ce9407ca072349e58a5cb9d14e26f925ce0bbb3b86
+
+This restores match_behavior's value for cases it *can* see. It does not close the hole and is not
+described as doing so anywhere in the tree any more.
+
+## 5. Overclaims retracted
+
+CHANGELOG.md said "Any change to host-map matching behaviour moves the hash." That is false and now
+demonstrably so. Reworded to state what is actually guaranteed — that a change to the matching
+rules the probe exercises moves the host_map hash, that a change keyed on scale or on real BiGG
+vocabulary can leave it unmoved, and that result_digest is what covers those. The same overclaim
+was repeated in three other places and all four are corrected:
+
+  CHANGELOG.md                            reworded, with the limit stated explicitly
+  cmig/core/host_map.py host_map_policy   "What this does and does not guarantee" paragraph added
+  cmig/cli/main.py _host_map_hash_components  "weaker claim than ..." paragraph added
+  cmig/core/host_map_probe.py module doc  now says it is HALF the guarantee, with the numbers
+  tests/test_host_map_behavior_digest.py  property restated at the strength it holds, with a note
+                                          not to restore the stronger wording without an argument
+
+Also recorded, because it is the reason the architecture changed: getsource's failure mode is false
+positives (annoying, safe); a behaviour probe's is false negatives (silent, unsafe).
+
+## 6. Second P2 — undisclosed blast radius, and the golden hole underneath it
+
+Confirmed. The F2 host_spec change moved real published hashes for FIVE kinds; the CHANGELOG named
+two. Three moved silently, and the gate could not see it because the `host_spec` fixture was a
+hand-written literal that `host_spec_component` never touched.
+
+Both halves fixed:
+
+  (a) Disclosure. CHANGELOG now names all five up front — host_microbe_bigg, host_search_bigg,
+      host_ko_impact, host_map, publication_benchmark — and says which change moves which.
+
+  (b) The mechanism. Envelope-golden component fixtures are now BUILT BY THEIR BUILDERS:
+        medium      -> medium_component(...)
+        host_spec   -> host_spec_component(...)      (fed an UNSORTED exclude list and a bare
+                                                      path, so the builder's own normalization is
+                                                      part of the fixture)
+        bundle_spec -> bundle_component(...)          (fed in reverse order, so its sort is too)
+        map_spec    -> host_map_policy(), with only its two live values replaced by synthetic ones
+                       — the SHAPE comes from the builder, so a new policy key cannot appear
+                       unnoticed, while a change in the science stays out of the envelope gate.
+      Pinned by test_component_fixtures_are_built_by_their_builders_not_transcribed, and by
+      BUILDER_DERIVED_FIXTURES so a component that gains a builder cannot keep a literal.
+
+  Effect, immediately visible: rebuilding the fixtures made the gate fire on exactly the five kinds
+  that had moved silently.
+    [DRIFT] host_ko_impact / host_map / host_microbe_bigg / host_search_bigg /
+            publication_benchmark : stored input no longer matches the declared component fixture
+
+  Verified the separation holds: widening the host-map probe afterwards did NOT move the envelope
+  golden (rc=0, 13 kinds OK), because map_spec's fixture digest is synthetic.
+
+## 7. NEW FINDING [P0-class, pre-existing, NOT fixed here] — the osqp golden is not reproducible
+
+The coordinator asked for both frozen hashes verified end-to-end on real runs. gurobi passes.
+**osqp does not.**
+
+  $ cmig solve-fixture --solver gurobi   ->  29844e29103603324d118cc9a8b9ae4fa2a79070418860cfc2ed70095cef29ab
+    fixtures/.../gurobi/config.json      ->  29844e29…  MATCH
+
+  $ cmig solve-fixture --solver osqp     ->  c491a6a8ffd303e9a6a95146a1331c09a15d19aea474398714ace8c192cb4eed
+    fixtures/.../osqp/config.json        ->  a422eb89d019f917f7fc334db8e9a2eff7d89ce49031ccbf215df7bd404d3d9d
+                                             MISMATCH
+
+Root cause, fully diagnosed — NOT a numerical regression and NOT caused by this branch:
+
+  - All 11 stored components are IDENTICAL to those a real run produces.
+  - The osqp fixture records `golden_decimals: 4`; the gurobi one records 6, which is also the
+    current DEFAULT_FLOAT_DECIMALS.
+  - Recomputing the osqp components at 4 decimals reproduces a422eb89… exactly; at 6 it gives
+    c491a6a8…, which is what the real run produces. The fixture is internally consistent under the
+    contract it was captured under, and stale against the current one.
+
+Proof it predates this branch: `git status fixtures/` is empty and
+`git show HEAD:…/osqp/config.json` already recomputes to c491a6a8… — the inconsistency is
+committed. No test pinned a422eb89… (`grep -r` over tests/ and cmig/ -> no hits), and
+`golden verify` (SC-5) compares only `micom_version`, so nothing could ever have seen it. The
+existing `test_shipped_golden_fixture_run_hash_is_unchanged` covers the GUROBI fixture only.
+
+NOT FIXED HERE, deliberately: recapturing moves a frozen contract hash, which is a coordinator
+decision and not a fixer's, and track P3 is concurrently touching this fixture. What I did instead:
+
+  - test_every_shipped_golden_is_reproducible_from_its_own_recorded_components — the invariant
+    nobody was checking: each golden must re-derive from the components stored beside it, at its
+    own recorded golden_decimals. Passes for both today; would have caught a corrupted golden.
+  - test_the_osqp_golden_is_stale_against_the_current_float_decimals_contract — pins the known-open
+    state with both hashes and the recapture command, so the decision is encoded rather than
+    remembered. Recapturing (`python -m cmig.golden_fixture`) makes it fail, which is the signal
+    that the decision was taken.
+  - CHANGELOG "Known open" entry.
+
+OWNER: coordinator, sequenced with track P3.
+
+## 8. Gates (final, this pass)
+
+  ruff check cmig tests          All checks passed!
+  mypy cmig                      2 errors, both pre-existing (cli/main.py:1766, HostKoDelta key)
+  golden verify                  rc=0   gurobi + osqp micom 0.39.0 OK
+  golden verify-envelope         rc=0   13 kinds + float probe
+  pytest -q tests/               outcome counts {'.': 870, 's': 2, 'F': 1}  TOTAL 873
+                                 870 passed / 2 skipped / 1 failed
+                                 the one failure is the pre-existing P3-owned
+                                 tests/test_render.py::test_render_client_passes_project_rlib
+                                 (asserts the path ends /CMIG/.Rlib; fails in any worktree).
+                                 Previous pass: 851 passed / 854 collected. +19 tests, all passing.
+
+FROZEN HASHES, end-to-end on real solves:
+  gurobi 29844e29…cef29ab   VERIFIED (real solve-fixture run, matches the shipped golden)
+  osqp   a422eb89…404d3d9d  NOT REPRODUCIBLE — see section 7. Real run gives c491a6a8…
+
+ENVELOPE RE-BLESS this pass (after the builder-derived fixtures made the blast radius visible):
+  host_ko_impact          5581699eb9cca958… -> f216ff74df2e9677…
+  host_map                4cd3fd31caed9b3c… -> 9f5ae8175acca8f4…
+  host_microbe_bigg       6b49d139336e514c… -> 404a03b0b1b7db0a…
+  host_search_bigg        1258180431078659… -> 270e3ce2df4d16f8…
+  publication_benchmark   73065943346592f9… -> b706be59f2ae109f…
+  the other 8 kinds and the float probe: unchanged.
+
+  These five are exactly the kinds that record host_spec — i.e. exactly the kinds the F2 change
+  moved in the real world. The golden now discloses that instead of hiding it.
