@@ -20,6 +20,7 @@ No solver required.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -43,6 +44,7 @@ from cmig.core.workflow_manifest import (
     workflow_components_for,
     write_workflow_manifest,
 )
+from cmig.golden_fixture import SOLVER_VARIANTS
 
 # ── the frozen contract ──────────────────────────────────────────────────────────
 
@@ -143,37 +145,61 @@ def test_every_shipped_golden_is_reproducible_from_its_own_recorded_components()
     assert checked, "no golden fixture was available to check"
 
 
-def test_the_osqp_golden_is_stale_against_the_current_float_decimals_contract():
-    """KNOWN OPEN — pinned deliberately so the state is encoded rather than remembered.
+@pytest.mark.parametrize("solver", SOLVER_VARIANTS)
+def test_each_shipped_golden_re_derives_its_own_run_hash_at_its_own_decimals(solver):
+    """Every shipped golden must reproduce its own published hash from its own stored components.
 
-    The osqp golden was captured at `golden_decimals: 4`; the gurobi one at 6, which is also the
-    current `DEFAULT_FLOAT_DECIMALS`. Both are internally consistent (see the test above), but the
-    osqp fixture's published `run_hash` `a422eb89…` is therefore **not reproducible by a real
-    `cmig solve-fixture --solver osqp` on this codebase** — a real run produces `c491a6a8…`, which
-    is exactly what its own components hash to at 6 decimals. A reader checking a published osqp
-    result against that golden would conclude, wrongly, that it did not reproduce.
+    History, because this test replaced one that asserted the opposite. It was originally written
+    to pin the osqp golden as *stale*: captured at `golden_decimals: 4` while the builder
+    pre-rounded at 6, so `a422eb89…` was a stored artifact no code path reproduced, and its author
+    made it fail "the moment someone recaptures" so that the decision would be visible. Track P3
+    then repaired the fixture — correcting the three stored abundances to 4 decimals so it
+    reproduces itself again, *without* moving the published hash — which made the staleness pin
+    fail by design. Pinning a known-bad state is only useful until it is fixed; the invariant
+    underneath it is permanent, so that is what is asserted now.
 
-    Not fixed here on purpose: recapturing it moves a frozen contract hash, which is a coordinator
-    decision and not a fixer's, and track P3 is concurrently touching this fixture. Recapture with
-    `python -m cmig.golden_fixture`, then update this test — its failing is the signal that the
-    decision was taken.
+    Two things make this stronger than the state it replaced, both lessons of the round:
+
+    * It is parametrized over `SOLVER_VARIANTS` rather than naming solvers inline. The osqp
+      regression reached integration precisely because every hash pin in the suite was
+      gurobi-only; a pin that covers "whichever solvers exist" cannot acquire that blind spot
+      when a third variant is added.
+    * A declared variant may not silently skip. `xfail`-by-absence is how a fixture stops being
+      checked without anyone deciding to stop checking it.
     """
     import json
     from pathlib import Path
 
-    from cmig.core.manifest import DEFAULT_FLOAT_DECIMALS, RunHashComponents, compute_run_hash
+    from cmig.core.manifest import RunHashComponents, compute_run_hash
 
-    config = Path("fixtures/community_3_member/expected/osqp/config.json")
-    if not config.exists():
-        pytest.skip("osqp golden fixture not present")
+    config = Path(f"fixtures/community_3_member/expected/{solver}/config.json")
+    if not config.exists():                       # trimmed checkout: no fixtures shipped at all
+        available = [
+            s for s in SOLVER_VARIANTS
+            if Path(f"fixtures/community_3_member/expected/{s}/config.json").exists()
+        ]
+        assert not available, (
+            f"{solver} is a declared solver variant but ships no golden, while {available} do — "
+            "a variant that cannot be checked must not be declared"
+        )
+        pytest.skip("no golden fixtures present in this checkout")
+
     payload = json.loads(config.read_text())
-    assert payload["golden_decimals"] == 4 != DEFAULT_FLOAT_DECIMALS
-    assert payload["run_hash"] == (
-        "a422eb89d019f917f7fc334db8e9a2eff7d89ce49031ccbf215df7bd404d3d9d"
+    decimals = payload["golden_decimals"]
+    components = RunHashComponents(**payload["components"])
+
+    assert compute_run_hash(components, decimals=decimals) == payload["run_hash"], (
+        f"the {solver} golden is internally inconsistent: its published run_hash is not the hash "
+        f"of the components stored beside it at its own golden_decimals={decimals}. Either the "
+        "components were edited without recapturing, or the hash was."
     )
-    assert compute_run_hash(
-        RunHashComponents(**payload["components"]), decimals=DEFAULT_FLOAT_DECIMALS
-    ) == "c491a6a8ffd303e9a6a95146a1331c09a15d19aea474398714ace8c192cb4eed"
+
+    # Guard on the guard (CC-22's mandatory "would this catch deletion?" audit): the assertion
+    # above must be discriminating, not satisfied by any components at all.
+    perturbed = replace(components, tradeoff_f=float(components.tradeoff_f) + 0.25)
+    assert compute_run_hash(perturbed, decimals=decimals) != payload["run_hash"], (
+        "the re-derivation above is vacuous — a changed input produced the published hash"
+    )
 
 
 def test_solve_hash_is_stable_across_repeated_computation():

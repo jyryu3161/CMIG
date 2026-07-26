@@ -160,7 +160,9 @@ _HOST_REACTIONS: tuple[_ProbeReaction, ...] = (
          {"bigg.reaction": "EX_fbk_e"}),
     # case folding in the normalizer.
     _rxn("EX_mixedcase_e", -1000.0, 1000.0, (_met("mixedcase_e"),)),
-    # trailing `__<Uppercase>` stereoisomer folding.
+    # stereo-descriptor preservation: the host offers the *bare* metabolite. A normalizer that
+    # folds `ste__D` onto `ste` matches here; the correct one leaves both member entries
+    # unmatched. So this one host reaction is what makes the round-5 P0 observable at entry level.
     _rxn("EX_ste_e", -1000.0, 1000.0, (_met("ste_e"),)),
     # compartment-suffix stripping beyond `_e`.
     _rxn("EX_sfx_lumen", -1000.0, 1000.0, (_met("sfx_lumen"),)),
@@ -201,8 +203,11 @@ _MEMBER_A_REACTIONS: tuple[_ProbeReaction, ...] = (
     _rxn("EX_ambig_e", 0.0, 1000.0, (_met("ambig_e"),)),
     _rxn("EX_fbk_e", 0.0, 1000.0, (_met("fbk_e"),)),
     _rxn("EX_MixedCase_e", 0.0, 1000.0, (_met("MixedCase_e"),)),
-    _rxn("EX_ste__D_e", 0.0, 1000.0, (_met("ste__D_e"),)),      # folds  -> ste
-    _rxn("EX_ste__d_e", 0.0, 1000.0, (_met("ste__d_e"),)),      # lowercase: does not fold
+    # Both must stay `ste__d` and so stay unmatched against the host's bare `ste_e`: the uppercase
+    # one because the descriptor is part of the identity, the lowercase one because case is not
+    # what decides. Either matching `EX_ste_e` means the D/L-collapsing normalizer is back.
+    _rxn("EX_ste__D_e", 0.0, 1000.0, (_met("ste__D_e"),)),
+    _rxn("EX_ste__d_e", 0.0, 1000.0, (_met("ste__d_e"),)),
     _rxn("EX_sfx_c", 0.0, 1000.0, (_met("sfx_c"),)),
     _rxn("EX_hx_e", 0.0, 1000.0, (_met("hx_e"),)),
     _rxn("EX_ghost_e", 0.0, 1000.0, (_met("ghost_e"),)),
@@ -225,7 +230,7 @@ _MEMBER_B_REACTIONS: tuple[_ProbeReaction, ...] = (
 #: Ids pushed through the normalizer directly, so a normalizer change is caught at full
 #: sensitivity rather than only where it happens to change a match. The D/L pairs are here
 #: deliberately: folding them is the round-2 stereoisomer hazard, and any fix to it *must* move
-#: every published host-map hash.
+#: every published host-map hash — which is exactly what round 5 did when CC-7 was closed.
 _NORMALIZATION_PROBE_IDS: tuple[str, ...] = (
     "ac_e", "EX_ac_e", "EX_glc__D_e",
     "lac__D_e", "lac__L_e", "glc__D_e", "arab__L_e", "ala__D_e",

@@ -265,7 +265,21 @@ def test_a_changed_float_normalization_breaks_the_gate(tmp_path):
 
 
 def test_the_float_probe_covers_the_cases_json_cannot_store():
-    """Pin what the probe is for, so it cannot be quietly reduced to finite floats."""
+    """Pin what the probe is for, so it cannot be quietly reduced to finite floats.
+
+    The last two assertions changed at round-5 integration, deliberately. They used to read
+    ``values["below_rounding_floor"] == 0.1`` — "noise under the 6-decimal floor" — which pinned
+    the very behaviour CC-4 identified as a defect: six-decimal canonicalization mapped every
+    input below the floor onto one serialization, so a run at solver tolerance 1e-7 and a run at
+    1e-9 produced the *same* run_hash while producing different numbers. Track P3 replaced it
+    with a lossless representation for exactly those values, which is what this now pins.
+
+    Note what did NOT change and why the frozen solve hashes survived: a value six decimals
+    represent exactly still serializes as that bare number. Only a value rounding would destroy
+    takes the ``f64:`` branch. That asymmetry is the whole reason the collision could be closed
+    without moving ``29844e29…`` — see
+    `test_canonicalize_floats_is_the_same_normalization_the_solve_hash_uses`.
+    """
     spec = float_probe_components()["dfba_spec"]
     assert spec["nan"] != spec["nan"]                 # NaN
     assert spec["pos_inf"] == float("inf")
@@ -279,7 +293,14 @@ def test_the_float_probe_covers_the_cases_json_cannot_store():
     assert values["pos_inf"] == "Infinity"
     assert values["neg_inf"] == "-Infinity"
     assert values["negative_zero"] == 0.0             # signed-zero collapse
-    assert values["below_rounding_floor"] == 0.1      # noise under the 6-decimal floor
+
+    # Noise six decimals cannot hold is preserved rather than flattened …
+    assert values["below_rounding_floor"] == "f64:0.10000000000100001"
+    assert values["at_rounding_floor"] == "f64:0.1234565"
+    # … and the point of preserving it: these no longer collide with the values they used to be
+    # rounded onto. That collision is what let a tolerance change leave the fingerprint unmoved.
+    assert values["below_rounding_floor"] != 0.1
+    assert values["at_rounding_floor"] != round(0.1234565, 6)
 
 
 def test_a_missing_golden_file_is_an_error_not_a_skip(tmp_path):

@@ -58,7 +58,13 @@ from cmig.synthetic_pair import build_pair_taxonomy  # noqa: E402
 #: written into `host_exchange_map.csv`). Updating it is a deliberate contract change: every
 #: published `host_map` and `publication_benchmark` run_hash moves with it, so say so in the
 #: changelog. Recapture with `python -m cmig.core.host_map_probe`.
-PINNED_BEHAVIOR_DIGEST = "sha256:70782b1b107b175ca04ef4ce9407ca072349e58a5cb9d14e26f925ce0bbb3b86"
+#:
+#: Round-5 integration moved it once, deliberately: CC-7's stereochemistry fix changed what
+#: `_normalize_metabolite_id` does to the probe's D/L ids, so `map_spec` and every host_map /
+#: publication_benchmark run_hash moved with it. That is the gate reporting a real semantic
+#: change, not drift — previously published host-map fingerprints no longer reproduce, and the
+#: CHANGELOG says so.
+PINNED_BEHAVIOR_DIGEST = "sha256:36059e16f8322762d50c8abfcbe6f2542f9410f7e30f6f5f2be2f2d10b425357"
 
 
 # ── perturbations: one per decision point the verifier attacked ──────────────────
@@ -84,11 +90,30 @@ def _normalize_without_case_folding(raw: str) -> str:
     return result.upper() if raw[:1].isupper() else result
 
 
-def _normalize_folding_every_stereo_suffix(raw: str) -> str:
-    """P-H: fold a trailing `__<token>` whatever its case, not only uppercase ones."""
-    from cmig.core.namespace import _normalize_metabolite_id
+def _normalize_folding_the_stereo_descriptor(raw: str) -> str:
+    """P-H, restated for the policy that now holds: the pre-round-5 normalizer, verbatim.
 
-    return _normalize_metabolite_id(raw.replace("__d_", "__D_"))
+    The original P-H ("fold a trailing `__<token>` whatever its case") went inert when CC-7 was
+    fixed — the fixed normalizer preserves the descriptor in *either* case, so upper-casing the
+    input no longer changes the output and the perturbation stopped perturbing anything. The
+    decision point it was standing in for is still live and is the P0 itself, so express it
+    directly: this is the exact body that collapsed `lac__D` onto `lac__L`. If it ever comes
+    back, the digest must move.
+    """
+    from cmig.core.namespace import NORMALIZE_COMPARTMENT_SUFFIXES, NORMALIZE_EXCHANGE_PREFIX
+
+    x = raw.strip()
+    if x.startswith(NORMALIZE_EXCHANGE_PREFIX):
+        x = x[len(NORMALIZE_EXCHANGE_PREFIX):]
+    if "__" in x and x.rsplit("__", 1)[-1]:
+        maybe_member = x.rsplit("__", 1)[-1]
+        if maybe_member and maybe_member[0].isupper():
+            x = x.rsplit("__", 1)[0]
+    for suffix in NORMALIZE_COMPARTMENT_SUFFIXES:
+        if x.endswith(suffix):
+            x = x[: -len(suffix)]
+            break
+    return x.lower()
 
 
 def _secretes_when_reversible(rxn: Any) -> bool:
@@ -146,8 +171,8 @@ MATCHER_PERTURBATIONS: dict[str, tuple[str, Any]] = {
     "exchange_discovery_by_prefix": ("_iter_exchanges", _ex_prefix_scan),
     "normalizer_stops_case_folding": ("_normalize_metabolite_id",
                                       _normalize_without_case_folding),
-    "normalizer_folds_every_stereo_suffix": ("_normalize_metabolite_id",
-                                             _normalize_folding_every_stereo_suffix),
+    "normalizer_folds_the_stereo_descriptor": ("_normalize_metabolite_id",
+                                               _normalize_folding_the_stereo_descriptor),
     "suggestion_wording": (
         "_MATCH_SUGGESTIONS",
         {
@@ -317,9 +342,12 @@ def test_the_probe_fixture_still_distinguishes_every_decision_point():
     # annotation index: unique target required, reaction level used only as a fallback.
     assert entries["ambig_e"].match_type == "unmatched"
     assert entries["fbk_e"].match_type == "annotation"
-    # id normalization: case folding, uppercase-only stereo folding, compartment suffixes.
+    # id normalization: case folding, stereo-descriptor PRESERVATION, compartment suffixes.
     assert entries["MixedCase_e"].match_type == "normalized"
-    assert entries["ste__D_e"].match_type == "normalized"
+    # CC-7: the host offers bare `ste_e`. A normalizer that folds `__D` matches it and hands a
+    # reviewed D-isomer mapping to L-isomer availability; the fixed one cannot reach it. Both
+    # cases are pinned because case is no longer what decides — length/descriptor identity is.
+    assert entries["ste__D_e"].match_type == "unmatched"
     assert entries["ste__d_e"].match_type == "unmatched"
     assert entries["sfx_c"].host_exchange == "EX_sfx_lumen"
     # exchange discovery: the model's accessor, not an `EX_` prefix scan.

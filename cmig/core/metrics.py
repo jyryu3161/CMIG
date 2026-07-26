@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import enum
 import itertools
+import math
 from collections.abc import Mapping
 
 from cmig.core.sign import NOISE_FLOOR, Label, classify
@@ -137,12 +138,21 @@ def community_contributions(
     abundances: Mapping[str, float | None],
     target: str,
 ) -> dict[str, float]:
-    """member -> community-level signed contribution (per-taxon flux x abundance)."""
+    """member -> community-level signed contribution (per-taxon flux x abundance).
+
+    micom writes **NaN** into ``sol.fluxes`` where a taxon has no such exchange reaction, and the
+    engine copies that NaN through. A member that cannot exchange the metabolite at all
+    contributes exactly 0 to the community's handling of it, so it is mapped to 0 here. Leaving
+    the NaN in poisoned every downstream share (``total`` became NaN, ``total <= eps`` was False,
+    and the share came out NaN), which is why ``abundance_impact.csv``'s documented
+    ``target_influence_share`` column was empty for every heterogeneous pool.
+    """
     contributions: dict[str, float] = {}
     for member, exchange in member_exchange.items():
         abundance = abundances.get(member)
         weight = 1.0 if abundance is None else float(abundance)
-        contributions[str(member)] = float(exchange.get(target, 0.0)) * weight
+        raw = float(exchange.get(target, 0.0))
+        contributions[str(member)] = 0.0 if math.isnan(raw) else raw * weight
     return contributions
 
 

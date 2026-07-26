@@ -32,7 +32,9 @@ HOST_MAP_MATCH_POLICY_VERSION = "1.0"
 HOST_MAP_MATCH_ORDER: tuple[str, ...] = ("exact", "annotation", "normalized")
 #: Match types auto-admitted into `interface_map` (safe to pass through unedited).
 HOST_MAP_INTERFACE_MAP_ADMITS: tuple[str, ...] = ("exact",)
-#: Match types parked in `needs_review` — computational guesses, incl. D/L stereoisomer swaps.
+#: Match types parked in `needs_review` — computational guesses, never auto-admitted. (Round 5:
+#: these no longer include D/L stereoisomer swaps, because the normalizer now preserves the
+#: descriptor and so cannot pair `lac__D` with `lac__L` in the first place.)
 HOST_MAP_NEEDS_REVIEW_TYPES: tuple[str, ...] = ("annotation", "normalized")
 #: Annotation fields consulted for the annotation strategy, as (level, annotation key) in priority
 #: order; the first level that yields any id wins. Consumed by :func:`_host_exchange_index`.
@@ -72,9 +74,12 @@ def host_map_policy() -> dict[str, Any]:
     * **Determining inputs.** ``match_behavior`` is a digest of what the matcher and the id
       normalizer actually *did* to a frozen probe fixture (see :mod:`cmig.core.host_map_probe`),
       and the remaining fields are read straight out of the constants the matcher consumes.
-    * **Descriptions.** ``match_policy_version`` and the two normalizer notes
-      (``uppercase_stereoisomer_suffix_folded``, ``case_folded``) are for a human reading the
-      manifest. They are *not* what makes the fingerprint sound — ``match_behavior`` is.
+    * **Descriptions.** ``match_policy_version`` is for a human reading the manifest. It is *not*
+      what makes the fingerprint sound — ``match_behavior`` is. The two normalizer notes
+      (``uppercase_stereoisomer_suffix_folded``, ``case_folded``) are *measured* off the live
+      normalizer rather than restated, because a restated one went stale exactly once and that
+      was enough: it recorded ``uppercase_stereoisomer_suffix_folded: true`` — the D/L-collapsing
+      defect — as though it were policy, and kept recording it after the defect was fixed.
 
     That distinction is the round-5 fix. Previously the control-flow facts were restated here as
     inert literals, so the matcher could be edited freely and the fingerprint would not notice: one
@@ -105,8 +110,13 @@ def host_map_policy() -> dict[str, Any]:
         "id_normalization": {
             "exchange_prefix_stripped": NORMALIZE_EXCHANGE_PREFIX,
             "compartment_suffixes_stripped": list(NORMALIZE_COMPARTMENT_SUFFIXES),
-            "uppercase_stereoisomer_suffix_folded": True,
-            "case_folded": True,
+            # Asked of the normalizer, not asserted about it.
+            "uppercase_stereoisomer_suffix_folded": (
+                _normalize_metabolite_id("lac__D_e") == _normalize_metabolite_id("lac__L_e")
+            ),
+            "case_folded": (
+                _normalize_metabolite_id("AC_e") == _normalize_metabolite_id("ac_e")
+            ),
         },
     }
 

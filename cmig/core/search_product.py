@@ -109,11 +109,24 @@ def unevaluable_warnings(
     return warnings
 
 
+# F9 (round 5): with the sign-domain constraint, MINIMISING a target exchange yields exactly 0
+# whenever 0 is feasible — essentially always. The LP answer is right, but the generic all-zero
+# message ("no candidate achieved a non-zero target flux") then states something false about the
+# science: the same pool secretes 12.11 mmol gDW^-1 h^-1 of acetate when asked in the max_*
+# direction. Minimisation directions need their own wording.
+MINIMISATION_DIRECTIONS = frozenset({"min_secretion", "min_uptake"})
+
+
+def _is_minimisation(direction: str | None) -> bool:
+    return str(direction) in MINIMISATION_DIRECTIONS
+
+
 def _ranking_degeneracy_warnings(
     scored: list[tuple[tuple[str, ...], float, str]],
     *,
     tolerance: float = TIE_TOLERANCE,
     score_is_flux: bool = True,
+    direction: str | None = None,
 ) -> list[str]:
     """(members, score, status) 목록 → 전부-0 / 상위 동점 경고. 순수 함수(solver 불요).
 
@@ -126,6 +139,11 @@ def _ranking_degeneracy_warnings(
         return warnings
     if all(abs(score) <= tolerance for _, score, _ in evaluable):
         warnings.append(
+            "every evaluable candidate scored 0, which is the EXPECTED optimum for a "
+            f"{direction} search (0 target flux is essentially always attainable). This does "
+            "NOT mean the target cannot be produced — re-run with the matching max_* direction "
+            "to measure capability. The ranking order is arbitrary"
+            if _is_minimisation(direction) else
             "no candidate achieved a non-zero target flux; the ranking order is arbitrary "
             "and rank 1 must not be reported as the best producer"
             if score_is_flux else
@@ -188,6 +206,41 @@ def _sample_candidates(
     return sorted(rng.sample(candidates, n_samples))
 
 
+# Round 5 (codex F3, part 2): every search evaluator called `apply_medium_checked` and threw the
+# returned "could not be applied" list on the floor. Under `--allow-unknown-medium` that made a
+# search silently run on a *different* medium from the requested one and still report `optimal`
+# with no warning anywhere. The medium is an input to the science, so a partially-honoured medium
+# has to reach both the per-candidate diagnostic and the run-level warnings.
+UNAPPLIED_MEDIUM_PREFIX = "requested medium exchanges not applied (no counterpart in the model)"
+
+
+def _apply_search_medium(
+    community: Any,
+    medium_spec: Any | None,
+    *,
+    strict_medium: bool,
+    notes: set[str] | None = None,
+) -> str | None:
+    """Apply the requested medium to one consortium. Returns a diagnostic when it was not whole."""
+    if medium_spec is None:
+        return None
+    from cmig.core.medium_spec import apply_medium_checked
+
+    _original, unknown = apply_medium_checked(community, medium_spec, strict=strict_medium)
+    if not unknown:
+        return None
+    note = f"{UNAPPLIED_MEDIUM_PREFIX}: {sorted(unknown)}"
+    if notes is not None:
+        notes.add(note)
+    return note
+
+
+def _with_medium_note(diagnostic: str | None, note: str | None) -> str | None:
+    if note is None:
+        return diagnostic
+    return note if not diagnostic else f"{note}; {diagnostic}"
+
+
 def _evaluate_members(
     engine: Any,
     taxonomy: Any,
@@ -199,14 +252,15 @@ def _evaluate_members(
     medium_spec: Any | None = None,
     strict_medium: bool = True,
     robustness_fva: bool = False,
+    medium_notes: set[str] | None = None,
 ) -> PoolRank:
     sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
+    medium_note: str | None = None
     try:
         community = engine.build_community(sub, cmig_solver=solver)
-        if medium_spec is not None:
-            from cmig.core.medium_spec import apply_medium_checked
-
-            apply_medium_checked(community, medium_spec, strict=strict_medium)
+        medium_note = _apply_search_medium(
+            community, medium_spec, strict_medium=strict_medium, notes=medium_notes
+        )
         result = target_max_solve(
             community,
             spec,
@@ -235,7 +289,7 @@ def _evaluate_members(
             target_flux=result.target_flux,
             community_growth=result.community_growth,
             status=result.status,
-            diagnostic=result.diagnostic,
+            diagnostic=_with_medium_note(result.diagnostic, medium_note),
             robustness_fva_lo=fva_lo,
             robustness_fva_hi=fva_hi,
             robustness_status=fva_status,
@@ -248,7 +302,7 @@ def _evaluate_members(
             target_flux=0.0,
             community_growth=0.0,
             status="failed",
-            diagnostic=str(error),
+            diagnostic=_with_medium_note(str(error), medium_note),
         )
 
 
@@ -271,6 +325,7 @@ def search_model_pool(
     strategy = choose_strategy(len(candidates), config.strategy)
     spec = TargetSpec(config.target, config.direction)
     warnings: list[str] = []
+    medium_notes: set[str] = set()
     cache: dict[tuple[str, ...], PoolRank] = {}
 
     def evaluate(members: tuple[str, ...]) -> PoolRank:
@@ -285,6 +340,7 @@ def search_model_pool(
                 medium_spec=medium_spec,
                 strict_medium=strict_medium,
                 robustness_fva=config.robustness_fva,
+                medium_notes=medium_notes,
             )
         return cache[members]
 
@@ -326,11 +382,13 @@ def search_model_pool(
     )
     # B4: 동점/전부-0 은 평가된 후보 전체를 기준으로 판정한다(top_k 절단 전).
     warnings.extend(_ranking_degeneracy_warnings(
-        [(row.members, row.score, row.status) for row in solved]
+        [(row.members, row.score, row.status) for row in solved],
+        direction=config.direction.value,
     ))
     warnings.extend(unevaluable_warnings(
         [(row.members, row.status, row.diagnostic) for row in failed], len(evaluated)
     ))
+    warnings.extend(sorted(medium_notes))
 
     def _renumber(row: PoolRank, rank: int) -> PoolRank:
         return replace(row, rank=rank)
@@ -371,7 +429,14 @@ MULTI_METRIC_UNITS: dict[str, str] = {
     "normalized_weighted": "dimensionless (weighted min-max over the candidate set)",
     "carbon_equivalent": "mmol C gDW^-1 h^-1",
     "raw_sum": "mmol gDW^-1 h^-1",
-    "pareto": "mmol C gDW^-1 h^-1 (front members are not totally ordered)",
+    # F6 (round 5): the pareto path never resolves carbon numbers — `carbon_numbers` is empty and
+    # the score is sum(user weight x flux), with weights defaulting to 1.0. Labelling that
+    # "mmol C" claimed a carbon-equivalent score that was never computed, i.e. it asserted that C2
+    # acetate and C4 succinate had been made commensurate when they had simply been added up.
+    "pareto": (
+        "sum(weight x flux); mmol gDW^-1 h^-1 unless --target-weights are carbon numbers "
+        "(front members are not totally ordered — the score does not rank the front)"
+    ),
 }
 
 # S1's deepest limit. Maximising a weighted sum over a polytope lands on a vertex, so a carbon-
@@ -547,6 +612,7 @@ def rank_multi_target(
 def _evaluate_members_multi(
     engine: Any, taxonomy: Any, members: tuple[str, ...], specs: list[TargetSpec], *,
     growth_fraction: float, solver: str, medium_spec: Any | None, strict_medium: bool,
+    medium_notes: set[str] | None = None,
 ) -> _ComboEval:
     """Per-target capability pass. Fluxes come from independent solves — NOT simultaneous.
 
@@ -557,10 +623,9 @@ def _evaluate_members_multi(
     sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
     try:
         community = engine.build_community(sub, cmig_solver=solver)
-        if medium_spec is not None:
-            from cmig.core.medium_spec import apply_medium_checked
-
-            apply_medium_checked(community, medium_spec, strict=strict_medium)
+        medium_note = _apply_search_medium(
+            community, medium_spec, strict_medium=strict_medium, notes=medium_notes
+        )
         fluxes: dict[str, float] = {}
         signed: dict[str, float] = {}
         status = "optimal"
@@ -586,7 +651,7 @@ def _evaluate_members_multi(
             status = "missing"
             diag = f"no target exchange present in this consortium: {sorted(missing)}"
         return _ComboEval(
-            members, status, growth, fluxes, signed, diag,
+            members, status, growth, fluxes, signed, _with_medium_note(diag, medium_note),
             tuple(sorted(missing)), FLUX_BASIS_CAPABILITY,
         )
     except Exception as e:  # noqa: BLE001 - per-combo isolation
@@ -627,6 +692,7 @@ def _evaluate_members_multi_joint(
     normalization_ranges: dict[str, tuple[float, float]], growth_fraction: float,
     solver: str, medium_spec: Any | None, strict_medium: bool,
     metric: MultiTargetMetric = "normalized_weighted",
+    medium_notes: set[str] | None = None,
 ) -> _ComboEval:
     """Evaluate one consortium with a single jointly feasible weighted LP solution."""
     from cmig.core.search import joint_target_solve
@@ -634,10 +700,9 @@ def _evaluate_members_multi_joint(
     sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
     try:
         community = engine.build_community(sub, cmig_solver=solver)
-        if medium_spec is not None:
-            from cmig.core.medium_spec import apply_medium_checked
-
-            apply_medium_checked(community, medium_spec, strict=strict_medium)
+        medium_note = _apply_search_medium(
+            community, medium_spec, strict_medium=strict_medium, notes=medium_notes
+        )
         scales = _joint_lp_scales(metric, normalization_ranges)
         result = joint_target_solve(
             community,
@@ -652,7 +717,7 @@ def _evaluate_members_multi_joint(
             result.community_growth,
             result.target_fluxes,
             result.signed_values,
-            result.diagnostic,
+            _with_medium_note(result.diagnostic, medium_note),
             result.missing_targets,
             FLUX_BASIS_JOINT if result.status == "optimal" else FLUX_BASIS_NONE,
         )
@@ -665,6 +730,7 @@ def _pareto_points_for_members(
     capability: dict[str, float], growth_fraction: float, solver: str,
     medium_spec: Any | None, strict_medium: bool,
     epsilon_grid: tuple[float, ...] = PARETO_EPSILON_GRID,
+    medium_notes: set[str] | None = None,
 ) -> list[_ComboEval]:
     """Trace one consortium's trade-off surface with an epsilon-constraint sweep.
 
@@ -679,10 +745,9 @@ def _pareto_points_for_members(
     points: list[_ComboEval] = []
     try:
         community = engine.build_community(sub_taxonomy, cmig_solver=solver)
-        if medium_spec is not None:
-            from cmig.core.medium_spec import apply_medium_checked
-
-            apply_medium_checked(community, medium_spec, strict=strict_medium)
+        medium_note = _apply_search_medium(
+            community, medium_spec, strict_medium=strict_medium, notes=medium_notes
+        )
         for epsilon in epsilon_grid:
             floors = {
                 spec.metabolite: epsilon * max(0.0, capability.get(spec.metabolite, 0.0))
@@ -700,7 +765,8 @@ def _pareto_points_for_members(
             points.append(_ComboEval(
                 members, "optimal", result.community_growth,
                 dict(result.target_fluxes), dict(result.signed_values),
-                f"epsilon={epsilon:g}", result.missing_targets, FLUX_BASIS_JOINT,
+                _with_medium_note(f"epsilon={epsilon:g}", medium_note),
+                result.missing_targets, FLUX_BASIS_JOINT,
             ))
     except Exception as error:  # noqa: BLE001 - per-combo isolation, same as the other passes
         return [_ComboEval(members, "failed", 0.0, {}, {}, str(error), (), FLUX_BASIS_NONE)]
@@ -744,11 +810,13 @@ def search_model_pool_multi(
             "narrow --min-size/--max-size (multi-target search is exhaustive-only, no silent "
             "truncation)")
 
+    medium_notes: set[str] = set()
     capability_evals = [
         _evaluate_members_multi(
             engine, taxonomy, members, specs,
             growth_fraction=config.growth_fraction, solver=config.solver,
-            medium_spec=medium_spec, strict_medium=strict_medium)
+            medium_spec=medium_spec, strict_medium=strict_medium,
+            medium_notes=medium_notes)
         for members in candidates
     ]
     ranges = _capability_ranges(capability_evals, specs)
@@ -756,6 +824,7 @@ def search_model_pool_multi(
         return _pareto_search(
             engine, taxonomy, candidates, capability_evals, specs, config,
             medium_spec=medium_spec, strict_medium=strict_medium, ids=ids,
+            medium_notes=medium_notes,
         )
     evals: list[_ComboEval] = []
     for members, capability in zip(candidates, capability_evals, strict=True):
@@ -774,6 +843,7 @@ def search_model_pool_multi(
                 medium_spec=medium_spec,
                 strict_medium=strict_medium,
                 metric=config.metric,
+                medium_notes=medium_notes,
             )
         )
     all_rows, normalizer = rank_multi_target(
@@ -783,6 +853,7 @@ def search_model_pool_multi(
     ranked = [row for row in all_rows if row.rank > 0]
     unevaluated = [row for row in all_rows if row.rank == 0]
     warnings: list[str] = list(_multi_target_warnings(ranked, unevaluated, config))
+    warnings.extend(sorted(medium_notes))
     return MultiTargetSearchResult(
         targets=list(config.targets),
         target_exchanges={s.metabolite: s.exchange_id() for s in specs},
@@ -806,6 +877,7 @@ def _pareto_search(
     engine: Any, taxonomy: Any, candidates: list[tuple[str, ...]],
     capability_evals: list[_ComboEval], specs: list[TargetSpec], config: MultiTargetConfig,
     *, medium_spec: Any, strict_medium: bool, ids: list[str],
+    medium_notes: set[str] | None = None,
 ) -> MultiTargetSearchResult:
     """Report the non-dominated trade-off set instead of one scalarised winner (item 9).
 
@@ -829,6 +901,7 @@ def _pareto_search(
             capability={m: capability.signed.get(m, 0.0) for m in metabolites},
             growth_fraction=config.growth_fraction, solver=config.solver,
             medium_spec=medium_spec, strict_medium=strict_medium,
+            medium_notes=medium_notes,
         )
         if found and all(point.status != "optimal" for point in found):
             unevaluated.extend(found)
@@ -872,6 +945,7 @@ def _pareto_search(
         "rank here is a reporting order (weighted sum), not a claim that rank 1 is best. "
         f"{n_specialists} of {len(ranked)} front points are single-metabolite specialists"
     )
+    warnings.extend(sorted(medium_notes or ()))
     return MultiTargetSearchResult(
         targets=list(config.targets),
         target_exchanges={s.metabolite: s.exchange_id() for s in specs},

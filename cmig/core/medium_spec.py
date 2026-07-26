@@ -18,6 +18,15 @@ from pathlib import Path
 
 _DECIMALS = 6
 
+# Round 5 (blocker 5): the CC-11 fix changes the numbers a `--medium` run produces WITHOUT moving
+# `run_hash` — measured, identical inputs, identical hash: solve growth 0.881561 -> 1.125065
+# (hash 6960d9ca9412a572…), search target flux 18.13 -> 13.64 (hash cf395ca787e9957b…). A
+# previously published hash therefore now maps to a different number. It cannot be recorded by
+# bumping a hash component (`cmig_core_version` is frozen), so it is stamped into the manifest's
+# **non-hashed** `provenance` block instead: enough to tell the two eras apart mechanically,
+# without touching the frozen contract. See the CHANGELOG entry.
+MEDIUM_POLICY = "exchange_reactions_by_metabolite_v2"   # was: open_uptakes_exact_key_v1
+
 
 @dataclass(frozen=True)
 class MediumSpec:
@@ -31,6 +40,40 @@ class MediumSpec:
                 raise ValueError(f"빈 exchange_id (medium): {ex!r}")
             if not math.isfinite(v) or v < 0:
                 raise ValueError(f"uptake_limit 은 유한·≥0 이어야 함 ({ex}={v}) [§4]")
+        self._reject_contradictory_aliases()
+
+    def _reject_contradictory_aliases(self) -> None:
+        """Two ids for one metabolite must not request different limits.
+
+        Round 5 (blocker 1). ``EX_ac_e`` and ``EX_ac_m`` name the same molecule, so under the
+        metabolite-keyed medium semantics they resolve to a single exchange — whichever row came
+        last silently won, and reordering identical CSV rows moved community growth 1.125065 ->
+        0.954612 while ``medium_checksum`` (which sorts, and hashes both rows) stayed identical.
+
+        The contradiction is a property of the *request*, not of any particular model, so it is
+        caught here at load/validate time. That makes it a clean input error (exit 2) on every
+        subcommand rather than a per-candidate analysis failure buried in diagnostics.
+        Aliases that agree are not contradictory and are merged downstream.
+        """
+        by_metabolite: dict[str, dict[str, float]] = {}
+        for exchange, limit in self.uptake.items():
+            by_metabolite.setdefault(exchange_metabolite(str(exchange)), {})[str(exchange)] = float(
+                limit
+            )
+        conflicts = [
+            f"{metabolite} <- {{"
+            + ", ".join(f"{source}={sources[source]!r}" for source in sorted(sources))
+            + "}"
+            for metabolite, sources in sorted(by_metabolite.items())
+            if len(set(sources.values())) > 1
+        ]
+        if conflicts:
+            raise ValueError(
+                "medium spec requests conflicting uptake limits for the same metabolite "
+                f"(namespace aliases): {conflicts}. Resolve the duplicate rows — refusing rather "
+                "than silently picking one, because the choice would change the result without "
+                "changing the medium checksum."
+            )
 
 
 def load_medium(path: str | Path) -> MediumSpec:
@@ -79,41 +122,46 @@ def load_medium(path: str | Path) -> MediumSpec:
 def apply_medium(community: object, spec: MediumSpec) -> dict[str, float]:
     """community.medium(MICOM public API)에 spec 적용. 원래 medium 반환(undo).
 
-    spec 의 exchange 중 community 가 아는 medium 키만 설정한다. 미지 exchange 는 기본적으로
-    fail-fast 이며, 호출자가 `strict=False` 를 선택한 경우에만 무시한다.
+    대상 모델이 **exchange 반응을 실제로 가진** 대사체만 설정한다. 대응 exchange 가 아예 없는
+    대사체는 기본적으로 fail-fast 이며, 호출자가 `strict=False` 를 선택한 경우에만 무시한다.
     uptake_limit 은 그대로 MICOM medium 양수값으로 사용(부호 변환 불요).
     """
     return apply_medium_checked(community, spec, strict=True)[0]
 
 
 def unknown_medium_exchanges(community: object, spec: MediumSpec) -> list[str]:
-    """medium spec 중 community.medium 에 없는 exchange 목록."""
+    """medium spec 중 대상 모델에 대응 exchange **반응**이 없는 exchange 목록.
+
+    ``community.medium`` 은 *현재 열려 있는* uptake 만 나열하므로 "이 모델이 제공할 수 있는가"
+    판정에 쓸 수 없다 — 닫힌 exchange 도 medium 으로 열 수 있어야 하기 때문이다.
+    :func:`apply_medium_checked` 와 정확히 같은 판정을 쓴다(둘이 어긋나면 pre-flight 가 거짓말을
+    하게 된다).
+    """
     spec.validate()
-    known = set(dict(community.medium))  # type: ignore[attr-defined]
-    return sorted(ex for ex in spec.uptake if ex not in known)
+    return list(translate_medium_for_model(community, spec).unmatched)
 
 
 def apply_medium_checked(
     community: object, spec: MediumSpec, *, strict: bool = True
 ) -> tuple[dict[str, float], list[str]]:
-    """community.medium 에 spec 적용 + 미적용 exchange 목록 반환.
+    """community.medium 에 spec 적용 + 미적용(대응 exchange 부재) exchange 목록 반환.
 
-    strict=True 이면 미지 exchange 를 ValueError 로 차단한다. strict=False 는 CLI의
+    strict=True 이면 대응 exchange 가 없는 대사체를 ValueError 로 차단한다. strict=False 는 CLI의
     `--allow-unknown-medium` 같은 명시 옵션에서만 사용하며, 반환된 unknown 목록을 diagnostic에
     기록해야 한다.
+
+    P0(round 5): 예전 구현은 ``dict(community.medium)`` 의 키를 "모델이 아는 exchange" 로 삼았다.
+    그 속성은 *현재 열린 uptake* 만 나열하므로 **닫힌 exchange 는 절대 열 수 없었고**(실측:
+    2-member community 의 257 개 ``EX_*_m`` 중 26 개만 해당), acetate·butyrate·lactate·succinate·
+    glycerol 등 대부분의 SCFA/탄소원이 strict 에서는 거짓 오류로, permissive 에서는 조용히
+    누락됐다. 그러면서 manifest 는 요청된 medium_checksum 과 고유 run_hash 를 찍어, 쓰지 않은
+    배지 위의 run 으로 발표된다. 이제 :func:`apply_medium_translated` 와 **동일한 단일 경로**
+    (대사체 기준 exchange 반응 조회)를 쓴다 — subcommand 마다 배지 의미가 갈리지 않는다.
     """
     spec.validate()
-    current = dict(community.medium)  # type: ignore[attr-defined]
-    original = dict(current)
-    known = set(current)
-    unknown = sorted(ex for ex in spec.uptake if ex not in known)
-    if strict and unknown:
-        raise ValueError(f"medium exchange not present in the target model: {unknown}")
-    applied = {ex: v for ex, v in spec.uptake.items() if ex in known}
-    new_medium = dict(current)
-    new_medium.update(applied)
-    community.medium = new_medium  # type: ignore[attr-defined]
-    return original, unknown
+    original = dict(community.medium)  # type: ignore[attr-defined]
+    translation = apply_medium_translated(community, spec, strict=strict, exact=False)
+    return original, list(translation.unmatched)
 
 
 # ── Namespace-bridged effective medium (P0-A) ──────────────────────────────────
@@ -160,11 +208,27 @@ class MediumTranslation:
 
 
 def translate_medium_for_model(model: object, spec: MediumSpec) -> MediumTranslation:
-    """Re-key ``spec`` onto the exchange ids ``model`` actually exposes, matching on metabolite."""
+    """Re-key ``spec`` onto the exchange ids ``model`` actually exposes, matching on metabolite.
+
+    Because the match is on the *metabolite*, two different source ids can resolve to one target
+    exchange — ``EX_glc__D_m`` and ``EX_glc__D_e`` both mean glucose. Round 5 (blocker 1): the
+    first cut wrote ``translated[target] = limit`` unconditionally, so the last row of the medium
+    file silently won. Reordering *identical* CSV rows then changed community growth
+    ``1.125065`` -> ``0.954612`` while ``medium_checksum`` (which sorts, and hashes **both**
+    entries) stayed byte-identical — a different scientific answer certified by the same
+    fingerprint, which is the exact failure class this round exists to close.
+
+    This is reachable rather than exotic: hedging both namespaces in one file was the natural
+    user workaround for the pre-CC-11 bug, since the old code required an exact key match.
+
+    Resolution: aliases that request the **same** limit are merged deterministically (the user
+    asked for one thing twice, so there is nothing to choose). Aliases that request **different**
+    limits are a contradictory input and are refused — never silently resolved in favour of one.
+    """
     spec.validate()
     index = model_exchange_index(model)
     mapping: dict[str, str] = {}
-    translated: dict[str, float] = {}
+    requested: dict[str, dict[str, float]] = {}
     unmatched: list[str] = []
     for source_exchange, limit in spec.uptake.items():
         target = index.get(exchange_metabolite(str(source_exchange)))
@@ -172,7 +236,25 @@ def translate_medium_for_model(model: object, spec: MediumSpec) -> MediumTransla
             unmatched.append(str(source_exchange))
             continue
         mapping[str(source_exchange)] = target
-        translated[target] = float(limit)
+        requested.setdefault(target, {})[str(source_exchange)] = float(limit)
+
+    translated: dict[str, float] = {}
+    conflicts: list[str] = []
+    for target in sorted(requested):
+        sources = requested[target]
+        distinct = sorted(set(sources.values()))
+        if len(distinct) > 1:
+            detail = ", ".join(f"{source}={sources[source]!r}" for source in sorted(sources))
+            conflicts.append(f"{target} <- {{{detail}}}")
+            continue
+        translated[target] = distinct[0]
+    if conflicts:
+        raise ValueError(
+            "medium spec requests conflicting uptake limits for the same model exchange "
+            f"(aliases of one metabolite): {conflicts}. Resolve the duplicate rows — refusing "
+            "rather than silently picking one, because the choice would change the result "
+            "without changing the medium checksum."
+        )
     return MediumTranslation(
         spec=MediumSpec(uptake=translated),
         mapping=mapping,

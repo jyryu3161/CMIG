@@ -24,6 +24,34 @@ semantic versioning for public releases.
 
 ### Changed
 
+- **BREAKING (scientific): `--medium` now actually applies.** `apply_medium_checked` gated on
+  `model.medium`, which lists only *currently open* uptakes, so a closed exchange could never be
+  opened — roughly 90% of nutrients (acetate, butyrate, lactate, succinate, glycerol) were
+  unreachable. Under `--allow-unknown-medium` they were dropped silently while the manifest still
+  recorded the requested `medium_checksum` and minted a distinct `run_hash`, publishing a run as
+  being on a medium it never used. Every consumer (`solve`, `search` and all multi-target
+  variants, `host-microbe-bigg`, `abundance-impact`, and the GUI via `EngineService`) now shares
+  the one metabolite-keyed path that `strain-growth` already used.
+
+  **This changes published numbers without changing `run_hash`.** Measured on identical inputs:
+  `solve --medium` growth `0.881561` → `1.125065` and `search --medium` target flux `18.13` →
+  `13.64`, both under a byte-identical hash. The discontinuity cannot be encoded in a hash
+  component (`cmig_core_version` is frozen), so runs are now stamped with a **non-hashed**
+  `medium_policy` marker — `provenance.medium_policy` in a solve manifest and a top-level
+  `medium_policy` in a workflow manifest — whose value moved from `open_uptakes_exact_key_v1` to
+  `exchange_reactions_by_metabolite_v2`.
+
+  **Action required:** any run produced before this change with `--medium` is suspect; its
+  `medium_checksum` describes a medium that was only partially applied, or not applied at all.
+  Re-run it. A manifest with no `medium_policy` key is from the old era.
+
+- A medium file that gives two namespace aliases of one metabolite (`EX_ac_e` and `EX_ac_m`)
+  different uptake limits is now refused as an input error (exit 2). Previously the last row
+  silently won, so reordering identical CSV rows changed community growth `1.125065` → `0.954612`
+  while `medium_checksum` — which sorts, and hashes both rows — stayed byte-identical. Aliases
+  that request the *same* limit are merged and are unaffected.
+
+
 - Cross-feeding allocation now conserves shared-pool supply and demand.
 - Multi-target search returns one jointly feasible flux vector.
 - Namespace review is mandatory unless the BiGG assumption is explicit.
@@ -53,6 +81,17 @@ semantic versioning for public releases.
 
 ### Fixed
 
+- A gene knockout whose solve *raised* was published as the screen's strongest result. The
+  exception handler wrote `score: 0.0` and `score_delta: -baseline.score` — a finite,
+  large-magnitude, entirely plausible effect size that was never measured — and the writer
+  numbered every row it was given, so the failure reached `gene_ko_rankings.csv` as rank 1 and was
+  printed as "rank 1 (largest effect)". An unevaluated knockout now carries NaN in every
+  scientific field (blank in CSV, null in JSON), takes `rank 0` = "no rank", is published under
+  `unevaluated` rather than `top_ranked`, and the rank-1 headline is suppressed when nothing was
+  evaluable. `gene_ko_summary.json`'s `status` is derived from the rows instead of being the
+  literal `"ok"` it always was. This aligns the gene-KO artifacts with the convention the four
+  search paths already used, so one rule — "is `rank` nonzero?" — answers "was this row measured?"
+  everywhere.
 - **Breaking for published `host_map`, `host_microbe_bigg`, `host_search_bigg`, `host_ko_impact`
   and `publication_benchmark` run_hashes** (five kinds — see the two entries below for which change
   moves which). Re-derive any published run_hash of these kinds against this release.
@@ -76,15 +115,31 @@ semantic versioning for public releases.
   directory — fingerprinted as a different run. Only the file name is hashed now. Moves all five
   kinds that record `host_spec`: `host_microbe_bigg`, `host_search_bigg`, `host_ko_impact`,
   `host_map`, `publication_benchmark`.
-- **Known open — the osqp golden fixture is stale and is not fixed here.** It was captured at
-  `golden_decimals: 4` while the gurobi one and the current default are 6, so its published
-  `run_hash` `a422eb89…` is not reproducible by a real `cmig solve-fixture --solver osqp`, which
-  produces `c491a6a8…`. Both fixtures are internally consistent; nothing in the suite re-derived a
-  golden from its own stored components, and `golden verify` compares only `micom_version`, so this
-  had been invisible. That invariant is now tested, and the stale state is pinned by
-  `test_the_osqp_golden_is_stale_against_the_current_float_decimals_contract`. Recapturing moves a
-  frozen contract hash, so it is deferred to a deliberate decision (`python -m cmig.golden_fixture`).
-  The gurobi golden `29844e29…` is unaffected and re-derives exactly.
+- The osqp golden fixture no longer reproduced its own published hash. It stored components
+  pre-rounded at 6 decimals while recording `golden_decimals: 4`, so `a422eb89…` was an artifact
+  no code path re-derived; nothing in the suite re-derived a golden from its own stored
+  components, and `golden verify` compared only `micom_version`, so it had been invisible. The
+  three stored abundances are corrected to 4 decimals, which makes the fixture self-consistent
+  **without moving the published hash** — `a422eb89…` still verifies, and now genuinely
+  reproduces. `golden verify` compares run_hashes as well as versions, and
+  `test_each_shipped_golden_re_derives_its_own_run_hash_at_its_own_decimals` asserts the invariant
+  for every declared solver variant rather than for gurobi alone (the blind spot that let this
+  through: every hash pin in the suite was gurobi-only). The gurobi golden `29844e29…` is
+  unaffected and re-derives exactly.
+- **The id normalizer destroyed D/L stereochemistry, and the manifest recorded that as policy.**
+  `_normalize_metabolite_id` stripped any trailing `__<Uppercase>` token as a MICOM taxon suffix,
+  but BiGG writes stereoisomers exactly that way, so `lac__D_e` and `lac__L_e` both normalized to
+  `lac` — as did `glc__D`, the most common carbon source in the bundled models. Because
+  `solve_bigg_host` normalizes both the reviewed interface-map keys and the microbial
+  availability, a reviewed D-isomer mapping matched L-isomer availability and opened the D
+  exchange: the host took up, and grew on, a molecule it cannot transport. The descriptor is now
+  preserved (`lac__D_e` → `lac__d`, `lac__L_e` → `lac__l`) while genuine taxon suffixes are still
+  stripped (`EX_ac_m__Escherichia_coli` → `ac`), the discriminator being token length rather than
+  case. **Breaking for published `host_map` and `publication_benchmark` run_hashes:**
+  `map_spec.id_normalization.uppercase_stereoisomer_suffix_folded` was `true` and is now `false`,
+  and it is measured off the live normalizer rather than restated, so it cannot go stale again.
+  The matching-behaviour digest moved with it
+  (`sha256:70782b1b…` → `sha256:36059e16…`). Re-derive any published run_hash of these two kinds.
 - Envelope-golden component fixtures are now **built by the same builders real runs use**
   (`medium_component`, `host_spec_component`, `host_map_policy`, `bundle_component`) instead of
   being transcribed as literals. A transcribed literal made the drift gate certify a *copy* of the

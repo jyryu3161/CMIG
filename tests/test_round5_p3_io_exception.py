@@ -482,31 +482,50 @@ def test_sweep_parquet_records_the_tradeoff_it_was_actually_given():
 def test_failed_gene_ko_row_is_not_given_a_rank_or_counted_as_evaluated():
     """V4. Every scientific field of a failed knockout is blank, but the row was still numbered
     ``rank=1`` and counted in the evaluated total, so the CSV asserted an ordinal position for a
-    knockout that was never evaluated."""
-    from cmig.cli.main import _ko_ranks, _n_ko_evaluated
+    knockout that was never evaluated.
+
+    Merge note (round-5 integration): tracks P1 and P3 fixed this same defect independently and
+    reached the same conclusion, differing only in the sentinel for "no rank" — P3 wrote a blank
+    cell, P1 wrote ``0``. Integration kept ``0`` and P1's ``_ko_ranked_rows``, because every other
+    ranked artifact CMIG publishes (all four search paths, see ``core/search_product.py``)
+    already uses ``rank 0 == no rank`` with the unevaluated rows in their own block. A consumer
+    should need one rule for "was this row measured?", not one per subcommand. The property this
+    test asserts is unchanged; only the sentinel it reads moved.
+    """
+    from cmig.cli.main import _ko_ranked_rows, _n_ko_evaluated
 
     rows = [
         {"evaluation_status": "ok", "member": "m", "gene": "g1"},
         {"evaluation_status": "failed", "member": "m", "gene": "g2"},
         {"evaluation_status": "ok", "member": "m", "gene": "g3"},
     ]
-    ranks = _ko_ranks(rows)
+    ranks = [rank for rank, _ in _ko_ranked_rows(rows)]
     assert ranks[0] == 1
-    assert ranks[1] == "", "a failed knockout was given an ordinal rank"
+    assert ranks[1] == 0, "a failed knockout was given an ordinal rank"
     assert ranks[2] == 2, "a failed row consumed a rank number from a real result"
     assert _n_ko_evaluated(rows) == 2, "a failed knockout was counted as evaluated"
 
     # A screen in which everything failed has no rank 1 at all.
     all_failed = [{"evaluation_status": "failed", "member": "m", "gene": "g"}]
-    assert _ko_ranks(all_failed) == [""]
+    assert [rank for rank, _ in _ko_ranked_rows(all_failed)] == [0]
     assert _n_ko_evaluated(all_failed) == 0
 
 
 def test_gene_ko_artifacts_do_not_rank_a_knockout_that_failed(tmp_path):
     """V4, at the writer rather than the helper.
 
-    Audit note: testing ``_ko_ranks`` alone would still pass if the CSV/JSON writer went back to
-    ``enumerate(rows, start=1)``. This drives the real writer and reads the real artifacts.
+    Audit note: testing ``_ko_ranked_rows`` alone would still pass if the CSV/JSON writer went
+    back to ``enumerate(rows, start=1)``. This drives the real writer and reads the real
+    artifacts.
+
+    Merge note: see the sentinel discussion on
+    ``test_failed_gene_ko_row_is_not_given_a_rank_or_counted_as_evaluated``. Integration also
+    adopted P1's stronger JSON shape — an unevaluated knockout is not in ``top_ranked`` at all,
+    it is published under ``unevaluated`` — because the GUI table and ``_resolve_run_status``
+    both iterate ``top_ranked`` without inspecting ``rank``, so a failure sitting there with a
+    null ordinal is still read as a result. The assertion below is therefore made on
+    ``unevaluated`` rather than on a null rank inside ``top_ranked``; it is the same claim, made
+    where a careless consumer cannot miss it.
     """
     import csv as _csv
     from types import SimpleNamespace
@@ -535,13 +554,14 @@ def test_gene_ko_artifacts_do_not_rank_a_knockout_that_failed(tmp_path):
     with (tmp_path / "gene_ko_rankings.csv").open(newline="") as handle:
         csv_rows = {r["gene"]: r for r in _csv.DictReader(handle)}
     assert csv_rows["g1"]["rank"] == "1"
-    assert csv_rows["g2"]["rank"] == "", "a failed knockout was numbered in gene_ko_rankings.csv"
+    assert csv_rows["g2"]["rank"] == "0", "a failed knockout was numbered in gene_ko_rankings.csv"
+    assert csv_rows["g2"]["score_delta"] == "", "a failed knockout carried a fabricated delta"
     assert csv_rows["g3"]["rank"] == "2", "a failed row consumed a rank number"
 
     payload = json.loads((tmp_path / "gene_ko_summary.json").read_text())
     ranked = {entry["gene"]: entry["rank"] for entry in payload["top_ranked"]}
-    assert ranked["g1"] == 1 and ranked["g3"] == 2
-    assert ranked["g2"] is None, "a failed knockout was given an ordinal in the JSON summary"
+    assert ranked == {"g1": 1, "g3": 2}, "a failed knockout entered top_ranked"
+    assert [entry["gene"] for entry in payload["unevaluated"]] == ["g2"]
     assert payload["n_genes_evaluated"] == 2
     assert payload["n_genes_attempted"] == 3
     assert payload["status"] == "degraded"
