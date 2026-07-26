@@ -441,7 +441,8 @@ def _cmd_inspect_run(args: argparse.Namespace) -> int:
     if payload["run_hash"]:
         print(f"run_hash: {payload['run_hash']}   (certifies the INPUTS)")
     if verified is None:
-        print("result_digest: not recorded (manifest predates result digests)")
+        reason = payload["result_digest_absent_reason"]
+        print(f"result_digest: not recorded ({_RESULT_DIGEST_ABSENT_MESSAGES[reason]})")
     elif verified["match"]:
         print(f"result_digest: {verified['actual']}   (certifies the ARTIFACT BYTES) — verified")
     basis = payload.get("edge_weight_basis")
@@ -510,7 +511,8 @@ def _inspect_run_dir(run_dir: Path) -> dict[str, Any]:
     if integrity == "mismatch":
         status, status_source = "failed", "result_digest_mismatch"
     return {
-        "schema_version": "1.1",
+        # 1.2 adds `result_digest_absent_reason` (round-6 C2).
+        "schema_version": "1.2",
         "run_dir": str(run_dir),
         "kind": kind,
         "status": status,
@@ -519,6 +521,13 @@ def _inspect_run_dir(run_dir: Path) -> dict[str, Any]:
         "run_hash": run_hash,
         "artifact_integrity": integrity,
         "result_digest": verified,
+        # Why there is nothing to verify. Round-6 C2: both the text renderer and (silently) the
+        # JSON payload offered exactly one explanation — "manifest predates result digests" — which
+        # is false for `cmig solve` (which never emits one) and absurd for a directory with no
+        # manifest at all. `manifest_scope` already distinguishes the cases.
+        "result_digest_absent_reason": (
+            None if verified is not None else _result_digest_absent_reason(manifest)
+        ),
         "artifacts": _list_run_artifacts(run_dir),
         "manifest": _compact_manifest(manifest),
         "summary_keys": sorted(str(key) for key in summary.keys()),
@@ -527,6 +536,39 @@ def _inspect_run_dir(run_dir: Path) -> dict[str, Any]:
         # community-basis profile.net_flux is exactly the misreading this field exists to stop.
         "edge_weight_basis": _edge_weight_basis(manifest),
     }
+
+
+# Round-6 C2. Only ONE of these is a statement about time; the old single message asserted that
+# one for all of them. `write_workflow_manifest` has recorded a `result_digest` for every workflow
+# run since round 5, and `io.solve_output` has never written one, so the scope marker is what
+# separates "too old to have it" from "never had it by design".
+_RESULT_DIGEST_ABSENT_MESSAGES: dict[str, str] = {
+    "no_manifest": (
+        "this run directory has no manifest.json, so nothing here ever recorded one"
+    ),
+    "solve_manifest_never_records_one": (
+        "cmig solve writes a manifest_scope=solve manifest and never emits a result digest; only "
+        "the workflow manifest kinds do"
+    ),
+    "workflow_manifest_predates_result_digests": (
+        "this workflow manifest predates result digests"
+    ),
+    "manifest_declares_no_scope": (
+        "this manifest declares no manifest_scope, so it predates result digests"
+    ),
+}
+
+
+def _result_digest_absent_reason(manifest: dict[str, Any]) -> str:
+    """Which of the four reasons applies. Never guesses "predates" for a manifest that cannot."""
+    if not manifest:
+        return "no_manifest"
+    scope = _string_or_none(manifest.get("manifest_scope"))
+    if scope == "solve":
+        return "solve_manifest_never_records_one"
+    if scope == "workflow":
+        return "workflow_manifest_predates_result_digests"
+    return "manifest_declares_no_scope"
 
 
 def _edge_weight_basis(manifest: dict[str, Any]) -> dict[str, Any] | None:
@@ -585,12 +627,54 @@ def _verify_result_digest(run_dir: Path, manifest: dict[str, Any]) -> dict[str, 
 def _resolve_run_status(
     summary: dict[str, Any], manifest: dict[str, Any]
 ) -> tuple[str, str]:
-    """(status, status_source) — 요약이 status 를 안 쓰더라도 "unknown" 으로 끝내지 않는다 (B7).
+    """(status, status_source) — 요약/manifest 안의 하위 신호에서 보수적으로 파생한다.
 
-    inspect-run 은 SKILL.md 가 모든 run 에 요구하는 검증 단계다. 그 단계가 성공한 run 을
-    "unknown" 으로 보고하면 검증이 성립하지 않는다. 명시 status 가 있으면 그대로 쓰고, 없으면
-    요약/manifest 안의 하위 신호에서 **보수적으로** 파생한다(모르면 ok 라고 하지 않는다).
+    inspect-run 은 SKILL.md 가 모든 run 에 요구하는 검증 단계이므로 그 status 가 곧 게이트다.
+    규칙은 하나뿐이다: **모르면 ok 라고 하지 않는다.** 파생할 신호가 하나도 없으면 "unknown"
+    이고, 신호가 있으면 가장 보수적인 해석을 쓴다.
+
+    Round 6 C1 (P0): the terminal fall-through used to be `if summary: return "ok", "derived"`, so
+    *any* run directory holding *any* recognised summary was certified ok — the exact thing this
+    docstring forbade. Measured: `cmig dfba-sensitivity --model models/iML1515.xml` exits 3 and
+    writes `acceptance.interpretable: false`, and `inspect-run` reported `status: ok (source:
+    derived)` and exited 0, because `dfba_sensitivity.json` has no `status`, no `top_ranked`, no
+    `reports` and the command writes no `manifest.json`.
     """
+    status, source = _derive_run_status(summary, manifest)
+    veto = _self_declared_not_a_result(summary)
+    if veto is None:
+        return status, source
+    veto_status, veto_source = veto
+    if status == "unknown":
+        return veto_status, veto_source
+    # A veto may only make the verdict worse, never better — and when it does, it owns the source
+    # so a reader can see which signal condemned the run.
+    worst = _worst_status(status, veto_status)
+    return worst, (veto_source if worst != status else source)
+
+
+def _self_declared_not_a_result(summary: dict[str, Any]) -> tuple[str, str] | None:
+    """A summary that stamps itself uninterpretable overrides any rosier derived tier.
+
+    `publication-benchmark` derives its dFBA sub-run manifest status from `dfba_completed` and
+    `dfba_balance_passed` only, so a grid whose growth was fed by untracked, never-depleting
+    substrates gets `status: ok` in `manifest.json` while `acceptance.interpretable` in
+    `dfba_sensitivity.json` beside it is `false`. The artifact's own verdict has to win: it is the
+    same value the producing command exits 3 on (`cmig.io.dfba_output.sensitivity_acceptance` is
+    the single source of truth for both).
+
+    `is False` rather than falsiness: a missing or null field is unknown, not a failure.
+    """
+    acceptance = summary.get("acceptance")
+    if isinstance(acceptance, dict) and acceptance.get("interpretable") is False:
+        return "failed", "acceptance.interpretable"
+    return None
+
+
+def _derive_run_status(
+    summary: dict[str, Any], manifest: dict[str, Any]
+) -> tuple[str, str]:
+    """The status ladder, most authoritative first. Returns "unknown" when nothing says anything."""
     # A workflow manifest's status is the derived run-level tier (ok/degraded/failed), so it wins
     # over a summary's raw solve status. Round-2 F11 found `inspect-run` emitting "optimal" and
     # "completed" alongside that vocabulary, which breaks any gate written against it.
@@ -604,13 +688,18 @@ def _resolve_run_status(
 
     ranked = summary.get("top_ranked")
     if isinstance(ranked, list):
+        return _status_from_ranking_rows(ranked), "derived"
+    if isinstance(ranked, dict):
+        # Round-6 C1: `search-advanced-fixture --targets a,b` keys `top_ranked` BY TARGET rather
+        # than listing it (cli/main.py:4288), so `isinstance(ranked, list)` missed and the run fell
+        # all the way through to the fabricated `ok`. Measured on the bundled fixture:
+        # `status: ok (source: derived)` came from the fall-through, not from the rankings.
         if not ranked:
             return "failed", "derived"
-        bad = [
-            row for row in ranked
-            if isinstance(row, dict) and _string_or_none(row.get("status")) not in (None, "optimal")
-        ]
-        return ("degraded" if bad else "ok"), "derived"
+        return _worst_status(*(
+            _status_from_ranking_rows(rows) if isinstance(rows, list) else "failed"
+            for rows in ranked.values()
+        )), "derived"
 
     reports = summary.get("reports")
     if isinstance(reports, list) and reports:
@@ -625,9 +714,123 @@ def _resolve_run_status(
         # solve manifest 는 status 대신 diagnostic 을 쓴다 (schema v2.0).
         return ("ok" if manifest.get("diagnostic") in (None, "") else "degraded"), "derived"
 
-    if summary:
-        return "ok", "derived"
-    return "unknown", "unknown"
+    # Per-shape derivations for the summary kinds that record no top-level `status` and whose
+    # command writes no manifest. Each mirrors the signal that kind's own command gates on, so
+    # `inspect-run` and the producing command can never disagree. Order is irrelevant — the
+    # shapes are disjoint — but each returns None unless its signal is actually present, which is
+    # what keeps an absent signal from being read as a success.
+    for derive in _SUMMARY_STATUS_DERIVATIONS:
+        derived = derive(summary)
+        if derived is not None:
+            return derived
+
+    # Nothing in this run says how it went. `no_status_signal` distinguishes "a recognised summary
+    # is here but records no run-level outcome" (e.g. `stats-demo`, which has no pass/fail
+    # dimension at all) from "the directory held nothing recognisable".
+    return ("unknown", "no_status_signal") if summary else ("unknown", "unknown")
+
+
+def _status_from_ranking_rows(rows: list[Any]) -> str:
+    """One ranking list -> run tier. Empty means nothing was ranked, which is a failure."""
+    if not rows:
+        return "failed"
+    bad = [
+        row for row in rows
+        if isinstance(row, dict) and _string_or_none(row.get("status")) not in (None, "optimal")
+    ]
+    return "degraded" if bad else "ok"
+
+
+def _status_from_acceptance(summary: dict[str, Any]) -> tuple[str, str] | None:
+    """`dfba_sensitivity.json` — the grid's own audit verdict is its run status."""
+    acceptance = summary.get("acceptance")
+    if not isinstance(acceptance, dict) or acceptance.get("interpretable") is None:
+        return None
+    return ("ok" if acceptance["interpretable"] else "failed"), "acceptance.interpretable"
+
+
+def _status_from_nested_solve(summary: dict[str, Any]) -> tuple[str, str] | None:
+    """`host_generic_summary.json` / `host_benchmark.json` put the solve outcome under `solve`."""
+    solve = summary.get("solve")
+    if not isinstance(solve, dict):
+        return None
+    status = _string_or_none(solve.get("status"))
+    if status is None:
+        return None
+    return _run_status_from_solve(status), "solve.status"
+
+
+def _status_from_inference(summary: dict[str, Any]) -> tuple[str, str] | None:
+    """`stats_sweep_summary.json` — round 5 made this withhold p-values without replicates.
+
+    A withheld inference is recorded in `inference.status`; reporting the run `ok` hides that the
+    summary contains no inferential result. Descriptive statistics are still valid, so this
+    degrades rather than fails.
+    """
+    inference = summary.get("inference")
+    if not isinstance(inference, dict):
+        return None
+    status = _string_or_none(inference.get("status"))
+    if status is None:
+        return None
+    return ("ok" if status == "completed" else "degraded"), "inference.status"
+
+
+def _status_from_namespace_gate(summary: dict[str, Any]) -> tuple[str, str] | None:
+    """`model_review.json` — the review's verdict *is* whether the namespace gate blocks.
+
+    A blocked review means no solve can use this model until decisions are supplied. The run
+    itself completed, so this is `degraded`, not `failed`.
+    """
+    namespace = summary.get("namespace")
+    if not isinstance(namespace, dict) or "blocked" not in namespace:
+        return None
+    if namespace["blocked"]:
+        return "degraded", "namespace.blocked"
+    model = summary.get("model")
+    if isinstance(model, dict) and _string_or_none(model.get("objective_warning")):
+        return "degraded", "model.objective_warning"
+    return "ok", "namespace.blocked"
+
+
+def _status_from_host_map_counts(summary: dict[str, Any]) -> tuple[str, str] | None:
+    """`host_map_summary.json` — mirrors `_cmd_host_map`'s own manifest-status derivation.
+
+    Reachable when the manifest could not be written (`_emit_workflow_manifest` warns and returns
+    None rather than destroying a finished result), which is exactly when a fabricated `ok` would
+    be least detectable.
+    """
+    if "n_microbial_secretions" not in summary or "n_exact" not in summary:
+        return None
+    n_secretions = _optional_float(summary.get("n_microbial_secretions"))
+    n_exact = _optional_float(summary.get("n_exact"))
+    if n_secretions is None or n_exact is None:
+        return None
+    if n_secretions == 0:
+        return "failed", "host_map_counts"
+    return ("degraded" if n_exact == 0 else "ok"), "host_map_counts"
+
+
+def _status_from_benchmark_checks(summary: dict[str, Any]) -> tuple[str, str] | None:
+    """`publication_benchmark.json` — mirrors `publication_benchmark._benchmark_run_status`."""
+    if "computational_checks_passed" not in summary:
+        return None
+    if not summary.get("computational_checks_passed"):
+        return "failed", "computational_checks_passed"
+    return (
+        ("ok" if summary.get("overall_passed") else "degraded"),
+        "computational_checks_passed",
+    )
+
+
+_SUMMARY_STATUS_DERIVATIONS: tuple[Callable[[dict[str, Any]], tuple[str, str] | None], ...] = (
+    _status_from_acceptance,
+    _status_from_nested_solve,
+    _status_from_inference,
+    _status_from_namespace_gate,
+    _status_from_host_map_counts,
+    _status_from_benchmark_checks,
+)
 
 
 class CorruptRunArtifactError(ValueError):
