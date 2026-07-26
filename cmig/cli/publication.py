@@ -43,7 +43,57 @@ def cmd_model_quality(args: argparse.Namespace) -> int:
         return 2
     print(f"model-quality complete ({len(reports)} models) -> {args.out}")
     print(f"  artifacts: {', '.join(artifacts)}")
+    _emit_model_quality_manifest(args, paths, reports, artifacts)
     return 0
+
+
+def _emit_model_quality_manifest(
+    args: argparse.Namespace, paths: list[Path], reports: list[Any], artifacts: list[str]
+) -> None:
+    """Reproducibility envelope for a quality audit: model bytes, checks run, and solver."""
+    from cmig.cli.main import _emit_workflow_manifest
+    from cmig.core.workflow_manifest import (
+        base_components,
+        medium_component,
+        optional_file_checksum,
+    )
+
+    def _components() -> dict[str, Any]:
+        components = base_components(
+            "model_quality",
+            solver_setting={"solver": args.solver},
+            model_checksum=json.dumps(
+                {str(path): optional_file_checksum(path) for path in sorted(paths, key=str)},
+                sort_keys=True, separators=(",", ":"),
+            ),
+            medium=medium_component(None, "model_quality_no_medium"),
+        )
+        components["quality_spec"] = {
+            "n_models": len(paths),
+            "check_blocked_reactions": bool(args.check_blocked_reactions),
+            "recursive": bool(getattr(args, "recursive", False)),
+            "sources": sorted(str(path) for path in paths),
+        }
+        return components
+
+    _emit_workflow_manifest(
+        Path(args.out),
+        "model_quality",
+        _components,
+        status=_worst_quality_status(reports),
+        artifacts=list(artifacts),
+        summary={"n_models": len(reports)},
+    )
+
+
+def _worst_quality_status(reports: list[Any]) -> str:
+    """A model that did not solve degrades the audit rather than passing silently."""
+    if not reports:
+        return "failed"
+    bad = sum(1 for report in reports if getattr(report, "solve_status", None) != "optimal")
+    if bad == len(reports):
+        return "failed"
+    return "degraded" if bad else "ok"
 
 
 def cmd_publication_benchmark(args: argparse.Namespace) -> int:

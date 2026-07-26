@@ -24,6 +24,11 @@ from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
 FluxReportStatus = Literal["full", "qp_only_approximate"]
 FLUX_REPORT_LABEL = {"full": "Full (LP pFBA)", "qp_only_approximate": "QP-only approximate"}
 
+# B1: MICOM 은 stage 가 non-optimal 로 끝나도 primal 을 무조건 읽으므로(micom/solution.py) 위임이
+# status 대신 예외를 던진다. pFBA stage 만 실패하는 경우가 있어 pfba=False 로 1회 재시도하고,
+# 그 사실을 warning 으로 노출한다(조용한 강등 금지).
+PFBA_FALLBACK_WARNING = "pfba_stage_failed; reporting non-parsimonious flux distribution"
+
 # CMIG solver 이름 → MICOM optlang solver (schema §5.2 / golden 변형 §16).
 # 루트 명세 기준: baseline에서 OSQP는 QP-only approximate 로 보고한다.
 SOLVER_MAP: dict[str, str] = {
@@ -59,12 +64,16 @@ class SolveResult:
     abundances: dict[str, float | None]              # member_id → abundance (None=누락)
     external_exchange: dict[str, float]                 # metabolite → raw net (medium pool)
     member_exchange: dict[str, dict[str, float]]        # member_id → {metabolite: raw}
-    status: Literal["optimal", "infeasible", "unbounded"]
+    status: Literal["optimal", "infeasible", "unbounded", "solver_failed"]
     flux_report_status: FluxReportStatus
     growth_solver: str                                  # QP
     flux_solver: str | None                             # LP (None → qp_only_approximate)
     diagnostic: str | None = None
     members: list[str] = field(default_factory=list)
+    # B1: 조용한 강등 금지 — pFBA fallback 등 결과 해석을 바꾸는 사건은 여기에 노출된다.
+    warnings: list[str] = field(default_factory=list)
+    # manifest 가 실제 flux 정규화를 사실대로 기록하도록 solve 결과가 스스로 들고 다닌다.
+    flux_normalization_method: str = "pfba"
 
 
 @runtime_checkable
@@ -84,6 +93,42 @@ def _met_from_exchange(rxn_id: str, suffix: str) -> str:
     if name.endswith(suffix):
         name = name[: -len(suffix)]
     return name
+
+
+def _solver_split(cmig_solver: str) -> tuple[str, str | None, FluxReportStatus]:
+    """(growth_solver, flux_solver, flux_report_status) — §4.2 [SOLVER-SPLIT] 단일 정의."""
+    if cmig_solver == "osqp":
+        return "osqp", None, "qp_only_approximate"
+    # gurobi = LP+QP 동일 solver → full (canonical full-flux). gurobi 만 'full' (F1).
+    return "gurobi", "gurobi", "full"
+
+
+def solver_failed_result(
+    cmig_solver: str,
+    causes: list[tuple[DiagnosticCode, str]],
+    *,
+    warnings: list[str] | None = None,
+) -> SolveResult:
+    """예외로 끝난 solve → 구조화 실패 SolveResult (B1: raw traceback 유출 금지).
+
+    호출자가 이미 가진 `status != "optimal"` 분기를 그대로 태울 수 있게 빈 flux dict 를 돌려준다.
+    """
+    growth_solver, flux_solver, flux_report = _solver_split(cmig_solver)
+    return SolveResult(
+        objective=0.0,
+        member_growth={},
+        abundances={},
+        external_exchange={},
+        member_exchange={},
+        status="solver_failed",
+        flux_report_status=flux_report,
+        growth_solver=growth_solver,
+        flux_solver=flux_solver,
+        diagnostic=diagnostic_from_parts(causes),
+        members=[],
+        warnings=list(warnings or []),
+        flux_normalization_method="none",
+    )
 
 
 class MicomEngine:
@@ -113,21 +158,86 @@ class MicomEngine:
         micom = self._load()
         return micom.Community(taxonomy, solver=SOLVER_MAP[cmig_solver], progress=False)
 
+    @staticmethod
+    def _delegate_cooperative_tradeoff(
+        community: Any, tradeoff_f: float
+    ) -> tuple[Any | None, str, list[str], list[tuple[DiagnosticCode, str]]]:
+        """MICOM 위임 (pFBA → 실패 시 non-pFBA 1회 재시도). 예외를 밖으로 흘리지 않는다.
+
+        MICOM 은 `CommunitySolution` 생성 시 solver status 확인 없이 primal 을 읽으므로, stage 가
+        non-optimal 로 끝나면 status 대신 solver 예외가 올라온다(관측: gurobipy GurobiError
+        "Unable to retrieve attribute 'X'" — pFBA stage). pFBA stage 만 실패하는 community 가
+        실제로 존재하므로 pfba=False 로 한 번 재시도하고, 성공 시 비-절약 flux 라는 사실을
+        warning + diagnostic 양쪽에 남긴다.
+
+        Returns ``(solution|None, flux_normalization_method, warnings, causes)``.
+        """
+        causes: list[tuple[DiagnosticCode, str]] = []
+        try:
+            return (
+                community.cooperative_tradeoff(fraction=tradeoff_f, fluxes=True, pfba=True),
+                "pfba",
+                [],
+                causes,
+            )
+        except Exception as pfba_error:  # noqa: BLE001 - solver 백엔드 예외는 타입이 열려 있다
+            causes.append((
+                DiagnosticCode.SOLVER_ERROR,
+                f"pFBA flux stage failed: {type(pfba_error).__name__}: {pfba_error}",
+            ))
+        try:
+            sol = community.cooperative_tradeoff(fraction=tradeoff_f, fluxes=True, pfba=False)
+        except Exception as retry_error:  # noqa: BLE001 - 위와 동일
+            causes.append((
+                DiagnosticCode.SOLVER_ERROR,
+                f"non-parsimonious retry failed: {type(retry_error).__name__}: {retry_error}",
+            ))
+            return None, "none", [], causes
+        return sol, "fba", [PFBA_FALLBACK_WARNING], causes
+
     def cooperative_tradeoff(
         self, community: object, tradeoff_f: float, *, cmig_solver: str = "gurobi"
     ) -> SolveResult:
         """MICOM cooperative_tradeoff(fraction=f, fluxes=True, pfba=True) 위임 + dict 변환.
 
-        eps 0 처리는 하위 sign 계층이 담당; 여기선 raw flux 만 추출한다.
+        eps 0 처리는 하위 sign 계층이 담당; 여기선 raw flux 만 추출한다. 위임이 예외로 끝나면
+        (B1) status="solver_failed" SolveResult 로 구조화한다 — 호출자는 이미 status 를 분기한다.
         """
         _require_allowed_solver(cmig_solver)        # F1: gurobi/osqp 만 (라이브러리 강제)
         # tradeoff f 범위 검증 (§4.2 [TRADEOFF-RANGE]: 0 < f ≤ 1) — MICOM 위임 전 fail-fast.
         if not (0.0 < tradeoff_f <= 1.0):
             raise ValueError(f"tradeoff_f 는 0 < f ≤ 1 이어야 함 (받음: {tradeoff_f}) [§4.2]")
 
-        sol = community.cooperative_tradeoff(  # type: ignore[attr-defined]
-            fraction=tradeoff_f, fluxes=True, pfba=True
+        sol, flux_normalization, solve_warnings, solve_causes = (
+            self._delegate_cooperative_tradeoff(community, tradeoff_f)
         )
+        if sol is None:
+            return solver_failed_result(cmig_solver, solve_causes, warnings=solve_warnings)
+        try:
+            return self._solve_result_from_solution(
+                sol,
+                cmig_solver=cmig_solver,
+                flux_normalization=flux_normalization,
+                solve_warnings=solve_warnings,
+                solve_causes=solve_causes,
+            )
+        except Exception as convert_error:  # noqa: BLE001 - 부분 해 판독 실패도 구조화한다
+            solve_causes.append((
+                DiagnosticCode.SOLVER_ERROR,
+                f"solution readout failed: {type(convert_error).__name__}: {convert_error}",
+            ))
+            return solver_failed_result(cmig_solver, solve_causes, warnings=solve_warnings)
+
+    def _solve_result_from_solution(
+        self,
+        sol: Any,
+        *,
+        cmig_solver: str,
+        flux_normalization: str = "pfba",
+        solve_warnings: list[str] | None = None,
+        solve_causes: list[tuple[DiagnosticCode, str]] | None = None,
+    ) -> SolveResult:
+        """MICOM CommunitySolution → SolveResult (순수 판독; solver 호출 없음)."""
         members_df = sol.members
         fluxes = sol.fluxes
         member_ids = [str(i) for i in fluxes.index if str(i) != "medium"]
@@ -163,20 +273,14 @@ class MicomEngine:
             member_exchange[m] = row
 
         # solver 분리 기록 (§4.2 [SOLVER-SPLIT]).
-        flux_solver: str | None
-        flux_report: FluxReportStatus
+        growth_solver, flux_solver, flux_report = _solver_split(cmig_solver)
         # F4: 진단을 (DiagnosticCode, message) 로 수집 → diagnostic_from_parts 구조화.
-        diag_parts: list[tuple[DiagnosticCode, str]] = []
-        if cmig_solver == "osqp":
-            growth_solver, flux_solver, flux_report = "osqp", None, "qp_only_approximate"
-        else:
-            # gurobi = LP+QP 동일 solver → full (canonical full-flux). gurobi 만 'full' (F1).
-            growth_solver = flux_solver = "gurobi"
-            flux_report = "full"
+        # 위임 단계에서 이미 수집된 원인(pFBA fallback 등)을 앞에 유지한다.
+        diag_parts: list[tuple[DiagnosticCode, str]] = list(solve_causes or [])
 
         # status — growth 비유한(infeasible) 가드 + 멤버 누락 진단 (§4.4).
         objective = float(sol.growth_rate)
-        status: Literal["optimal", "infeasible", "unbounded"] = "optimal"
+        status: Literal["optimal", "infeasible", "unbounded", "solver_failed"] = "optimal"
         if not math.isfinite(objective):
             if math.isinf(objective):
                 status = "unbounded"
@@ -204,4 +308,6 @@ class MicomEngine:
             flux_solver=flux_solver,
             diagnostic=diagnostic,
             members=member_ids,
+            warnings=list(solve_warnings or []),
+            flux_normalization_method=flux_normalization,
         )

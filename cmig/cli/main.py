@@ -22,6 +22,7 @@ from typing import Any
 
 from cmig import CMIG_CORE_VERSION
 from cmig.core.solver import capability_matrix
+from cmig.core.targets import TARGET_PRESETS
 
 DEFAULT_DFBA_INITIAL_CONCENTRATIONS = {
     "EX_glc__D_e": 10.0,
@@ -193,6 +194,30 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         ),
     },
     {
+        "gui_surface": "Host / Knockout Impact",
+        "cli_command": "cmig host-ko-impact",
+        "purpose": (
+            "Quantify how a microbial gene/reaction knockout changes the host objective, "
+            "against an identically configured baseline."
+        ),
+        "required_args": [
+            "--host", "--model-dir or --taxonomy", "--member",
+            "--genes or --reactions", "--microbial-biomass-gdw", "--host-biomass-gdw",
+            "--biomass-basis-kind", "--biomass-basis-source", "--out",
+        ],
+        "common_options": [
+            "--ko-level", "--target", "--interface-map", "--host-medium", "--microbe-medium",
+            "--host-objective", "--keep-host-uptake",
+        ],
+        "key_outputs": ["host_ko_impact_summary.json", "host_ko_impact.csv"],
+        "example": (
+            "uv run cmig host-ko-impact --host host.xml --model-dir models --member iHN637 "
+            "--ko-level reaction --reactions ACKr,PTAr --target ac "
+            "--microbial-biomass-gdw 1.0 --host-biomass-gdw 1.0 --biomass-basis-kind measured "
+            "--biomass-basis-source \"$BIOMASS_BASIS_SOURCE\" --out runs/host_ko"
+        ),
+    },
+    {
         "gui_surface": "Host / Rank Combinations",
         "cli_command": "cmig host-search-bigg",
         "purpose": "Rank microbial combinations by host objective and target transfer.",
@@ -312,6 +337,7 @@ RUN_SUMMARY_FILES: list[tuple[str, str]] = [
     ("search_summary.json", "model_pool_search"),
     ("host_microbe_bigg_summary.json", "host_microbe_bigg"),
     ("host_search_summary.json", "host_search_bigg"),
+    ("host_ko_impact_summary.json", "host_ko_impact"),
     ("strain_growth_summary.json", "strain_growth"),
     ("abundance_impact_summary.json", "abundance_impact"),
     ("gene_ko_summary.json", "gene_ko_search"),
@@ -326,6 +352,12 @@ RUN_SUMMARY_FILES: list[tuple[str, str]] = [
     ("host_generic_summary.json", "host_generic"),
     ("host_benchmark.json", "host_benchmark"),
     ("search_advanced_summary.json", "advanced_search_fixture"),
+    # B7: inspect-run 이 kind=unknown 을 돌려주던 워크플로 (검증 단계가 "이 run 이 뭔지 모름"을
+    # 보고하면 안 된다).
+    ("model_quality.json", "model_quality"),
+    ("host_map_summary.json", "host_exchange_map"),
+    ("dfba_sensitivity.json", "dfba_sensitivity"),
+    ("publication_benchmark.json", "publication_benchmark"),
 ]
 
 
@@ -378,7 +410,7 @@ def _cmd_inspect_run(args: argparse.Namespace) -> int:
         return 0
     print(f"run_dir: {payload['run_dir']}")
     print(f"kind: {payload['kind']}")
-    print(f"status: {payload['status']}")
+    print(f"status: {payload['status']} (source: {payload['status_source']})")
     if payload["summary_file"]:
         print(f"summary_file: {payload['summary_file']}")
     if payload["run_hash"]:
@@ -390,10 +422,21 @@ def _cmd_inspect_run(args: argparse.Namespace) -> int:
 
 
 def _inspect_run_dir(run_dir: Path) -> dict[str, Any]:
+    manifest = _load_json_object(run_dir / "manifest.json") or {}
+    # A workflow manifest names its own kind. Without this check the `manifest.json ->
+    # community_solve` entry below would relabel every workflow run as a community solve, because
+    # it is the first entry in RUN_SUMMARY_FILES.
+    workflow_kind = (
+        _string_or_none(manifest.get("workflow_kind"))
+        if manifest.get("manifest_scope") == "workflow" else None
+    )
+
     kind = "unknown"
     summary_file: str | None = None
     summary: dict[str, Any] = {}
     for filename, candidate_kind in RUN_SUMMARY_FILES:
+        if filename == "manifest.json" and workflow_kind:
+            continue          # not a community solve; the workflow manifest says what it is
         path = run_dir / filename
         if not path.exists():
             continue
@@ -404,21 +447,71 @@ def _inspect_run_dir(run_dir: Path) -> dict[str, Any]:
         summary_file = filename
         summary = loaded
         break
+    if workflow_kind:
+        kind = workflow_kind
 
-    manifest = _load_json_object(run_dir / "manifest.json") or {}
-    status = _string_or_none(summary.get("status")) or _string_or_none(manifest.get("status"))
+    status, status_source = _resolve_run_status(summary, manifest)
     run_hash = _string_or_none(summary.get("run_hash")) or _string_or_none(manifest.get("run_hash"))
     return {
         "schema_version": "1.0",
         "run_dir": str(run_dir),
         "kind": kind,
-        "status": status or "unknown",
+        "status": status,
+        "status_source": status_source,
         "summary_file": summary_file,
         "run_hash": run_hash,
         "artifacts": _list_run_artifacts(run_dir),
         "manifest": _compact_manifest(manifest),
         "summary_keys": sorted(str(key) for key in summary.keys()),
     }
+
+
+def _resolve_run_status(
+    summary: dict[str, Any], manifest: dict[str, Any]
+) -> tuple[str, str]:
+    """(status, status_source) — 요약이 status 를 안 쓰더라도 "unknown" 으로 끝내지 않는다 (B7).
+
+    inspect-run 은 SKILL.md 가 모든 run 에 요구하는 검증 단계다. 그 단계가 성공한 run 을
+    "unknown" 으로 보고하면 검증이 성립하지 않는다. 명시 status 가 있으면 그대로 쓰고, 없으면
+    요약/manifest 안의 하위 신호에서 **보수적으로** 파생한다(모르면 ok 라고 하지 않는다).
+    """
+    # A workflow manifest's status is the derived run-level tier (ok/degraded/failed), so it wins
+    # over a summary's raw solve status. Round-2 F11 found `inspect-run` emitting "optimal" and
+    # "completed" alongside that vocabulary, which breaks any gate written against it.
+    if manifest.get("manifest_scope") == "workflow":
+        manifest_status = _string_or_none(manifest.get("status"))
+        if manifest_status:
+            return manifest_status, "manifest"
+    explicit = _string_or_none(summary.get("status")) or _string_or_none(manifest.get("status"))
+    if explicit:
+        return _normalize_run_status(explicit), "summary"
+
+    ranked = summary.get("top_ranked")
+    if isinstance(ranked, list):
+        if not ranked:
+            return "failed", "derived"
+        bad = [
+            row for row in ranked
+            if isinstance(row, dict) and _string_or_none(row.get("status")) not in (None, "optimal")
+        ]
+        return ("degraded" if bad else "ok"), "derived"
+
+    reports = summary.get("reports")
+    if isinstance(reports, list) and reports:
+        bad_reports = [
+            row for row in reports
+            if isinstance(row, dict)
+            and _string_or_none(row.get("solve_status")) not in (None, "optimal")
+        ]
+        return ("degraded" if bad_reports else "ok"), "derived"
+
+    if manifest:
+        # solve manifest 는 status 대신 diagnostic 을 쓴다 (schema v2.0).
+        return ("ok" if manifest.get("diagnostic") in (None, "") else "degraded"), "derived"
+
+    if summary:
+        return "ok", "derived"
+    return "unknown", "unknown"
 
 
 def _load_json_object(path: Path) -> dict[str, Any] | None:
@@ -447,12 +540,19 @@ def _list_run_artifacts(run_dir: Path, *, limit: int = 200) -> list[str]:
 def _compact_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     keys = [
         "manifest_schema_version",
+        "manifest_scope",
+        "workflow_kind",
         "run_hash",
         "status",
         "artifacts",
         "inputs",
         "solver",
         "software",
+        # Workflow envelope: the ordered component names, and the determining values themselves.
+        # Surfacing these is the point of the manifest — a reader must be able to see what the
+        # answer depended on without opening the file.
+        "hash_components",
+        "components",
     ]
     return {key: manifest[key] for key in keys if key in manifest}
 
@@ -767,7 +867,9 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
         _apply_host_objective(host, args.host_objective)
         microbe_medium = load_medium(args.microbe_medium) if args.microbe_medium else None
         host_medium = load_medium(args.host_medium).uptake if args.host_medium else None
-        interface_map = _load_host_interface_map(args.interface_map)
+        interface_map = _load_host_interface_map(
+            args.interface_map, accept_unreviewed=args.accept_unreviewed_map
+        )
         exclude = set() if args.include_currency_metabolites else {"h", "h2o", "co2"}
         if args.exclude_metabolites:
             exclude.update(
@@ -803,7 +905,39 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
         f"host_objective={result.host_result.biomass:.4g} "
         f"host_status={result.host_result.status}"
     )
-    return 0
+    host_run_status = _worst_status(
+        _run_status_from_solve(str(result.community_status)),
+        _run_status_from_solve(str(result.host_result.status)),
+    )
+    _emit_workflow_manifest(
+        out,
+        "host_microbe_bigg",
+        lambda: {
+            **_workflow_base(
+                "host_microbe_bigg", args, taxonomy,
+                medium=_host_medium_component(args),
+            ),
+            "abundances": {
+                str(k): v for k, v in sorted((result.coupling_scale.__dict__ or {}).items())
+                if isinstance(v, (int, float))
+            } if result.coupling_scale else {},
+            "tradeoff_f": float(args.tradeoff_f),
+            "host_spec": _host_spec_component(args, interface_map),
+            "biomass_basis": _biomass_basis_component(args),
+            "flux_normalization_method": "pfba",
+            "solve_run_hash": None,
+        },
+        status=host_run_status,
+        artifacts=["host_microbe_bigg_summary.json", "interaction_edges.csv"],
+        warnings=list(result.warnings),
+        summary={
+            "community_growth": _finite_or_none(float(result.community_growth)),
+            "host_objective": _finite_or_none(float(result.host_result.biomass)),
+            "host_status": result.host_result.status,
+            "n_matched_exchanges": len(result.matched_exchanges),
+        },
+    )
+    return _exit_code_for_status(host_run_status, args)
 
 
 def _cmd_host_map(args: argparse.Namespace) -> int:
@@ -882,22 +1016,35 @@ def _write_host_map_outputs(result: Any, out: Path) -> None:
                 "host_can_uptake": e.host_can_uptake,
                 "suggestion": e.suggestion,
             })
-    # Starter interface map the user can edit/confirm: metabolite -> host_exchange for
-    # exact + annotation + normalized matches (unmatched entries remain null on purpose).
+    # A-B8: only EXACT id matches go into interface_map. Annotation/normalized matches are
+    # computational guesses — round-2 found three D<->L stereoisomer swaps among them
+    # (arab__D_e -> EX_arab__L_e, glu__D_e -> EX_glu__L_e, pser__D_e -> EX_pser__L_e), which are
+    # chemically distinct metabolites. Putting them in the same flat dict as the 170 exact matches
+    # meant passing the file through unedited silently coupled the wrong molecules.
     interface_map = {
-        e.metabolite: e.host_exchange
-        for e in result.entries if e.match_type in ("exact", "annotation", "normalized")
+        e.metabolite: e.host_exchange for e in result.entries if e.match_type == "exact"
+    }
+    needs_review = {
+        e.metabolite: {
+            "host_exchange": e.host_exchange,
+            "match_type": e.match_type,
+            "reason": e.suggestion,
+        }
+        for e in result.entries if e.match_type in ("annotation", "normalized")
     }
     with open(out / "host_interface_map.json", "w") as f:
         json.dump(
             {
-                "_comment": "Edit/confirm this metabolite->host_exchange map, then couple. "
-                "null host_exchange means no host counterpart was found.",
+                "_comment": "interface_map holds EXACT id matches only and is safe to pass "
+                "through. needs_review holds annotation/normalized guesses: confirm each one and "
+                "move it into interface_map before coupling. Coupling commands refuse a map that "
+                "still carries needs_review entries unless --accept-unreviewed-map is given.",
                 "interface_map": interface_map,
+                "needs_review": needs_review,
                 "unmatched": [e.metabolite for e in result.entries
                               if e.match_type == "unmatched"],
             },
-            f, indent=2,
+            f, indent=2, sort_keys=True,
         )
     summary = {
         "kind": "host_exchange_map",
@@ -964,6 +1111,11 @@ def _cmd_render_figure(args: argparse.Namespace) -> int:
         format=args.format, seed=args.seed, journal_preset=args.journal_preset,
     )
     try:
+        # P1-F: actually APPLY the preset (previously stored as metadata and ignored, so the
+        # sidecar claimed e.g. "nature" while the figure stayed 6.0x4.0in at 600 dpi). An unknown
+        # name now fails validation instead of being recorded verbatim.
+        if args.journal_preset != "default":
+            spec = spec.for_journal(args.journal_preset)
         spec.validate()
     except RenderError as e:
         print(str(e), file=sys.stderr)
@@ -1089,7 +1241,9 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         _apply_host_objective(host_model, args.host_objective)
         microbe_medium = load_medium(args.microbe_medium) if args.microbe_medium else None
         host_medium = load_medium(args.host_medium).uptake if args.host_medium else None
-        interface_map = _load_host_interface_map(args.interface_map)
+        interface_map = _load_host_interface_map(
+            args.interface_map, accept_unreviewed=args.accept_unreviewed_map
+        )
         exclude = set() if args.include_currency_metabolites else {"h", "h2o", "co2"}
         if args.exclude_metabolites:
             exclude.update(
@@ -1159,19 +1313,32 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                     "warnings": [],
                     "diagnostic": str(e),
                 })
-        rows.sort(key=lambda row: (
-            row["evaluation_status"] != "ok",
-            -float(row["score"]),
-            tuple(row["members"]),
-        ))
+        # B1 (silent half): 평가 실패 후보는 score=0 으로 랭킹에 섞이면 "host objective 0" 이라는
+        # 실재하는 생물학적 결과와 구별되지 않는다. 랭킹에서 분리해 별도 블록으로 보고한다.
+        ranked_rows = [row for row in rows if row["evaluation_status"] == "ok"]
+        unevaluated_rows = [row for row in rows if row["evaluation_status"] != "ok"]
+        ranked_rows.sort(key=lambda row: (-float(row["score"]), tuple(row["members"])))
+        unevaluated_rows.sort(key=lambda row: tuple(row["members"]))
+        search_warnings: list[str] = []
+        if unevaluated_rows:
+            search_warnings.append(
+                f"{len(unevaluated_rows)} of {len(candidates)} candidates could not be "
+                "evaluated and are excluded from the ranking (see unevaluated): "
+                + ", ".join("+".join(row["members"]) for row in unevaluated_rows)
+            )
+        if not ranked_rows:
+            search_warnings.append("no candidate was evaluable; the ranking is empty")
         out = Path(args.out)
         _write_host_search_bigg_outputs(
-            rows[: args.top_k],
+            ranked_rows[: args.top_k],
             out,
             target=args.target,
             metric=args.metric,
             n_candidates_total=len(candidates),
-            n_candidates_evaluated=len(candidates),
+            n_candidates_evaluated=len(ranked_rows),
+            n_candidates_failed=len(unevaluated_rows),
+            unevaluated=unevaluated_rows,
+            warnings=search_warnings,
             ranking_parameters={
                 "host_weight": args.host_weight,
                 "target_weight": args.target_weight,
@@ -1192,14 +1359,382 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         print(f"failed to write host-search outputs: {e}", file=sys.stderr)
         return 2
     print(f"host-search BiGG complete ({args.metric}, target={args.target}) -> {out}")
-    if rows:
-        best = rows[0]
+    print(f"  ranked: {len(ranked_rows)}/{len(candidates)} candidates")
+    if ranked_rows:
+        best = ranked_rows[0]
         print(
             f"  best: {'+'.join(best['members'])} score={float(best['score']):.4g} "
             f"host_objective={float(best['host_objective_value']):.4g} "
             f"target_transfer={float(best['target_transfer']):.4g}"
         )
-    return 0
+    for warning in search_warnings:
+        print(f"  warning: {warning}")
+    _emit_workflow_manifest(
+        out,
+        "host_search_bigg",
+        lambda: {
+            **_workflow_base(
+                "host_search_bigg", args, taxonomy,
+                medium=_host_medium_component(args),
+            ),
+            "tradeoff_f": float(args.tradeoff_f),
+            "target_spec": {
+                "target": args.target,
+                "metric": args.metric,
+                "host_weight": args.host_weight,
+                "target_weight": args.target_weight,
+                "host_reference": args.host_reference,
+                "target_reference": args.target_reference,
+            },
+            "search_spec": {
+                "min_size": args.min_size,
+                "max_size": args.max_size,
+                "top_k": args.top_k,
+                "n_candidates_total": len(candidates),
+            },
+            "host_spec": _host_spec_component(args, interface_map),
+            "biomass_basis": _biomass_basis_component(args),
+        },
+        status=_worst_status(
+            "ok" if ranked_rows else "failed",
+            "degraded" if unevaluated_rows else "ok",
+        ),
+        artifacts=["host_search_summary.json", "host_search_rankings.csv"],
+        warnings=search_warnings,
+        summary={
+            "n_candidates_total": len(candidates),
+            "n_candidates_ranked": len(ranked_rows),
+            "n_candidates_failed": len(unevaluated_rows),
+        },
+    )
+    return _exit_code_for_status(
+        _worst_status(
+            "ok" if ranked_rows else "failed",
+            "degraded" if unevaluated_rows else "ok",
+        ),
+        args,
+    )
+
+
+def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
+    """P1-E: microbial gene/reaction knockout -> host objective delta, in one command.
+
+    Baseline and every knockout arm go through the *same* ``run_bigg_host_microbe`` call with the
+    identical medium, interface map, biomass basis, host objective, solver and tradeoff. Only the
+    named member's SBML is swapped, and only for a knockout of the named gene/reaction — so the
+    delta is attributable to the perturbation and not to a drifting setup.
+    """
+    try:
+        import pandas as pd
+        from cobra.io import read_sbml_model, write_sbml_model
+
+        from cmig.core.host import run_bigg_host_microbe
+        from cmig.core.host_ko_impact import arm_from_coupling, assemble_result
+        from cmig.core.medium_spec import load_medium, medium_checksum
+        from cmig.core.model_pool import taxonomy_from_model_dir
+    except ImportError:
+        print(
+            "host-ko-impact requires the engine stack: uv sync --extra engine",
+            file=sys.stderr,
+        )
+        return 2
+    tmp_dir: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        host_path = Path(args.host)
+        if not host_path.exists():
+            raise ValueError(f"host model file not found: {host_path}")
+        if bool(args.taxonomy) == bool(args.model_dir):
+            raise ValueError("provide exactly one of --taxonomy or --model-dir")
+        if args.taxonomy:
+            taxonomy_path = Path(args.taxonomy)
+            if not taxonomy_path.exists():
+                raise ValueError(f"taxonomy file not found: {taxonomy_path}")
+            taxonomy = pd.read_csv(taxonomy_path)
+        else:
+            taxonomy = taxonomy_from_model_dir(args.model_dir, recursive=args.recursive)
+        missing_cols = {"id", "file"} - set(taxonomy.columns)
+        if missing_cols:
+            raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
+        member_ids = [str(x) for x in taxonomy["id"]]
+        if args.member not in member_ids:
+            raise ValueError(f"--member {args.member!r} not in the pool: {member_ids}")
+        ko_ids = _parse_csv_strings(
+            args.reactions if args.ko_level == "reaction" else args.genes,
+            flag="--reactions" if args.ko_level == "reaction" else "--genes",
+        )
+        if not ko_ids:
+            raise ValueError(
+                f"--{'reactions' if args.ko_level == 'reaction' else 'genes'} is required "
+                "(the knockout set must be explicit so the comparison is reproducible)"
+            )
+
+        # 모든 arm 이 공유하는 설정 — 한 번만 만들어 baseline/KO 에 동일하게 넘긴다.
+        microbe_medium = load_medium(args.microbe_medium) if args.microbe_medium else None
+        host_medium = load_medium(args.host_medium).uptake if args.host_medium else None
+        interface_map = _load_host_interface_map(
+            args.interface_map, accept_unreviewed=args.accept_unreviewed_map
+        )
+        exclude = set() if args.include_currency_metabolites else {"h", "h2o", "co2"}
+        if args.exclude_metabolites:
+            exclude.update(
+                _parse_csv_strings(args.exclude_metabolites, flag="--exclude-metabolites")
+            )
+        shared: dict[str, Any] = {
+            "microbial_biomass_gdw": args.microbial_biomass_gdw,
+            "host_biomass_gdw": args.host_biomass_gdw,
+            "biomass_basis_kind": args.biomass_basis_kind,
+            "biomass_basis_source": args.biomass_basis_source,
+            "solver": args.solver,
+            "tradeoff_f": args.tradeoff_f,
+            "microbe_medium": microbe_medium,
+            "host_medium": host_medium,
+            "interface_map": interface_map,
+            "exchange_suffix": args.exchange_suffix,
+            "exclude_metabolites": exclude,
+            "close_unlisted_host_uptake": not args.keep_host_uptake,
+        }
+
+        def _fresh_host() -> Any:
+            """Each arm gets its own host copy — a coupled solve mutates bounds."""
+            host = read_sbml_model(str(host_path))
+            _apply_host_objective(host, args.host_objective)
+            return host
+
+        baseline_coupling = run_bigg_host_microbe(taxonomy.copy(), _fresh_host(), **shared)
+        baseline = arm_from_coupling(
+            baseline_coupling, label="baseline", target=args.target
+        )
+
+        base_model = read_sbml_model(
+            str(taxonomy.loc[taxonomy["id"].astype(str) == args.member, "file"].iloc[0])
+        )
+        tmp_dir = tempfile.TemporaryDirectory(prefix="cmig_host_ko_")
+        arms: list[Any] = []
+        for index, ko_id in enumerate(ko_ids):
+            label = f"{args.member}:{ko_id}"
+            try:
+                ko_model = base_model.copy()
+                if args.ko_level == "reaction":
+                    ko_model.reactions.get_by_id(ko_id).knock_out()
+                else:
+                    ko_model.genes.get_by_id(ko_id).knock_out()
+                safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in ko_id)
+                ko_file = Path(tmp_dir.name) / f"{args.member}_{index}_{safe}.xml"
+                write_sbml_model(ko_model, str(ko_file))
+                ko_taxonomy = taxonomy.copy()
+                ko_taxonomy.loc[
+                    ko_taxonomy["id"].astype(str) == args.member, "file"
+                ] = str(ko_file)
+                coupling = run_bigg_host_microbe(ko_taxonomy, _fresh_host(), **shared)
+                arms.append(arm_from_coupling(
+                    coupling,
+                    label=label,
+                    target=args.target,
+                    member=args.member,
+                    ko_id=ko_id,
+                    ko_level=args.ko_level,
+                ))
+            except Exception as e:  # noqa: BLE001 - arm 하나의 실패가 나머지를 죽이지 않는다
+                from cmig.core.host_ko_impact import HostArm
+
+                arms.append(HostArm(
+                    label=label, member=args.member, ko_id=ko_id, ko_level=args.ko_level,
+                    run_status="failed", community_status="failed", community_growth=0.0,
+                    host_status="failed", host_viable=False,
+                    host_objective=float("nan"), target_transfer=float("nan"),
+                    diagnostic=str(e),
+                ))
+        result = assemble_result(
+            target=args.target,
+            baseline=baseline,
+            arms=arms,
+            biomass_basis={
+                "kind": args.biomass_basis_kind,
+                "source": args.biomass_basis_source,
+                "microbial_biomass_gdw": args.microbial_biomass_gdw,
+                "host_biomass_gdw": args.host_biomass_gdw,
+            },
+            comparability={
+                # 모든 arm 이 같은 설정을 썼다는 사실을 산출물에 기록한다 — 비교 가능성의 근거.
+                "shared_across_arms": [
+                    "host_model", "host_objective", "microbe_medium", "host_medium",
+                    "interface_map", "biomass_basis", "solver", "tradeoff_f", "abundances",
+                    "exchange_suffix", "exclude_metabolites",
+                ],
+                "host_model": str(host_path),
+                "host_objective": args.host_objective,
+                "microbe_medium_checksum": medium_checksum(microbe_medium),
+                "host_medium": str(args.host_medium) if args.host_medium else None,
+                "interface_map": str(args.interface_map) if args.interface_map else None,
+                "solver": args.solver,
+                "tradeoff_f": args.tradeoff_f,
+                "ko_level": args.ko_level,
+                "perturbed_member": args.member,
+                "only_perturbed_member_model_differs": True,
+            },
+        )
+        out = Path(args.out)
+        _write_host_ko_impact_outputs(result, out)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"failed to write host-ko-impact outputs: {e}", file=sys.stderr)
+        return 2
+    finally:
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
+    print(f"host-ko-impact complete (level={args.ko_level}, member={args.member}) -> {out}")
+    print(
+        f"  baseline: host_objective={_fmt_number(result.baseline.host_objective)} "
+        f"host_status={result.baseline.host_status} "
+        f"target_transfer={_fmt_number(result.baseline.target_transfer)}"
+    )
+    ranked = sorted(
+        (d for d in result.deltas if d.delta_host_objective is not None),
+        key=lambda d: d.delta_host_objective,
+    )
+    for delta in ranked[:5]:
+        relative = (
+            "" if delta.relative_host_objective is None
+            else f" ({delta.relative_host_objective * 100:+.2f}%)"
+        )
+        print(
+            f"  {delta.label}: delta_host_objective="
+            f"{_fmt_number(delta.delta_host_objective)}{relative} "
+            f"delta_target_transfer={_fmt_number(delta.delta_target_transfer)}"
+        )
+    for delta in result.deltas:
+        if delta.delta_host_objective is None:
+            print(f"  {delta.label}: no delta (host_status={delta.host_status})")
+    for warning in result.warnings:
+        print(f"  warning: {warning}")
+    _emit_workflow_manifest(
+        out,
+        "host_ko_impact",
+        lambda: {
+            **_workflow_base(
+                "host_ko_impact", args, taxonomy,
+                medium=_host_medium_component(args),
+            ),
+            "abundances": {
+                str(record["id"]): float(record.get("abundance", 1.0) or 1.0)
+                for record in taxonomy.to_dict("records")
+            },
+            "tradeoff_f": float(args.tradeoff_f),
+            "target_spec": {"target": args.target, "mode": "host_transfer"},
+            "knockout_spec": {
+                "ko_level": args.ko_level,
+                "member": args.member,
+                "ko_ids": list(ko_ids),
+                "n_arms": len(ko_ids),
+            },
+            "host_spec": _host_spec_component(args, interface_map),
+            "biomass_basis": _biomass_basis_component(args),
+        },
+        status=result.status,
+        artifacts=["host_ko_impact_summary.json", "host_ko_impact.csv"],
+        warnings=list(result.warnings),
+        summary={
+            "baseline_host_objective": _finite_or_none(result.baseline.host_objective),
+            "n_knockouts": len(result.deltas),
+            "n_comparable": sum(1 for d in result.deltas if d.comparable),
+        },
+    )
+    return _exit_code_for_status(result.status, args)
+
+
+def _fmt_number(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return "n/a" if not math.isfinite(value) else f"{value:.6g}"
+
+
+def _write_host_ko_impact_outputs(result: Any, out: Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "host_ko_impact.csv", "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "arm", "member", "ko_id", "ko_level", "comparable",
+                "host_objective", "delta_host_objective", "relative_host_objective",
+                "target_transfer", "delta_target_transfer",
+                "community_growth", "community_status", "host_status", "diagnostic",
+            ],
+        )
+        writer.writeheader()
+        # baseline 을 첫 행으로 명시 — germ-free/no-KO 기준선이 항상 산출물에 존재한다.
+        base = result.baseline
+        writer.writerow({
+            "arm": "baseline", "member": "", "ko_id": "", "ko_level": "",
+            "comparable": base.is_comparable,
+            "host_objective": _csv_float_or_blank(base.host_objective),
+            "delta_host_objective": "", "relative_host_objective": "",
+            "target_transfer": _csv_float_or_blank(base.target_transfer),
+            "delta_target_transfer": "",
+            "community_growth": _csv_float_or_blank(base.community_growth),
+            "community_status": base.community_status,
+            "host_status": base.host_status,
+            "diagnostic": base.diagnostic or "",
+        })
+        by_label = {arm.label: arm for arm in result.arms}
+        for delta in result.deltas:
+            arm = by_label[delta.label]
+            writer.writerow({
+                "arm": delta.label,
+                "member": delta.member or "",
+                "ko_id": delta.ko_id or "",
+                "ko_level": arm.ko_level or "",
+                "comparable": delta.comparable,
+                "host_objective": _csv_float_or_blank(arm.host_objective),
+                "delta_host_objective": _csv_float_or_blank(delta.delta_host_objective),
+                "relative_host_objective": _csv_float_or_blank(delta.relative_host_objective),
+                "target_transfer": _csv_float_or_blank(arm.target_transfer),
+                "delta_target_transfer": _csv_float_or_blank(delta.delta_target_transfer),
+                "community_growth": _csv_float_or_blank(arm.community_growth),
+                "community_status": delta.community_status,
+                "host_status": delta.host_status,
+                "diagnostic": delta.diagnostic or "",
+            })
+    payload = {
+        "kind": "host_ko_impact",
+        "status": result.status,
+        "target": result.target,
+        "biomass_basis": result.biomass_basis,
+        "comparability": result.comparability,
+        "baseline": {
+            "host_objective": _finite_or_none(result.baseline.host_objective),
+            "host_status": result.baseline.host_status,
+            "host_viable": result.baseline.host_viable,
+            "target_transfer": _finite_or_none(result.baseline.target_transfer),
+            "community_growth": _finite_or_none(result.baseline.community_growth),
+            "community_status": result.baseline.community_status,
+            "matched_exchanges": result.baseline.matched_exchanges,
+            "microbe_to_host": result.baseline.microbe_to_host,
+            "warnings": result.baseline.warnings,
+        },
+        "knockouts": [
+            {
+                "arm": d.label,
+                "member": d.member,
+                "ko_id": d.ko_id,
+                "comparable": d.comparable,
+                "delta_host_objective": d.delta_host_objective,
+                "relative_host_objective": d.relative_host_objective,
+                "delta_target_transfer": d.delta_target_transfer,
+                "delta_microbe_to_host": d.delta_microbe_to_host,
+                "host_status": d.host_status,
+                "community_status": d.community_status,
+                "diagnostic": d.diagnostic,
+            }
+            for d in result.deltas
+        ],
+        "warnings": result.warnings,
+        "artifacts": ["host_ko_impact.csv", "host_ko_impact_summary.json"],
+    }
+    (out / "host_ko_impact_summary.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    )
 
 
 def _select_ko_targets(
@@ -1274,7 +1809,28 @@ def _evaluate_ko_target(
         write_sbml_model(ko_model, str(ko_file))
         ko_taxonomy = sub_taxonomy.copy()
         ko_taxonomy.loc[ko_taxonomy["id"].astype(str) == member_id, "file"] = str(ko_file)
-        rank = search_model_pool(engine_factory(), ko_taxonomy, config).ranks[0]
+        ko_result = search_model_pool(engine_factory(), ko_taxonomy, config)
+        # P0-B: 평가 불가 후보는 이제 `ranks` 에 들어가지 않는다. KO 가 consortium 을 풀 수 없게
+        # 만든 경우가 바로 그것이며, 그것은 0 이 아니라 "평가 불가" 로 보고해야 한다.
+        if not ko_result.ranks:
+            unevaluated = ko_result.unevaluated[0] if ko_result.unevaluated else None
+            return {
+                "gene": ko_id,
+                "member": member_id,
+                "evaluation_status": "failed",
+                "score": float("nan"),
+                "score_delta": float("nan"),
+                "target_flux": float("nan"),
+                "target_flux_delta": float("nan"),
+                "community_growth": float("nan"),
+                "community_growth_delta": float("nan"),
+                "status": unevaluated.status if unevaluated else "failed",
+                "diagnostic": (
+                    unevaluated.diagnostic if unevaluated
+                    else "knockout left no evaluable consortium"
+                ),
+            }
+        rank = ko_result.ranks[0]
         return {
             "gene": ko_id,
             "member": member_id,
@@ -1323,18 +1879,32 @@ def _map_ko_evaluations(
         return list(executor.map(evaluate, items))
 
 
-def _ko_sort_key(row: dict[str, Any]) -> tuple[int, int, float, str]:
+def _ko_sort_key(
+    row: dict[str, Any], rank_by: str = "effect"
+) -> tuple[int, int, float, str]:
     """Deterministic, NaN-safe ranking key.
 
-    ok before failed, finite delta before non-finite, larger ``score_delta`` first, then
-    ``member:gene`` tiebreak so a baseline-infeasible run (all-NaN deltas) stays stable.
+    ``rank_by="effect"`` (default) orders by |score_delta| descending — the knockouts that move
+    the target most, which is what a suppression screen is asking for. Round-2 found the previous
+    absolute-score ordering put a zero-effect knockout at rank 1 and printed it as "best", while
+    the genuinely suppressive knockouts sat at the bottom of the list.
+
+    ``rank_by="remaining"`` keeps the old ordering (highest remaining target flux first) for
+    callers who want "which knockout preserves production".
+
+    ok before failed, finite delta before non-finite, then a ``member:gene`` tiebreak so a
+    baseline-infeasible run (all-NaN deltas) stays stable.
     """
     delta = float(row["score_delta"])
     finite = math.isfinite(delta)
+    if rank_by == "remaining":
+        primary = -float(row["score"]) if math.isfinite(float(row["score"])) else 0.0
+    else:
+        primary = -abs(delta) if finite else 0.0
     return (
         0 if row["evaluation_status"] == "ok" else 1,
         0 if finite else 1,
-        -delta if finite else 0.0,
+        primary,
         f"{row['member']}:{row['gene']}",
     )
 
@@ -1348,7 +1918,11 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         from cmig.core.engine import MicomEngine
         from cmig.core.model_pool import taxonomy_from_model_dir
         from cmig.core.search import Direction
-        from cmig.core.search_product import SearchConfig, search_model_pool
+        from cmig.core.search_product import (
+            SearchConfig,
+            _ranking_degeneracy_warnings,
+            search_model_pool,
+        )
     except ImportError:
         print("gene-ko-search requires the engine stack: uv sync --extra engine", file=sys.stderr)
         return 2
@@ -1424,7 +1998,18 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             growth_fraction=args.growth_fraction,
             solver=args.solver,
         )
-        baseline = search_model_pool(MicomEngine(), sub, config).ranks[0]
+        baseline_result = search_model_pool(MicomEngine(), sub, config)
+        if not baseline_result.ranks:
+            # P0-B: 기준선이 평가 불가면 어떤 KO delta 도 의미가 없다 — 0 을 만들어내지 않는다.
+            reason = (
+                baseline_result.unevaluated[0].diagnostic
+                if baseline_result.unevaluated else "unknown"
+            )
+            raise ValueError(
+                "baseline consortium is not evaluable for this target, so no knockout delta can "
+                f"be computed: {reason}"
+            )
+        baseline = baseline_result.ranks[0]
 
         warnings: list[str] = []
         for member_id in target_members:
@@ -1467,7 +2052,18 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
                 )
 
             rows = _map_ko_evaluations(items, _evaluate, jobs=args.jobs)
-        rows.sort(key=_ko_sort_key)
+        rows.sort(key=lambda row: _ko_sort_key(row, args.rank_by))
+        # B12/F7: a screen where nothing moves, or where the top is tied, must not read as a
+        # ranked hit list. `search` already owns this guard; point it at the KO deltas too.
+        warnings.extend(_ranking_degeneracy_warnings(
+            [
+                ((f"{row['member']}:{row['gene']}",), abs(float(row["score_delta"])),
+                 "optimal" if row["evaluation_status"] == "ok" else row["evaluation_status"])
+                for row in rows
+                if math.isfinite(float(row["score_delta"]))
+            ],
+            score_is_flux=False,
+        ))
         out = Path(args.out)
         _write_gene_ko_search_outputs(
             rows[: args.top_k],
@@ -1499,10 +2095,51 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         print(f"  warning: {warning}")
     if rows:
         best = rows[0]
+        label = "largest effect" if args.rank_by == "effect" else "highest remaining flux"
         print(
-            f"  best: {best['member']}:{best['gene']} "
-            f"delta={float(best['score_delta']):.4g} score={float(best['score']):.4g}"
+            f"  rank 1 ({label}): {best['member']}:{best['gene']} "
+            f"delta={float(best['score_delta']):.4g} "
+            f"remaining={float(best['score']):.4g}"
         )
+    _emit_workflow_manifest(
+        out,
+        "gene_ko_search",
+        lambda: {
+            **_workflow_base("gene_ko_search", args, sub, medium=_medium_component_for(args, None)),
+            "target_spec": {
+                "target": args.target,
+                "direction": args.direction,
+                "mode": "single_target",
+            },
+            "search_spec": {"members": list(members), "top_k": args.top_k},
+            "growth_fraction": float(args.growth_fraction),
+            "knockout_spec": {
+                "ko_level": ko_level,
+                "member": args.member,
+                "explicit_ids": sorted(explicit_raw.split(",")) if explicit_raw else None,
+                "gene_selection": args.gene_selection,
+                "seed": args.seed,
+                "max_genes": args.max_genes,
+                # Which targets were actually screened is what the ranking is over; a truncated
+                # screen is a different experiment from a complete one.
+                "n_evaluated": len(rows),
+                "n_total": sum(member_totals.values()),
+                "screened_ids": sorted(
+                    {f"{row['member']}:{row['gene']}" for row in rows}
+                ),
+            },
+        },
+        status=_worst_status(*[
+            "ok" if row.get("evaluation_status") == "ok" else "degraded" for row in rows
+        ] or ["failed"]),
+        artifacts=["gene_ko_summary.json", "gene_ko_rankings.csv"],
+        warnings=warnings,
+        summary={
+            "baseline_score": _finite_or_none(float(baseline.score)),
+            "n_evaluated": len(rows),
+            "n_total": sum(member_totals.values()),
+        },
+    )
     return 0
 
 
@@ -1513,7 +2150,15 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
         from cobra.io import read_sbml_model
 
         from cmig.core.engine import MicomEngine
-        from cmig.core.medium_spec import apply_medium_checked, load_medium
+        from cmig.core.medium_spec import (
+            MediumSpec,
+            apply_medium_translated,
+            compare_effective_media,
+            effective_medium_by_metabolite,
+            exchange_metabolite,
+            load_medium,
+            medium_checksum,
+        )
         from cmig.core.model_pool import taxonomy_from_model_dir
         from cmig.core.single_model import solve_single_model
     except ImportError:
@@ -1531,37 +2176,132 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
         engine = MicomEngine()
         community = engine.build_community(taxonomy, cmig_solver=args.solver)
         if medium_spec is not None:
-            apply_medium_checked(community, medium_spec, strict=not args.allow_unknown_medium)
+            # P0-A: preset 은 EX_*_m 로 쓰여 있을 수도, EX_*_e 로 쓰여 있을 수도 있다. 대사체로
+            # 매칭해 community 의 namespace 로 번역한 뒤 적용한다.
+            apply_medium_translated(
+                community, medium_spec, strict=not args.allow_unknown_medium
+            )
         community_result = engine.cooperative_tradeoff(
             community, args.tradeoff_f, cmig_solver=args.solver
         )
         rows: list[dict[str, Any]] = []
+        # P0-A: alone-vs-community 는 **동일한 실효 배지**에서만 상호작용으로 해석할 수 있다.
+        # community 는 EX_*_m, 단일 모델은 EX_*_e 를 노출하므로 같은 MediumSpec 객체를 양쪽에
+        # 그대로 넘기면 어느 쪽에도 적용되지 않는다. 따라서 (1) community 의 **실효** 배지를
+        # 대사체 단위로 읽고, (2) 각 단일 모델의 namespace 로 번역해 적용하고, (3) 두 실효 배지를
+        # 실제로 비교해서 동등성을 **측정**한다 — 결코 가정하지 않는다.
+        community_medium = effective_medium_by_metabolite(community)
+        controlled = args.single_medium == "community"
+        community_offer = MediumSpec(uptake={
+            f"EX_{metabolite}_e": limit for metabolite, limit in community_medium.items()
+        })
+        media_matched = True
         for record in taxonomy.to_dict("records"):
             member_id = str(record["id"])
             model_file = str(record["file"])
             single_growth: float | None = None
             single_status = "not_run"
             single_diag = None
+            single_medium_applied = False
+            n_objective_terms: int | None = None
+            objective_note: str | None = None
+            unavailable: tuple[str, ...] = ()
+            single_effective: dict[str, float] = {}
+            row_equal = False
             try:
                 model = read_sbml_model(model_file)
+                if controlled:
+                    # community 의 실효 배지를 이 모델이 실제로 가진 exchange 로 번역해 **정확히**
+                    # 적용한다(exact=True → 나머지 exchange 는 닫힘). exchange 가 없는 대사체는 이
+                    # 균주가 애초에 쓸 수 없으므로 offer 에서 빠지며(생물학적 사실), 동등성 판정에서
+                    # 면제된다. strict=False: 없는 exchange 는 오류가 아니라 기록 대상이다.
+                    translation = apply_medium_translated(
+                        model, community_offer, strict=False, exact=True
+                    )
+                    unavailable = tuple(
+                        exchange_metabolite(ex) for ex in translation.unmatched
+                    )
+                    single_medium_applied = bool(translation.mapping)
+                elif medium_spec is not None:
+                    translation = apply_medium_translated(
+                        model, medium_spec, strict=not args.allow_unknown_medium
+                    )
+                    unavailable = tuple(
+                        exchange_metabolite(ex) for ex in translation.unmatched
+                    )
+                    single_medium_applied = bool(translation.mapping)
+                    if translation.unmatched:
+                        single_diag = (
+                            f"{member_id} has no exchange for medium metabolites: "
+                            f"{sorted(unavailable)}"
+                        )
+                single_effective = effective_medium_by_metabolite(model)
+                row_equal, differences = compare_effective_media(
+                    community_medium, single_effective, exempt=set(unavailable)
+                )
+                if not row_equal and single_diag is None:
+                    changed = differences["bound_mismatch"] or differences["extra_in_candidate"] \
+                        or differences["missing_from_candidate"]
+                    single_diag = (
+                        f"{member_id} effective medium differs from the community medium: "
+                        f"{changed[:8]}"
+                    )
+                from cobra.util.solver import linear_reaction_coefficients
+
+                from cmig.io.model_import import objective_structure_warning
+
+                n_objective_terms = len(linear_reaction_coefficients(model))
+                objective_note = objective_structure_warning(n_objective_terms)
                 single = solve_single_model(model, solver=args.solver)
                 single_growth = float(single.objective)
                 single_status = single.status
-                single_diag = single.diagnostic
+                single_diag = single.diagnostic or objective_note or single_diag
             except Exception as e:
                 single_status = "failed"
                 single_diag = str(e)
+                single_medium_applied = False
+                row_equal = False
+            media_matched = media_matched and row_equal
             rows.append({
                 "member": member_id,
                 "file": model_file,
                 "abundance": community_result.abundances.get(member_id),
                 "single_growth": single_growth,
                 "single_status": single_status,
+                "single_medium_applied": single_medium_applied,
+                # A-B9: a multi-term objective is not a growth rate; carried so the figure and the
+                # summary can say so instead of labelling it "Growth rate".
+                "n_objective_terms": n_objective_terms,
+                "objective_warning": objective_note,
+                # 측정된 동등성 — 요청이 성공했다는 사실이 아니라 실효 배지 비교 결과.
+                "single_medium_equals_community": row_equal,
+                "medium_metabolites_unavailable_to_member": list(unavailable),
+                "n_single_medium_metabolites": len(single_effective),
                 "community_member_growth": community_result.member_growth.get(member_id),
                 "community_status": community_result.status,
                 "community_growth": community_result.objective,
                 "diagnostic": single_diag,
             })
+        warnings = list(community_result.warnings)
+        if not media_matched:
+            mismatched = [r["member"] for r in rows if not r["single_medium_equals_community"]]
+            warnings.append(
+                "single-model and community legs did not run on the same effective medium "
+                f"({mismatched}); the alone-vs-community difference is NOT attributable to "
+                "interaction and must not be reported as one"
+            )
+        if not controlled:
+            warnings.append(
+                "--single-medium model_default keeps each member on its own native bounds, which "
+                "differ from the community medium; this reports native growth capability, not a "
+                "controlled interaction effect"
+            )
+        failed_single = [r["member"] for r in rows if r["single_status"] != "optimal"]
+        if failed_single:
+            warnings.append(
+                f"single-model leg did not solve for {failed_single}; no alone-vs-community "
+                "comparison exists for those members"
+            )
         out = Path(args.out)
         _write_strain_growth_outputs(
             rows,
@@ -1571,6 +2311,16 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
             community_growth=community_result.objective,
             community_status=community_result.status,
             community_diagnostic=community_result.diagnostic,
+            medium_basis={
+                "medium_source": str(args.medium) if args.medium else "micom_default_medium",
+                "medium_checksum": medium_checksum(medium_spec),
+                "single_medium_mode": args.single_medium,
+                "n_community_medium_metabolites": len(community_medium),
+                # 이 필드는 이제 **측정값**이다 (P0-A). 모든 멤버에서 실효 배지가 일치할 때만 true.
+                "single_medium_equals_community_medium": media_matched,
+                "comparison_is_controlled": bool(media_matched and not failed_single),
+            },
+            warnings=warnings,
         )
     except ValueError as e:
         print(str(e), file=sys.stderr)
@@ -1579,6 +2329,29 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
         print(f"failed to write strain-growth outputs: {e}", file=sys.stderr)
         return 2
     print(f"strain-growth complete ({len(rows)} members) -> {out}")
+    for warning in warnings:
+        print(f"  warning: {warning}")
+    _emit_workflow_manifest(
+        out,
+        "strain_growth",
+        lambda: _strain_growth_hash_components(
+            args, taxonomy, medium_spec, community_result, community_medium, rows
+        ),
+        status=_worst_status(
+            _run_status_from_solve(str(community_result.status)),
+            "ok" if not failed_single else (
+                "failed" if len(failed_single) == len(rows) else "degraded"
+            ),
+            "ok" if (media_matched and not failed_single) else "degraded",
+        ),
+        artifacts=["strain_growth_summary.json", "strain_growth.csv"],
+        warnings=warnings,
+        summary={
+            "n_members": len(rows),
+            "community_growth": _finite_or_none(float(community_result.objective)),
+            "single_medium_equals_community_medium": media_matched,
+        },
+    )
     return 0
 
 
@@ -1589,6 +2362,11 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
 
         from cmig.core.engine import MicomEngine
         from cmig.core.medium_spec import apply_medium_checked, load_medium
+        from cmig.core.metrics import (
+            community_contributions,
+            target_secretion_share,
+            target_turnover_share,
+        )
         from cmig.core.model_pool import taxonomy_from_model_dir
     except ImportError:
         print("abundance-impact requires the engine stack: uv sync --extra engine", file=sys.stderr)
@@ -1623,14 +2401,38 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
                 target_member_exchange = float(
                     result.member_exchange.get(args.member, {}).get(args.target, 0.0)
                 )
-                total_member_abs = sum(
-                    abs(float(exchanges.get(args.target, 0.0)))
-                    for exchanges in result.member_exchange.values()
+                # F4: micom member_exchange is a PER-TAXON flux, so the community-level
+                # contribution is flux x abundance. Omitting the weight inverts the trend exactly.
+                # Two distinct questions are reported separately rather than conflated under one
+                # ambiguous name (see cmig.core.metrics).
+                # R2-A D4: the swept exchange flux is one LP vertex. --fva reports the interval
+                # the growth floor actually permits at each point, so a 2.5x jump between
+                # neighbouring abundances can be read as degeneracy rather than a dose response.
+                target_lo = target_hi = None
+                fva_status = "not_requested"
+                if args.fva:
+                    try:
+                        from cmig.core.fva import community_fva
+
+                        ranges = community_fva(
+                            community,
+                            reactions=[f"EX_{args.target}_m"],
+                            fraction_of_optimum=args.tradeoff_f,
+                            solver=args.solver,
+                        )
+                        interval = ranges.get(f"EX_{args.target}_m")
+                        if interval is not None:
+                            target_lo, target_hi = float(interval.lo), float(interval.hi)
+                            fva_status = "ok"
+                        else:
+                            fva_status = "missing"
+                    except Exception as fva_error:  # noqa: BLE001 - FVA is a diagnostic add-on
+                        fva_status = f"failed: {type(fva_error).__name__}"
+                contributions = community_contributions(
+                    result.member_exchange, result.abundances, args.target
                 )
-                influence_share = (
-                    abs(target_member_exchange) / total_member_abs
-                    if total_member_abs > 1e-12 else 0.0
-                )
+                influence_share = target_turnover_share(contributions, args.member)
+                secretion_share = target_secretion_share(contributions, args.member)
                 rows.append({
                     "target_member": args.member,
                     "target_abundance": fraction,
@@ -1642,6 +2444,11 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
                         result.external_exchange.get(args.target, 0.0)
                     ),
                     "target_influence_share": influence_share,
+                    "target_secretion_share": secretion_share,
+                    "target_member_contribution": contributions.get(args.member, 0.0),
+                    "community_target_fva_lo": target_lo,
+                    "community_target_fva_hi": target_hi,
+                    "fva_status": fva_status,
                     "status": result.status,
                     "diagnostic": result.diagnostic,
                 })
@@ -1662,6 +2469,11 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
                     "target_member_exchange": 0.0,
                     "community_target_exchange": 0.0,
                     "target_influence_share": 0.0,
+                    "target_secretion_share": 0.0,
+                    "target_member_contribution": 0.0,
+                    "community_target_fva_lo": None,
+                    "community_target_fva_hi": None,
+                    "fva_status": "not_run",
                     "status": "failed",
                     "diagnostic": str(e),
                 })
@@ -1674,6 +2486,15 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
             target=args.target,
             solver=args.solver,
             tradeoff_f=args.tradeoff_f,
+            warnings=[
+                "abundance sweeps rescale one member under the same models and medium; report "
+                "this as a sensitivity analysis, not ecological causation",
+                "target_influence_share is the abundance-weighted share of the community's total "
+                "|target| turnover (producers and consumers alike); target_secretion_share is the "
+                "producer-only share. Both use flux x abundance, because member_exchange is a "
+                "per-taxon flux",
+                "the reported exchange flux is one LP vertex and is not necessarily unique",
+            ],
         )
     except ValueError as e:
         print(str(e), file=sys.stderr)
@@ -1682,6 +2503,20 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
         print(f"failed to write abundance-impact outputs: {e}", file=sys.stderr)
         return 2
     print(f"abundance-impact complete ({args.member}, target={args.target}) -> {out}")
+    _emit_workflow_manifest(
+        out,
+        "abundance_impact",
+        lambda: _abundance_hash_components(args, taxonomy, medium_spec, fractions, rows),
+        status=_worst_status(*[
+            _run_status_from_solve(str(row.get("status"))) for row in rows
+        ] or ["failed"]),
+        artifacts=["abundance_impact_summary.json", "abundance_impact.csv"],
+        summary={
+            "n_points": len(rows),
+            "target_member": args.member,
+            "target": args.target,
+        },
+    )
     return 0
 
 
@@ -1822,6 +2657,8 @@ def _write_strain_growth_outputs(
     community_growth: float,
     community_status: str,
     community_diagnostic: str | None,
+    medium_basis: dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
 ) -> None:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "strain_growth.csv", "w", newline="") as f:
@@ -1833,6 +2670,9 @@ def _write_strain_growth_outputs(
                 "abundance",
                 "single_growth",
                 "single_status",
+                "single_medium_applied",
+                "single_medium_equals_community",
+                "medium_metabolites_unavailable_to_member",
                 "community_member_growth",
                 "community_status",
                 "community_growth",
@@ -1847,6 +2687,11 @@ def _write_strain_growth_outputs(
                 "abundance": _csv_float_or_blank(row.get("abundance")),
                 "single_growth": _csv_float_or_blank(row.get("single_growth")),
                 "single_status": row["single_status"],
+                "single_medium_applied": row.get("single_medium_applied"),
+                "single_medium_equals_community": row.get("single_medium_equals_community"),
+                "medium_metabolites_unavailable_to_member": ";".join(
+                    row.get("medium_metabolites_unavailable_to_member") or []
+                ),
                 "community_member_growth": _csv_float_or_blank(
                     row.get("community_member_growth")
                 ),
@@ -1854,12 +2699,40 @@ def _write_strain_growth_outputs(
                 "community_growth": _csv_float_or_blank(row.get("community_growth")),
                 "diagnostic": row.get("diagnostic") or "",
             })
+    # P0-D: 최상위 status 는 하위 상태 중 **최악**에서 파생된다. community 가 optimal 이어도
+    # 단일 leg 이 전부 실패했다면 alone-vs-community 결과는 존재하지 않는다.
+    # A-B9: a multi-term objective is not a growth rate; say so at run level too.
+    multi_term = sorted(
+        str(row["member"]) for row in rows if (row.get("n_objective_terms") or 1) > 1
+    )
+    if multi_term:
+        warnings = list(warnings or []) + [
+            f"objective is a multi-term linear combination for {multi_term}; the reported growth "
+            "for those members is an objective value, not a growth rate"
+        ]
+    single_statuses = [str(row.get("single_status")) for row in rows]
+    n_failed_single = sum(1 for status in single_statuses if status != "optimal")
+    if not rows or n_failed_single == len(rows):
+        single_tier = "failed"
+    elif n_failed_single:
+        single_tier = "degraded"
+    else:
+        single_tier = "ok"
+    controlled = bool((medium_basis or {}).get("comparison_is_controlled", False))
     payload = {
-        "status": community_status,
+        "status": _worst_status(
+            _run_status_from_solve(str(community_status)),
+            single_tier,
+            "ok" if controlled else "degraded",
+        ),
+        "community_status": community_status,
         "diagnostic": community_diagnostic,
         "solver": solver,
         "tradeoff_f": tradeoff_f,
         "community_growth": _finite_or_none(float(community_growth)),
+        # B5: 두 leg 이 같은 배지였는지를 결과에 명시한다 — 해석 가능성의 전제 조건.
+        "medium_basis": medium_basis or {},
+        "warnings": list(warnings or []),
         "members": [
             {
                 "member": row["member"],
@@ -1867,6 +2740,14 @@ def _write_strain_growth_outputs(
                 "abundance": _optional_float(row.get("abundance")),
                 "single_growth": _optional_float(row.get("single_growth")),
                 "single_status": row["single_status"],
+                "single_medium_applied": row.get("single_medium_applied"),
+                "n_objective_terms": row.get("n_objective_terms"),
+                "objective_warning": row.get("objective_warning"),
+                "single_medium_equals_community": row.get("single_medium_equals_community"),
+                "medium_metabolites_unavailable_to_member": list(
+                    row.get("medium_metabolites_unavailable_to_member") or []
+                ),
+                "n_single_medium_metabolites": row.get("n_single_medium_metabolites"),
                 "community_member_growth": _optional_float(
                     row.get("community_member_growth")
                 ),
@@ -1898,6 +2779,7 @@ def _write_abundance_impact_outputs(
     target: str,
     solver: str,
     tradeoff_f: float,
+    warnings: list[str] | None = None,
 ) -> None:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "abundance_impact.csv", "w", newline="") as f:
@@ -1912,6 +2794,11 @@ def _write_abundance_impact_outputs(
                 "target_member_exchange",
                 "community_target_exchange",
                 "target_influence_share",
+                "target_secretion_share",
+                "target_member_contribution",
+                "community_target_fva_lo",
+                "community_target_fva_hi",
+                "fva_status",
                 "status",
                 "diagnostic",
             ],
@@ -1935,6 +2822,19 @@ def _write_abundance_impact_outputs(
                 "target_influence_share": _csv_float_or_blank(
                     row.get("target_influence_share")
                 ),
+                "target_secretion_share": _csv_float_or_blank(
+                    row.get("target_secretion_share")
+                ),
+                "target_member_contribution": _csv_float_or_blank(
+                    row.get("target_member_contribution")
+                ),
+                "community_target_fva_lo": _csv_float_or_blank(
+                    row.get("community_target_fva_lo")
+                ),
+                "community_target_fva_hi": _csv_float_or_blank(
+                    row.get("community_target_fva_hi")
+                ),
+                "fva_status": row.get("fva_status") or "",
                 "status": row["status"],
                 "diagnostic": row.get("diagnostic") or "",
             })
@@ -1951,8 +2851,31 @@ def _write_abundance_impact_outputs(
                 "abundance": _csv_float_or_blank(row.get("abundance")),
                 "growth": _csv_float_or_blank(row.get("growth")),
             })
+    # P0-D: "any row optimal → ok" 는 최악 상태를 감춘다 (red-team F5). 최악에서 파생한다.
+    sweep_statuses = [str(row.get("status")) for row in rows]
+    n_bad = sum(1 for status in sweep_statuses if status != "optimal")
+    if not rows or n_bad == len(rows):
+        sweep_tier = "failed"
+    elif n_bad:
+        sweep_tier = "degraded"
+    else:
+        sweep_tier = "ok"
+    # pFBA fallback 이 일부 지점에서만 발동하면 한 곡선 안에서 flux 정규화 기준이 섞인다.
+    fallback_rows = [
+        row for row in rows
+        if "pFBA flux stage failed" in str(row.get("diagnostic") or "")
+    ]
+    sweep_warnings = list(warnings or [])
+    if fallback_rows and len(fallback_rows) != len(rows):
+        sweep_warnings.append(
+            f"{len(fallback_rows)} of {len(rows)} sweep points fell back to a non-parsimonious "
+            "(FBA) flux distribution while the rest are pFBA; the exchange-flux curve mixes two "
+            "flux-selection rules and the points are not like-for-like"
+        )
+        sweep_tier = _worst_status(sweep_tier, "degraded")
     payload = {
-        "status": "ok" if any(row["status"] == "optimal" for row in rows) else "failed",
+        "status": sweep_tier,
+        "warnings": sweep_warnings,
         "target_member": target_member,
         "target": target,
         "solver": solver,
@@ -1998,8 +2921,12 @@ def _write_host_search_bigg_outputs(
     n_candidates_evaluated: int,
     ranking_parameters: dict[str, float | None],
     biomass_basis: dict[str, Any],
+    n_candidates_failed: int = 0,
+    unevaluated: list[dict[str, Any]] | None = None,
+    warnings: list[str] | None = None,
 ) -> None:
     out.mkdir(parents=True, exist_ok=True)
+    unevaluated = list(unevaluated or [])
     with open(out / "host_search_rankings.csv", "w", newline="") as f:
         writer = csv.DictWriter(
             f,
@@ -2036,12 +2963,39 @@ def _write_host_search_bigg_outputs(
                 "evaluation_status": row["evaluation_status"],
                 "diagnostic": row["diagnostic"] or "",
             })
+    if unevaluated:
+        with open(out / "host_search_unevaluated.csv", "w", newline="") as f:
+            unevaluated_writer = csv.DictWriter(
+                f, fieldnames=["members", "evaluation_status", "diagnostic"]
+            )
+            unevaluated_writer.writeheader()
+            for row in unevaluated:
+                unevaluated_writer.writerow({
+                    "members": "+".join(row["members"]),
+                    "evaluation_status": row["evaluation_status"],
+                    "diagnostic": row["diagnostic"] or "",
+                })
     payload = {
-        "status": "ok",
+        # B6: 최상위 status 는 최악의 하위 상태에서 파생된다 — 일부 후보가 평가되지 않았다면 "ok" 가
+        # 아니다(스크립트/에이전트가 status 로 성공을 게이팅한다).
+        "status": _worst_status(
+            "ok" if n_candidates_evaluated else "failed",
+            "degraded" if n_candidates_failed else "ok",
+        ),
         "metric": metric,
         "target": target,
         "n_candidates_total": n_candidates_total,
         "n_candidates_evaluated": n_candidates_evaluated,
+        "n_candidates_failed": n_candidates_failed,
+        "warnings": list(warnings or []),
+        "unevaluated": [
+            {
+                "members": list(row["members"]),
+                "evaluation_status": row["evaluation_status"],
+                "diagnostic": row["diagnostic"],
+            }
+            for row in unevaluated
+        ],
         "ranking_parameters": ranking_parameters,
         "biomass_basis": biomass_basis,
         "top_ranked": [
@@ -2067,7 +3021,7 @@ def _write_host_search_bigg_outputs(
             "host_search_summary.json",
             "host_search_plot.svg",
             "host_search_plot.tiff",
-        ],
+        ] + (["host_search_unevaluated.csv"] if unevaluated else []),
     }
     (out / "host_search_summary.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
@@ -2172,9 +3126,31 @@ def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> N
         contributions=contributions,
         figure_manifest=figure_manifest,
     )
-    figure_artifacts = render_interaction_figures(out)
+    # F9: a complete interaction figure set written from a failed solve is indistinguishable
+    # from a real result unless the figures themselves say otherwise.
+    host_failed = str(result.host_result.status) != "optimal"
+    community_failed = str(result.community_status) != "optimal"
+    banner = None
+    if community_failed:
+        banner = (
+            f"NOT A RESULT — community solve {result.community_status}; "
+            "figures show inputs only"
+        )
+    elif host_failed:
+        banner = (
+            f"NOT A RESULT — host solve {result.host_result.status}; "
+            "no metabolite reached the host"
+        )
+    elif not result.matched_exchanges:
+        banner = "NO COUPLING — no microbial metabolite matched a host exchange"
+    figure_artifacts = render_interaction_figures(out, failure_banner=banner)
     payload = {
-        "status": "ok",
+        # B6: host LP 가 infeasible 인데 최상위가 "ok" 이면 스크립트가 실패를 성공으로 읽는다.
+        # 최상위 status 는 community/host 하위 상태 중 최악에서 파생한다.
+        "status": _worst_status(
+            _run_status_from_solve(str(result.community_status)),
+            _run_status_from_solve(str(result.host_result.status)),
+        ),
         "coupling": "bigg_direct_exchange",
         "community": {
             "status": result.community_status,
@@ -2294,6 +3270,7 @@ def _cmd_dfba(args: argparse.Namespace) -> int:
                 vmax=vmax,
                 min_dt=args.min_dt,
                 growth_floor=args.growth_floor,
+                close_untracked_uptake=args.close_untracked_uptake,
             ),
             solver=args.solver,
         )
@@ -2321,7 +3298,37 @@ def _cmd_dfba(args: argparse.Namespace) -> int:
         },
     )
     print(f"dfba complete ({result.status}) -> {args.out}")
-    return 0
+    # D5: an untracked-substrate warning invalidates any substrate/Km reading of the run, so it
+    # must be impossible to miss.
+    for warning in result.warnings:
+        print(f"  warning: {warning}", file=sys.stderr)
+    _emit_workflow_manifest(
+        Path(args.out),
+        "dfba",
+        lambda: {
+            **_single_model_workflow_base("dfba", args, model_path),
+            "dfba_spec": {
+                "t_end": args.t_end,
+                "dt": args.dt,
+                "min_dt": args.min_dt,
+                "km": args.km,
+                "vmax": vmax,
+                "initial_biomass": args.initial_biomass,
+                "initial_concentrations": concentrations,
+                "default_initial_preset": args.initial_concentrations is None,
+                "growth_floor": args.growth_floor,
+                # D5: closing untracked uptake changes the trajectory entirely (completed ->
+                # infeasible on iHN637), so it belongs in the reproducibility hash.
+                "close_untracked_uptake": bool(args.close_untracked_uptake),
+            },
+        },
+        # dFBA reports "completed", not "optimal" — mapping it through the solve vocabulary would
+        # mark every successful integration as failed.
+        status=_dfba_run_status(str(result.status)),
+        artifacts=["dfba_summary.json", "timecourse.parquet"],
+        summary={"status": result.status, "n_steps": len(getattr(result, "rows", []) or [])},
+    )
+    return _exit_code_for_status(_dfba_run_status(str(result.status)), args)
 
 
 def _cmd_dfba_sensitivity(args: argparse.Namespace) -> int:
@@ -2455,6 +3462,31 @@ def _cmd_search_fixture(args: argparse.Namespace) -> int:
         "diagnostic": result.diagnostic,
     }
     _write_json_or_print(payload, args.out, "search_summary.json")
+    if args.out:
+        _emit_workflow_manifest(
+            Path(args.out),
+            "model_pool_search",
+            lambda: {
+                **_workflow_base(
+                    "model_pool_search", args, taxonomy,
+                    # The bundled fixture is identified by name, matching how golden_fixture
+                    # fingerprints it — its bytes ship with the package, not with the run.
+                    medium=_medium_component_for(args, None),
+                ),
+                "model_checksum": "micom_test_taxonomy_3",
+                "target_spec": {
+                    "target": args.metabolite,
+                    "direction": spec.direction.value,
+                    "mode": "single_target",
+                    "fixture": "community_3_member",
+                },
+                "search_spec": {"sizes": [2], "top_k": args.top_k},
+                "growth_fraction": float(args.growth_fraction),
+            },
+            status=_run_status_from_solve(str(result.status)),
+            artifacts=["search_summary.json"],
+            summary={"target": args.metabolite, "status": result.status},
+        )
     return 0
 
 
@@ -2616,7 +3648,8 @@ def _cmd_search(args: argparse.Namespace) -> int:
         if missing_cols:
             raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
         medium_spec = load_medium(args.medium) if args.medium else None
-        if args.targets:                          # multi-target path (§14 다중 타깃)
+        # multi-target path (§14 다중 타깃). --target-preset scfa 는 문서화된 SCFA 6종으로 확장된다.
+        if args.targets or args.target_preset:
             return _run_multi_target_search(args, taxonomy, medium_spec)
         diagnostics = diagnose_model_pool(taxonomy, args.target)
         config = SearchConfig(
@@ -2648,23 +3681,139 @@ def _cmd_search(args: argparse.Namespace) -> int:
         print(f"failed to write search outputs: {e}", file=sys.stderr)
         return 2
     print(f"search complete ({result.strategy}, target={result.target}) -> {out}")
-    print(f"  evaluated: {result.n_candidates_evaluated}/{result.n_candidates_total}")
-    if result.ranks:
+    print(
+        f"  evaluated: {result.n_candidates_evaluated}/{result.n_candidates_total}"
+        f" | ranked: {len(result.ranks)} | unevaluable: {len(result.unevaluated)}"
+    )
+    # P0-B: 실패했거나 target flux 가 0 인 후보를 "best" 로 인쇄하지 않는다. rank 목록에는 이미
+    # 평가 가능한 행만 들어 있으므로, 남은 위험은 "전부 0" 인 경우다.
+    if not result.ranks:
+        print("  no evaluable candidate: there is no best producer for this target")
+    elif abs(result.ranks[0].score) <= 1e-9:
+        print(
+            f"  no candidate produced {result.target}: top score is 0 "
+            "(the order is arbitrary; see warnings)"
+        )
+    else:
         best = result.ranks[0]
         print(
             f"  best: {'+'.join(best.members)} "
             f"flux={best.target_flux:.4g} growth={best.community_growth:.4g}"
         )
-    return 0
+    # B4: 전부-0 / 동점 랭킹에서 rank 1 을 "최고"로 읽지 않도록 경고를 stdout 에도 낸다.
+    for warning in result.warnings:
+        print(f"  warning: {warning}")
+    _emit_workflow_manifest(
+        out,
+        "model_pool_search",
+        lambda: _search_hash_components(
+            "model_pool_search", args, taxonomy, medium_spec,
+            target_spec={
+                "target": result.target,
+                "target_exchange": result.target_exchange,
+                "direction": result.direction,
+                "mode": "single_target",
+            },
+            search_spec={
+                "min_size": args.min_size,
+                "max_size": args.max_size,
+                "strategy_requested": args.strategy,
+                "strategy_resolved": result.strategy,
+                "n_samples": args.n_samples,
+                "seed": args.seed,
+                "top_k": args.top_k,
+                "robustness_fva": bool(args.robustness_fva),
+            },
+        ),
+        status=_worst_status(
+            "ok" if result.ranks else "failed",
+            "degraded" if result.unevaluated else "ok",
+        ),
+        artifacts=["search_summary.json", "search_rankings.csv", "pool_taxonomy.csv"],
+        warnings=list(result.warnings),
+        summary={
+            "n_candidates_total": result.n_candidates_total,
+            "n_candidates_ranked": len(result.ranks),
+            "n_candidates_failed": len(result.unevaluated),
+            "best_members": list(result.ranks[0].members) if result.ranks else None,
+            "best_target_flux": (
+                _finite_or_none(result.ranks[0].target_flux) if result.ranks else None
+            ),
+        },
+    )
+    return _exit_code_for_status(
+        _worst_status(
+            "ok" if result.ranks else "failed",
+            "degraded" if result.unevaluated else "ok",
+        ),
+        args,
+    )
+
+
+def _resolve_target_carbon_numbers(
+    taxonomy: Any, targets: list[str]
+) -> tuple[dict[str, int], dict[str, str]]:
+    """target 별 탄소 수를 pool 모델의 metabolite formula 에서 읽는다 (carbon_equivalent 용).
+
+    "SCFA 총량"을 mmol 단순합으로 더하면 아세트산(C2)과 부티르산(C4)을 같은 단위로 취급하게 되어
+    화학적으로 의미가 없다. 탄소 수는 반드시 **모델의 화학식**에서 가져오고, 읽을 수 없으면
+    조용히 1.0 을 쓰지 않고 ValueError 로 멈춘다(잘못된 총량을 만들지 않는다).
+
+    Returns ``(carbon_number_by_target, source_model_by_target)``.
+    """
+    from cobra.io import read_sbml_model
+
+    from cmig.core.targets import parse_carbon_number
+
+    remaining = set(targets)
+    carbon: dict[str, int] = {}
+    sources: dict[str, str] = {}
+    for record in taxonomy.to_dict("records"):
+        if not remaining:
+            break
+        try:
+            model = read_sbml_model(str(record["file"]))
+        except Exception:  # noqa: BLE001 - 읽을 수 없는 모델은 다음 후보로 넘어간다
+            continue
+        by_id = {str(m.id): m for m in model.metabolites}
+        for target in sorted(remaining):
+            candidates = [f"{target}_e", f"{target}_c", f"{target}_p"]
+            candidates += sorted(
+                mid for mid in by_id if mid.rsplit("_", 1)[0] == target
+            )
+            for metabolite_id in candidates:
+                metabolite = by_id.get(metabolite_id)
+                if metabolite is None:
+                    continue
+                count = parse_carbon_number(getattr(metabolite, "formula", None))
+                if count:
+                    carbon[target] = count
+                    sources[target] = f"{model.id}:{metabolite_id}"
+                    break
+        remaining = set(targets) - set(carbon)
+    if remaining:
+        raise ValueError(
+            "--multi-metric carbon_equivalent needs a carbon number for every target, but the "
+            f"pool models carry no readable formula for: {sorted(remaining)}. Supply "
+            "--target-weights explicitly or use --multi-metric raw_sum."
+        )
+    return carbon, sources
 
 
 def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spec: Any) -> int:
     """Multi-target model-pool search (§14). Raises ValueError on bad args (caught by caller)."""
     from cmig.core.engine import MicomEngine
+    from cmig.core.model_pool import diagnose_model_pool
     from cmig.core.search import Direction
     from cmig.core.search_product import MultiTargetConfig, search_model_pool_multi
+    from cmig.core.targets import preset_targets
 
-    targets = [t.strip() for t in str(args.targets).split(",") if t.strip()]
+    if args.targets and args.target_preset:
+        raise ValueError("provide either --targets or --target-preset, not both")
+    if args.target_preset:
+        targets = preset_targets(args.target_preset)   # ValueError on unknown preset
+    else:
+        targets = [t.strip() for t in str(args.targets).split(",") if t.strip()]
     if len(targets) < 2:
         raise ValueError("--targets needs >= 2 comma-separated metabolites (use --target for one)")
     if len(set(targets)) != len(targets):
@@ -2692,24 +3841,50 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
             ) from e
     else:
         dir_list = [default_direction] * len(targets)
+    effective_weights = dict(zip(targets, weights, strict=True))
+    carbon_numbers: dict[str, int] = {}
+    carbon_sources: dict[str, str] = {}
+    if args.multi_metric == "carbon_equivalent":
+        carbon_numbers, carbon_sources = _resolve_target_carbon_numbers(taxonomy, targets)
+        # 사용자 가중치 × 탄소 수 → 점수 단위는 mmol C gDW^-1 h^-1.
+        effective_weights = {
+            target: effective_weights[target] * float(carbon_numbers[target])
+            for target in targets
+        }
     config = MultiTargetConfig(
         targets=targets,
         directions=dict(zip(targets, dir_list, strict=True)),
-        weights=dict(zip(targets, weights, strict=True)),
+        weights=effective_weights,
         min_size=args.min_size,
         max_size=args.max_size,
         growth_fraction=args.growth_fraction,
         solver=args.solver,
         top_k=args.top_k,
+        metric=args.multi_metric,
     )
     result = search_model_pool_multi(
         MicomEngine(), taxonomy, config,
         medium_spec=medium_spec, strict_medium=not args.allow_unknown_medium,
     )
     out = Path(args.out)
-    _write_multi_target_outputs(result, taxonomy, out)
+    _write_multi_target_outputs(
+        result,
+        taxonomy,
+        out,
+        diagnostics=diagnose_model_pool(taxonomy, targets[0]),
+        target_preset=args.target_preset,
+        user_weights=dict(zip(targets, weights, strict=True)),
+        carbon_numbers=carbon_numbers,
+        carbon_sources=carbon_sources,
+    )
     print(f"multi-target search complete (targets={','.join(targets)}) -> {out}")
-    print(f"  evaluated: {result.n_candidates_evaluated}/{result.n_candidates_total}")
+    print(f"  metric: {result.metric} [{result.score_unit}]")
+    print(
+        f"  evaluated: {result.n_candidates_evaluated}/{result.n_candidates_total}"
+        f" | ranked: {len(result.ranks)} | unevaluable: {len(result.unevaluated)}"
+    )
+    if not result.ranks:
+        print("  no evaluable candidate: there is no best combination for this target set")
     if result.ranks:
         best = result.ranks[0]
         flux_str = ", ".join(f"{m}={best.target_fluxes.get(m, 0.0):.4g}" for m in targets)
@@ -2717,48 +3892,158 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
             f"  best: {'+'.join(best.members)} score={best.weighted_score:.4g} "
             f"pareto={best.pareto} ({flux_str})"
         )
-    return 0
+        if best.missing_targets:
+            print(f"  note: no exchange for {','.join(best.missing_targets)} (counted as 0)")
+    for warning in result.warnings:
+        print(f"  warning: {warning}")
+    _emit_workflow_manifest(
+        out,
+        "multi_target_model_pool_search",
+        lambda: _search_hash_components(
+            "multi_target_model_pool_search", args, taxonomy, medium_spec,
+            target_spec={
+                "targets": list(targets),
+                "target_preset": args.target_preset,
+                "target_exchanges": result.target_exchanges,
+                "directions": result.directions,
+                "mode": "multi_target",
+                "multi_metric": result.metric,
+                "score_unit": result.score_unit,
+                "normalizer": result.normalizer,
+                # Effective weights are what the LP saw; user weights and the carbon numbers that
+                # produced them are recorded separately so the derivation is auditable.
+                "effective_weights": result.weights,
+                "user_weights": dict(zip(targets, weights, strict=True)),
+                "carbon_numbers": carbon_numbers,
+                "carbon_number_sources": carbon_sources,
+            },
+            search_spec={
+                "min_size": args.min_size,
+                "max_size": args.max_size,
+                "strategy_resolved": result.strategy,
+                "top_k": args.top_k,
+                "seed": args.seed,
+                "exhaustive_max": config.exhaustive_max,
+            },
+        ),
+        status=_worst_status(
+            "ok" if result.ranks else "failed",
+            "degraded" if result.unevaluated else "ok",
+        ),
+        artifacts=["search_summary.json", "search_rankings.csv", "pool_taxonomy.csv"],
+        warnings=list(result.warnings),
+        summary={
+            "n_candidates_total": result.n_candidates_total,
+            "n_candidates_ranked": len(result.ranks),
+            "n_candidates_failed": len(result.unevaluated),
+            "best_members": list(result.ranks[0].members) if result.ranks else None,
+            "best_score": (
+                _finite_or_none(result.ranks[0].weighted_score) if result.ranks else None
+            ),
+        },
+    )
+    return _exit_code_for_status(
+        _worst_status(
+            "ok" if result.ranks else "failed",
+            "degraded" if result.unevaluated else "ok",
+        ),
+        args,
+    )
 
 
-def _write_multi_target_outputs(result: Any, taxonomy: Any, out: Path) -> None:
+def _write_multi_target_outputs(
+    result: Any,
+    taxonomy: Any,
+    out: Path,
+    *,
+    diagnostics: list[Any] | None = None,
+    target_preset: str | None = None,
+    user_weights: dict[str, float] | None = None,
+    carbon_numbers: dict[str, int] | None = None,
+    carbon_sources: dict[str, str] | None = None,
+) -> None:
     out.mkdir(parents=True, exist_ok=True)
     taxonomy.to_csv(out / "pool_taxonomy.csv", index=False)
+    # D9: `cmig workflows` advertises pool_diagnostics.csv and figures for `cmig search`; the
+    # multi-target path emitted neither.
+    if diagnostics is not None:
+        _write_pool_diagnostics_csv(diagnostics, out / "pool_diagnostics.csv")
     targets = list(result.targets)
     fieldnames = (
         ["rank", "members", "weighted_score", "pareto", "community_growth", "status"]
         + [f"flux_{t}" for t in targets]
         + [f"score_{t}" for t in targets]
-        + ["diagnostic"]
+        # B3: flux 열이 한 해에서 온 것인지(joint) 표적별 독립 해인지 반드시 함께 읽혀야 한다.
+        + ["flux_basis", "missing_targets", "diagnostic"]
     )
+    def _multi_record(row: Any) -> dict[str, Any]:
+        record: dict[str, Any] = {
+            "rank": row.rank if row.rank > 0 else "",
+            "members": "+".join(row.members),
+            "weighted_score": _finite_csv(row.weighted_score),
+            "pareto": row.pareto,
+            "community_growth": _finite_csv(row.community_growth),
+            "status": row.status,
+            "flux_basis": row.flux_basis,
+            "missing_targets": ";".join(row.missing_targets),
+            "diagnostic": row.diagnostic or "",
+        }
+        for t in targets:
+            record[f"flux_{t}"] = _finite_csv(row.target_fluxes.get(t, float("nan")))
+            record[f"score_{t}"] = _finite_csv(row.target_scores.get(t, float("nan")))
+        return record
+
     with open(out / "search_rankings.csv", "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in result.ranks:
-            record = {
-                "rank": row.rank,
-                "members": "+".join(row.members),
-                "weighted_score": _finite_csv(row.weighted_score),
-                "pareto": row.pareto,
-                "community_growth": _finite_csv(row.community_growth),
-                "status": row.status,
-                "diagnostic": row.diagnostic or "",
-            }
-            for t in targets:
-                record[f"flux_{t}"] = _finite_csv(row.target_fluxes.get(t, float("nan")))
-                record[f"score_{t}"] = _finite_csv(row.target_scores.get(t, float("nan")))
-            writer.writerow(record)
+            writer.writerow(_multi_record(row))
+    # P0-C: 평가 불가 후보는 랭킹 CSV 에서 완전히 빠지고 별도 파일로만 나간다.
+    if result.unevaluated:
+        with open(out / "search_unevaluated.csv", "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in result.unevaluated:
+                writer.writerow(_multi_record(row))
+    ranked_rows = list(result.ranks)
     summary = {
         "kind": "multi_target_model_pool_search",
+        # B7: 요약이 status 를 쓰지 않아 inspect-run 이 "unknown" 을 돌려주던 자리.
+        "status": _worst_status(
+            "ok" if ranked_rows else "failed",
+            "degraded" if result.unevaluated else "ok",
+        ),
         "targets": targets,
+        "target_preset": target_preset,
         "target_exchanges": result.target_exchanges,
         "directions": result.directions,
+        # B3/P1-4: 점수 척도의 출처를 명시한다 — 무차원 정규화 점수와 실제 flux 합은 다른 물건이다.
+        "metric": result.metric,
+        "score_unit": result.score_unit,
         "weights": result.weights,
+        "user_weights": user_weights or {},
+        "carbon_numbers": carbon_numbers or {},
+        "carbon_number_sources": carbon_sources or {},
         "strategy": result.strategy,
         "normalizer": result.normalizer,
         "solution_semantics": result.solution_semantics,
         "n_pool_members": result.n_pool_members,
         "n_candidates_total": result.n_candidates_total,
         "n_candidates_evaluated": result.n_candidates_evaluated,
+        "n_candidates_ranked": len(ranked_rows),
+        "n_candidates_failed": len(result.unevaluated),
+        # P0-C: 평가 불가 후보는 rank 없이 여기에만 존재한다.
+        "unevaluated": [
+            {
+                "members": list(r.members),
+                "status": r.status,
+                "target_fluxes": {k: _finite_or_none(v) for k, v in r.target_fluxes.items()},
+                "missing_targets": list(r.missing_targets),
+                "flux_basis": r.flux_basis,
+                "diagnostic": r.diagnostic,
+            }
+            for r in result.unevaluated
+        ],
         "top_ranked": [
             {
                 "rank": r.rank,
@@ -2769,14 +4054,388 @@ def _write_multi_target_outputs(result: Any, taxonomy: Any, out: Path) -> None:
                 "status": r.status,
                 "target_fluxes": {k: _finite_or_none(v) for k, v in r.target_fluxes.items()},
                 "target_scores": {k: _finite_or_none(v) for k, v in r.target_scores.items()},
+                "missing_targets": list(r.missing_targets),
+                "flux_basis": r.flux_basis,
                 "diagnostic": r.diagnostic,
             }
             for r in result.ranks
         ],
         "warnings": result.warnings,
     }
+    summary["artifacts"] = sorted(
+        ["pool_taxonomy.csv", "search_rankings.csv", "search_summary.json",
+         "search_plot.svg", "search_plot.tiff"]
+        + (["pool_diagnostics.csv"] if diagnostics is not None else [])
+        + (["search_unevaluated.csv"] if result.unevaluated else [])
+    )
     with open(out / "search_summary.json", "w") as f:
         json.dump(summary, f, indent=2, allow_nan=False)
+    _write_multi_target_figure(result, out / "search_plot.svg")
+
+
+def _search_hash_components(
+    kind: str,
+    args: argparse.Namespace,
+    taxonomy: Any,
+    medium_spec: Any,
+    *,
+    target_spec: dict[str, Any],
+    search_spec: dict[str, Any],
+) -> dict[str, Any]:
+    """Determining inputs of a model-pool search: pool bytes, medium, target and search policy."""
+    from cmig.core.workflow_manifest import base_components, pool_model_checksum
+
+    components = base_components(
+        kind,
+        solver_setting=_pool_solver_setting(args),
+        model_checksum=pool_model_checksum(taxonomy),
+        medium=_medium_component_for(args, medium_spec),
+    )
+    components["target_spec"] = target_spec
+    components["search_spec"] = search_spec
+    components["growth_fraction"] = float(args.growth_fraction)
+    return components
+
+
+def _single_model_workflow_base(
+    kind: str, args: argparse.Namespace, model_path: Any
+) -> dict[str, Any]:
+    """Base components for a single-model workflow (dfba), fingerprinting the model file itself."""
+    from cmig.core.workflow_manifest import (
+        base_components,
+        medium_component,
+        optional_file_checksum,
+    )
+
+    return base_components(
+        kind,
+        solver_setting=_pool_solver_setting(args),
+        model_checksum=optional_file_checksum(model_path) or "unknown",
+        medium=medium_component(None, "single_model_no_medium"),
+    )
+
+
+def _workflow_base(
+    kind: str,
+    args: argparse.Namespace,
+    taxonomy: Any,
+    *,
+    medium: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The six base components, with the pool fingerprint taken from the taxonomy."""
+    from cmig.core.workflow_manifest import base_components, pool_model_checksum
+
+    return base_components(
+        kind,
+        solver_setting=_pool_solver_setting(args),
+        model_checksum=pool_model_checksum(taxonomy),
+        medium=medium if medium is not None else _medium_component_for(args, None),
+    )
+
+
+def _host_spec_component(args: argparse.Namespace, interface_map: Any = None) -> dict[str, Any]:
+    """Everything about the host side that changes the host objective.
+
+    The host model bytes, the reviewed interface map, the objective override and the exchange
+    handling all move the answer, and round-2 found none of them recorded anywhere.
+    """
+    from cmig.core.workflow_manifest import (
+        mapping_checksum,
+        optional_file_checksum,
+    )
+
+    exclude = sorted(_parse_csv_strings(
+        args.exclude_metabolites, flag="--exclude-metabolites"
+    )) if getattr(args, "exclude_metabolites", None) else []
+    return {
+        "host_model": str(args.host),
+        "host_model_checksum": optional_file_checksum(args.host),
+        "host_objective": getattr(args, "host_objective", None),
+        "host_medium": str(args.host_medium) if getattr(args, "host_medium", None) else None,
+        "host_medium_checksum": optional_file_checksum(getattr(args, "host_medium", None)),
+        "microbe_medium": (
+            str(args.microbe_medium) if getattr(args, "microbe_medium", None) else None
+        ),
+        "microbe_medium_checksum": optional_file_checksum(getattr(args, "microbe_medium", None)),
+        "interface_map": (
+            str(args.interface_map) if getattr(args, "interface_map", None) else None
+        ),
+        "interface_map_checksum": mapping_checksum(interface_map),
+        "exchange_suffix": getattr(args, "exchange_suffix", None),
+        "exclude_metabolites": exclude,
+        "include_currency_metabolites": bool(
+            getattr(args, "include_currency_metabolites", False)
+        ),
+        "keep_host_uptake": bool(getattr(args, "keep_host_uptake", False)),
+    }
+
+
+def _biomass_basis_component(args: argparse.Namespace) -> dict[str, Any]:
+    """The gDW scaling that makes host and microbial fluxes comparable at all."""
+    return {
+        "kind": args.biomass_basis_kind,
+        "source": args.biomass_basis_source,
+        "microbial_biomass_gdw": float(args.microbial_biomass_gdw),
+        "host_biomass_gdw": float(args.host_biomass_gdw),
+    }
+
+
+def _host_medium_component(args: argparse.Namespace) -> dict[str, Any]:
+    """Host workflows carry their media inside host_spec; the medium slot records the microbial
+    side plus the fact that no separate --medium was applied."""
+    from cmig.core.workflow_manifest import medium_component, optional_file_checksum
+
+    return medium_component(
+        getattr(args, "microbe_medium", None),
+        optional_file_checksum(getattr(args, "microbe_medium", None)) or "no_microbe_medium",
+    )
+
+
+def _embedded_solve_run_hash(
+    taxonomy: Any,
+    medium_spec: Any,
+    solve_result: Any,
+    *,
+    tradeoff_f: float,
+    namespace_decisions: list[str] | None = None,
+) -> str | None:
+    """The community solve's own 11-component run_hash, for embedding in a workflow hash.
+
+    [HASH-SINGLE]: this goes through the one canonical implementation
+    (`build_run_components` -> `compute_run_hash`) — the workflow envelope never reimplements or
+    extends the frozen 11-component contract, it just carries the resulting hash as one value.
+    Returns None when the solve did not produce a usable result, so a failed solve cannot be
+    fingerprinted as if it had succeeded.
+    """
+    from cmig.core.manifest import compute_run_hash
+    from cmig.core.medium_spec import medium_checksum
+    from cmig.io.solve_output import build_run_components, taxonomy_model_checksum
+
+    if getattr(solve_result, "status", None) != "optimal":
+        return None
+    try:
+        from cmig.core.engine import MicomEngine
+
+        components = build_run_components(
+            solve_result,
+            model_checksum=taxonomy_model_checksum(taxonomy),
+            medium_checksum=medium_checksum(medium_spec),
+            tradeoff_f=float(tradeoff_f),
+            micom_version=MicomEngine().micom_version,
+            namespace_decisions=namespace_decisions or [],
+        )
+    except (ValueError, OSError, ImportError):
+        return None
+    return compute_run_hash(components)
+
+
+def _strain_growth_hash_components(
+    args: argparse.Namespace,
+    taxonomy: Any,
+    medium_spec: Any,
+    community_result: Any,
+    community_medium: dict[str, float],
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Determining inputs of an alone-vs-community comparison.
+
+    The namespace-bridge decisions belong in the hash: which metabolites the community offered,
+    and which each member had no exchange for, is what makes the two legs comparable at all
+    (phase-3 P0-A). Two runs that bridged differently are not the same experiment.
+    """
+    from cmig.core.workflow_manifest import base_components, pool_model_checksum
+
+    components = base_components(
+        "strain_growth",
+        solver_setting=_pool_solver_setting(args),
+        model_checksum=pool_model_checksum(taxonomy),
+        medium=_medium_component_for(
+            args, medium_spec,
+            single_medium_mode=args.single_medium,
+            community_medium_metabolites=sorted(community_medium),
+            unavailable_per_member={
+                str(row["member"]): list(
+                    row.get("medium_metabolites_unavailable_to_member") or []
+                )
+                for row in rows
+            },
+        ),
+    )
+    components["abundances"] = {
+        str(member): value
+        for member, value in sorted((community_result.abundances or {}).items())
+        if value is not None
+    }
+    components["tradeoff_f"] = float(args.tradeoff_f)
+    components["flux_normalization_method"] = getattr(
+        community_result, "flux_normalization_method", "pfba"
+    )
+    components["solve_run_hash"] = _embedded_solve_run_hash(
+        taxonomy, medium_spec, community_result, tradeoff_f=args.tradeoff_f
+    )
+    return components
+
+
+def _abundance_hash_components(
+    args: argparse.Namespace,
+    taxonomy: Any,
+    medium_spec: Any,
+    fractions: list[float],
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Determining inputs of an abundance sweep, including the swept grid itself."""
+    from cmig.core.workflow_manifest import base_components, pool_model_checksum
+
+    components = base_components(
+        "abundance_impact",
+        solver_setting=_pool_solver_setting(args),
+        model_checksum=pool_model_checksum(taxonomy),
+        medium=_medium_component_for(args, medium_spec),
+    )
+    components["abundances"] = {"swept_member": args.member, "fractions": list(fractions)}
+    components["tradeoff_f"] = float(args.tradeoff_f)
+    components["target_spec"] = {"target": args.target, "mode": "single_target"}
+    components["sweep_spec"] = {"kind": "member_abundance", "n_points": len(fractions)}
+    # Phase-3 found the pFBA fallback can fire on some sweep points and not others, which changes
+    # the flux-selection rule mid-curve. Record what actually ran, per point.
+    components["flux_normalization_method"] = sorted({
+        "fba" if "pFBA flux stage failed" in str(row.get("diagnostic") or "") else "pfba"
+        for row in rows
+    })
+    return components
+
+
+def _pool_solver_setting(args: argparse.Namespace, **extra: Any) -> dict[str, Any]:
+    """Solver-level knobs that change the numbers, recorded identically by every command."""
+    setting: dict[str, Any] = {"solver": getattr(args, "solver", None)}
+    setting.update({k: v for k, v in extra.items() if v is not None})
+    return setting
+
+
+def _medium_component_for(
+    args: argparse.Namespace, medium_spec: Any, **bridge: Any
+) -> dict[str, Any]:
+    """Medium identity + namespace-bridge decisions for the workflow hash."""
+    from cmig.core.medium_spec import medium_checksum
+    from cmig.core.workflow_manifest import medium_component
+
+    return medium_component(
+        getattr(args, "medium", None),
+        medium_checksum(medium_spec),
+        namespace_bridge=bridge or None,
+        allow_unknown=bool(getattr(args, "allow_unknown_medium", False)),
+    )
+
+
+def _emit_workflow_manifest(
+    out: Path,
+    kind: str,
+    build_components: Callable[[], dict[str, Any]],
+    *,
+    status: str = "ok",
+    artifacts: list[str] | None = None,
+    warnings: list[str] | None = None,
+    summary: dict[str, Any] | None = None,
+    diagnostic: str | None = None,
+) -> str | None:
+    """Write the workflow manifest and echo its run_hash.
+
+    Components are built lazily inside the guard: assembling them touches the filesystem
+    (model/interface-map checksums), and a completed analysis must not be discarded because its
+    provenance could not be gathered. Failures are reported; a hash is never fabricated.
+    """
+    from cmig.core.workflow_manifest import write_workflow_manifest
+
+    try:
+        run_hash = write_workflow_manifest(
+            out, kind, build_components(),
+            status=status, artifacts=artifacts, warnings=warnings,
+            summary=summary, diagnostic=diagnostic,
+        )
+    except Exception as error:  # noqa: BLE001 - provenance must never destroy a finished result
+        print(
+            "  warning: analysis completed but its reproducibility manifest could not be written "
+            f"({type(error).__name__}: {error}); this run has no run_hash",
+            file=sys.stderr,
+        )
+        return None
+    print(f"  run_hash: {run_hash[:16]}… (manifest.json)")
+    return run_hash
+
+
+# Documented exit contract (Codex D4).
+#   0 — analysis ran and the scientific solve succeeded (status ok or degraded)
+#   2 — usage/input error; no analysis was attempted
+#   3 — artifacts were written but the SCIENTIFIC SOLVE FAILED (status failed)
+# Exit 3 exists because "artifacts on disk" and "a result" are different claims: round-2 found a
+# host-microbe run with an infeasible host, an empty transferred set and a complete figure set
+# still exiting 0, so any shell pipeline gating on $? accepted it as a finding.
+EXIT_ANALYSIS_FAILED = 3
+
+
+def _exit_code_for_status(status: str, args: argparse.Namespace) -> int:
+    """Map a run-level status onto the process exit code."""
+    if status != "failed":
+        return 0
+    if getattr(args, "allow_failed_run", False):
+        print(
+            "  note: --allow-failed-run set; exiting 0 despite a failed solve "
+            "(artifacts were written, but this run is not a result)",
+            file=sys.stderr,
+        )
+        return 0
+    print(
+        f"  analysis failed: artifacts were written to {getattr(args, 'out', '?')} but the "
+        f"scientific solve did not succeed (exit {EXIT_ANALYSIS_FAILED}); pass "
+        "--allow-failed-run to exit 0 anyway",
+        file=sys.stderr,
+    )
+    return EXIT_ANALYSIS_FAILED
+
+
+# B6: run-level status 파생 — 하위 상태 중 최악을 최상위로 올린다. 순서가 곧 심각도이고,
+# 미등재 문자열은 "알 수 없음"이 아니라 최악(failed)으로 취급한다(성공을 낙관하지 않는다).
+_STATUS_SEVERITY: tuple[str, ...] = ("ok", "degraded", "failed")
+
+
+def _run_status_from_solve(status: str) -> str:
+    """solve status(optimal/infeasible/unbounded/solver_failed) → run-level status."""
+    return "ok" if status == "optimal" else "failed"
+
+
+# Legacy summaries wrote raw solve statuses where a run-level tier belongs. Map the known
+# successes onto the gate vocabulary; anything unrecognized stays untouched so it is visible
+# rather than silently coerced to "ok".
+_LEGACY_STATUS_ALIASES: dict[str, str] = {"optimal": "ok", "completed": "ok"}
+
+
+def _normalize_run_status(status: str) -> str:
+    return _LEGACY_STATUS_ALIASES.get(status, status)
+
+
+def _dfba_run_status(status: str) -> str:
+    """dFBA outcome -> run-level tier.
+
+    `stalled` is a real finding (the culture stopped growing), so it degrades rather than fails.
+    `infeasible` means no trajectory was produced at all.
+    """
+    if status == "completed":
+        return "ok"
+    if status == "stalled":
+        return "degraded"
+    return "failed"
+
+
+def _worst_status(*statuses: str) -> str:
+    """여러 하위 status → 가장 심각한 것. 알 수 없는 값은 'failed' 로 보수적으로 승격."""
+    worst = 0
+    for status in statuses:
+        worst = max(
+            worst,
+            _STATUS_SEVERITY.index(status) if status in _STATUS_SEVERITY
+            else len(_STATUS_SEVERITY) - 1,
+        )
+    return _STATUS_SEVERITY[worst]
 
 
 def _finite_or_none(value: float) -> float | None:
@@ -2787,24 +4446,20 @@ def _finite_csv(value: float) -> str:
     return "" if not math.isfinite(value) else f"{value:.12g}"
 
 
-def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], out: Path) -> None:
-    out.mkdir(parents=True, exist_ok=True)
-    taxonomy.to_csv(out / "pool_taxonomy.csv", index=False)
-    with open(out / "pool_diagnostics.csv", "w", newline="") as f:
+def _write_pool_diagnostics_csv(diagnostics: list[Any], path: Path) -> None:
+    """Per-model import/target readiness table. Shared so the multi-target path emits it too (D9).
+
+    `cmig workflows` advertises pool_diagnostics.csv under `cmig search`; the multi-target path
+    produced none, so the documented contract was unmet on exactly the workflow the SCFA preset
+    was added for.
+    """
+    with open(path, "w", newline="") as f:
         writer = csv.DictWriter(
             f,
             fieldnames=[
-                "member_id",
-                "file",
-                "readable",
-                "model_id",
-                "n_reactions",
-                "n_exchanges",
-                "n_biomass",
-                "has_target_exchange",
-                "matching_exchanges",
-                "warnings",
-                "error",
+                "member_id", "file", "readable", "model_id", "n_reactions", "n_exchanges",
+                "n_biomass", "n_objective_terms", "has_target_exchange", "matching_exchanges",
+                "warnings", "error",
             ],
         )
         writer.writeheader()
@@ -2817,11 +4472,20 @@ def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], ou
                 "n_reactions": "" if row.n_reactions is None else row.n_reactions,
                 "n_exchanges": "" if row.n_exchanges is None else row.n_exchanges,
                 "n_biomass": "" if row.n_biomass is None else row.n_biomass,
+                "n_objective_terms": (
+                    "" if row.n_objective_terms is None else row.n_objective_terms
+                ),
                 "has_target_exchange": row.has_target_exchange,
                 "matching_exchanges": ";".join(row.matching_exchanges),
                 "warnings": ";".join(row.warnings),
                 "error": row.error or "",
             })
+
+
+def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], out: Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    taxonomy.to_csv(out / "pool_taxonomy.csv", index=False)
+    _write_pool_diagnostics_csv(diagnostics, out / "pool_diagnostics.csv")
     ranking_path = out / "search_rankings.csv"
     with open(ranking_path, "w", newline="") as f:
         writer = csv.DictWriter(
@@ -2861,6 +4525,20 @@ def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], ou
                 "status": row.status,
                 "diagnostic": row.diagnostic or "",
             })
+    # P0-B: 평가 불가 후보는 --top-k 와 무관하게 전량 별도 파일로 나간다. 랭킹 CSV 에서 잘려
+    # 사라지면 "평가되지 않았다"는 사실 자체가 산출물에서 소멸한다(red-team F1).
+    if result.unevaluated:
+        with open(out / "search_unevaluated.csv", "w", newline="") as f:
+            unevaluated_writer = csv.DictWriter(
+                f, fieldnames=["members", "status", "diagnostic"]
+            )
+            unevaluated_writer.writeheader()
+            for row in result.unevaluated:
+                unevaluated_writer.writerow({
+                    "members": "+".join(row.members),
+                    "status": row.status,
+                    "diagnostic": row.diagnostic or "",
+                })
     member_ids = [str(x) for x in taxonomy["id"]]
     with open(out / "search_member_matrix.csv", "w", newline="") as f:
         fieldnames = ["rank", "members", "target_flux", "community_growth"] + member_ids
@@ -2880,14 +4558,28 @@ def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], ou
     n_readable = sum(1 for row in diagnostics if row.readable)
     n_with_target = sum(1 for row in diagnostics if row.has_target_exchange)
     n_with_biomass = sum(1 for row in diagnostics if row.n_biomass and row.n_biomass > 0)
+    # A-B9: a model whose objective is a many-term combination does not report a growth rate.
+    multi_term = sorted(
+        row.member_id for row in diagnostics
+        if row.n_objective_terms and row.n_objective_terms > 1
+    )
     if n_readable != len(diagnostics):
         search_warnings.append("one or more pool models failed import diagnostics")
     if n_with_target == 0:
         search_warnings.append("target exchange was not detected in any individual pool model")
     if n_with_biomass != len(diagnostics):
         search_warnings.append("one or more pool models have no detected biomass objective")
+    if multi_term:
+        search_warnings.append(
+            f"objective is a multi-term linear combination for {multi_term}; for those models the "
+            "reported growth is an objective value, not a growth rate"
+        )
     payload = {
-        "status": "ok",
+        # P0-B: "ok" 리터럴 금지 — 평가 불가 후보가 있으면 degraded, 하나도 없으면 failed.
+        "status": _worst_status(
+            "ok" if result.ranks else "failed",
+            "degraded" if result.unevaluated else "ok",
+        ),
         "target": result.target,
         "target_exchange": result.target_exchange,
         "direction": result.direction,
@@ -2895,6 +4587,16 @@ def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], ou
         "n_pool_members": result.n_pool_members,
         "n_candidates_total": result.n_candidates_total,
         "n_candidates_evaluated": result.n_candidates_evaluated,
+        "n_candidates_ranked": len(result.ranks),
+        "n_candidates_failed": len(result.unevaluated),
+        "unevaluated": [
+            {
+                "members": list(row.members),
+                "status": row.status,
+                "diagnostic": row.diagnostic,
+            }
+            for row in result.unevaluated
+        ],
         "pool_diagnostics": {
             "n_readable": n_readable,
             "n_with_target_exchange": n_with_target,
@@ -2935,7 +4637,7 @@ def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], ou
             "search_scatter.svg",
             "search_scatter.tiff",
             "search_summary.json",
-        ],
+        ] + (["search_unevaluated.csv"] if result.unevaluated else []),
     }
     (out / "search_summary.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
@@ -2946,6 +4648,34 @@ def _write_search_outputs(result: Any, taxonomy: Any, diagnostics: list[Any], ou
     _write_search_scatter_tiff(result, out / "search_scatter.tiff")
 
 
+# P1-F: publication figure constants, shared by every writer so the outputs agree.
+#
+# Okabe-Ito — the standard colourblind-safe qualitative palette. Round-2 measured the previous
+# ColorBrewer mix and found #2b8cbe vs #756bb1 at ΔE(deuteranopia) = 4.7, below the legibility
+# floor; every Okabe-Ito pair stays well clear of it under protan/deutan/tritan simulation.
+OKABE_ITO: tuple[str, ...] = (
+    "#0072B2",   # blue
+    "#E69F00",   # orange
+    "#009E73",   # bluish green
+    "#CC79A7",   # reddish purple
+    "#56B4E9",   # sky blue
+    "#D55E00",   # vermillion
+    "#F0E442",   # yellow
+    "#000000",   # black
+)
+# A font *stack*: the R/ggplot path aborted on `unknown family 'Arial'` and matplotlib silently
+# fell back to DejaVu, so the two backends disagreed. Naming the fallbacks makes them agree.
+FONT_STACK: tuple[str, ...] = ("Arial", "Helvetica", "DejaVu Sans")
+# Journals reject uncompressed RGBA TIFFs; 600 dpi is the line-art expectation.
+FIGURE_TIFF_DPI = 600
+
+# Units live in the JSON summaries already — these are the axis strings that carry them.
+UNIT_GROWTH = "h$^{-1}$"
+UNIT_FLUX = "mmol gDW$^{-1}$ h$^{-1}$"
+UNIT_HOST_FLUX = "mmol gDW$_{host}^{-1}$ h$^{-1}$"
+UNIT_CARBON = "mmol C gDW$^{-1}$ h$^{-1}$"
+
+
 def _load_matplotlib_pyplot() -> Any:
     import matplotlib
 
@@ -2953,13 +4683,22 @@ def _load_matplotlib_pyplot() -> Any:
     import matplotlib.pyplot as plt
 
     plt.rcParams.update({
-        "font.family": "Arial",
+        "font.family": "sans-serif",
+        "font.sans-serif": list(FONT_STACK),
         "axes.titlesize": 14,
         "axes.labelsize": 11,
         "xtick.labelsize": 10,
         "ytick.labelsize": 10,
+        # Keep SVG text as text so a figure can still be re-typeset; the previous default
+        # outlined every glyph to a <path>, making half the figure set uneditable.
+        "svg.fonttype": "none",
     })
     return plt
+
+
+def _direction_phrase(direction: str) -> str:
+    """`max_uptake` -> "uptake" so an uptake search is not titled a "production" search."""
+    return "uptake" if "uptake" in str(direction) else "production"
 
 
 def _polish_matplotlib_axes(ax: Any, *, grid_axis: str = "x") -> None:
@@ -2969,10 +4708,50 @@ def _polish_matplotlib_axes(ax: Any, *, grid_axis: str = "x") -> None:
     ax.spines["right"].set_visible(False)
 
 
+def _add_panel_letters(axes: Any, *, start: int = 0) -> None:
+    """A/B/C in the top-left of each panel — required on any composite figure."""
+    for offset, ax in enumerate(axes):
+        ax.text(
+            -0.085, 1.06, chr(ord("A") + start + offset),
+            transform=ax.transAxes, fontsize=13, fontweight="bold",
+            va="bottom", ha="right",
+        )
+
+
+def save_publication_tiff(fig: Any, out_tiff: Path, *, dpi: int = FIGURE_TIFF_DPI) -> None:
+    """TIFF at 600 dpi, RGB, LZW — the three things submission portals check.
+
+    matplotlib writes RGBA with ``compression=raw`` by default, which produced 8.8-21.3 MB files
+    with an alpha channel. Flattening onto white and LZW-compressing cuts that by ~10x and removes
+    the alpha, without touching the rendered content.
+    """
+    fig.savefig(
+        out_tiff,
+        format="tiff",
+        dpi=dpi,
+        facecolor="white",
+        pil_kwargs={"compression": "tiff_lzw"},
+    )
+    try:
+        from PIL import Image
+    except ImportError:  # pragma: no cover - PIL ships with matplotlib
+        return
+    with Image.open(out_tiff) as image:
+        if image.mode == "RGB":
+            return
+        flattened = Image.new("RGB", image.size, (255, 255, 255))
+        flattened.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
+        info = dict(image.info)
+    flattened.save(
+        out_tiff, format="tiff", compression="tiff_lzw",
+        dpi=info.get("dpi", (dpi, dpi)),
+    )
+
+
 def _save_screening_figure(fig: Any, out_svg: Path, out_tiff: Path) -> None:
     fig.tight_layout()
     fig.savefig(out_svg, format="svg")
-    fig.savefig(out_tiff, format="tiff", dpi=300)
+    save_publication_tiff(fig, out_tiff)
 
 
 def _write_dfba_outputs(
@@ -3007,6 +4786,10 @@ def _write_dfba_outputs(
         "solver": solver,
         "config": config,
         "managed_exchanges": result.managed_exchanges,
+        # D5: what the run actually ate outside the tracked set, and why that matters.
+        "untracked_uptake": result.untracked_uptake,
+        "n_untracked_uptake": len(result.untracked_uptake),
+        "warnings": list(result.warnings),
         "n_timepoints": len(result.timecourse),
         "final_t": final.t,
         "final_biomass": final.biomass,
@@ -3038,7 +4821,10 @@ def _write_dfba_figure(rows: list[dict[str, Any]], out_svg: Path, out_tiff: Path
     )
     biomass = series.get("biomass", [])
     if biomass:
-        axes[0].plot([x for x, _ in biomass], [y for _, y in biomass], color="#2b8cbe", linewidth=2)
+        axes[0].plot(
+            [x for x, _ in biomass], [y for _, y in biomass],
+            color=OKABE_ITO[0], linewidth=2,
+        )
         final_t, final_biomass = biomass[-1]
         axes[0].text(
             final_t,
@@ -3047,10 +4833,10 @@ def _write_dfba_figure(rows: list[dict[str, Any]], out_svg: Path, out_tiff: Path
             va="center",
             ha="left",
             fontsize=9,
-            color="#2b8cbe",
+            color=OKABE_ITO[0],
         )
     axes[0].set_title("Dynamic FBA time course", loc="left", pad=10)
-    axes[0].set_ylabel("Biomass")
+    axes[0].set_ylabel("Biomass (gDW L$^{-1}$)")
     _polish_matplotlib_axes(axes[0], grid_axis="y")
     growth = series.get("growth_rate", [])
     if growth:
@@ -3060,13 +4846,13 @@ def _write_dfba_figure(rows: list[dict[str, Any]], out_svg: Path, out_tiff: Path
         axes[1].plot(
             [x for x, _ in growth_plot],
             [y for _, y in growth_plot],
-            color="#636363",
+            color=OKABE_ITO[7],
             linewidth=1.8,
             marker="o",
             markersize=3.8,
         )
         axes[1].ticklabel_format(axis="y", style="plain", useOffset=False)
-    axes[1].set_ylabel("Growth rate")
+    axes[1].set_ylabel(f"Growth rate ({UNIT_GROWTH})")
     _polish_matplotlib_axes(axes[1], grid_axis="y")
     palette = ["#d95f0e", "#31a354", "#756bb1", "#636363", "#e7298a", "#1b9e77"]
     metabolites = [name for name in series if name not in {"biomass", "growth_rate"}]
@@ -3089,10 +4875,11 @@ def _write_dfba_figure(rows: list[dict[str, Any]], out_svg: Path, out_tiff: Path
             fontsize=9,
             color=palette[idx % len(palette)],
         )
-    axes[2].set_xlabel("Time")
-    axes[2].set_ylabel("Concentration")
+    axes[2].set_xlabel("Time (h)")
+    axes[2].set_ylabel("Concentration (mmol L$^{-1}$)")
     if metabolites:
         axes[2].legend(loc="best", frameon=False, fontsize=9)
+    _add_panel_letters(axes)
     _polish_matplotlib_axes(axes[2], grid_axis="y")
     _save_screening_figure(fig, out_svg, out_tiff)
     plt.close(fig)
@@ -3111,20 +4898,32 @@ def _write_strain_growth_figures(rows: list[dict[str, Any]], out: Path) -> None:
         [y + offset for y in positions],
         single,
         height=0.32,
-        color="#2b8cbe",
+        color=OKABE_ITO[0],
         label="Single model",
     )
     ax.barh(
         [y - offset for y in positions],
         community,
         height=0.32,
-        color="#31a354",
+        color=OKABE_ITO[2],
         label="Community",
     )
     ax.set_yticks(positions)
     ax.set_yticklabels(labels)
     ax.invert_yaxis()
-    ax.set_xlabel("Growth rate")
+    # A-B9: iAF987 ships a 283-term objective, so its optimum is an objective value, not a growth
+    # rate. Labelling the axis "Growth rate" regardless is the misleading part.
+    multi_term_members = [
+        str(row["member"]) for row in rows
+        if (row.get("n_objective_terms") or 1) > 1
+    ]
+    if multi_term_members:
+        ax.set_xlabel(
+            f"Objective value ({UNIT_GROWTH}); not a growth rate for "
+            f"{', '.join(multi_term_members)}"
+        )
+    else:
+        ax.set_xlabel(f"Growth rate ({UNIT_GROWTH})")
     ax.set_title("Strain growth profile", loc="left", pad=10)
     max_value = max(single + community, default=0.0)
     if max_value > 0.0:
@@ -3166,9 +4965,9 @@ def _write_abundance_impact_figures(
         _optional_float(row.get("target_influence_share")) or 0.0 for row in valid_rows
     ]
     fig, axes = plt.subplots(3, 1, figsize=(7.2, 7.4), dpi=300, sharex=True)
-    axes[0].plot(x, community_growth, color="#2b8cbe", marker="o", label="Community")
-    axes[0].plot(x, member_growth, color="#31a354", marker="o", label=target_member)
-    axes[0].set_ylabel("Growth")
+    axes[0].plot(x, community_growth, color=OKABE_ITO[0], marker="o", label="Community")
+    axes[0].plot(x, member_growth, color=OKABE_ITO[2], marker="o", label=target_member)
+    axes[0].set_ylabel(f"Growth rate ({UNIT_GROWTH})")
     axes[0].set_title(
         f"Abundance sensitivity: {target_member}",
         loc="left",
@@ -3176,14 +4975,15 @@ def _write_abundance_impact_figures(
     )
     axes[0].legend(frameon=False, loc="best")
     _polish_matplotlib_axes(axes[0], grid_axis="y")
-    axes[1].plot(x, member_flux, color="#756bb1", marker="o", label=f"{target_member} {target}")
-    axes[1].plot(x, community_flux, color="#d95f0e", marker="o", label=f"Community {target}")
-    axes[1].set_ylabel("Exchange flux")
+    axes[1].plot(x, member_flux, color=OKABE_ITO[3], marker="o", label=f"{target_member} {target}")
+    axes[1].plot(x, community_flux, color=OKABE_ITO[5], marker="o", label=f"Community {target}")
+    axes[1].set_ylabel(f"Exchange flux ({UNIT_FLUX})")
     axes[1].legend(frameon=False, loc="best")
     _polish_matplotlib_axes(axes[1], grid_axis="y")
-    axes[2].plot(x, influence, color="#636363", marker="o")
+    axes[2].plot(x, influence, color=OKABE_ITO[7], marker="o")
     axes[2].set_xlabel(f"{target_member} abundance")
-    axes[2].set_ylabel("Target share")
+    axes[2].set_ylabel("Abundance-weighted\nsecretion share (fraction)")
+    _add_panel_letters(axes)
     axes[2].set_ylim(bottom=0.0, top=min(1.0, max(0.1, max(influence, default=0.0) * 1.25)))
     _polish_matplotlib_axes(axes[2], grid_axis="y")
     _save_screening_figure(
@@ -3277,7 +5077,7 @@ def _write_spatial_heatmap(
             fontsize=9, color="#222222",
             bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 3})
     cbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label("Concentration")
+    cbar.set_label("Concentration (mmol L$^{-1}$)")
     _save_screening_figure(fig, out_svg, out_tiff)
     plt.close(fig)
 
@@ -3312,7 +5112,7 @@ def _write_spatial_snapshots(
     final = selected[-1]
     mid_y = len(final.values) // 2
     profile = final.values[mid_y]
-    axes[-1].plot(range(len(profile)), profile, color="#2b8cbe", linewidth=2)
+    axes[-1].plot(range(len(profile)), profile, color=OKABE_ITO[0], linewidth=2)
     axes[-1].set_title("Final centerline concentration", fontsize=11)
     axes[-1].set_xlabel("x")
     axes[-1].set_ylabel("")
@@ -3320,9 +5120,9 @@ def _write_spatial_snapshots(
     fig.suptitle(f"Spatial medium dynamics: {metabolite}", x=0.02, ha="left", fontsize=14)
     if image is not None:
         cbar = fig.colorbar(image, ax=list(axes[:-1]), fraction=0.035, pad=0.02)
-        cbar.set_label("Grid concentration")
+        cbar.set_label("Concentration (mmol L$^{-1}$)")
     fig.savefig(out_svg, format="svg", bbox_inches="tight")
-    fig.savefig(out_tiff, format="tiff", dpi=300, bbox_inches="tight")
+    save_publication_tiff(fig, out_tiff)
     plt.close(fig)
 
 
@@ -3351,7 +5151,14 @@ def _write_host_search_figures(
             if abs(value) > 1e-12:
                 ax.text(value, idx, f" {value:.3g}", va="center", fontsize=10)
     ax.set_title(f"Host-microbe combination ranking: {target}", loc="left", pad=12)
-    ax.set_xlabel(metric.replace("_", " "))
+    metric_unit = {
+        "objective_value": UNIT_GROWTH,
+        "target_transfer": UNIT_HOST_FLUX,
+        "weighted": "dimensionless",
+    }.get(metric, "")
+    ax.set_xlabel(
+        f"{metric.replace('_', ' ')}" + (f" ({metric_unit})" if metric_unit else "")
+    )
     ax.margins(x=0.06)
     _polish_matplotlib_axes(ax, grid_axis="x")
     _save_screening_figure(fig, out / "host_search_plot.svg", out / "host_search_plot.tiff")
@@ -3446,7 +5253,9 @@ def _write_gene_ko_figures(
         transform=ax.transAxes, fontsize=9.5, color="#555555",
     )
     # Bar = physical flux change; color = effect on the objective (direction-aware).
-    ax.set_xlabel(f"{target} {direction_word} flux delta vs baseline (bar) — color = objective")
+    ax.set_xlabel(
+        f"{target} {direction_word} flux delta vs baseline ({UNIT_FLUX}); colour = effect sign"
+    )
     ax.margins(x=0.12)
     _polish_matplotlib_axes(ax, grid_axis="x")
     ax.legend(
@@ -3463,6 +5272,45 @@ def _write_gene_ko_figures(
     plt.close(fig)
 
 
+def _write_multi_target_figure(result: Any, svg_path: Path) -> None:
+    """Stacked per-target contribution bars for a multi-target search (D9).
+
+    Stacked rather than a single total, because the headline finding of the SCFA work is that a
+    weighted-sum optimum concentrates on ONE acid — a single total bar would hide exactly that.
+    """
+    plt = _load_matplotlib_pyplot()
+    rows = [row for row in result.ranks[:10] if math.isfinite(row.weighted_score)]
+    if not rows:
+        return
+    targets = list(result.targets)
+    labels = ["+".join(row.members) for row in rows]
+    height = max(3.6, 0.5 * len(rows) + 1.9)
+    fig, ax = plt.subplots(figsize=(8.4, height), dpi=300)
+    positions = list(range(len(rows)))
+    left = [0.0] * len(rows)
+    for index, target in enumerate(targets):
+        widths = [max(0.0, float(row.target_scores.get(target, 0.0))) for row in rows]
+        ax.barh(
+            positions, widths, left=left, height=0.62,
+            color=OKABE_ITO[index % len(OKABE_ITO)], label=target,
+        )
+        left = [a + b for a, b in zip(left, widths, strict=True)]
+    ax.set_yticks(positions)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel(f"Score contribution per target ({result.score_unit})")
+    ax.set_title(
+        f"Multi-target search: {', '.join(targets)} [{result.metric}]", loc="left", pad=10
+    )
+    ax.legend(
+        loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False, fontsize=9,
+        title="target",
+    )
+    _polish_matplotlib_axes(ax, grid_axis="x")
+    _save_screening_figure(fig, svg_path, svg_path.with_suffix(".tiff"))
+    plt.close(fig)
+
+
 def _write_search_tiff(result: Any, path: Path) -> None:
     plt = _load_matplotlib_pyplot()
     rows = [row for row in result.ranks[:10] if math.isfinite(row.target_flux)]
@@ -3475,8 +5323,8 @@ def _write_search_tiff(result: Any, path: Path) -> None:
         ax.barh(labels[::-1], values[::-1], color=colors[::-1], height=0.56)
         for idx, value in enumerate(values[::-1]):
             ax.text(value, idx, f" {value:.3g}", va="center", fontsize=10)
-    ax.set_title(f"Target production search: {result.target}")
-    ax.set_xlabel(f"Target exchange flux ({result.target_exchange})")
+    ax.set_title(f"Target {_direction_phrase(result.direction)} search: {result.target}")
+    ax.set_xlabel(f"Target exchange flux, {result.target_exchange} ({UNIT_FLUX})")
     ax.text(
         0.0,
         1.01,
@@ -3491,7 +5339,7 @@ def _write_search_tiff(result: Any, path: Path) -> None:
                 fontsize=10, color="#555555")
     _polish_matplotlib_axes(ax, grid_axis="x")
     fig.tight_layout()
-    fig.savefig(path, format="tiff", dpi=300)
+    save_publication_tiff(fig, path)
     plt.close(fig)
 
 
@@ -3507,7 +5355,7 @@ def _write_search_scatter_tiff(result: Any, path: Path) -> None:
             [row.community_growth for row in rows],
             [row.target_flux for row in rows],
             s=56,
-            color="#3182bd",
+            color=OKABE_ITO[4],
             alpha=0.9,
             edgecolor="white",
             linewidth=0.8,
@@ -3521,8 +5369,8 @@ def _write_search_scatter_tiff(result: Any, path: Path) -> None:
                 fontsize=9,
             )
     ax.set_title("Growth-production tradeoff")
-    ax.set_xlabel("Community growth under target objective")
-    ax.set_ylabel("Target exchange flux")
+    ax.set_xlabel(f"Community growth under target objective ({UNIT_GROWTH})")
+    ax.set_ylabel(f"Target exchange flux ({UNIT_FLUX})")
     ax.text(0.0, -0.18, f"Target: {result.target_exchange}", transform=ax.transAxes,
             fontsize=9, color="#555555")
     if len(rows) == 1:
@@ -3530,7 +5378,7 @@ def _write_search_scatter_tiff(result: Any, path: Path) -> None:
                 fontsize=10, color="#555555")
     _polish_matplotlib_axes(ax, grid_axis="both")
     fig.tight_layout()
-    fig.savefig(path, format="tiff", dpi=300)
+    save_publication_tiff(fig, path)
     plt.close(fig)
 
 
@@ -3552,7 +5400,8 @@ def _write_search_svg(result: Any, path: Path) -> None:
         f'viewBox="0 0 {width} {height}">',
         '<rect width="100%" height="100%" fill="#ffffff"/>',
         f'<text x="{margin_left}" y="30" font-family="Arial" font-size="22" '
-        f'font-weight="700">Target production search: {html.escape(result.target)}</text>',
+        f'font-weight="700">Target {html.escape(_direction_phrase(result.direction))} '
+        f'search: {html.escape(result.target)}</text>',
         f'<text x="{margin_left}" y="52" font-family="Arial" font-size="13" fill="#555">'
         f'{html.escape(result.strategy)} · evaluated {result.n_candidates_evaluated}/'
         f'{result.n_candidates_total} candidates</text>',
@@ -3584,8 +5433,9 @@ def _write_search_svg(result: Any, path: Path) -> None:
         ])
     parts.append(
         f'<text x="{axis_x}" y="{height - 28}" font-family="Arial" font-size="13" '
-        f'fill="#333">Target exchange flux ({html.escape(result.target_exchange)}), '
-        'larger is better for max secretion</text>'
+        f'fill="#333">Target exchange flux, {html.escape(result.target_exchange)} '
+        f'(mmol gDW⁻¹ h⁻¹); bar length = |flux|, '
+        f'objective = {html.escape(result.direction)}</text>'
     )
     parts.append("</svg>")
     path.write_text("\n".join(parts) + "\n")
@@ -3990,13 +5840,47 @@ def _load_bounds_json(path: str) -> dict[str, list[float]]:
     return out
 
 
-def _load_host_interface_map(path: str | None) -> dict[str, str] | None:
+def _load_host_interface_map(
+    path: str | None, *, accept_unreviewed: bool = False
+) -> dict[str, str] | None:
+    """Load a reviewed metabolite -> host exchange map.
+
+    A-B8: a map that still carries `needs_review` entries has unconfirmed annotation matches in
+    it (including possible D/L stereoisomer swaps). Coupling against those silently is how a
+    chemically wrong transfer becomes a published number, so it is refused by default and only
+    proceeds — loudly — under an explicit flag.
+    """
     if path is None:
         return None
     source = Path(path)
     raw = json.loads(source.read_text())
     if isinstance(raw, dict) and "interface_map" in raw:
-        raw = raw["interface_map"]
+        pending = raw.get("needs_review") or {}
+        if pending:
+            listing = ", ".join(
+                f"{met} -> {info.get('host_exchange')} ({info.get('match_type')})"
+                if isinstance(info, dict) else f"{met} -> {info}"
+                for met, info in sorted(pending.items())
+            )
+            if not accept_unreviewed:
+                raise ValueError(
+                    f"interface map {source} still has {len(pending)} unreviewed entries: "
+                    f"{listing}. Confirm each and move it into interface_map, or pass "
+                    "--accept-unreviewed-map to couple anyway."
+                )
+            print(
+                f"  warning: coupling with {len(pending)} UNREVIEWED interface-map entries "
+                f"({listing}); annotation matches can pair chemically distinct metabolites",
+                file=sys.stderr,
+            )
+            merged = dict(raw["interface_map"])
+            for met, info in pending.items():
+                target = info.get("host_exchange") if isinstance(info, dict) else info
+                if target:
+                    merged[met] = target
+            raw = merged
+        else:
+            raw = raw["interface_map"]
     if not isinstance(raw, dict):
         raise ValueError("host interface map must be a JSON object")
     mapping: dict[str, str] = {}
@@ -4393,6 +6277,36 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         args.out,
         "sweep_summary.json",
     )
+    _emit_workflow_manifest(
+        out,
+        "sweep",
+        lambda: {
+            **_workflow_base("sweep", args, taxonomy, medium=_medium_component_for(args, None)),
+            # tradeoff_f is swept, so the axis grid carries it rather than a single value.
+            "tradeoff_f": sorted({
+                float(row.axis_values["tradeoff_f"]) for row in rows
+                if row.axis_values.get("tradeoff_f") is not None
+            }),
+            "sweep_spec": {
+                "kind": "taxonomy_condition_grid",
+                "metric": args.metric,
+                "fva": bool(args.fva or args.fva_metabolites is not None),
+                "fva_metabolites": _parse_optional_csv_strings(args.fva_metabolites),
+                "n_runs": len(rows),
+                "condition_ids": sorted(str(row.condition_id) for row in rows),
+                "namespace_decisions": str(args.namespace_decisions)
+                if args.namespace_decisions else None,
+                # The per-condition solve hashes ARE the sweep's provenance: each is a full
+                # 11-component solve hash, embedded rather than recomputed ([HASH-SINGLE]).
+                "condition_run_hashes": sorted(
+                    str(row.run_hash) for row in rows if row.run_hash
+                ),
+            },
+        },
+        status="ok" if rows else "failed",
+        artifacts=["sweep_summary.json", "sweep.parquet", "sweep_profiles.parquet"],
+        summary={"n_runs": len(rows), "metric": args.metric},
+    )
     return 0
 
 
@@ -4623,8 +6537,93 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not close pre-existing host exchange uptake bounds before coupling",
     )
+    hmb.add_argument(
+        "--accept-unreviewed-map", action="store_true", dest="accept_unreviewed_map",
+        help="couple even though the interface map still has needs_review entries "
+        "(annotation matches can pair chemically distinct metabolites, e.g. D/L "
+        "stereoisomers); the run is warned and the entries are named",
+    )
+    hmb.add_argument(
+        "--allow-failed-run", action="store_true", dest="allow_failed_run",
+        help="exit 0 even when the scientific solve failed (default: exit 3, so a "
+        "pipeline gating on $? cannot mistake written artifacts for a result)",
+    )
     hmb.add_argument("--out", required=True, help="output directory")
     hmb.set_defaults(func=_cmd_host_microbe_bigg)
+
+    # P1-E: microbial perturbation -> host effect, composed so the two arms cannot drift apart.
+    hki = sub.add_parser(
+        "host-ko-impact",
+        help="microbial gene/reaction knockout -> host objective delta "
+        "-> host_ko_impact_summary.json",
+    )
+    hki.add_argument("--host", required=True, help="host SBML/XML model path")
+    hki_src = hki.add_mutually_exclusive_group(required=True)
+    hki_src.add_argument("--taxonomy", default=None, help="microbial MICOM taxonomy csv")
+    hki_src.add_argument("--model-dir", default=None, help="directory containing microbial GEMs")
+    hki.add_argument("--recursive", action="store_true", help="scan --model-dir recursively")
+    hki.add_argument(
+        "--member", required=True,
+        help="member whose gene/reaction is knocked out; every other arm input is held identical",
+    )
+    hki.add_argument(
+        "--ko-level", default="reaction", dest="ko_level", choices=["gene", "reaction"],
+        help="knock out reactions directly (default) or genes via GPR",
+    )
+    hki.add_argument("--genes", default=None, help="comma-separated gene ids (--ko-level gene)")
+    hki.add_argument(
+        "--reactions", default=None, help="comma-separated reaction ids (--ko-level reaction)"
+    )
+    hki.add_argument(
+        "--target", default="ac",
+        help="transferred metabolite whose host delivery delta is reported",
+    )
+    hki.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
+    hki.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f")
+    hki.add_argument(
+        "--microbial-biomass-gdw", type=float, required=True,
+        help="microbial community biomass represented by MICOM flux (gDW)",
+    )
+    hki.add_argument(
+        "--host-biomass-gdw", type=float, required=True,
+        help="host biomass basis for host-specific uptake flux (gDW)",
+    )
+    hki.add_argument(
+        "--biomass-basis-kind", required=True,
+        choices=["measured", "literature", "validation"],
+        help="measured/literature for study results; validation is explicitly non-publication",
+    )
+    hki.add_argument(
+        "--biomass-basis-source", required=True,
+        help="measurement method, sample record, or literature citation for both gDW bases",
+    )
+    hki.add_argument("--microbe-medium", default=None, help="optional microbial medium csv/json")
+    hki.add_argument("--host-medium", default=None, help="optional host background medium csv/json")
+    hki.add_argument("--exchange-suffix", default="_e", help="host BiGG exchange suffix")
+    hki.add_argument(
+        "--interface-map", default=None,
+        help="reviewed JSON metabolite->host exchange map (shared by every arm)",
+    )
+    hki.add_argument(
+        "--host-objective", default=None,
+        help="optional host reaction id used as the host objective in every arm",
+    )
+    hki.add_argument("--exclude-metabolites", default=None)
+    hki.add_argument("--include-currency-metabolites", action="store_true")
+    hki.add_argument("--keep-host-uptake", action="store_true")
+    hki.add_argument(
+        "--accept-unreviewed-map", action="store_true", dest="accept_unreviewed_map",
+        help="couple even though the interface map still has needs_review entries "
+        "(annotation matches can pair chemically distinct metabolites, e.g. D/L "
+        "stereoisomers); the run is warned and the entries are named",
+    )
+    hki.add_argument(
+        "--allow-failed-run", action="store_true", dest="allow_failed_run",
+        help="exit 0 even when the scientific solve failed (default: exit 3, so a "
+        "pipeline gating on $? cannot mistake written artifacts for a result)",
+    )
+    hki.add_argument("--out", required=True, help="output directory")
+    hki.set_defaults(func=_cmd_host_ko_impact)
 
     hm = sub.add_parser(
         "host-map",
@@ -4654,7 +6653,11 @@ def build_parser() -> argparse.ArgumentParser:
     rf.add_argument("--height", type=float, default=4.0, help="figure height (inches)")
     rf.add_argument("--dpi", type=int, default=600)
     rf.add_argument("--seed", type=int, default=42)
-    rf.add_argument("--journal-preset", default="default", dest="journal_preset")
+    rf.add_argument(
+        "--journal-preset", default="default", dest="journal_preset",
+        help="apply a journal's width/height/dpi (default, nature, nature_double, cell, science, "
+        "plos); an unknown name is rejected with exit 2",
+    )
     rf.set_defaults(func=_cmd_render_figure)
 
     hs = sub.add_parser(
@@ -4722,6 +6725,17 @@ def build_parser() -> argparse.ArgumentParser:
     hs.add_argument("--exclude-metabolites", default=None)
     hs.add_argument("--include-currency-metabolites", action="store_true")
     hs.add_argument("--keep-host-uptake", action="store_true")
+    hs.add_argument(
+        "--accept-unreviewed-map", action="store_true", dest="accept_unreviewed_map",
+        help="couple even though the interface map still has needs_review entries "
+        "(annotation matches can pair chemically distinct metabolites, e.g. D/L "
+        "stereoisomers); the run is warned and the entries are named",
+    )
+    hs.add_argument(
+        "--allow-failed-run", action="store_true", dest="allow_failed_run",
+        help="exit 0 even when the scientific solve failed (default: exit 3, so a "
+        "pipeline gating on $? cannot mistake written artifacts for a result)",
+    )
     hs.add_argument("--out", required=True, help="output directory")
     hs.set_defaults(func=_cmd_host_search_bigg)
     sg = sub.add_parser(
@@ -4736,9 +6750,23 @@ def build_parser() -> argparse.ArgumentParser:
     sg.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f")
     sg.add_argument("--medium", default=None, help="optional community medium csv/json")
     sg.add_argument(
+        "--single-medium",
+        default="community",
+        dest="single_medium",
+        choices=["community", "model_default"],
+        help="medium for the alone leg: community (default) projects the community's effective "
+        "medium onto each member so the comparison is controlled | model_default keeps each "
+        "member's native SBML bounds, which reports native capability, NOT an interaction effect",
+    )
+    sg.add_argument(
         "--allow-unknown-medium",
         action="store_true",
         help="record medium ids absent from the community and continue",
+    )
+    sg.add_argument(
+        "--allow-failed-run", action="store_true", dest="allow_failed_run",
+        help="exit 0 even when the scientific solve failed (default: exit 3, so a "
+        "pipeline gating on $? cannot mistake written artifacts for a result)",
     )
     sg.add_argument("--out", required=True, help="output directory")
     sg.set_defaults(func=_cmd_strain_growth)
@@ -4764,6 +6792,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-unknown-medium",
         action="store_true",
         help="record medium ids absent from the community and continue",
+    )
+    ai.add_argument(
+        "--fva", action="store_true",
+        help="report the FVA interval of the target exchange at each sweep point, so a jump "
+        "between neighbouring abundances can be read as alternate-optima degeneracy rather "
+        "than a dose response",
+    )
+    ai.add_argument(
+        "--allow-failed-run", action="store_true", dest="allow_failed_run",
+        help="exit 0 even when the scientific solve failed (default: exit 3, so a "
+        "pipeline gating on $? cannot mistake written artifacts for a result)",
     )
     ai.add_argument("--out", required=True, help="output directory")
     ai.set_defaults(func=_cmd_abundance_impact)
@@ -4832,7 +6871,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="parallel evaluation workers (default 1; >1 speedup depends on solver thread-safety)",
     )
+    gk.add_argument(
+        "--rank-by", default="effect", dest="rank_by", choices=["effect", "remaining"],
+        help="effect (default): |delta| descending — the knockouts that move the target most, "
+        "which is what a suppression screen asks for | remaining: highest remaining target flux "
+        "first (the previous ordering, in which a zero-effect KO could hold rank 1)",
+    )
     gk.add_argument("--top-k", type=int, default=20, dest="top_k")
+    gk.add_argument(
+        "--allow-failed-run", action="store_true", dest="allow_failed_run",
+        help="exit 0 even when the scientific solve failed (default: exit 3, so a "
+        "pipeline gating on $? cannot mistake written artifacts for a result)",
+    )
     gk.add_argument("--out", required=True, help="output directory")
     gk.set_defaults(func=_cmd_gene_ko_search)
     df = sub.add_parser("dfba-fixture", help="e_coli_core glucose dFBA → timecourse.parquet")
@@ -4869,6 +6919,12 @@ def build_parser() -> argparse.ArgumentParser:
     df_user.add_argument("--km", type=float, default=0.01)
     df_user.add_argument("--min-dt", type=float, default=1e-4, dest="min_dt")
     df_user.add_argument("--growth-floor", type=float, default=1e-6, dest="growth_floor")
+    df_user.add_argument(
+        "--close-untracked-uptake", action="store_true", dest="close_untracked_uptake",
+        help="close every uptake exchange outside --initial before integrating, so growth "
+        "cannot be fed by an unconstrained default-medium substrate that is never "
+        "depleted (without this, a substrate/Km experiment is not interpretable)",
+    )
     df_user.add_argument("--out", required=True, help="output directory")
     df_user.set_defaults(func=_cmd_dfba)
     dfs = sub.add_parser(
@@ -4936,6 +6992,25 @@ def build_parser() -> argparse.ArgumentParser:
         "ranks by weighted-normalized score + Pareto flag (overrides --target)",
     )
     sp.add_argument(
+        "--target-preset",
+        default=None,
+        dest="target_preset",
+        choices=sorted(TARGET_PRESETS),
+        help="documented target set for multi-target search (scfa = ac,but,lac__D,lac__L,ppa,succ)",
+    )
+    sp.add_argument(
+        "--multi-metric",
+        default="normalized_weighted",
+        dest="multi_metric",
+        choices=["normalized_weighted", "carbon_equivalent", "raw_sum", "pareto"],
+        help="multi-target score: normalized_weighted (dimensionless min-max over the candidate "
+        "set, not comparable across runs) | carbon_equivalent (weight each target by its carbon "
+        "number from the model formula -> mmol C gDW^-1 h^-1) | raw_sum (mmol gDW^-1 h^-1, "
+        "ignores that C2 and C4 acids differ) | pareto (epsilon-constraint sweep reporting the "
+        "NON-DOMINATED trade-off set instead of one scalarised winner; the scalarised metrics "
+        "are optimised at a vertex and therefore favour a single-metabolite specialist)",
+    )
+    sp.add_argument(
         "--target-weights",
         default=None,
         dest="target_weights",
@@ -4968,6 +7043,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--medium", default=None, help="optional medium csv/json")
     sp.add_argument("--allow-unknown-medium", action="store_true")
+    sp.add_argument(
+        "--allow-failed-run", action="store_true", dest="allow_failed_run",
+        help="exit 0 even when the scientific solve failed (default: exit 3, so a "
+        "pipeline gating on $? cannot mistake written artifacts for a result)",
+    )
     sp.add_argument("--out", required=True, help="output directory")
     sp.set_defaults(func=_cmd_search)
     se = sub.add_parser("search-fixture", help="3-member target-max search → search_summary.json")

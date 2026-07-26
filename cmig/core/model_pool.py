@@ -120,6 +120,8 @@ class PoolModelDiagnostic:
     n_reactions: int | None
     n_exchanges: int | None
     n_biomass: int | None
+    # A-B9: n_biomass counts objective TERMS. A multi-term objective is not a growth rate.
+    n_objective_terms: int | None
     has_target_exchange: bool
     matching_exchanges: tuple[str, ...]
     warnings: tuple[str, ...]
@@ -128,7 +130,11 @@ class PoolModelDiagnostic:
 
 def diagnose_model_pool(taxonomy: Any, target_metabolite: str) -> list[PoolModelDiagnostic]:
     """Load each pool model enough to report target-exchange and biomass readiness."""
-    from cmig.io.model_import import exchange_metabolite_ids, import_model
+    from cmig.io.model_import import (
+        exchange_metabolite_ids,
+        import_model,
+        objective_structure_warning,
+    )
 
     def exchange_metabolite(exchange_id: str) -> str:
         name = exchange_id[3:] if exchange_id.startswith("EX_") else exchange_id
@@ -151,8 +157,9 @@ def diagnose_model_pool(taxonomy: Any, target_metabolite: str) -> list[PoolModel
                 )
             )
             warnings: list[str] = []
-            if not summary.biomass_reactions:
-                warnings.append("biomass objective not detected")
+            objective_warning = objective_structure_warning(len(summary.biomass_reactions))
+            if objective_warning:
+                warnings.append(objective_warning)
             if target_metabolite not in exchange_mets:
                 warnings.append(f"target exchange not detected for {target_metabolite}")
             diagnostics.append(
@@ -164,6 +171,7 @@ def diagnose_model_pool(taxonomy: Any, target_metabolite: str) -> list[PoolModel
                     n_reactions=summary.n_reactions,
                     n_exchanges=len(summary.exchanges),
                     n_biomass=len(summary.biomass_reactions),
+                    n_objective_terms=len(summary.biomass_reactions),
                     has_target_exchange=target_metabolite in exchange_mets,
                     matching_exchanges=matching,
                     warnings=tuple(warnings),
@@ -179,6 +187,7 @@ def diagnose_model_pool(taxonomy: Any, target_metabolite: str) -> list[PoolModel
                     n_reactions=None,
                     n_exchanges=None,
                     n_biomass=None,
+                    n_objective_terms=None,
                     has_target_exchange=False,
                     matching_exchanges=(),
                     warnings=("model import failed",),

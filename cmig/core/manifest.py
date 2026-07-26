@@ -80,6 +80,17 @@ def _round_floats(obj: Any, decimals: int) -> Any:
     return obj
 
 
+def canonicalize_floats(obj: Any, decimals: int = DEFAULT_FLOAT_DECIMALS) -> Any:
+    """Public alias for the run_hash float normalization ([HASH-FLOAT]).
+
+    The workflow-level envelope (`cmig.core.workflow_manifest`) hashes a *different*, per-kind
+    component set, but it must normalize floats exactly the same way. Sharing this one
+    implementation keeps both hashes deterministic under the same rules instead of drifting.
+    This is a read-only alias — it does not touch RUN_HASH_COMPONENTS or DEFAULT_FLOAT_DECIMALS.
+    """
+    return _round_floats(obj, decimals)
+
+
 def canonical_payload(
     c: RunHashComponents, decimals: int = DEFAULT_FLOAT_DECIMALS
 ) -> dict[str, Any]:

@@ -19,6 +19,8 @@ MODEL_QUALITY_SUMMARY_COLUMNS = (
     "n_exchanges",
     "solve_status",
     "objective_value",
+    # A-B9: >1 means the "objective value" above is not a growth rate.
+    "n_objective_terms",
     "solve_seconds",
     "gene_association_coverage",
     "metabolite_formula_coverage",

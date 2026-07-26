@@ -22,6 +22,7 @@ from typing import Any
 
 from cmig import CMIG_CORE_VERSION
 from cmig.core.golden import DEFAULT_DECIMALS
+from cmig.core.interactions import CROSS_FEEDING_ALLOCATION_METHOD
 from cmig.core.manifest import RunHashComponents, RunManifest, canonical_json
 
 KNOWN_SOLVE_ARTIFACTS = frozenset({
@@ -122,7 +123,9 @@ def build_run_components(
         micom_version=micom_version,
         cmig_core_version=CMIG_CORE_VERSION,
         namespace_mapping_decisions=list(namespace_decisions),
-        flux_normalization_method="pfba",
+        # B1: pFBA stage 가 실패해 non-parsimonious 로 강등된 solve 를 manifest 가 "pfba" 라고
+        # 주장하지 않도록 결과가 들고 온 실제 정규화 방식을 기록한다(run_hash 도 이에 따라 달라짐).
+        flux_normalization_method=getattr(result, "flux_normalization_method", "pfba"),
     )
 
 
@@ -210,6 +213,17 @@ def write_solve_output(
                 "cmig_core_version": components.cmig_core_version,
                 "micom_version": components.micom_version,
                 "dependency_versions": dependencies,
+            },
+            # A-B15 / B-D6: the cross-feeding attribution method was documented only in source.
+            # A published edge weight must carry how it was derived.
+            "edge_attribution": {
+                "cross_feeding_allocation_method": CROSS_FEEDING_ALLOCATION_METHOD,
+                "cross_feeding_identifiable": False,
+                "note": (
+                    "a steady-state shared pool does not identify pairwise donor->recipient "
+                    "transfer; cross_feeding weights are a mass-conserving proportional "
+                    "allocation, not a measurement"
+                ),
             },
             "provenance": provenance or {},
             "sweep": sweep,

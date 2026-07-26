@@ -54,6 +54,30 @@ class FigureSpec:
     def validate(self) -> None:
         if self.format not in SUPPORTED_FORMATS:
             raise RenderError(f"미지원 format: {self.format} (지원: {sorted(SUPPORTED_FORMATS)})")
+        # P1-F: an unknown preset used to be accepted and recorded verbatim in the provenance
+        # sidecar, so the artifact claimed a journal spec it never had.
+        from cmig.render.composer import JOURNAL_PRESETS
+
+        if self.journal_preset not in JOURNAL_PRESETS:
+            raise RenderError(
+                f"unsupported journal preset: {self.journal_preset} "
+                f"(supported: {sorted(JOURNAL_PRESETS)})"
+            )
+
+    def for_journal(self, preset: str) -> FigureSpec:
+        """Apply a journal's width/height/dpi. P1-F: previously defined but never called."""
+        from dataclasses import replace
+
+        from cmig.render.composer import JOURNAL_PRESETS
+
+        if preset not in JOURNAL_PRESETS:
+            raise RenderError(
+                f"unsupported journal preset: {preset} (supported: {sorted(JOURNAL_PRESETS)})"
+            )
+        width, height, dpi = JOURNAL_PRESETS[preset]
+        return replace(
+            self, width_in=width, height_in=height, dpi=dpi, journal_preset=preset
+        )
 
 
 def rscript_path() -> str | None:

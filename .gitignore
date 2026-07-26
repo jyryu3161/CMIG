@@ -34,5 +34,16 @@ fixtures/Recon3D.xml.gz
 fixtures/Human-GEM*.xml
 fixtures/human_models/
 
+# Evaluation run outputs and scratch: regenerate with `cmig <workflow> --out ...`.
+# These hold large TIFF/parquet artifacts and are not source.
+runs/
+REVIEW/scratch_*/
+
+# Editor / agent tooling state
+.omc/
+docs/.bkit-memory.json
+docs/.pdca-status.json
+docs/.pdca-snapshots/
+
 # OS
 .DS_Store

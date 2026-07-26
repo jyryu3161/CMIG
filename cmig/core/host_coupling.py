@@ -231,7 +231,9 @@ def run_bigg_host_microbe(
             warnings=(
                 ["biomass basis is validation-only; result is not publication-ready"]
                 if scale.basis_kind == "validation" else []
-            ) + ["microbial community solve was not optimal"],
+            ) + [
+                f"microbial community solve was not optimal (status={community_result.status})"
+            ] + list(getattr(community_result, "warnings", []) or []),
             coupling_scale=scale,
         )
     community_secretion = {
@@ -299,6 +301,14 @@ def run_bigg_host_microbe(
         warnings.append(
             "biomass basis is validation-only; result is not publication-ready"
         )
+    # B6: host LP 실패는 최상위 요약에서 조용히 사라져서는 안 된다(status 파생 + warning 양쪽).
+    if host_result.status != "optimal":
+        warnings.append(
+            f"host solve was not optimal (status={host_result.status}); "
+            "the reported host objective is not a result"
+        )
+    # engine seam 은 duck-typed (engine: Any) — warnings 를 갖지 않는 double 도 허용한다.
+    warnings.extend(getattr(community_result, "warnings", []) or [])
     excluded_present = sorted(set(secretion) & excluded)
     if excluded_present:
         warnings.append(f"excluded currency microbial secretions: {excluded_present}")

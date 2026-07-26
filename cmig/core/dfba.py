@@ -41,6 +41,9 @@ class DfbaConfig:
     vmax: dict[str, float] | None = None       # exchange_id → 최대 흡수(기본=모델 |lb|)
     min_dt: float = 1e-4
     growth_floor: float = 1e-6                 # μ ≤ floor → stalled 종료
+    # D5: close every uptake outside initial_concentrations before integrating, so growth cannot
+    # be supported by an unconstrained default-medium substrate that is never depleted.
+    close_untracked_uptake: bool = False
 
     def __post_init__(self) -> None:
         numeric = {
@@ -103,6 +106,11 @@ class DfbaResult:
     status: str                                # completed | infeasible | stalled
     diagnostic: str | None = None
     managed_exchanges: list[str] = field(default_factory=list)
+    # Codex D5: exchanges the organism actually consumed that are NOT tracked. Their bounds come
+    # from the model's default medium and are never depleted, so biomass can rise while the
+    # tracked substrate sits untouched and the endpoint becomes independent of Km.
+    untracked_uptake: dict[str, float] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -140,6 +148,69 @@ def _growth_of(model: Any, sol: Any) -> float:
     return sum(float(c) * float(sol.fluxes[rxn.id]) for rxn, c in coeffs.items())
 
 
+def _exposes_exchanges(model: Any) -> bool:
+    """True iff the model can enumerate its exchange reactions (cobra models can)."""
+    try:
+        iter(model.exchanges)
+    except (AttributeError, TypeError):
+        return False
+    return True
+
+
+def _record_untracked_uptake(
+    model: Any,
+    sol: Any,
+    managed: list[str],
+    untracked_uptake: dict[str, float],
+) -> None:
+    """Accumulate the peak uptake rate of every exchange the run does not track."""
+    if not _exposes_exchanges(model):
+        return
+    for reaction in model.exchanges:
+        rid = str(reaction.id)
+        if rid in managed:
+            continue
+        try:
+            flux = float(sol.fluxes[rid])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if flux < -1e-9:
+            untracked_uptake[rid] = max(untracked_uptake.get(rid, 0.0), -flux)
+
+
+def _untracked_warnings(
+    untracked_uptake: dict[str, float],
+    managed: list[str],
+    closed_untracked: list[str],
+) -> list[str]:
+    """Say plainly when growth was fed by substrates the run does not track (Codex D5).
+
+    Round-2 observed biomass rise 0.05 -> 0.0623 and acetate 0 -> 0.508 while the managed glucose
+    pool stayed at exactly 10.0, and the sensitivity endpoint came out independent of Km. That is
+    not a dFBA result about glucose: the organism was eating something else, from a default-medium
+    pool with no concentration and therefore no depletion and no Michaelis term.
+    """
+    warnings: list[str] = []
+    if closed_untracked:
+        warnings.append(
+            f"closed {len(closed_untracked)} untracked uptake exchanges before integrating so "
+            "the tracked-substrate experiment is controlled"
+        )
+    if not untracked_uptake:
+        return warnings
+    ranked = sorted(untracked_uptake.items(), key=lambda kv: -kv[1])[:8]
+    detail = ", ".join(f"{rid} (max {rate:.3g})" for rid, rate in ranked)
+    warnings.append(
+        f"growth was supported by {len(untracked_uptake)} UNCONSTRAINED default-medium "
+        f"substrates outside the tracked set {sorted(managed)}: {detail}. Those pools have no "
+        "concentration, so they are never depleted and no Michaelis-Menten term applies to them "
+        "— biomass can rise while the tracked substrate is untouched, and a Km sweep on the "
+        "tracked substrate is NOT interpretable. Re-run with --close-untracked-uptake, or track "
+        "these exchanges with --initial, before reporting a substrate/Km result."
+    )
+    return warnings
+
+
 def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> DfbaResult:
     """well-mixed dFBA. timecourse + status. non-negativity 강제(dt 적응)."""
     from cmig.core.single_model import _require_lp
@@ -156,11 +227,29 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
             if ex not in vmax:
                 vmax[ex] = abs(model.reactions.get_by_id(ex).lower_bound)
 
+        # D5: optionally close every uptake the run does not track, so the tracked
+        # substrate/Km experiment is actually controlled rather than merely instrumented.
+        closed_untracked: list[str] = []
+        if config.close_untracked_uptake:
+            if not _exposes_exchanges(model):
+                # Silently not closing them would report a controlled experiment that never was.
+                raise ValueError(
+                    "--close-untracked-uptake needs a model exposing .exchanges; "
+                    "this model does not, so untracked uptake cannot be closed"
+                )
+            for reaction in model.exchanges:
+                if str(reaction.id) in managed:
+                    continue
+                if reaction.lower_bound < 0:
+                    closed_untracked.append(str(reaction.id))
+                    reaction.lower_bound = 0.0
+
         conc = dict(config.initial_concentrations)
         biomass = config.initial_biomass
         t = 0.0
         dt = config.dt
         tc: list[DfbaTimepoint] = [DfbaTimepoint(0.0, biomass, 0.0, dict(conc))]
+        untracked_uptake: dict[str, float] = {}
 
         while t < config.t_end - 1e-12:
             # (1) Michaelis-Menten 흡수 한계 → exchange lower_bound
@@ -172,11 +261,20 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
             sol = model.optimize()
             if sol.status != "optimal":
                 return DfbaResult(
-                    tc, "infeasible", f"FBA status={sol.status} at t={t:.4f}", managed
+                    tc, "infeasible", f"FBA status={sol.status} at t={t:.4f}", managed,
+                    untracked_uptake,
+                    _untracked_warnings(untracked_uptake, managed, closed_untracked),
                 )
+            # Record every uptake outside the managed set; these are the substrates that make a
+            # Km sweep on the tracked one uninterpretable. This is a diagnostic: a model that
+            # cannot enumerate its exchanges yields no warning rather than aborting the run.
+            _record_untracked_uptake(model, sol, managed, untracked_uptake)
             mu = _growth_of(model, sol)
             if mu <= config.growth_floor:                       # 성장 정지 → stalled 종료
-                return DfbaResult(tc, "stalled", None, managed)
+                return DfbaResult(
+                    tc, "stalled", None, managed, untracked_uptake,
+                    _untracked_warnings(untracked_uptake, managed, closed_untracked),
+                )
             # (3) explicit Euler + non-negativity (농도<0 이면 dt halving)
             step_dt = min(dt, config.t_end - t)
             growth_scale = 1.0
@@ -221,7 +319,10 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
                 )
             )
 
-        return DfbaResult(tc, "completed", None, managed)
+        return DfbaResult(
+            tc, "completed", None, managed, untracked_uptake,
+            _untracked_warnings(untracked_uptake, managed, closed_untracked),
+        )
 
 
 def audit_dfba_balance(result: DfbaResult) -> DfbaBalanceAudit:

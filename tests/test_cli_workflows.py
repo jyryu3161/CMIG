@@ -59,6 +59,9 @@ def test_inspect_run_reports_manifest_metadata(tmp_path, capsys):
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["kind"] == "community_solve"
-    assert payload["status"] == "completed"
+    # Phase-4: inspect-run reports one status vocabulary (ok/degraded/failed) for every run kind,
+    # so a legacy raw status like "completed" is normalized rather than echoed. Round-2 F11 found
+    # that emitting "completed"/"optimal" alongside those tiers breaks any gate written on them.
+    assert payload["status"] == "ok"
     assert payload["run_hash"] == "abc123"
     assert payload["manifest"]["solver"]["growth_solver"] == "gurobi"

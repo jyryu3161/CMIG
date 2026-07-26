@@ -36,7 +36,13 @@ class ModelSummary:
             "model_id": self.model_id, "source_format": self.source_format,
             "source_path": self.source_path, "n_reactions": self.n_reactions,
             "n_metabolites": self.n_metabolites, "n_genes": self.n_genes,
-            "n_exchanges": len(self.exchanges), "n_biomass": len(self.biomass_reactions),
+            "n_exchanges": len(self.exchanges),
+            # A-B9: this counts objective TERMS. Kept under the old key for compatibility, but
+            # the honest name is emitted alongside it and a >1 count carries a warning.
+            "n_biomass": len(self.biomass_reactions),
+            "n_objective_terms": len(self.biomass_reactions),
+            "objective_reactions": list(self.biomass_reactions),
+            "objective_warning": objective_structure_warning(len(self.biomass_reactions)),
         }
 
 
@@ -82,13 +88,36 @@ def load_cobra_model(path: str | Path) -> Any:
 
 
 def _biomass_reactions(model: Any) -> list[str]:
-    """objective(목적계수≠0) reaction = biomass 후보."""
+    """Reactions carrying a non-zero objective coefficient.
+
+    These are *objective terms*, not necessarily biomass reactions — see
+    :func:`objective_structure_warning`. A single-term objective is the usual biomass case; a
+    multi-term objective means the reported "growth" is an arbitrary objective value.
+    """
     from cobra.util.solver import linear_reaction_coefficients
     try:
         coeffs = linear_reaction_coefficients(model)
         return sorted(str(r.id) for r in coeffs)
     except Exception:                            # objective 미설정 등 → 빈 목록(강제 추정 금지)
         return []
+
+
+def objective_structure_warning(n_objective_terms: int) -> str | None:
+    """Warn when an objective is not a single biomass-like reaction (A-B9).
+
+    iAF987 ships with a 283-term linear objective, so its optimum is not a growth rate at all —
+    yet it was counted as "283 biomass reactions", passed the has-biomass check silently, and was
+    reported and plotted under the label "Growth rate". A multi-term objective is legal and
+    sometimes intended; it just cannot be read as growth without saying so.
+    """
+    if n_objective_terms == 0:
+        return "no objective reaction detected; this model cannot report growth"
+    if n_objective_terms > 1:
+        return (
+            f"objective has {n_objective_terms} terms; not a single biomass reaction — "
+            "reported growth is an objective value, not a growth rate"
+        )
+    return None
 
 
 def import_model(path: str | Path) -> ModelSummary:

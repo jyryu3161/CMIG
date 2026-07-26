@@ -58,6 +58,25 @@ def weighted_multi_target(
     return sum(by_met[m].weight * v for m, v in normalized.items() if m in by_met)
 
 
+def pareto_frontier_nd(points: list[tuple[float, ...]]) -> list[int]:
+    """Non-dominated indices for ANY number of maximised objectives.
+
+    `pareto_frontier` handles exactly two targets; the SCFA preset has six, which is why the
+    Pareto flag was previously left at its `False` default for every row. Domination here is the
+    standard definition: j dominates i when j is >= i on every objective and > on at least one.
+    """
+    keep: list[int] = []
+    for i, candidate in enumerate(points):
+        dominated = any(
+            all(a >= b for a, b in zip(other, candidate, strict=True))
+            and any(a > b for a, b in zip(other, candidate, strict=True))
+            for j, other in enumerate(points) if j != i
+        )
+        if not dominated:
+            keep.append(i)
+    return keep
+
+
 def pareto_frontier(points: list[tuple[float, float]]) -> list[int]:
     """2-표적 비지배(non-dominated) 점 인덱스 (둘 다 최대화 가정). Pareto frontier(≤2 표적)."""
     keep: list[int] = []
