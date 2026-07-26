@@ -330,9 +330,19 @@ quietly dropped:
 
 - **`pytest-randomly` is not installed in this environment.** Several runs during the
   round used `-p no:randomly`, which was therefore inert, and "green under randomized
-  order" overstated what was tested. The final gate substituted a fixed-seed shuffle
-  of the 100 test files, which is weaker than per-test randomization. Installing
-  `pytest-randomly` and re-running is a cheap outstanding check.
+  order" overstated what was tested. What *was* verified, after landing:
+  - a seeded per-test shuffle of all 1043 node IDs reached ~15 % (155 tests, all
+    passing) and then **stalled** — CPU time advanced 0.04 s over 20 s of wall clock.
+    Shuffling per test destroys module-scoped fixture reuse, so genome-scale models
+    reload constantly; the run was abandoned rather than reported as a pass.
+  - **every one of the 77 test files was then run in its own process: 0 failed in
+    isolation.** This is the check that actually caught both genuine order-dependent
+    tests this round, and both of them (`test_render_client_passes_project_rlib`,
+    `test_review_regressions.py::test_profile_render_passes_rlib_to_rscript`) now
+    pass standalone where they previously failed.
+  Per-file isolation plus the sequential full run is strong but not equivalent to
+  per-test randomization. Installing `pytest-randomly` (or making the expensive
+  fixtures cheap enough to shuffle) remains an open, cheap improvement.
 - **`or 0.0` occurs 3 times in `cli/main.py`, not 7.** The higher count came from a
   coordinator grep that matched the abundance-impact fix's own explanatory comment.
   Repo-wide there are 19; all were audited and 2 needed fixing. An AST-based test now
