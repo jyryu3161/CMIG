@@ -10,7 +10,7 @@ from __future__ import annotations
 import itertools
 import math
 import random
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from cmig.core.search import Direction, TargetSpec, score_target_result, target_max_solve
@@ -64,6 +64,86 @@ class PoolSearchResult:
     n_candidates_evaluated: int
     ranks: list[PoolRank]
     warnings: list[str]
+    # P0-B: 평가 불가 후보는 rank 를 갖지 않고 여기에만 들어간다. --top-k 는 `ranks` 만 자르므로
+    # 이 목록은 절단과 무관하게 항상 완전하다.
+    unevaluated: list[PoolRank] = field(default_factory=list)
+
+    @property
+    def n_candidates_ranked(self) -> int:
+        return len(self.ranks)
+
+    @property
+    def n_candidates_failed(self) -> int:
+        return len(self.unevaluated)
+
+
+# B4: 동점/전부-0 랭킹 경고. rank 1 이 "최고"로 읽히므로, 실제로는 아무 후보도 target 을 만들지
+# 못했거나 상위가 동점일 때 그 사실을 반드시 알려야 한다(현재는 알파벳 순 1등이 최고로 보고된다).
+TIE_TOLERANCE = 1e-9
+
+
+def is_evaluable(status: str, score: float) -> bool:
+    """랭킹에 들어갈 자격 — optimal LP 이고 점수가 유한한 행만."""
+    return status == "optimal" and math.isfinite(score)
+
+
+def unevaluable_warnings(
+    unevaluated: list[tuple[tuple[str, ...], str, str | None]], n_total: int
+) -> list[str]:
+    """P0-B/P0-C: 평가 불가 후보를 반드시 최상위 warnings 로 노출한다.
+
+    평가되지 않은 후보는 --top-k 절단으로 사라질 수 있으므로(red-team F1: top-k 10 에서는 보이고
+    top-k 2 에서는 사라진다), 개수와 이름을 절단과 무관한 최상위 warnings 에 남긴다.
+    """
+    if not unevaluated:
+        return []
+    names = ", ".join("+".join(members) for members, _status, _diag in unevaluated)
+    warnings = [
+        f"{len(unevaluated)} of {n_total} candidates could not be evaluated and are excluded "
+        f"from the ranking (see unevaluated): {names}"
+    ]
+    if len(unevaluated) == n_total:
+        warnings.append(
+            "no candidate was evaluable; there is no ranking and no best producer"
+        )
+    return warnings
+
+
+def _ranking_degeneracy_warnings(
+    scored: list[tuple[tuple[str, ...], float, str]],
+    *,
+    tolerance: float = TIE_TOLERANCE,
+    score_is_flux: bool = True,
+) -> list[str]:
+    """(members, score, status) 목록 → 전부-0 / 상위 동점 경고. 순수 함수(solver 불요).
+
+    ``score_is_flux=False`` 는 점수가 정규화된 무차원 값일 때 쓴다 — 이때 0 점은 flux 가 0 이라는
+    뜻이 아니라 정규화 폭이 0 이라는 뜻일 수 있으므로(codex B3), 관측된 flux 를 부정하지 않는다.
+    """
+    warnings: list[str] = []
+    evaluable = [row for row in scored if row[2] == "optimal" and math.isfinite(row[1])]
+    if not evaluable:
+        return warnings
+    if all(abs(score) <= tolerance for _, score, _ in evaluable):
+        warnings.append(
+            "no candidate achieved a non-zero target flux; the ranking order is arbitrary "
+            "and rank 1 must not be reported as the best producer"
+            if score_is_flux else
+            "every evaluable candidate scored 0; with a normalized metric this can mean the "
+            "candidate set has zero score range (a single candidate, or all candidates equal) "
+            "rather than zero target flux — read the per-target flux columns, and prefer "
+            "--multi-metric carbon_equivalent for an absolute score"
+        )
+        return warnings
+    best = max(score for _, score, _ in evaluable)
+    tied = [members for members, score, _ in evaluable if abs(score - best) <= tolerance]
+    if len(tied) > 1:
+        warnings.append(
+            f"top-{len(tied)} candidates tied at score {best:.6g} "
+            f"({', '.join('+'.join(m) for m in sorted(tied))}); rank 1 is the first tie in "
+            "member order, not a unique optimum"
+        )
+    return warnings
 
 
 def _validate_config(config: SearchConfig) -> None:
@@ -233,23 +313,31 @@ def search_model_pool(
     else:
         raise ValueError(f"unsupported search strategy: {strategy}")
 
-    ranks = [evaluate(members) for members in selected]
-    ranks.sort(key=lambda row: (-row.score, row.members))
-    ranked = [
-        PoolRank(
-            rank=i + 1,
-            members=row.members,
-            score=row.score,
-            target_flux=row.target_flux,
-            community_growth=row.community_growth,
-            status=row.status,
-            diagnostic=row.diagnostic,
-            robustness_fva_lo=row.robustness_fva_lo,
-            robustness_fva_hi=row.robustness_fva_hi,
-            robustness_status=row.robustness_status,
-        )
-        for i, row in enumerate(ranks[: config.top_k])
-    ]
+    evaluated = [evaluate(members) for members in selected]
+    # P0-B: 평가 가능한 후보만 랭킹에 들어간다. 실패 후보를 score=-inf 로 정렬 바닥에 두고
+    # --top-k 로 자르면 실패가 산출물에서 완전히 사라진다(red-team F1).
+    solved = sorted(
+        (row for row in evaluated if is_evaluable(row.status, row.score)),
+        key=lambda row: (-row.score, row.members),
+    )
+    failed = sorted(
+        (row for row in evaluated if not is_evaluable(row.status, row.score)),
+        key=lambda row: row.members,
+    )
+    # B4: 동점/전부-0 은 평가된 후보 전체를 기준으로 판정한다(top_k 절단 전).
+    warnings.extend(_ranking_degeneracy_warnings(
+        [(row.members, row.score, row.status) for row in solved]
+    ))
+    warnings.extend(unevaluable_warnings(
+        [(row.members, row.status, row.diagnostic) for row in failed], len(evaluated)
+    ))
+
+    def _renumber(row: PoolRank, rank: int) -> PoolRank:
+        return replace(row, rank=rank)
+
+    ranked = [_renumber(row, i + 1) for i, row in enumerate(solved[: config.top_k])]
+    # 평가 불가 후보는 rank 0 (= "순위 없음")으로 남고, top_k 와 무관하게 전부 보고된다.
+    unevaluated = [_renumber(row, 0) for row in failed]
     return PoolSearchResult(
         target=config.target,
         target_exchange=spec.exchange_id(),
@@ -260,6 +348,7 @@ def search_model_pool(
         n_candidates_evaluated=len(cache),
         ranks=ranked,
         warnings=warnings,
+        unevaluated=unevaluated,
     )
 
 
@@ -267,6 +356,39 @@ def search_model_pool(
 # Users can rank model-pool combinations against several targets at once, combined
 # by a weighted sum of per-target scores normalized into [0,1] over the observed
 # range, plus (for exactly two targets) a Pareto non-dominated flag.
+
+
+MultiTargetMetric = Literal[
+    "normalized_weighted", "carbon_equivalent", "raw_sum", "pareto"
+]
+
+# Epsilon floors, as a fraction of each target's own achievable maximum for that consortium.
+# 0.0 reproduces the plain scalarised vertex; the rest force progressively more mixed solutions.
+PARETO_EPSILON_GRID: tuple[float, ...] = (0.0, 0.05, 0.15, 0.3, 0.5)
+
+# 점수의 단위 — 무차원 정규화 점수와 실제 flux 합을 같은 칸에 담지 않기 위해 결과에 기록한다.
+MULTI_METRIC_UNITS: dict[str, str] = {
+    "normalized_weighted": "dimensionless (weighted min-max over the candidate set)",
+    "carbon_equivalent": "mmol C gDW^-1 h^-1",
+    "raw_sum": "mmol gDW^-1 h^-1",
+    "pareto": "mmol C gDW^-1 h^-1 (front members are not totally ordered)",
+}
+
+# S1's deepest limit. Maximising a weighted sum over a polytope lands on a vertex, so a carbon-
+# weighted objective concentrates on whichever acid has the best carbon-per-substrate yield and
+# reports every other target as exactly 0. That is a property of weighted-sum LP, not degeneracy:
+# no weight vector avoids it, because every weight vector still selects a vertex.
+SCALARISATION_WARNING = (
+    "a weighted-sum objective is optimised at a vertex of the feasible set, so this ranking "
+    "systematically favours a single-metabolite specialist over a balanced producer — the "
+    "winner's 'total' can be one metabolite and zero of the others. Use --multi-metric pareto "
+    "for the non-dominated trade-off set instead of one scalarised winner"
+)
+
+# flux 열의 출처 표시 (B3): 하나의 joint LP 해인지, 표적별 독립 해(동시 달성 불가)인지.
+FLUX_BASIS_JOINT = "joint_weighted_lp"
+FLUX_BASIS_CAPABILITY = "per_target_capability_not_simultaneous"
+FLUX_BASIS_NONE = "unevaluated"
 
 
 @dataclass(frozen=True)
@@ -280,19 +402,24 @@ class MultiTargetConfig:
     solver: str = "gurobi"
     top_k: int = 10
     exhaustive_max: int = 100
+    metric: MultiTargetMetric = "normalized_weighted"
 
 
 @dataclass(frozen=True)
 class MultiTargetRank:
     rank: int
     members: tuple[str, ...]
-    weighted_score: float               # Σ weight·normalized ([0,1]); -inf if not evaluable
+    weighted_score: float               # metric 에 따라 무차원 or 실제 flux 합; -inf = 평가 불가
     target_fluxes: dict[str, float]     # metabolite → raw exchange flux
-    target_scores: dict[str, float]     # metabolite → normalized [0,1]
+    target_scores: dict[str, float]     # metabolite → per-target contribution
     community_growth: float
     status: str
     pareto: bool = False
     diagnostic: str | None = None
+    # B3: 이 consortium 에 exchange 자체가 없어 0 으로 기여한 target 들.
+    missing_targets: tuple[str, ...] = ()
+    # B3: flux 열이 한 해에서 온 것인지(joint) 표적별 독립 해인지(동시 달성 불가) 표시.
+    flux_basis: str = FLUX_BASIS_JOINT
 
 
 @dataclass(frozen=True)
@@ -309,6 +436,10 @@ class MultiTargetSearchResult:
     n_candidates_evaluated: int
     ranks: list[MultiTargetRank]
     warnings: list[str]
+    metric: str = "normalized_weighted"
+    score_unit: str = MULTI_METRIC_UNITS["normalized_weighted"]
+    # P0-C: 평가 불가 후보 — rank 를 갖지 않고 top_ranked 에 들어가지 않는다.
+    unevaluated: list[MultiTargetRank] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -319,6 +450,8 @@ class _ComboEval:
     fluxes: dict[str, float]
     signed: dict[str, float]            # direction-adjusted raw (larger = better), no weight
     diagnostic: str | None = None
+    missing_targets: tuple[str, ...] = ()
+    flux_basis: str = FLUX_BASIS_CAPABILITY
 
 
 def _signed_raw(result: Any, spec: TargetSpec) -> float:
@@ -335,10 +468,14 @@ def _signed_raw(result: Any, spec: TargetSpec) -> float:
 def rank_multi_target(
     evals: list[_ComboEval], specs: list[TargetSpec], *,
     normalization_ranges: dict[str, tuple[float, float]] | None = None,
+    metric: MultiTargetMetric = "normalized_weighted",
 ) -> tuple[list[MultiTargetRank], str]:
-    """Pure ranking: normalize per-target over observed range, weight, Pareto-flag (2 targets).
+    """Pure ranking. Returns (ranked_rows, normalizer_name). Testable without a solver.
 
-    Returns (ranked_rows, normalizer_name). Testable without a solver.
+    ``normalized_weighted`` min-max normalizes each target over the candidate set (dimensionless,
+    not comparable across runs). ``carbon_equivalent``/``raw_sum`` keep real flux units and simply
+    weight-and-add, so the score is comparable across runs — the weights carry the chemistry
+    (carbon number) instead of the candidate set carrying it.
     """
     from cmig.core.search_advanced import (
         normalize_score,
@@ -347,6 +484,7 @@ def rank_multi_target(
     )
 
     mets = [s.metabolite for s in specs]
+    weight_of = {s.metabolite: s.weight for s in specs}
     ok = [e for e in evals if e.status == "optimal"]
     ranges: dict[str, tuple[float, float]] = {}
     for m in mets:
@@ -357,23 +495,33 @@ def rank_multi_target(
             ranges[m] = (min(vals), max(vals)) if vals else (0.0, 1.0)
 
     rows: list[MultiTargetRank] = []
-    normalizer = (
-        "capability_range_joint_lp" if normalization_ranges is not None else "observed_range"
-    )
+    if metric == "normalized_weighted":
+        normalizer = (
+            "capability_range_joint_lp" if normalization_ranges is not None else "observed_range"
+        )
+    else:
+        normalizer = f"none_{metric}_absolute_units"
     for e in evals:
         if e.status != "optimal":
             rows.append(MultiTargetRank(
                 0, e.members, float("-inf"), e.fluxes, {}, e.community_growth,
-                e.status, False, e.diagnostic))
+                e.status, False, e.diagnostic, e.missing_targets, e.flux_basis))
             continue
-        normalized: dict[str, float] = {}
-        for m in mets:
-            lo, hi = ranges[m]
-            normalized[m] = normalize_score(
-                e.signed[m], observed_min=lo, observed_max=hi).value
-        ws = weighted_multi_target(normalized, specs)
+        contributions: dict[str, float] = {}
+        if metric == "normalized_weighted":
+            for m in mets:
+                lo, hi = ranges[m]
+                contributions[m] = normalize_score(
+                    e.signed.get(m, 0.0), observed_min=lo, observed_max=hi).value
+            score = weighted_multi_target(contributions, specs)
+        else:
+            # 실제 단위 유지: 기여도 = weight(=carbon number 등) × direction 보정 flux.
+            for m in mets:
+                contributions[m] = weight_of[m] * e.signed.get(m, 0.0)
+            score = sum(contributions.values())
         rows.append(MultiTargetRank(
-            0, e.members, ws, e.fluxes, normalized, e.community_growth, "optimal", False, None))
+            0, e.members, score, e.fluxes, contributions, e.community_growth, "optimal",
+            False, None, e.missing_targets, e.flux_basis))
 
     if len(mets) == 2:
         ok_idx = [i for i, r in enumerate(rows) if r.status == "optimal"]
@@ -381,14 +529,31 @@ def rank_multi_target(
         keep = {ok_idx[k] for k in pareto_frontier(pts)}
         rows = [replace(r, pareto=(i in keep)) for i, r in enumerate(rows)]
 
-    rows.sort(key=lambda r: (-r.weighted_score, r.members))
-    return [replace(r, rank=i + 1) for i, r in enumerate(rows)], normalizer
+    # P0-C: 평가 불가 행은 rank 를 받지 않는다 — rank 2/3 을 부여받고 top_ranked 에 들어가면
+    # "평가되었지만 낮은 점수"와 구별할 수 없다. rank 0 = 순위 없음.
+    solved = sorted(
+        (r for r in rows if is_evaluable(r.status, r.weighted_score)),
+        key=lambda r: (-r.weighted_score, r.members),
+    )
+    failed = sorted(
+        (r for r in rows if not is_evaluable(r.status, r.weighted_score)),
+        key=lambda r: r.members,
+    )
+    ranked = [replace(r, rank=i + 1) for i, r in enumerate(solved)]
+    unevaluated = [replace(r, rank=0) for r in failed]
+    return ranked + unevaluated, normalizer
 
 
 def _evaluate_members_multi(
     engine: Any, taxonomy: Any, members: tuple[str, ...], specs: list[TargetSpec], *,
     growth_fraction: float, solver: str, medium_spec: Any | None, strict_medium: bool,
 ) -> _ComboEval:
+    """Per-target capability pass. Fluxes come from independent solves — NOT simultaneous.
+
+    B3: a target whose exchange is absent from this consortium contributes flux 0 (it simply
+    cannot make that metabolite) and is listed in ``missing_targets``. Only a genuinely
+    non-optimal LP (infeasible / baseline failure / solver error) disqualifies the consortium.
+    """
     sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
     try:
         community = engine.build_community(sub, cmig_solver=solver)
@@ -401,18 +566,31 @@ def _evaluate_members_multi(
         status = "optimal"
         growth = 0.0
         diag: str | None = None
+        missing: list[str] = []
         for spec in specs:
             res = target_max_solve(
                 community, spec, growth_fraction=growth_fraction, solver=solver)
+            if res.status == "missing":
+                # exchange 부재 = 이 대사체를 만들 수 없음 → 0 기여, consortium 은 계속 평가된다.
+                missing.append(spec.metabolite)
+                fluxes[spec.metabolite] = 0.0
+                signed[spec.metabolite] = 0.0
+                continue
             fluxes[spec.metabolite] = float(res.target_flux)
             signed[spec.metabolite] = _signed_raw(res, spec)
             growth = float(res.community_growth)
-            if res.status != "optimal":       # any target unevaluable → combo not rankable
+            if res.status != "optimal":       # 진짜 non-optimal LP → 랭킹 불가
                 status = res.status
                 diag = res.diagnostic
-        return _ComboEval(members, status, growth, fluxes, signed, diag)
+        if len(missing) == len(specs):        # 평가할 target 이 하나도 없다
+            status = "missing"
+            diag = f"no target exchange present in this consortium: {sorted(missing)}"
+        return _ComboEval(
+            members, status, growth, fluxes, signed, diag,
+            tuple(sorted(missing)), FLUX_BASIS_CAPABILITY,
+        )
     except Exception as e:  # noqa: BLE001 - per-combo isolation
-        return _ComboEval(members, "failed", 0.0, {}, {}, str(e))
+        return _ComboEval(members, "failed", 0.0, {}, {}, str(e), (), FLUX_BASIS_NONE)
 
 
 def _capability_ranges(
@@ -427,10 +605,28 @@ def _capability_ranges(
     return ranges
 
 
+def _joint_lp_scales(
+    metric: MultiTargetMetric, ranges: dict[str, tuple[float, float]]
+) -> dict[str, float]:
+    """joint LP 목적식의 target 별 나눗값.
+
+    ``normalized_weighted`` 는 표적 간 크기 차이를 candidate set 의 capability 폭으로 흡수한다
+    (무차원). ``carbon_equivalent``/``raw_sum`` 은 실제 단위를 유지해야 하므로 1.0 — 가중치가
+    화학(탄소 수)을 담고, candidate set 이 점수 척도를 바꾸지 않는다.
+    """
+    if metric != "normalized_weighted":
+        return dict.fromkeys(ranges, 1.0)
+    return {
+        metabolite: (high - low if high - low > 1e-12 else 1.0)
+        for metabolite, (low, high) in ranges.items()
+    }
+
+
 def _evaluate_members_multi_joint(
     engine: Any, taxonomy: Any, members: tuple[str, ...], specs: list[TargetSpec], *,
     normalization_ranges: dict[str, tuple[float, float]], growth_fraction: float,
     solver: str, medium_spec: Any | None, strict_medium: bool,
+    metric: MultiTargetMetric = "normalized_weighted",
 ) -> _ComboEval:
     """Evaluate one consortium with a single jointly feasible weighted LP solution."""
     from cmig.core.search import joint_target_solve
@@ -442,10 +638,7 @@ def _evaluate_members_multi_joint(
             from cmig.core.medium_spec import apply_medium_checked
 
             apply_medium_checked(community, medium_spec, strict=strict_medium)
-        scales = {
-            metabolite: (high - low if high - low > 1e-12 else 1.0)
-            for metabolite, (low, high) in normalization_ranges.items()
-        }
+        scales = _joint_lp_scales(metric, normalization_ranges)
         result = joint_target_solve(
             community,
             specs,
@@ -460,9 +653,58 @@ def _evaluate_members_multi_joint(
             result.target_fluxes,
             result.signed_values,
             result.diagnostic,
+            result.missing_targets,
+            FLUX_BASIS_JOINT if result.status == "optimal" else FLUX_BASIS_NONE,
         )
     except Exception as e:  # noqa: BLE001 - per-combo isolation
-        return _ComboEval(members, "failed", 0.0, {}, {}, str(e))
+        return _ComboEval(members, "failed", 0.0, {}, {}, str(e), (), FLUX_BASIS_NONE)
+
+
+def _pareto_points_for_members(
+    engine: Any, taxonomy: Any, members: tuple[str, ...], specs: list[TargetSpec], *,
+    capability: dict[str, float], growth_fraction: float, solver: str,
+    medium_spec: Any | None, strict_medium: bool,
+    epsilon_grid: tuple[float, ...] = PARETO_EPSILON_GRID,
+) -> list[_ComboEval]:
+    """Trace one consortium's trade-off surface with an epsilon-constraint sweep.
+
+    Each epsilon level forces every target to at least that fraction of its own achievable
+    maximum, which removes the single-metabolite vertices from the feasible set and makes the
+    optimiser return a genuinely mixed flux vector. Infeasible levels are simply dropped — an
+    epsilon that cannot be met is information about the trade-off, not an error.
+    """
+    from cmig.core.search import epsilon_constrained_solve
+
+    sub_taxonomy = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
+    points: list[_ComboEval] = []
+    try:
+        community = engine.build_community(sub_taxonomy, cmig_solver=solver)
+        if medium_spec is not None:
+            from cmig.core.medium_spec import apply_medium_checked
+
+            apply_medium_checked(community, medium_spec, strict=strict_medium)
+        for epsilon in epsilon_grid:
+            floors = {
+                spec.metabolite: epsilon * max(0.0, capability.get(spec.metabolite, 0.0))
+                for spec in specs
+            }
+            result = epsilon_constrained_solve(
+                community, specs, floors,
+                normalization_scales=dict.fromkeys(
+                    (spec.metabolite for spec in specs), 1.0
+                ),
+                growth_fraction=growth_fraction, solver=solver,
+            )
+            if result.status != "optimal":
+                continue
+            points.append(_ComboEval(
+                members, "optimal", result.community_growth,
+                dict(result.target_fluxes), dict(result.signed_values),
+                f"epsilon={epsilon:g}", result.missing_targets, FLUX_BASIS_JOINT,
+            ))
+    except Exception as error:  # noqa: BLE001 - per-combo isolation, same as the other passes
+        return [_ComboEval(members, "failed", 0.0, {}, {}, str(error), (), FLUX_BASIS_NONE)]
+    return points
 
 
 def search_model_pool_multi(
@@ -510,6 +752,11 @@ def search_model_pool_multi(
         for members in candidates
     ]
     ranges = _capability_ranges(capability_evals, specs)
+    if config.metric == "pareto":
+        return _pareto_search(
+            engine, taxonomy, candidates, capability_evals, specs, config,
+            medium_spec=medium_spec, strict_medium=strict_medium, ids=ids,
+        )
     evals: list[_ComboEval] = []
     for members, capability in zip(candidates, capability_evals, strict=True):
         if capability.status != "optimal":
@@ -526,16 +773,16 @@ def search_model_pool_multi(
                 solver=config.solver,
                 medium_spec=medium_spec,
                 strict_medium=strict_medium,
+                metric=config.metric,
             )
         )
-    ranked, normalizer = rank_multi_target(
-        evals, specs, normalization_ranges=ranges
+    all_rows, normalizer = rank_multi_target(
+        evals, specs, normalization_ranges=ranges, metric=config.metric
     )
-    warnings: list[str] = []
-    if any(r.status != "optimal" for r in ranked):
-        warnings.append(
-            "some combinations were not evaluable on every target (missing exchange or "
-            "non-optimal solve); those are excluded from ranking with a diagnostic")
+    # P0-C: rank 0 = 순위 없음 = 평가 불가. 별도 블록으로 나눠 top_ranked 를 오염시키지 않는다.
+    ranked = [row for row in all_rows if row.rank > 0]
+    unevaluated = [row for row in all_rows if row.rank == 0]
+    warnings: list[str] = list(_multi_target_warnings(ranked, unevaluated, config))
     return MultiTargetSearchResult(
         targets=list(config.targets),
         target_exchanges={s.metabolite: s.exchange_id() for s in specs},
@@ -549,4 +796,170 @@ def search_model_pool_multi(
         n_candidates_evaluated=len(evals),
         ranks=ranked[: config.top_k],
         warnings=warnings,
+        metric=config.metric,
+        score_unit=MULTI_METRIC_UNITS[config.metric],
+        unevaluated=unevaluated,
     )
+
+
+def _pareto_search(
+    engine: Any, taxonomy: Any, candidates: list[tuple[str, ...]],
+    capability_evals: list[_ComboEval], specs: list[TargetSpec], config: MultiTargetConfig,
+    *, medium_spec: Any, strict_medium: bool, ids: list[str],
+) -> MultiTargetSearchResult:
+    """Report the non-dominated trade-off set instead of one scalarised winner (item 9).
+
+    Every (consortium, epsilon level) pair that solves contributes one achieved flux vector; the
+    front is the non-dominated subset across all of them, using the user's weights only to order
+    the *report*, never to collapse the objectives. Points on the front are NOT totally ordered —
+    that is the whole point, and the summary says so.
+    """
+    from cmig.core.search_advanced import pareto_frontier_nd
+
+    metabolites = [spec.metabolite for spec in specs]
+    weight_of = {spec.metabolite: spec.weight for spec in specs}
+    points: list[_ComboEval] = []
+    unevaluated: list[_ComboEval] = []
+    for members, capability in zip(candidates, capability_evals, strict=True):
+        if capability.status != "optimal":
+            unevaluated.append(capability)
+            continue
+        found = _pareto_points_for_members(
+            engine, taxonomy, members, specs,
+            capability={m: capability.signed.get(m, 0.0) for m in metabolites},
+            growth_fraction=config.growth_fraction, solver=config.solver,
+            medium_spec=medium_spec, strict_medium=strict_medium,
+        )
+        if found and all(point.status != "optimal" for point in found):
+            unevaluated.extend(found)
+            continue
+        points.extend(point for point in found if point.status == "optimal")
+
+    vectors = [tuple(point.signed.get(m, 0.0) for m in metabolites) for point in points]
+    keep = set(pareto_frontier_nd(vectors)) if vectors else set()
+    rows: list[MultiTargetRank] = []
+    for index, point in enumerate(points):
+        if index not in keep:
+            continue
+        contributions = {m: weight_of[m] * point.signed.get(m, 0.0) for m in metabolites}
+        rows.append(MultiTargetRank(
+            0, point.members, sum(contributions.values()), point.fluxes, contributions,
+            point.community_growth, "optimal", True, point.diagnostic,
+            point.missing_targets, point.flux_basis,
+        ))
+    # Deduplicate identical achieved vectors from different epsilon levels of the same consortium.
+    seen: set[tuple[Any, ...]] = set()
+    unique: list[MultiTargetRank] = []
+    for row in sorted(rows, key=lambda r: (-r.weighted_score, r.members)):
+        key = (row.members, tuple(round(row.target_fluxes.get(m, 0.0), 6) for m in metabolites))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    ranked = [replace(row, rank=i + 1) for i, row in enumerate(unique)]
+
+    warnings = list(unevaluable_warnings(
+        [(r.members, r.status, r.diagnostic) for r in unevaluated],
+        len(candidates),
+    ))
+    n_specialists = sum(
+        1 for row in ranked
+        if sum(1 for m in metabolites if abs(row.target_scores.get(m, 0.0)) > TIE_TOLERANCE) <= 1
+    )
+    warnings.append(
+        f"pareto mode: {len(ranked)} non-dominated points across {len(candidates)} consortia and "
+        f"{len(PARETO_EPSILON_GRID)} epsilon levels. Front members are NOT totally ordered — "
+        "rank here is a reporting order (weighted sum), not a claim that rank 1 is best. "
+        f"{n_specialists} of {len(ranked)} front points are single-metabolite specialists"
+    )
+    return MultiTargetSearchResult(
+        targets=list(config.targets),
+        target_exchanges={s.metabolite: s.exchange_id() for s in specs},
+        directions={t: config.directions[t].value for t in config.targets},
+        weights=dict(config.weights),
+        strategy="exhaustive_epsilon_constraint",
+        normalizer="none_pareto_front_absolute_units",
+        solution_semantics="epsilon_constrained_lp_non_dominated_set",
+        n_pool_members=len(ids),
+        n_candidates_total=len(candidates),
+        n_candidates_evaluated=len(candidates),
+        ranks=ranked[: config.top_k] if config.top_k else ranked,
+        warnings=warnings,
+        metric="pareto",
+        score_unit=MULTI_METRIC_UNITS["pareto"],
+        unevaluated=unevaluated_ranks(unevaluated, metabolites),
+    )
+
+
+def unevaluated_ranks(
+    evals: list[_ComboEval], metabolites: list[str]
+) -> list[MultiTargetRank]:
+    """Unevaluable combos as rank-0 rows (P0-C), shared by the pareto path."""
+    return [
+        MultiTargetRank(
+            0, e.members, float("-inf"), e.fluxes, {}, e.community_growth,
+            e.status, False, e.diagnostic, e.missing_targets, e.flux_basis,
+        )
+        for e in evals
+    ]
+
+
+def _multi_target_warnings(
+    ranked: list[MultiTargetRank],
+    unevaluated: list[MultiTargetRank],
+    config: MultiTargetConfig,
+) -> list[str]:
+    """B3/B4: 부재 target·평가 불가·전부-0·동점을 요약 warnings 로 노출한다."""
+    warnings: list[str] = list(unevaluable_warnings(
+        [(r.members, r.status, r.diagnostic) for r in unevaluated],
+        len(ranked) + len(unevaluated),
+    ))
+    # P0-F(D7): 선형 joint 목적식은 정점 해를 고르므로, 일부 target 이 정확히 0 인 것은
+    # "만들 수 없다"가 아니라 "이 정점에서 선택되지 않았다"일 수 있다.
+    collapsed = [
+        r for r in ranked
+        if r.status == "optimal"
+        and any(abs(v) <= TIE_TOLERANCE for v in r.target_scores.values())
+        and any(abs(v) > TIE_TOLERANCE for v in r.target_scores.values())
+    ]
+    if collapsed:
+        warnings.append(
+            "the joint objective is linear, so its optimum is a vertex: targets reported as "
+            "exactly 0 alongside positive ones may be a vertex-selection artifact rather than an "
+            "inability to produce them ("
+            + ", ".join(
+                f"{'+'.join(r.members)}:"
+                + ",".join(
+                    sorted(m for m, v in r.target_scores.items() if abs(v) <= TIE_TOLERANCE)
+                )
+                for r in collapsed[:5]
+            )
+            + ")"
+        )
+    if len(config.targets) != 2:
+        # F10: pareto 는 2-target 에서만 계산된다. False 가 "지배됨"으로 읽히면 안 된다.
+        warnings.append(
+            f"pareto was NOT computed ({len(config.targets)} targets; the frontier is only "
+            "defined for 2); pareto=false means 'not evaluated', not 'dominated'"
+        )
+    partial = [r for r in ranked if r.status == "optimal" and r.missing_targets]
+    if partial:
+        warnings.append(
+            "some combinations lack an exchange for part of the target set; those targets "
+            "contribute flux 0 rather than disqualifying the combination: "
+            + ", ".join(f"{'+'.join(r.members)}({','.join(r.missing_targets)})" for r in partial)
+        )
+    if config.metric == "normalized_weighted":
+        warnings.append(
+            "normalized_weighted scores are min-max normalized over this candidate set; they "
+            "are dimensionless and NOT comparable across runs — use --multi-metric "
+            "carbon_equivalent for an absolute, run-comparable total"
+        )
+    # Item 9: every scalarised metric inherits the vertex-selection bias, so say it on all of them.
+    if config.metric != "pareto":
+        warnings.append(SCALARISATION_WARNING)
+    warnings.extend(_ranking_degeneracy_warnings(
+        [(r.members, r.weighted_score, r.status) for r in ranked],
+        score_is_flux=config.metric != "normalized_weighted",
+    ))
+    return warnings

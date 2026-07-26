@@ -458,7 +458,9 @@ def test_strain_growth_cli_writes_member_growth_report(tmp_path):
     rc = main(["strain-growth", "--taxonomy", str(taxonomy), "--out", str(out)])
     assert rc == 0
     payload = json.loads((out / "strain_growth_summary.json").read_text())
-    assert payload["status"] == "optimal"
+    # P0-D: run-level tier, not the raw solve status ("optimal" is not in the gate vocabulary).
+    assert payload["status"] in {"ok", "degraded"}
+    assert payload["community_status"] == "optimal"
     assert {row["member"] for row in payload["members"]} == {"producer", "consumer"}
     assert all(row["community_member_growth"] is not None for row in payload["members"])
     assert (out / "strain_growth.csv").exists()

@@ -146,7 +146,7 @@ def test_unknown_medium_exchange_is_strict_by_default(tmp_path, capsys):
         "--out", str(tmp_path / "o"),
     ])
     assert rc == 2
-    assert "community" in capsys.readouterr().err
+    assert "EX_not_real_m" in capsys.readouterr().err
 
 
 def test_allow_unknown_medium_records_diagnostic(tmp_path):

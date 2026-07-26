@@ -30,12 +30,23 @@ MEMBER_CONTRIBUTION_COLUMNS = (
     "identifiable",
 )
 CURRENCY_METABOLITES = frozenset({"h", "h2o", "co2"})
+# P1-F: Okabe-Ito. The previous ColorBrewer mix had a #2b8cbe/#756bb1 pair at
+# deuteranopia dE = 4.7, below the legibility floor; every Okabe-Ito pair clears it.
 EDGE_COLORS = {
-    "secretion": "#2ca25f",
-    "host_uptake": "#3182bd",
-    "cross_feeding": "#e6550d",
+    "secretion": "#009E73",      # bluish green
+    "host_uptake": "#0072B2",    # blue
+    "cross_feeding": "#D55E00",  # vermillion
 }
-BAR_COLORS = ("#3182bd", "#2ca25f", "#756bb1", "#e6550d", "#636363")
+# Human-readable legend labels for the edge kinds encoded above.
+EDGE_LABELS = {
+    "secretion": "microbe -> shared pool (secretion)",
+    "host_uptake": "shared pool -> host (uptake)",
+    "cross_feeding": "microbiome -> host (inferred transfer)",
+}
+BAR_COLORS = ("#0072B2", "#009E73", "#CC79A7", "#D55E00", "#000000")
+FONT_STACK = ("Arial", "Helvetica", "DejaVu Sans")
+FIGURE_TIFF_DPI = 600
+UNIT_FLUX = "mmol gDW$^{-1}$ h$^{-1}$"
 
 
 def host_microbe_interaction_rows(
@@ -185,8 +196,16 @@ def write_interaction_artifacts(
     return artifacts
 
 
-def render_interaction_figures(out_dir: str | Path, *, top_n: int = 20) -> list[str]:
-    """Render circle, heatmap, bubble, and contribution SVG/TIFF figures from saved CSV."""
+def render_interaction_figures(
+    out_dir: str | Path, *, top_n: int = 20, failure_banner: str | None = None
+) -> list[str]:
+    """Render circle, heatmap, bubble, and contribution SVG/TIFF figures from saved CSV.
+
+    ``failure_banner`` stamps every figure when the underlying solve did not succeed (F9). A
+    complete, publication-shaped interaction figure set written from a failed host solve is
+    indistinguishable from a real result — round-2 produced exactly that, with a titled heatmap
+    and colourbar over a run whose host was infeasible and whose transferred set was empty.
+    """
     out = Path(out_dir)
     edges = _read_csv(out / "interaction_edges.csv")
     contributions = _read_csv(out / "member_contribution.csv")
@@ -196,6 +215,9 @@ def render_interaction_figures(out_dir: str | Path, *, top_n: int = 20) -> list[
         _render_bubble(edges, out / "interaction_bubble.svg", top_n=top_n),
         _render_contribution(contributions, out / "member_contribution.svg", top_n=top_n),
     ]
+    if failure_banner:
+        for path in svg_artifacts:
+            _stamp_failure_banner(path, failure_banner)
     names: list[str] = []
     for path in svg_artifacts:
         names.append(path.name)
@@ -203,6 +225,77 @@ def render_interaction_figures(out_dir: str | Path, *, top_n: int = 20) -> list[
         if tiff.exists():
             names.append(tiff.name)
     return names
+
+
+def _stamp_failure_banner(svg_path: Path, banner: str) -> None:
+    """Re-render an existing figure with a prominent failure banner across the top.
+
+    Rewrites both the SVG and its TIFF sibling so neither can circulate unlabelled.
+    """
+    tiff_path = svg_path.with_suffix(".tiff")
+    # A written figure cannot be reopened as a matplotlib Figure, so the banner is composited:
+    # a <g> element appended to the SVG, and a drawn bar on the raster.
+    try:
+        raw = svg_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if "</svg>" in raw and "cmig-failure-banner" not in raw:
+        overlay = (
+            '<g id="cmig-failure-banner">'
+            '<rect x="0" y="0" width="100%" height="26" fill="#D55E00" opacity="0.92"/>'
+            f'<text x="8" y="18" font-family="Arial,Helvetica,sans-serif" font-size="13" '
+            f'font-weight="700" fill="#ffffff">{_escape_svg_text(banner)}</text>'
+            "</g>"
+        )
+        svg_path.write_text(raw.replace("</svg>", overlay + "\n</svg>"), encoding="utf-8")
+    if tiff_path.exists():
+        _stamp_raster_banner(tiff_path, banner)
+
+
+def _escape_svg_text(text: str) -> str:
+    return (
+        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _stamp_raster_banner(tiff_path: Path, banner: str) -> None:
+    """Draw the banner onto the raster so a TIFF handed around cannot lose the annotation."""
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:  # pragma: no cover - PIL ships with matplotlib
+        return
+    with Image.open(tiff_path) as image:
+        frame = image.convert("RGB")
+        info = dict(image.info)
+    draw = ImageDraw.Draw(frame)
+    height = max(28, frame.height // 24)
+    draw.rectangle([(0, 0), (frame.width, height)], fill=(213, 94, 0))
+    # PIL's default bitmap font is ~11 px, which is invisible on a 600 dpi raster. Scale a real
+    # font to the banner so the annotation is legible at the size the figure is actually viewed.
+    font = _banner_font(int(height * 0.62))
+    draw.text((height // 3, height // 5), banner, fill=(255, 255, 255), font=font)
+    frame.save(
+        tiff_path, format="tiff", compression="tiff_lzw",
+        dpi=info.get("dpi", (FIGURE_TIFF_DPI, FIGURE_TIFF_DPI)),
+    )
+
+
+def _banner_font(size: int) -> Any:
+    """A truetype face at `size`, falling back to PIL's default if none is installed."""
+    from PIL import ImageFont
+
+    for candidate in (
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "DejaVuSans-Bold.ttf",
+    ):
+        try:
+            return ImageFont.truetype(candidate, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
 
 
 def _edge_row(
@@ -258,7 +351,8 @@ def _load_matplotlib() -> Any:
     import matplotlib.pyplot as plt
 
     plt.rcParams.update({
-        "font.family": "Arial",
+        "font.family": "sans-serif",
+        "font.sans-serif": list(FONT_STACK),
         "axes.titlesize": 14,
         "axes.labelsize": 11,
         "xtick.labelsize": 10,
@@ -270,7 +364,47 @@ def _load_matplotlib() -> Any:
 
 def _save_svg_and_tiff(fig: Any, path: Path) -> None:
     fig.savefig(path, format="svg")
-    fig.savefig(path.with_suffix(".tiff"), format="tiff", dpi=300)
+    _save_publication_tiff(fig, path.with_suffix(".tiff"))
+
+
+def _save_publication_tiff(fig: Any, path: Path, *, dpi: int = FIGURE_TIFF_DPI) -> None:
+    """600 dpi, RGB, LZW. matplotlib's default RGBA/raw TIFF is a submission-portal reject."""
+    fig.savefig(
+        path, format="tiff", dpi=dpi, facecolor="white",
+        pil_kwargs={"compression": "tiff_lzw"},
+    )
+    try:
+        from PIL import Image
+    except ImportError:  # pragma: no cover - PIL ships with matplotlib
+        return
+    with Image.open(path) as image:
+        if image.mode == "RGB":
+            return
+        flattened = Image.new("RGB", image.size, (255, 255, 255))
+        flattened.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
+        info = dict(image.info)
+    flattened.save(
+        path, format="tiff", compression="tiff_lzw", dpi=info.get("dpi", (dpi, dpi))
+    )
+
+
+def _edge_legend(ax: Any, rows: list[dict[str, str]], *, extra: list[Any] | None = None) -> None:
+    """Legend for the edge-colour channel. Without it the colours are undecodable."""
+    from matplotlib.lines import Line2D
+
+    present = [kind for kind in EDGE_COLORS if any(r.get("edge_type") == kind for r in rows)]
+    handles: list[Any] = [
+        Line2D([], [], color=EDGE_COLORS[kind], linewidth=2.6,
+               label=EDGE_LABELS.get(kind, kind))
+        for kind in present
+    ]
+    handles.extend(extra or [])
+    if not handles:
+        return
+    ax.legend(
+        handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0),
+        frameon=False, fontsize=9, handlelength=1.8, borderaxespad=0.0,
+    )
 
 
 def _polish_axes(ax: Any, *, grid_axis: str = "x") -> None:
@@ -293,7 +427,7 @@ def _render_circle(rows: list[dict[str, str]], path: Path, *, top_n: int) -> Pat
     plt = _load_matplotlib()
     edges = _filtered_edges(rows, top_n=top_n)
     nodes = sorted({r["source"] for r in edges} | {r["target"] for r in edges})
-    fig, ax = plt.subplots(figsize=(8.2, 7.2), dpi=300)
+    fig, ax = plt.subplots(figsize=(12.1, 7.2), dpi=300)
     ax.axis("off")
     ax.set_title("Interaction circle", pad=24)
     ax.set_xlim(-1.62, 1.62)
@@ -326,7 +460,11 @@ def _render_circle(rows: list[dict[str, str]], path: Path, *, top_n: int) -> Pat
             },
         )
     for node, (x, y) in coords.items():
-        color = "#e6550d" if node == "host" else "#9aa0a6" if node.startswith("met:") else "#3182bd"
+        color = (
+            "#D55E00" if node == "host"
+            else "#999999" if node.startswith("met:")
+            else "#0072B2"
+        )
         ax.scatter([x], [y], s=430, color=color, edgecolor="white", linewidth=1.4, zorder=3)
         ax.text(
             x * 1.23,
@@ -336,6 +474,20 @@ def _render_circle(rows: list[dict[str, str]], path: Path, *, top_n: int) -> Pat
             va="center",
             fontsize=10,
         )
+    # P1-F: the figure encodes edge kind by colour, magnitude by width, and node role by colour.
+    # None of that was decodable without a legend.
+    from matplotlib.lines import Line2D
+
+    node_handles = [
+        Line2D([], [], marker="o", linestyle="", markersize=9, color="#0072B2",
+               label="microbial member"),
+        Line2D([], [], marker="o", linestyle="", markersize=9, color="#999999",
+               label="metabolite pool"),
+        Line2D([], [], marker="o", linestyle="", markersize=9, color="#D55E00", label="host"),
+        Line2D([], [], color="#666666", linewidth=0.5,
+               label=f"arrow width $\\propto$ flux (max {max_flux:.3g} {UNIT_FLUX})"),
+    ]
+    _edge_legend(ax, edges, extra=node_handles)
     fig.tight_layout()
     fig.subplots_adjust(top=0.9)
     _save_svg_and_tiff(fig, path)
@@ -358,7 +510,7 @@ def _render_heatmap(rows: list[dict[str, str]], path: Path) -> Path:
     fig, ax = plt.subplots(figsize=(width, height), dpi=300)
     if sources and targets:
         im = ax.imshow(values, cmap="viridis", aspect="auto")
-        fig.colorbar(im, ax=ax, shrink=0.8, label="Flux")
+        fig.colorbar(im, ax=ax, shrink=0.8, label=f"Flux ({UNIT_FLUX})")
     ax.set_xticks(
         range(len(targets)),
         [x.replace("met:", "") for x in targets],
@@ -385,7 +537,8 @@ def _render_bubble(rows: list[dict[str, str]], path: Path, *, top_n: int) -> Pat
     edges = _filtered_edges(rows, top_n=top_n)
     sources = sorted({r["source"] for r in edges})
     metabolites = sorted({r["metabolite"] for r in edges})
-    width = max(6.5, 0.45 * len(sources) + 2.4)
+    # +3.9in reserves room for the outside-right legend so it cannot overlap the plot.
+    width = max(6.5, 0.45 * len(sources) + 2.4) + 3.9
     height = max(4.8, 0.32 * len(metabolites) + 2.0)
     fig, ax = plt.subplots(figsize=(width, height), dpi=300)
     x_map = {s: i for i, s in enumerate(sources)}
@@ -405,9 +558,19 @@ def _render_bubble(rows: list[dict[str, str]], path: Path, *, top_n: int) -> Pat
     ax.set_xticks(range(len(sources)), sources, rotation=45, ha="right")
     ax.set_yticks(range(len(metabolites)), metabolites)
     ax.set_title("Interaction bubble plot")
-    _polish_axes(ax, grid_axis="both")
+    ax.set_xlabel("Source (microbial member / pool)")
+    ax.set_ylabel("Metabolite")
+    # P1-F: bubble AREA encodes flux and colour encodes edge kind; both need a key.
+    from matplotlib.lines import Line2D
+
+    size_handles = [
+        Line2D([], [], marker="o", linestyle="", markerfacecolor="#999999",
+               markeredgecolor="white", markersize=math.sqrt(70 + 380 * frac) / 1.6,
+               label=f"{frac * max_flux:.3g} {UNIT_FLUX}")
+        for frac in (0.25, 1.0)
+    ]
+    _edge_legend(ax, edges, extra=size_handles)
     fig.tight_layout()
-    fig.subplots_adjust(bottom=0.28, left=0.18)
     _save_svg_and_tiff(fig, path)
     plt.close(fig)
     return path
@@ -423,7 +586,7 @@ def _render_contribution(rows: list[dict[str, str]], path: Path, *, top_n: int) 
     fig, ax = plt.subplots(figsize=(7.2, 4.8), dpi=300)
     colors = [BAR_COLORS[i % len(BAR_COLORS)] for i, _ in enumerate(labels[::-1])]
     ax.barh(labels[::-1], values[::-1], color=colors, edgecolor="white", linewidth=0.8, height=0.55)
-    ax.set_xlabel("Transfer flux")
+    ax.set_xlabel(f"Transfer flux ({UNIT_FLUX})")
     ax.set_title("Member contribution to host transfer")
     _polish_axes(ax, grid_axis="x")
     fig.tight_layout()

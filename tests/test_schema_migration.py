@@ -1,6 +1,7 @@
-"""F5 — tidy schema v1.1 migration. Plan SC: SC-C5.
+"""F5 — tidy schema migration (v1.0 -> v1.1 -> v1.2). Plan SC: SC-C5.
 
-writer 항상 v1.1 · v1.0 parquet 는 read_legacy_or_upgrade 로 승격(하위호환) · 신규 컬럼.
+writer 는 항상 현행 버전 · 구버전 parquet 는 read_legacy_or_upgrade 로 승격(하위호환).
+v1.2 는 edge identifiability 컬럼(allocation_method/identifiable/weight_lo/weight_hi)을 더한다.
 """
 
 from __future__ import annotations
@@ -19,16 +20,16 @@ from cmig.core.tidy import (
 )
 
 
-def test_schema_version_is_11():
-    assert TIDY_SCHEMA_VERSION == "1.1"
+def test_schema_version_is_current():
+    assert TIDY_SCHEMA_VERSION == "1.2"
     # v1.1 = v1.0 + host-microbe 확장 3컬럼 (nodes)
     assert set(NODES_SCHEMA.names) - set(NODES_SCHEMA_V10.names) == {
         "organism_type", "interface", "compartment",
     }
 
 
-def test_writer_emits_v11(tmp_path):
-    """build_tidy/write 는 항상 v1.1 + 신규 컬럼."""
+def test_writer_emits_current_version(tmp_path):
+    """build_tidy/write 는 항상 현행 버전 + 신규 컬럼."""
     pytest.importorskip("micom")
     from cmig.golden_fixture import solve
 
@@ -36,7 +37,7 @@ def test_writer_emits_v11(tmp_path):
     bundle.write(tmp_path)
     nodes = pq.read_table(tmp_path / "nodes.parquet")
     assert "organism_type" in nodes.column_names
-    assert set(nodes.column("schema_version").to_pylist()) == {"1.1"}
+    assert set(nodes.column("schema_version").to_pylist()) == {TIDY_SCHEMA_VERSION}
     # member 노드는 organism_type=microbe, pool 은 null
     rows = nodes.to_pylist()
     members = [r for r in rows if r["node_type"] == "member"]
@@ -66,13 +67,13 @@ def _v10_profile():
 
 
 def test_legacy_v10_parquet_read_upgrades(tmp_path):
-    """SC-C5 핵심: v1.0 parquet 을 read() 로 읽으면 v1.1 로 승격(default 주입)·검증 통과."""
+    """SC-C5 핵심: 구버전 parquet 을 read() 로 읽으면 현행으로 승격(default 주입)·검증 통과."""
     pq.write_table(_v10_nodes(), tmp_path / "nodes.parquet")
     pq.write_table(_v10_edges(), tmp_path / "edges.parquet")
     pq.write_table(_v10_profile(), tmp_path / "profile.parquet")
 
     bundle = TidyBundle.read(tmp_path)              # 즉시 exact-validate 실패 없이 승격
-    assert set(bundle.nodes.column("schema_version").to_pylist()) == {"1.1"}
+    assert set(bundle.nodes.column("schema_version").to_pylist()) == {TIDY_SCHEMA_VERSION}
     assert "organism_type" in bundle.nodes.column_names
     # default microbe 계약: member→microbe, environment_pool→None
     org = dict(zip(
@@ -91,8 +92,8 @@ def test_empty_v10_table_upgrades():
     assert "interface" in upgraded.column_names and "compartment" in upgraded.column_names
 
 
-def test_read_legacy_or_upgrade_idempotent_on_v11():
-    """이미 v1.1 인 테이블은 read_legacy_or_upgrade 가 그대로 반환."""
+def test_read_legacy_or_upgrade_idempotent_on_current():
+    """이미 현행 버전인 테이블은 read_legacy_or_upgrade 가 그대로 반환."""
     pytest.importorskip("micom")
     from cmig.golden_fixture import solve
 

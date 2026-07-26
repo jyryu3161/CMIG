@@ -33,6 +33,9 @@ def _edges():
         "schema_version": [TIDY_SCHEMA_VERSION],
         "source_id": ["A"], "target_id": ["B"], "metabolite": ["ac"],
         "edge_type": ["cross_feeding"], "weight": [5.0], "label": ["secretion"],
+        # v1.2: cross-feeding attribution is allocated, not identified.
+        "allocation_method": ["proportional_shared_pool"], "identifiable": [False],
+        "weight_lo": [None], "weight_hi": [None],
     }, schema=EDGES_SCHEMA)
 
 

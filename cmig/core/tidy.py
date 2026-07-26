@@ -18,7 +18,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-TIDY_SCHEMA_VERSION = "1.1"        # F5: 1.0→1.1 (host-microbe 확장 컬럼). writer 는 항상 v1.1.
+TIDY_SCHEMA_VERSION = "1.2"        # 1.1→1.2: edge identifiability columns (A-B15 / B-D6).
 
 # F5/C11: host-microbe 확장 컬럼 (nullable placeholder; 로직은 microbe-only).
 #   organism_type {microbe, host}  · interface {lumen, blood}  · compartment
@@ -39,7 +39,8 @@ NODES_SCHEMA_V10 = pa.schema([
     ("abundance", pa.float64()),      # normalize 시 상대 (nullable; pool=null)
 ])
 
-EDGES_SCHEMA = pa.schema([
+# v1.1 edges (legacy read/upgrade baseline)
+EDGES_SCHEMA_V11 = pa.schema([
     ("schema_version", pa.string()),
     ("source_id", pa.string()),
     ("target_id", pa.string()),
@@ -48,6 +49,19 @@ EDGES_SCHEMA = pa.schema([
     ("weight", pa.float64()),         # mass-conserving proportional shared-pool allocation
     ("label", pa.string()),           # sign label (uptake|secretion)
 ])
+
+# A-B15 / B-D6: a cross-feeding weight reads as a measured pairwise transfer, but a steady-state
+# shared pool does not identify donor->recipient attribution — allocate_cross_feeding says so in
+# its docstring and the string appeared in no artifact. These columns put that on the row itself,
+# and carry the FVA interval when --fva ran so a point weight is not mistaken for a determined one.
+_EDGE_IDENTIFIABILITY_FIELDS = [
+    ("allocation_method", pa.string()),   # e.g. proportional_shared_pool | direct
+    ("identifiable", pa.bool_()),         # False for allocated cross-feeding
+    ("weight_lo", pa.float64()),          # FVA lower bound (nullable; only when --fva ran)
+    ("weight_hi", pa.float64()),          # FVA upper bound (nullable)
+]
+
+EDGES_SCHEMA = pa.schema(list(EDGES_SCHEMA_V11) + _EDGE_IDENTIFIABILITY_FIELDS)
 
 PROFILE_SCHEMA_V10 = pa.schema([
     ("schema_version", pa.string()),
@@ -93,14 +107,19 @@ def _check(
 
 
 def read_legacy_or_upgrade(table: pa.Table, name: str) -> pa.Table:
-    """F5: parquet 테이블을 현행 v1.1 로 승격(단일 read 경로).
+    """F5: parquet 테이블을 현행 스키마 버전으로 승격(단일 read 경로).
 
     legacy 판정은 **컬럼 존재** 기준(빈 테이블·row 0 도 견고). nodes/profile 에 host 확장 컬럼이
     없으면 주입한다 — `organism_type` 은 'default microbe' 계약(node_type=member → "microbe",
-    pool/profile → None). schema_version 은 v1.1 로 승격(legacy 값·빈 컬럼 모두). edges 는
-    schema_version bump 만.
+    pool/profile → None). edges 는 v1.2 identifiability 컬럼을 null 로 주입한다(과거 산출물은
+    attribution 방법을 기록하지 않았으므로 "모른다"가 정직한 값이다). schema_version 은 현행으로
+    승격(legacy 값·빈 컬럼 모두).
     """
     n = table.num_rows
+    if name == "edges":
+        for fname, ftype in _EDGE_IDENTIFIABILITY_FIELDS:
+            if fname not in table.column_names:
+                table = table.append_column(fname, pa.array([None] * n, type=ftype))
     if name in ("nodes", "profile"):
         for fname, ftype in _HOST_EXT_FIELDS:
             if fname in table.column_names:

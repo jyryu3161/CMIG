@@ -60,6 +60,9 @@ class MultiTargetSolveResult:
     community_growth: float
     status: str
     diagnostic: str | None = None
+    # B3: community 에 exchange 가 없는 target — flux 0 으로 기여하고 여기에 기록된다
+    # (하나가 없다고 consortium 전체를 랭킹에서 탈락시키지 않는다).
+    missing_targets: tuple[str, ...] = ()
 
 
 def target_objective_direction(direction: Direction) -> str:
@@ -148,7 +151,8 @@ def target_max_solve(
             from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
 
             diag = diagnostic_from_parts([(
-                DiagnosticCode.CAPABILITY_MISSING, f"target exchange 부재: {ex_id}")])
+                DiagnosticCode.CAPABILITY_MISSING,
+                f"target exchange absent from the community: {ex_id}")])
             return TargetMaxResult(ex_id, spec.direction.value, 0.0, 0.0, "missing", diag)
         growth_expr = m.objective.expression                      # community growth 식
         floor = m.problem.Constraint(
@@ -177,6 +181,96 @@ def target_max_solve(
         growth = float(floor.primal) if status == "optimal" else 0.0
     diagnostic = None if status == "optimal" else f"target LP status={status}"
     return TargetMaxResult(ex_id, spec.direction.value, flux, growth, status, diagnostic)
+
+
+def epsilon_constrained_solve(
+    community: Any,
+    specs: list[TargetSpec],
+    floors: dict[str, float],
+    *,
+    normalization_scales: dict[str, float],
+    growth_fraction: float = 0.5,
+    mu_community: float | None = None,
+    solver: str = "gurobi",
+) -> MultiTargetSolveResult:
+    """Weighted-sum solve with an explicit lower bound (an epsilon floor) on each target.
+
+    The scalarised path's deepest limit: maximising ``sum(w_i * v_i)`` over a polytope puts the
+    optimum at a vertex, so with carbon weights it concentrates entirely on whichever metabolite
+    has the best carbon-per-substrate yield. The red-team measured all six SCFA per-target ranges
+    at width ~0 — that is a property of weighted-sum LP, not degeneracy, and no choice of weights
+    fixes it because every weight vector still selects a vertex.
+
+    Forcing ``v_i >= floor_i`` cuts those single-metabolite vertices out of the feasible set, so
+    the optimum has to be a genuinely mixed solution. Sweeping the floors traces the trade-off
+    surface (the classic epsilon-constraint method), which is what a Pareto front needs.
+    """
+    from cmig.core.single_model import _require_lp, set_model_solver
+
+    _validate_growth_floor(growth_fraction, mu_community)
+    if len(specs) < 2:
+        raise ValueError("epsilon_constrained_solve requires at least two targets")
+    _require_lp(solver)
+    with community as model:
+        set_model_solver(model, solver)
+        if mu_community is None:
+            try:
+                mu_community = _community_growth_star(model)
+            except ValueError as e:
+                return MultiTargetSolveResult({}, {}, 0.0, "baseline_failed", str(e))
+        present_specs = [spec for spec in specs if spec.exchange_id() in model.reactions]
+        missing_metabolites = tuple(
+            spec.metabolite for spec in specs if spec.exchange_id() not in model.reactions
+        )
+        if not present_specs:
+            return MultiTargetSolveResult(
+                {spec.metabolite: 0.0 for spec in specs},
+                {spec.metabolite: 0.0 for spec in specs},
+                0.0, "missing", "no target exchange present", missing_metabolites,
+            )
+        growth_expr = model.objective.expression
+        constraints = [model.problem.Constraint(
+            growth_expr, lb=growth_fraction * mu_community, name="cmig_eps_growth_floor"
+        )]
+        objective = 0
+        reactions: dict[str, Any] = {}
+        for index, spec in enumerate(present_specs):
+            reaction = model.reactions.get_by_id(spec.exchange_id())
+            reactions[spec.metabolite] = reaction
+            sign = 1.0 if spec.direction in (
+                Direction.MAX_SECRETION, Direction.MIN_UPTAKE
+            ) else -1.0
+            floor = float(floors.get(spec.metabolite, 0.0))
+            # Sign-domain plus the epsilon floor in one constraint: signed flux >= floor >= 0.
+            constraints.append(model.problem.Constraint(
+                sign * reaction.flux_expression,
+                lb=max(0.0, floor),
+                name=f"cmig_eps_floor_{index}",
+            ))
+            scale = normalization_scales.get(spec.metabolite) or 1.0
+            objective += (spec.weight / scale) * sign * reaction.flux_expression
+        model.add_cons_vars(constraints)
+        model.objective = model.problem.Objective(objective, direction="max")
+        model.solver.update()
+        solution = model.optimize()
+        status = "solver_no_solution" if solution is None else str(solution.status)
+        if status != "optimal":
+            return MultiTargetSolveResult(
+                {}, {}, 0.0, status,
+                f"epsilon-constrained LP status={status}", missing_metabolites,
+            )
+        fluxes = {
+            spec.metabolite: (
+                float(reactions[spec.metabolite].flux) if spec.metabolite in reactions else 0.0
+            )
+            for spec in specs
+        }
+        signed = {
+            spec.metabolite: signed_target_flux(fluxes[spec.metabolite], spec.direction)
+            for spec in specs
+        }
+        growth = float(constraints[0].primal)
+    return MultiTargetSolveResult(fluxes, signed, growth, "optimal", None, missing_metabolites)
 
 
 def joint_target_solve(
@@ -219,13 +313,22 @@ def joint_target_solve(
                 mu_community = _community_growth_star(model)
             except ValueError as e:
                 return MultiTargetSolveResult({}, {}, 0.0, "baseline_failed", str(e))
-        missing = [
-            spec.exchange_id() for spec in specs
-            if spec.exchange_id() not in model.reactions
-        ]
-        if missing:
+        # B3: 개별 target 의 exchange 부재는 "그 대사체를 만들 수 없다"(flux 0)는 정보이지
+        # consortium 을 평가 불가로 만드는 사유가 아니다. 존재하는 target 만 목적식에 넣고,
+        # 부재 target 은 0 으로 보고한다. 전부 부재일 때만 평가할 것이 없어 status="missing".
+        present_specs = [spec for spec in specs if spec.exchange_id() in model.reactions]
+        missing_metabolites = tuple(
+            spec.metabolite for spec in specs if spec.exchange_id() not in model.reactions
+        )
+        if not present_specs:
             return MultiTargetSolveResult(
-                {}, {}, 0.0, "missing", f"target exchanges absent: {sorted(missing)}"
+                {spec.metabolite: 0.0 for spec in specs},
+                {spec.metabolite: 0.0 for spec in specs},
+                0.0,
+                "missing",
+                "target exchanges absent: "
+                f"{sorted(spec.exchange_id() for spec in specs)}",
+                missing_metabolites,
             )
 
         growth_expr = model.objective.expression
@@ -237,7 +340,7 @@ def joint_target_solve(
         constraints = [floor]
         objective = 0
         reactions: dict[str, Any] = {}
-        for index, spec in enumerate(specs):
+        for index, spec in enumerate(present_specs):
             reaction = model.reactions.get_by_id(spec.exchange_id())
             reactions[spec.metabolite] = reaction
             constraints.append(
@@ -261,19 +364,28 @@ def joint_target_solve(
             return MultiTargetSolveResult(
                 {}, {}, 0.0, status,
                 f"joint target LP returned no solution object (solver_status={status})",
+                missing_metabolites,
             )
         status = str(solution.status)
         if status != "optimal":
-            return MultiTargetSolveResult({}, {}, 0.0, status, f"joint target LP status={status}")
+            return MultiTargetSolveResult(
+                {}, {}, 0.0, status, f"joint target LP status={status}", missing_metabolites
+            )
+        # 부재 target 은 0.0 — 실제 flux vector 와 같은 해석(만들 수 없음)을 갖는다.
         fluxes = {
-            spec.metabolite: float(reactions[spec.metabolite].flux) for spec in specs
+            spec.metabolite: (
+                float(reactions[spec.metabolite].flux) if spec.metabolite in reactions else 0.0
+            )
+            for spec in specs
         }
         signed = {
             spec.metabolite: signed_target_flux(fluxes[spec.metabolite], spec.direction)
             for spec in specs
         }
         growth = float(floor.primal)
-    return MultiTargetSolveResult(fluxes, signed, growth, "optimal")
+    return MultiTargetSolveResult(
+        fluxes, signed, growth, "optimal", None, missing_metabolites
+    )
 
 
 def score_target_result(result: TargetMaxResult, spec: TargetSpec) -> float:

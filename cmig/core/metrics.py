@@ -115,3 +115,57 @@ def interaction_type(
     if signs == {-1, 0}:
         return InteractionType.AMENSalism
     return InteractionType.PARASITISM   # {1, -1}
+
+
+# ── Abundance-weighted target shares (F4) ──────────────────────────────────────
+# micom `member_exchange` values are **per-taxon** fluxes (mmol gDW_taxon^-1 h^-1). A member's
+# community-level contribution is therefore flux x abundance. Omitting that weight inverts the
+# trend exactly, because per-taxon flux scales roughly as 1/abundance: round-2 measured a share
+# falling 0.75 -> 0.50 -> 0.25 as the member's abundance ROSE 0.25 -> 0.50 -> 0.75, where the
+# weighted truth was a flat 0.50.
+#
+# Two different questions hide behind one name, so both are computed and reported separately:
+#   turnover share  — |contribution| / total |contribution|, counting producers and consumers
+#                     alike. This is the "how much of the community's handling of this metabolite
+#                     runs through this member" quantity.
+#   secretion share — contribution / total positive contribution, producers only. This is the
+#                     "who makes it" quantity; a consumer must not be credited as a producer.
+
+
+def community_contributions(
+    member_exchange: Mapping[str, Mapping[str, float]],
+    abundances: Mapping[str, float | None],
+    target: str,
+) -> dict[str, float]:
+    """member -> community-level signed contribution (per-taxon flux x abundance)."""
+    contributions: dict[str, float] = {}
+    for member, exchange in member_exchange.items():
+        abundance = abundances.get(member)
+        weight = 1.0 if abundance is None else float(abundance)
+        contributions[str(member)] = float(exchange.get(target, 0.0)) * weight
+    return contributions
+
+
+def target_turnover_share(
+    contributions: Mapping[str, float], member: str, *, eps: float = 1e-12
+) -> float:
+    """|contribution| share over ALL members (producers and consumers).
+
+    Flat across an abundance sweep when two members exchange the metabolite at a matching rate,
+    which is the case round-2 used to expose the missing abundance weight.
+    """
+    total = sum(abs(float(v)) for v in contributions.values())
+    if total <= eps:
+        return 0.0
+    return abs(float(contributions.get(member, 0.0))) / total
+
+
+def target_secretion_share(
+    contributions: Mapping[str, float], member: str, *, eps: float = 1e-12
+) -> float:
+    """Producer-only share. A member that consumes the target contributes 0, never a credit."""
+    positive = {m: max(0.0, float(v)) for m, v in contributions.items()}
+    total = sum(positive.values())
+    if total <= eps:
+        return 0.0
+    return positive.get(member, 0.0) / total

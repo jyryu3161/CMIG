@@ -129,7 +129,9 @@ def test_rank_multi_target_weighted_normalized_and_pareto():
     ]
     ranked, normalizer = rank_multi_target(evals, specs)
     assert normalizer == "observed_range"
-    assert [r.rank for r in ranked] == [1, 2, 3, 4]
+# P0-C: evaluable rows get contiguous ranks; the unevaluable row gets rank 0 = no rank.
+    assert [r.rank for r in ranked] == [1, 2, 3, 0]
+    assert ranked[-1].status != "optimal"
     # failed combo excluded from ranking (weighted -inf), sorted last, never Pareto
     failed = ranked[-1]
     assert failed.status == "missing" and failed.weighted_score == float("-inf")

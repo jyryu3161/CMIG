@@ -12,6 +12,8 @@ donor→recipient 실제 전달은 식별되지 않으므로, 대사체별 총 �
 
 from __future__ import annotations
 
+from typing import Any
+
 import pyarrow as pa
 
 from cmig.core.engine import SolveResult
@@ -66,7 +68,17 @@ def allocate_cross_feeding(
     return rows
 
 
-def build_tidy(result: SolveResult, eps: float = NOISE_FLOOR) -> TidyBundle:
+# Direct member<->pool edges ARE read off the flux vector; only the cross-feeding attribution is
+# an allocation. Naming both makes the difference visible on the row.
+DIRECT_ALLOCATION_METHOD = "direct_flux"
+
+
+def build_tidy(
+    result: SolveResult,
+    eps: float = NOISE_FLOOR,
+    *,
+    edge_fva: dict[tuple[str, str], tuple[float, float]] | None = None,
+) -> TidyBundle:
     """SolveResult → TidyBundle. 정렬 결정적(determinism) for golden 비교."""
     members = sorted(result.members)
 
@@ -120,16 +132,22 @@ def build_tidy(result: SolveResult, eps: float = NOISE_FLOOR) -> TidyBundle:
     )
 
     # ── edges: 멤버↔pool (secretion/uptake) + cross-feeding (m→m′) ──
-    edges: list[tuple[str, str, str, str, float, str]] = []
+    edges: list[tuple[str, str, str, str, float, str, str, bool]] = []
     # 1) 멤버↔pool 방향 edge
     for m in members:
         for metab in sorted(result.member_exchange.get(m, {})):
             raw = result.member_exchange[m][metab]
             sf = convert(raw, Scope.MEMBER_POOL, eps=eps)
             if sf.label is Label.SECRETION:
-                edges.append((m, ENV_POOL_ID, metab, "secretion", sf.ui_flux, "secretion"))
+                edges.append((
+                    m, ENV_POOL_ID, metab, "secretion", sf.ui_flux, "secretion",
+                    DIRECT_ALLOCATION_METHOD, True,
+                ))
             elif sf.label is Label.UPTAKE:
-                edges.append((ENV_POOL_ID, m, metab, "uptake", sf.ui_flux, "uptake"))
+                edges.append((
+                    ENV_POOL_ID, m, metab, "uptake", sf.ui_flux, "uptake",
+                    DIRECT_ALLOCATION_METHOD, True,
+                ))
     # 2) cross-feeding: 동일 metabolite 의 secretor → consumer.
     # Shared-pool 해는 pairwise donor attribution을 식별하지 않으므로 대사체별 총 전달 가능량을
     # 공급/수요 비례로 보존 배분한다(CROSS_FEEDING_ALLOCATION_METHOD).
@@ -140,8 +158,28 @@ def build_tidy(result: SolveResult, eps: float = NOISE_FLOOR) -> TidyBundle:
         consumers = {m: result.member_exchange[m][metab]
                      for m in members if result.member_exchange.get(m, {}).get(metab, 0.0) < -eps}
         for source, target, weight in allocate_cross_feeding(secretors, consumers, eps=eps):
-            edges.append((source, target, metab, "cross_feeding", weight, "secretion"))
+            # identifiable=False: the shared-pool solution does not determine WHO fed WHOM.
+            edges.append((
+                source, target, metab, "cross_feeding", weight, "secretion",
+                CROSS_FEEDING_ALLOCATION_METHOD, False,
+            ))
     edges.sort()
+    intervals = edge_fva or {}
+
+    def _bound(edge: tuple[Any, ...], index: int) -> float | None:
+        """FVA bound for a DIRECT edge's metabolite; None for allocated cross-feeding.
+
+        An allocated weight has no FVA interval of its own — the interval belongs to the exchange
+        flux, not to the pairwise attribution, and pretending otherwise would dress an
+        unidentifiable number in a determined-looking range.
+        """
+        if edge[3] == "cross_feeding":
+            return None
+        found = intervals.get((str(edge[0]), str(edge[2]))) or intervals.get(
+            (str(edge[1]), str(edge[2]))
+        )
+        return None if found is None else float(found[index])
+
     edges_tbl = pa.table(
         {
             "schema_version": [TIDY_SCHEMA_VERSION] * len(edges),
@@ -151,6 +189,10 @@ def build_tidy(result: SolveResult, eps: float = NOISE_FLOOR) -> TidyBundle:
             "edge_type": [e[3] for e in edges],
             "weight": [e[4] for e in edges],
             "label": [e[5] for e in edges],
+            "allocation_method": [e[6] for e in edges],
+            "identifiable": [e[7] for e in edges],
+            "weight_lo": [_bound(e, 0) for e in edges],
+            "weight_hi": [_bound(e, 1) for e in edges],
         },
         schema=EDGES_SCHEMA,
     )

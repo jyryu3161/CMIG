@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -33,6 +34,46 @@ SCFA = TargetMetaboliteSet(
 
 # 이름 → preset (CLI/GUI 선택용)
 TARGET_PRESETS: dict[str, TargetMetaboliteSet] = {"scfa": SCFA}
+
+# 결정적 preset 순서 (CLI --target-preset → --targets 확장에 사용; set 순회 비결정성 차단).
+def preset_targets(name: str) -> list[str]:
+    """preset 이름 → 정렬된 metabolite id 목록. 미등록 이름은 ValueError."""
+    preset = TARGET_PRESETS.get(name)
+    if preset is None:
+        raise ValueError(
+            f"unknown target preset: {name!r} (available: {sorted(TARGET_PRESETS)})"
+        )
+    return sorted(preset.metabolites)
+
+
+_FORMULA_ELEMENT = re.compile(r"([A-Z][a-z]?)(\d*)")
+
+
+def parse_carbon_number(formula: str | None) -> int | None:
+    """화학식 → 탄소 원자 수. 판독 불가/탄소 없음은 None (0 과 구별한다).
+
+    'C2H3O2' → 2, 'C4H7O2' → 4, 'CH4' → 1. SCFA 총량을 mmol 단순합으로 더하는 것은
+    화학적으로 의미가 없으므로(아세트산 C2 vs 부티르산 C4) carbon-equivalent 가중에 쓰인다.
+    formula 가 비었거나 탄소를 포함하지 않으면 None — 호출자가 "모른다"를 조용히 0 으로
+    바꾸지 않도록 한다.
+    """
+    if not formula:
+        return None
+    text = str(formula).strip()
+    if not text:
+        return None
+    position = 0
+    carbon: int | None = None
+    for match in _FORMULA_ELEMENT.finditer(text):
+        if match.start() != position:      # 판독하지 못한 구간 → 신뢰할 수 없는 식
+            return None
+        position = match.end()
+        element, count = match.group(1), match.group(2)
+        if element == "C":
+            carbon = (carbon or 0) + (int(count) if count else 1)
+    if position != len(text):
+        return None
+    return carbon
 
 
 def target_summary(

@@ -59,7 +59,10 @@ class ModelQualityReport:
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        # A-B9: derived, so the flat CSV can carry it without widening the dataclass contract.
+        payload["n_objective_terms"] = len(self.objective_reactions)
+        return payload
 
 
 def _coverage(items: list[Any], predicate: Any) -> float:
@@ -165,8 +168,13 @@ def audit_model_quality(
     elapsed = time.perf_counter() - started
 
     warnings: list[str] = []
-    if not objective_reactions:
-        warnings.append("objective reaction is not configured")
+    # A-B9: a multi-term objective is legal but is not a growth rate; the audit must say so
+    # rather than reporting the optimum under a growth label.
+    from cmig.io.model_import import objective_structure_warning
+
+    objective_note = objective_structure_warning(len(objective_reactions))
+    if objective_note:
+        warnings.append(objective_note)
     if solve_status != "optimal":
         warnings.append(f"model objective solve is not optimal: {solve_status}")
     if uncheckable:

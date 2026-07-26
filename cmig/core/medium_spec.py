@@ -37,7 +37,7 @@ def load_medium(path: str | Path) -> MediumSpec:
     """csv(exchange_id,uptake_limit) 또는 json({exchange_id: uptake_limit}) → MediumSpec."""
     p = Path(path)
     if not p.exists():
-        raise FileNotFoundError(f"medium 파일 없음: {p}")
+        raise FileNotFoundError(f"medium file not found: {p}")
     uptake: dict[str, float] = {}
     if p.suffix == ".json":
         # AF-2: 중복 키 fail-fast (object_pairs_hook — CSV 경로와 대칭).
@@ -108,12 +108,147 @@ def apply_medium_checked(
     known = set(current)
     unknown = sorted(ex for ex in spec.uptake if ex not in known)
     if strict and unknown:
-        raise ValueError(f"medium exchange 가 community 에 없음: {unknown}")
+        raise ValueError(f"medium exchange not present in the target model: {unknown}")
     applied = {ex: v for ex, v in spec.uptake.items() if ex in known}
     new_medium = dict(current)
     new_medium.update(applied)
     community.medium = new_medium  # type: ignore[attr-defined]
     return original, unknown
+
+
+# ── Namespace-bridged effective medium (P0-A) ──────────────────────────────────
+# A community exposes environment exchanges as ``EX_<met>_m`` while each member model exposes
+# ``EX_<met>_e``. Applying one MediumSpec object to both therefore silently applies it to *neither*
+# unless the ids are translated. The metabolite is the invariant, so every comparison below is
+# keyed on the metabolite, never on the raw exchange id.
+
+
+def exchange_metabolite(exchange_id: str) -> str:
+    """``EX_glc__D_m``/``EX_glc__D_e``/``EX_etoh_lumen`` → ``glc__D``/``glc__D``/``etoh``.
+
+    BiGG-style exchange ids are ``EX_<metabolite>_<compartment>`` and the metabolite part may
+    itself contain ``__`` (``lac__L``), so the compartment is the final ``_``-delimited token.
+    """
+    name = exchange_id[3:] if exchange_id.startswith("EX_") else exchange_id
+    head, separator, _tail = name.rpartition("_")
+    return head if separator else name
+
+
+def model_exchange_index(model: object) -> dict[str, str]:
+    """metabolite → this model's exchange id, over *all* exchanges (not just open uptakes).
+
+    ``model.medium`` lists only currently-open uptakes, so it cannot be used to decide whether a
+    nutrient is offerable; a closed exchange can still be opened by a medium.
+    """
+    index: dict[str, str] = {}
+    for reaction in getattr(model, "exchanges", []):
+        index.setdefault(exchange_metabolite(str(reaction.id)), str(reaction.id))
+    return index
+
+
+@dataclass(frozen=True)
+class MediumTranslation:
+    """A MediumSpec re-expressed in one model's exchange namespace."""
+
+    spec: MediumSpec                      # translated (keys are this model's exchange ids)
+    mapping: dict[str, str]               # source exchange id → this model's exchange id
+    unmatched: tuple[str, ...]            # source exchange ids with no counterpart in the model
+
+    @property
+    def matched_count(self) -> int:
+        return len(self.mapping)
+
+
+def translate_medium_for_model(model: object, spec: MediumSpec) -> MediumTranslation:
+    """Re-key ``spec`` onto the exchange ids ``model`` actually exposes, matching on metabolite."""
+    spec.validate()
+    index = model_exchange_index(model)
+    mapping: dict[str, str] = {}
+    translated: dict[str, float] = {}
+    unmatched: list[str] = []
+    for source_exchange, limit in spec.uptake.items():
+        target = index.get(exchange_metabolite(str(source_exchange)))
+        if target is None:
+            unmatched.append(str(source_exchange))
+            continue
+        mapping[str(source_exchange)] = target
+        translated[target] = float(limit)
+    return MediumTranslation(
+        spec=MediumSpec(uptake=translated),
+        mapping=mapping,
+        unmatched=tuple(sorted(unmatched)),
+    )
+
+
+def effective_medium_by_metabolite(model: object) -> dict[str, float]:
+    """This model's *current* effective medium as metabolite → uptake limit.
+
+    Namespace-free, so a community (`_m`) and a member model (`_e`) become directly comparable.
+    """
+    medium = dict(getattr(model, "medium", {}) or {})
+    return {
+        exchange_metabolite(str(exchange)): float(limit)
+        for exchange, limit in medium.items()
+    }
+
+
+def apply_medium_translated(
+    model: object, spec: MediumSpec, *, strict: bool = True, exact: bool = False
+) -> MediumTranslation:
+    """Translate ``spec`` into ``model``'s namespace and apply it. Returns the translation.
+
+    ``strict=True`` refuses when a requested metabolite has no exchange in this model — that is a
+    request the model cannot honour, so silently dropping it would fake a controlled medium.
+
+    ``exact=True`` makes the translated spec the *whole* medium (cobra closes every other
+    exchange), which is what "both legs on the same defined medium" requires. ``exact=False``
+    merges onto whatever the model already offers.
+
+    Unlike :func:`apply_medium_checked`, this does not gate on ``model.medium`` — that property
+    lists only *currently open* uptakes, so gating on it makes opening a closed nutrient
+    impossible, which is precisely how a medium silently applies to nothing.
+    """
+    translation = translate_medium_for_model(model, spec)
+    if strict and translation.unmatched:
+        raise ValueError(
+            "medium exchange has no counterpart in the target model "
+            f"(matched on metabolite): {list(translation.unmatched)}"
+        )
+    if exact:
+        target = dict(translation.spec.uptake)
+    else:
+        target = dict(getattr(model, "medium", {}) or {})
+        target.update(translation.spec.uptake)
+    model.medium = target  # type: ignore[attr-defined]
+    return translation
+
+
+def compare_effective_media(
+    reference: dict[str, float],
+    candidate: dict[str, float],
+    *,
+    tolerance: float = 1e-9,
+    exempt: set[str] | frozenset[str] = frozenset(),
+) -> tuple[bool, dict[str, list[str]]]:
+    """Are two metabolite-keyed effective media the same offer? Returns (equal, differences).
+
+    ``exempt`` holds metabolites the candidate model has no exchange for — it cannot be offered
+    them at all, which is biology, not a loss of experimental control, so those are excluded from
+    the equality decision and reported separately by the caller.
+    """
+    reference_keys = set(reference) - set(exempt)
+    candidate_keys = set(candidate) - set(exempt)
+    differences: dict[str, list[str]] = {
+        "missing_from_candidate": sorted(reference_keys - candidate_keys),
+        "extra_in_candidate": sorted(candidate_keys - reference_keys),
+        "bound_mismatch": sorted(
+            metabolite
+            for metabolite in reference_keys & candidate_keys
+            if abs(float(reference[metabolite]) - float(candidate[metabolite])) > tolerance
+        ),
+    }
+    equal = not any(differences.values())
+    return equal, differences
 
 
 def medium_checksum(spec: MediumSpec | None) -> str:
