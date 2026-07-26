@@ -31,6 +31,7 @@ from typing import Any
 
 from cmig import CMIG_CORE_VERSION
 from cmig.core.manifest import DEFAULT_FLOAT_DECIMALS, canonicalize_floats
+from cmig.core.medium_spec import MEDIUM_POLICY
 
 WORKFLOW_MANIFEST_SCHEMA_VERSION = "1.0"
 
@@ -227,6 +228,13 @@ class WorkflowManifest:
             "components": canonical_workflow_payload(
                 self.kind, self.components, decimals=self.float_decimals
             ),
+            # NOT a hash component, deliberately (round 5, blocker 5). The CC-11 fix changed what
+            # a `--medium` run computes without moving `run_hash` (measured: solve growth
+            # 0.881561 -> 1.125065 under an identical hash), and the discontinuity cannot be
+            # recorded in a component because `cmig_core_version` is frozen. This marker lets a
+            # consumer tell the two eras apart mechanically. `hash_components` above is the
+            # authority on what is hashed, so adding a payload key here cannot move a run_hash.
+            "medium_policy": MEDIUM_POLICY,
             "status": self.status,
             "diagnostic": self.diagnostic,
             "warnings": list(self.warnings),

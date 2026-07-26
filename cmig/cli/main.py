@@ -415,6 +415,11 @@ def _cmd_inspect_run(args: argparse.Namespace) -> int:
         print(f"summary_file: {payload['summary_file']}")
     if payload["run_hash"]:
         print(f"run_hash: {payload['run_hash']}")
+    basis = payload.get("edge_weight_basis")
+    if basis:
+        print(f"edges.weight basis: {basis.get('weight_basis')} [{basis.get('weight_unit')}]")
+        if basis.get("weight_basis_note"):
+            print(f"  {basis['weight_basis_note']}")
     print("artifacts:")
     for artifact in payload["artifacts"]:
         print(f"  - {artifact}")
@@ -463,6 +468,21 @@ def _inspect_run_dir(run_dir: Path) -> dict[str, Any]:
         "artifacts": _list_run_artifacts(run_dir),
         "manifest": _compact_manifest(manifest),
         "summary_keys": sorted(str(key) for key in summary.keys()),
+        # Consumers read edges.parquet, not manifest.json, so the unit basis has to travel with
+        # the inspection output too — a per-taxon weight silently compared against a
+        # community-basis profile.net_flux is exactly the misreading this field exists to stop.
+        "edge_weight_basis": _edge_weight_basis(manifest),
+    }
+
+
+def _edge_weight_basis(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    attribution = manifest.get("edge_attribution")
+    if not isinstance(attribution, dict) or "weight_basis" not in attribution:
+        return None
+    return {
+        key: attribution[key]
+        for key in ("weight_basis", "weight_unit", "weight_is_magnitude", "weight_basis_note")
+        if key in attribution
     }
 
 
@@ -680,9 +700,29 @@ def _cmd_solve(args: argparse.Namespace) -> int:
         print(f"solve 실패: {outcome.diagnostic}", file=sys.stderr)
         return 1
     medium_label = "custom" if args.medium else "default"
+    # F5/F2 (round 5): the facade can succeed at *writing artifacts* while the scientific solve
+    # failed — `solver_failed_result` sets objective=0.0, which is indistinguishable from the real
+    # finding "this community cannot grow". Every other analysis command already refuses to print
+    # a number for a failed solve and exits 3; `solve` printed "완료 … growth: 0.0000" and exited 0.
+    solve_status = str(outcome.result.status)
+    if solve_status != "optimal":
+        print(
+            f"solve did not succeed (status={solve_status}); artifacts were written to "
+            f"{outcome.manifest_path.parent} but the reported growth is NOT a result",
+            file=sys.stderr,
+        )
+        for warning in outcome.result.warnings:
+            print(f"  warning: {warning}", file=sys.stderr)
+        if outcome.result.diagnostic:
+            print(f"  diagnostic: {outcome.result.diagnostic}", file=sys.stderr)
+        return _exit_code_for_status("failed", args)
     print(f"solve 완료 (solver={args.solver}, medium={medium_label}) "
           f"→ {outcome.manifest_path.parent}")
     print(f"  run_hash: {outcome.run_hash[:16]}…  growth: {outcome.result.objective:.4f}")
+    # Silent degradation is the thing this product cannot afford: a pFBA fallback changes what the
+    # flux vector means, so it has to reach the operator, not only the manifest.
+    for warning in outcome.result.warnings:
+        print(f"  warning: {warning}")
     return 0
 
 
@@ -1755,6 +1795,17 @@ def _select_ko_targets(
     warning so a screen never silently inspects an arbitrary subset.
     """
     if explicit is not None:
+        # An explicit id the model does not have is an input error, not a scientific result.
+        # It used to sail through into evaluation, where the lookup exception was converted into
+        # score=0 / target_flux=0 / community_growth=0 with negated-baseline deltas, and that row
+        # was then ranked 1 and announced as the "largest effect". Refuse it up front instead.
+        collection = model.reactions if ko_level == "reaction" else model.genes
+        available = {str(item.id) for item in collection}
+        missing = sorted(set(explicit) - available)
+        if missing:
+            raise ValueError(
+                f"unknown {ko_level} id(s) for model {getattr(model, 'id', '?')}: {missing}"
+            )
         return list(explicit), len(explicit), "explicit"
     if ko_level == "reaction":
         # Auto-enumeration skips boundary pseudo-reactions (EX_ exchange, DM_ demand, SK_ sink —
@@ -1845,16 +1896,22 @@ def _evaluate_ko_target(
             "diagnostic": rank.diagnostic,
         }
     except Exception as e:
+        # A knockout that could not be evaluated has NO measured effect. Writing 0.0 and a
+        # negated baseline delta fabricated the strongest possible result out of a failure — the
+        # reported "-12.15 effect" was just the baseline with a minus sign. NaN propagates
+        # honestly: `_ko_sort_key` already sorts non-finite deltas last and the CSV/JSON writers
+        # render them as blank / null.
+        nan = float("nan")
         return {
             "gene": ko_id,
             "member": member_id,
             "evaluation_status": "failed",
-            "score": 0.0,
-            "score_delta": -baseline.score,
-            "target_flux": 0.0,
-            "target_flux_delta": -baseline.target_flux,
-            "community_growth": 0.0,
-            "community_growth_delta": -baseline.community_growth,
+            "score": nan,
+            "score_delta": nan,
+            "target_flux": nan,
+            "target_flux_delta": nan,
+            "community_growth": nan,
+            "community_growth_delta": nan,
             "status": "failed",
             "diagnostic": str(e),
         }
@@ -2052,7 +2109,20 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
                 )
 
             rows = _map_ko_evaluations(items, _evaluate, jobs=args.jobs)
-        rows.sort(key=lambda row: _ko_sort_key(row, args.rank_by))
+        # Only an evaluated knockout can hold a rank. Failed rows stay in the artifacts as
+        # rank-0 diagnostics so nothing disappears, but they never enter `top_ranked` and are
+        # never printed as "rank 1 (largest effect)".
+        evaluated_rows = [row for row in rows if row["evaluation_status"] == "ok"]
+        failed_rows = [row for row in rows if row["evaluation_status"] != "ok"]
+        evaluated_rows.sort(key=lambda row: _ko_sort_key(row, args.rank_by))
+        failed_rows.sort(key=lambda row: (str(row["member"]), str(row["gene"])))
+        rows = evaluated_rows + failed_rows
+        if failed_rows:
+            warnings.append(
+                f"{len(failed_rows)} of {len(rows)} knockouts could not be evaluated and are "
+                "excluded from the ranking (no effect was measured for them): "
+                + ", ".join(f"{r['member']}:{r['gene']}" for r in failed_rows)
+            )
         # B12/F7: a screen where nothing moves, or where the top is tied, must not read as a
         # ranked hit list. `search` already owns this guard; point it at the KO deltas too.
         warnings.extend(_ranking_degeneracy_warnings(
@@ -2066,7 +2136,7 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         ))
         out = Path(args.out)
         _write_gene_ko_search_outputs(
-            rows[: args.top_k],
+            evaluated_rows[: args.top_k] + failed_rows,
             out,
             baseline=baseline,
             members=members,
@@ -2093,8 +2163,8 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
     )
     for warning in warnings:
         print(f"  warning: {warning}")
-    if rows:
-        best = rows[0]
+    if evaluated_rows:
+        best = evaluated_rows[0]
         label = "largest effect" if args.rank_by == "effect" else "highest remaining flux"
         print(
             f"  rank 1 ({label}): {best['member']}:{best['gene']} "
@@ -2250,8 +2320,13 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
 
                 from cmig.io.model_import import objective_structure_warning
 
-                n_objective_terms = len(linear_reaction_coefficients(model))
-                objective_note = objective_structure_warning(n_objective_terms)
+                objective_reactions = list(linear_reaction_coefficients(model))
+                n_objective_terms = len(objective_reactions)
+                # Blocker 3: the reactions themselves are needed — a one-term DEMAND objective is
+                # not growth either, and counting alone reported it as growth silently.
+                objective_note = objective_structure_warning(
+                    n_objective_terms, objective_reactions
+                )
                 single = solve_single_model(model, solver=args.solver)
                 single_growth = float(single.objective)
                 single_status = single.status
@@ -2302,6 +2377,18 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
                 f"single-model leg did not solve for {failed_single}; no alone-vs-community "
                 "comparison exists for those members"
             )
+        # Blocker 3: this note existed per row but never reached the run-level warnings or the
+        # status, so a demand-objective model was published as `status: ok` with no warnings.
+        objective_suspect = [r["member"] for r in rows if r["objective_warning"]]
+        for row in rows:
+            if row["objective_warning"]:
+                warnings.append(f"{row['member']}: {row['objective_warning']}")
+        if objective_suspect:
+            warnings.append(
+                f"the 'growth' column is an objective value, not a confirmed growth rate, for "
+                f"{objective_suspect}; interpret alone-vs-community for those members only after "
+                "confirming the model's objective really is its biomass reaction"
+            )
         out = Path(args.out)
         _write_strain_growth_outputs(
             rows,
@@ -2343,6 +2430,7 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
                 "failed" if len(failed_single) == len(rows) else "degraded"
             ),
             "ok" if (media_matched and not failed_single) else "degraded",
+            "ok" if not objective_suspect else "degraded",
         ),
         artifacts=["strain_growth_summary.json", "strain_growth.csv"],
         warnings=warnings,
@@ -2520,6 +2608,24 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ko_ranked_rows(rows: list[dict[str, Any]]) -> list[tuple[int, dict[str, Any]]]:
+    """(rank, row) pairs where an unevaluated knockout gets rank 0 = "no rank".
+
+    Round-5 codex F4: a failed evaluation used to be written with rank 1 and fabricated numeric
+    deltas, then announced as the screen's largest effect. Ranks now number only the rows that
+    were actually measured; the rest stay in the artifacts as rank-0 diagnostics.
+    """
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    position = 0
+    for row in rows:
+        if row["evaluation_status"] == "ok":
+            position += 1
+            ranked.append((position, row))
+        else:
+            ranked.append((0, row))
+    return ranked
+
+
 def _write_gene_ko_search_outputs(
     rows: list[dict[str, Any]],
     out: Path,
@@ -2556,7 +2662,9 @@ def _write_gene_ko_search_outputs(
             ],
         )
         writer.writeheader()
-        for rank, row in enumerate(rows, start=1):
+        # rank 0 == "no rank": a knockout that could not be evaluated has no measured effect, so
+        # it must not occupy a rank position ahead of a real one.
+        for rank, row in _ko_ranked_rows(rows):
             writer.writerow({
                 "rank": rank,
                 "member": row["member"],
@@ -2571,8 +2679,13 @@ def _write_gene_ko_search_outputs(
                 "evaluation_status": row["evaluation_status"],
                 "diagnostic": row["diagnostic"] or "",
             })
+    n_failed = sum(1 for row in rows if row["evaluation_status"] != "ok")
     payload = {
-        "status": "ok",
+        # Hard-coding "ok" certified a screen in which every knockout had failed. Derive it.
+        "status": (
+            "failed" if rows and n_failed == len(rows)
+            else "degraded" if n_failed else "ok"
+        ),
         "members": list(members),
         "member": member,
         "screening_scope": "single_member" if member else "all_members",
@@ -2608,7 +2721,20 @@ def _write_gene_ko_search_outputs(
                 "evaluation_status": row["evaluation_status"],
                 "diagnostic": row["diagnostic"],
             }
-            for rank, row in enumerate(rows, start=1)
+            for rank, row in _ko_ranked_rows(rows)
+            if row["evaluation_status"] == "ok"
+        ],
+        "unevaluated": [
+            {
+                "rank": 0,
+                "member": row["member"],
+                "gene": row["gene"],
+                "status": row["status"],
+                "evaluation_status": row["evaluation_status"],
+                "diagnostic": row["diagnostic"],
+            }
+            for row in rows
+            if row["evaluation_status"] != "ok"
         ],
         "artifacts": [
             "gene_ko_rankings.csv",
@@ -3324,8 +3450,18 @@ def _cmd_dfba(args: argparse.Namespace) -> int:
         },
         # dFBA reports "completed", not "optimal" — mapping it through the solve vocabulary would
         # mark every successful integration as failed.
-        status=_dfba_run_status(str(result.status)),
+        #
+        # Round 5 (opus F4b): the untracked-uptake verdict reached `dfba_summary.json` and stderr
+        # but NOT the workflow manifest, so `cmig inspect-run` — the verification step the skill
+        # mandates after every run — certified an uninterpretable run as `status: ok, warnings: []`.
+        status=_worst_status(
+            _dfba_run_status(str(result.status)),
+            # Uncontrolled substrate uptake makes the endpoint uninterpretable; the purely
+            # informational warnings (e.g. "closed N untracked uptake exchanges") must not.
+            "degraded" if getattr(result, "untracked_uptake", None) else "ok",
+        ),
         artifacts=["dfba_summary.json", "timecourse.parquet"],
+        warnings=list(getattr(result, "warnings", []) or []),
         summary={"status": result.status, "n_steps": len(getattr(result, "rows", []) or [])},
     )
     return _exit_code_for_status(_dfba_run_status(str(result.status)), args)
@@ -3337,7 +3473,7 @@ def _cmd_dfba_sensitivity(args: argparse.Namespace) -> int:
         import cobra
 
         from cmig.core.dfba import DfbaConfig, run_dfba_sensitivity
-        from cmig.io.dfba_output import write_dfba_sensitivity
+        from cmig.io.dfba_output import sensitivity_acceptance, write_dfba_sensitivity
         from cmig.io.solve_output import file_checksum, runtime_versions
     except ImportError:
         print("dfba-sensitivity requires the engine stack", file=sys.stderr)
@@ -3364,6 +3500,7 @@ def _cmd_dfba_sensitivity(args: argparse.Namespace) -> int:
             vmax=vmax,
             min_dt=min(args.min_dt, min(dts)),
             growth_floor=args.growth_floor,
+            close_untracked_uptake=args.close_untracked_uptake,
         )
         result = run_dfba_sensitivity(
             model,
@@ -3387,6 +3524,20 @@ def _cmd_dfba_sensitivity(args: argparse.Namespace) -> int:
         return 2
     print(f"dfba-sensitivity complete ({len(result.rows)} runs) -> {args.out}")
     print(f"  artifacts: {', '.join(artifacts)}")
+    for warning in sorted({w for row in result.rows for w in row.warnings}):
+        print(f"  warning: {warning}", file=sys.stderr)
+    # The CLI verdict and the written `acceptance` block come from one function, so the exit code
+    # can never disagree with the artifact it just wrote.
+    acceptance = sensitivity_acceptance(result)
+    if not acceptance["interpretable"]:
+        print(
+            "  this grid is NOT interpretable as a tracked-substrate/Km experiment "
+            "(acceptance.interpretable=false):",
+            file=sys.stderr,
+        )
+        for reason in acceptance["not_interpretable_because"]:
+            print(f"    - {reason}", file=sys.stderr)
+        return _exit_code_for_status("failed", args)
     return 0
 
 
@@ -3690,10 +3841,20 @@ def _cmd_search(args: argparse.Namespace) -> int:
     if not result.ranks:
         print("  no evaluable candidate: there is no best producer for this target")
     elif abs(result.ranks[0].score) <= 1e-9:
-        print(
-            f"  no candidate produced {result.target}: top score is 0 "
-            "(the order is arbitrary; see warnings)"
-        )
+        # A minimisation direction reaching 0 is the answer, not an absence of capability.
+        from cmig.core.search_product import _is_minimisation
+
+        if _is_minimisation(result.direction):
+            print(
+                f"  every candidate can be constrained to 0 {result.target}: that is the "
+                f"expected optimum for {result.direction}, not an inability to produce it "
+                "(re-run with the matching max_* direction to measure capability)"
+            )
+        else:
+            print(
+                f"  no candidate produced {result.target}: top score is 0 "
+                "(the order is arbitrary; see warnings)"
+            )
     else:
         best = result.ranks[0]
         print(
@@ -4669,6 +4830,14 @@ FONT_STACK: tuple[str, ...] = ("Arial", "Helvetica", "DejaVu Sans")
 # Journals reject uncompressed RGBA TIFFs; 600 dpi is the line-art expectation.
 FIGURE_TIFF_DPI = 600
 
+# Byte-reproducibility of figure artifacts (round 5: codex F5 / opus F14). matplotlib stamps the
+# wall-clock time into <dc:date> and derives generated element ids (clip paths, glyph defs) from a
+# random salt, so two runs with an identical run_hash emitted different SVG bytes — a deliverable
+# advertised as reproducible that was not checksummable. A fixed salt makes the ids deterministic
+# and `metadata={"Date": None}` drops the timestamp. TIFF/PNG were already stable.
+SVG_HASHSALT = "cmig-svg-v1"
+SVG_METADATA: dict[str, None] = {"Date": None}
+
 # Units live in the JSON summaries already — these are the axis strings that carry them.
 UNIT_GROWTH = "h$^{-1}$"
 UNIT_FLUX = "mmol gDW$^{-1}$ h$^{-1}$"
@@ -4692,6 +4861,11 @@ def _load_matplotlib_pyplot() -> Any:
         # Keep SVG text as text so a figure can still be re-typeset; the previous default
         # outlined every glyph to a <path>, making half the figure set uneditable.
         "svg.fonttype": "none",
+        # Byte-reproducibility: matplotlib stamps <dc:date> and randomizes generated element ids
+        # (clip paths, glyph defs) into every SVG, so two runs with the same run_hash produced
+        # different artifact bytes. A fixed hash salt makes the generated ids deterministic; the
+        # date is suppressed per-savefig with metadata={"Date": None}.
+        "svg.hashsalt": SVG_HASHSALT,
     })
     return plt
 
@@ -4750,7 +4924,7 @@ def save_publication_tiff(fig: Any, out_tiff: Path, *, dpi: int = FIGURE_TIFF_DP
 
 def _save_screening_figure(fig: Any, out_svg: Path, out_tiff: Path) -> None:
     fig.tight_layout()
-    fig.savefig(out_svg, format="svg")
+    fig.savefig(out_svg, format="svg", metadata=SVG_METADATA)
     save_publication_tiff(fig, out_tiff)
 
 
@@ -5121,7 +5295,7 @@ def _write_spatial_snapshots(
     if image is not None:
         cbar = fig.colorbar(image, ax=list(axes[:-1]), fraction=0.035, pad=0.02)
         cbar.set_label("Concentration (mmol L$^{-1}$)")
-    fig.savefig(out_svg, format="svg", bbox_inches="tight")
+    fig.savefig(out_svg, format="svg", bbox_inches="tight", metadata=SVG_METADATA)
     save_publication_tiff(fig, out_tiff)
     plt.close(fig)
 
@@ -6428,6 +6602,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="community에 없는 medium exchange를 diagnostic에 기록하고 계속 진행",
     )
     sv.add_argument(
+        "--allow-failed-run", action="store_true", dest="allow_failed_run",
+        help="solve 가 실패해도 exit 0 (산출물은 기록되지만 결과가 아님)",
+    )
+    sv.add_argument(
         "--solver", default="gurobi",
         choices=["gurobi", "osqp"], help="solver (default: gurobi)",
     )
@@ -6941,6 +7119,16 @@ def build_parser() -> argparse.ArgumentParser:
     dfs.add_argument("--vmax", default=None)
     dfs.add_argument("--min-dt", type=float, default=1e-4, dest="min_dt")
     dfs.add_argument("--growth-floor", type=float, default=1e-6, dest="growth_floor")
+    dfs.add_argument(
+        "--close-untracked-uptake", action="store_true", dest="close_untracked_uptake",
+        help="close every default-medium uptake that --initial does not track, so growth cannot "
+        "be fed by an unconstrained substrate that is never depleted (without this, a "
+        "substrate/Km experiment is not interpretable)",
+    )
+    dfs.add_argument(
+        "--allow-failed-run", action="store_true", dest="allow_failed_run",
+        help="exit 0 even when the grid is not interpretable (artifacts are still written)",
+    )
     dfs.add_argument("--out", required=True, help="output directory")
     dfs.set_defaults(func=_cmd_dfba_sensitivity)
     spatial = sub.add_parser(

@@ -46,6 +46,20 @@ EDGE_LABELS = {
 BAR_COLORS = ("#0072B2", "#009E73", "#CC79A7", "#D55E00", "#000000")
 FONT_STACK = ("Arial", "Helvetica", "DejaVu Sans")
 FIGURE_TIFF_DPI = 600
+
+# F13: `sign.NOISE_FLOOR` declares itself the single classification threshold ("no independent
+# hard-coding, no drift"). These figures had drifted to their own looser literal in six
+# places, so a flux the rest of the product calls numerical noise could still be drawn as an
+# edge. Import the constant instead of restating it.
+from cmig.core.sign import NOISE_FLOOR  # noqa: E402
+
+# Byte-reproducibility of figure artifacts (round 5: codex F5 / opus F14). matplotlib stamps the
+# wall-clock time into <dc:date> and derives generated element ids (clip paths, glyph defs) from a
+# random salt, so two runs with an identical run_hash emitted different SVG bytes — a deliverable
+# advertised as reproducible that was not checksummable. A fixed salt makes the ids deterministic
+# and `metadata={"Date": None}` drops the timestamp. TIFF/PNG were already stable.
+SVG_HASHSALT = "cmig-svg-v1"
+SVG_METADATA: dict[str, None] = {"Date": None}
 UNIT_FLUX = "mmol gDW$^{-1}$ h$^{-1}$"
 
 
@@ -75,7 +89,7 @@ def host_microbe_interaction_rows(
     if member_sources:
         for member, secretion in sorted(member_sources.items()):
             for met, flux in sorted(secretion.items()):
-                if flux > 1e-9:
+                if flux > NOISE_FLOOR:
                     rows.append(_edge_row(
                         source=member,
                         target=f"met:{met}",
@@ -88,7 +102,7 @@ def host_microbe_interaction_rows(
                     ))
     else:
         for met, flux in sorted(microbial_secretion.items()):
-            if flux > 1e-9:
+            if flux > NOISE_FLOOR:
                 rows.append(_edge_row(
                     source="microbiome",
                     target=f"met:{met}",
@@ -100,7 +114,7 @@ def host_microbe_interaction_rows(
                     used_by_host=met in microbe_to_host,
                 ))
     for met, flux in sorted(host_uptake.items()):
-        if flux > 1e-9:
+        if flux > NOISE_FLOOR:
             rows.append(_edge_row(
                 source=f"met:{met}",
                 target="host",
@@ -112,7 +126,7 @@ def host_microbe_interaction_rows(
                 used_by_host=True,
             ))
     for met, flux in sorted(microbe_to_host.items()):
-        if flux > 1e-9:
+        if flux > NOISE_FLOOR:
             rows.append(_edge_row(
                 source="microbiome",
                 target="host",
@@ -134,7 +148,7 @@ def contribution_rows(
     totals: dict[str, float] = defaultdict(float)
     for secretion in member_secretion.values():
         for met, flux in secretion.items():
-            if flux > 1e-9:
+            if flux > NOISE_FLOOR:
                 totals[met] += flux
     rows: list[dict[str, Any]] = []
     for member, secretion in sorted(member_secretion.items()):
@@ -142,7 +156,7 @@ def contribution_rows(
             if met not in microbe_to_host:
                 continue
             total = totals.get(met, 0.0)
-            if flux <= 1e-9 or total <= 0.0:
+            if flux <= NOISE_FLOOR or total <= 0.0:
                 continue
             frac = flux / total
             rows.append({
@@ -358,12 +372,17 @@ def _load_matplotlib() -> Any:
         "xtick.labelsize": 10,
         "ytick.labelsize": 10,
         "svg.fonttype": "none",
+        # Byte-reproducibility: matplotlib stamps <dc:date> and randomizes generated element ids
+        # (clip paths, glyph defs) into every SVG, so two runs with the same run_hash produced
+        # different artifact bytes. A fixed hash salt makes the generated ids deterministic; the
+        # date is suppressed per-savefig with metadata={"Date": None}.
+        "svg.hashsalt": SVG_HASHSALT,
     })
     return plt
 
 
 def _save_svg_and_tiff(fig: Any, path: Path) -> None:
-    fig.savefig(path, format="svg")
+    fig.savefig(path, format="svg", metadata=SVG_METADATA)
     _save_publication_tiff(fig, path.with_suffix(".tiff"))
 
 

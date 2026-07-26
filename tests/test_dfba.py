@@ -313,14 +313,59 @@ def test_dfba_sensitivity_cli_writes_provenance_and_acceptance(tmp_path):
     rc = main([
         "dfba-sensitivity", "--model", _MODEL, "--t-end", "0.3",
         "--dts", "0.1,0.05", "--kms", "0.01,0.02",
-        "--initial", "EX_glc__D_e=10", "--out", str(out),
+        # Every substrate the organism needs must be tracked, or closing untracked uptake leaves
+        # it unable to grow at all and the grid has no dynamics to be sensitive to. Measured:
+        # glucose alone -> 4/4 stalled at the initial biomass; the set below -> 4/4 completed
+        # with biomass varying by dt (0.012922 / 0.012854 / 0.012919 / 0.012851).
+        "--initial",
+        "EX_glc__D_e=10,EX_o2_e=20,EX_nh4_e=10,EX_pi_e=10,EX_h2o_e=1000,EX_h_e=1000",
+        "--close-untracked-uptake", "--out", str(out),
     ])
     assert rc == 0
     payload = json.loads((out / "dfba_sensitivity.json").read_text())
     assert payload["n_runs"] == 4
     assert payload["acceptance"]["balance_passed"] is True
+    assert payload["acceptance"]["interpretable"] is True
+    assert payload["acceptance"]["n_infeasible"] == 0
+    assert payload["acceptance"]["not_interpretable_because"] == []
     assert payload["provenance"]["model_checksum"].startswith("sha256:")
     assert (out / "dfba_sensitivity.csv").exists()
+
+
+def test_dfba_sensitivity_refuses_to_certify_an_uninterpretable_grid(tmp_path):
+    """Round-5 opus F4 contract change.
+
+    Without `--close-untracked-uptake`, growth is fed by unconstrained default-medium substrates
+    that are never depleted: biomass came out bit-identical across a 10x Km sweep with the tracked
+    substrate untouched, and the audit still reported `balance_passed: true` and exit 0. The
+    integration residuals were genuinely zero — they simply cannot decide whether the *experiment*
+    means anything, so the verdict now has its own field and its own exit code.
+    """
+    from cmig.cli.main import main
+
+    out = tmp_path / "open_sensitivity"
+    rc = main([
+        "dfba-sensitivity", "--model", _MODEL, "--t-end", "0.3",
+        "--dts", "0.1,0.05", "--kms", "0.01,0.02",
+        "--initial", "EX_glc__D_e=10", "--out", str(out),
+    ])
+    assert rc == 3
+    payload = json.loads((out / "dfba_sensitivity.json").read_text())
+    assert payload["acceptance"]["balance_passed"] is True      # numerics were fine
+    assert payload["acceptance"]["no_untracked_uptake"] is False
+    assert payload["acceptance"]["interpretable"] is False      # the run is still not a result
+    assert payload["warnings"]
+    assert all(row["warnings"] for row in payload["rows"])
+    # --allow-failed-run is the documented override; it must not change the recorded verdict.
+    out2 = tmp_path / "open_sensitivity_allowed"
+    assert main([
+        "dfba-sensitivity", "--model", _MODEL, "--t-end", "0.3",
+        "--dts", "0.1", "--kms", "0.01",
+        "--initial", "EX_glc__D_e=10", "--allow-failed-run", "--out", str(out2),
+    ]) == 0
+    assert json.loads(
+        (out2 / "dfba_sensitivity.json").read_text()
+    )["acceptance"]["interpretable"] is False
 
 
 def test_spatial_preview_cli_writes_heatmap(tmp_path):

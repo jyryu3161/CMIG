@@ -24,6 +24,34 @@ semantic versioning for public releases.
 
 ### Changed
 
+- **BREAKING (scientific): `--medium` now actually applies.** `apply_medium_checked` gated on
+  `model.medium`, which lists only *currently open* uptakes, so a closed exchange could never be
+  opened — roughly 90% of nutrients (acetate, butyrate, lactate, succinate, glycerol) were
+  unreachable. Under `--allow-unknown-medium` they were dropped silently while the manifest still
+  recorded the requested `medium_checksum` and minted a distinct `run_hash`, publishing a run as
+  being on a medium it never used. Every consumer (`solve`, `search` and all multi-target
+  variants, `host-microbe-bigg`, `abundance-impact`, and the GUI via `EngineService`) now shares
+  the one metabolite-keyed path that `strain-growth` already used.
+
+  **This changes published numbers without changing `run_hash`.** Measured on identical inputs:
+  `solve --medium` growth `0.881561` → `1.125065` and `search --medium` target flux `18.13` →
+  `13.64`, both under a byte-identical hash. The discontinuity cannot be encoded in a hash
+  component (`cmig_core_version` is frozen), so runs are now stamped with a **non-hashed**
+  `medium_policy` marker — `provenance.medium_policy` in a solve manifest and a top-level
+  `medium_policy` in a workflow manifest — whose value moved from `open_uptakes_exact_key_v1` to
+  `exchange_reactions_by_metabolite_v2`.
+
+  **Action required:** any run produced before this change with `--medium` is suspect; its
+  `medium_checksum` describes a medium that was only partially applied, or not applied at all.
+  Re-run it. A manifest with no `medium_policy` key is from the old era.
+
+- A medium file that gives two namespace aliases of one metabolite (`EX_ac_e` and `EX_ac_m`)
+  different uptake limits is now refused as an input error (exit 2). Previously the last row
+  silently won, so reordering identical CSV rows changed community growth `1.125065` → `0.954612`
+  while `medium_checksum` — which sorts, and hashes both rows — stayed byte-identical. Aliases
+  that request the *same* limit are merged and are unaffected.
+
+
 - Cross-feeding allocation now conserves shared-pool supply and demand.
 - Multi-target search returns one jointly feasible flux vector.
 - Namespace review is mandatory unless the BiGG assumption is explicit.
