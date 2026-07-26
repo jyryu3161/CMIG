@@ -26,10 +26,11 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+
+from cmig.gui.builder import make_read_only, read_only_item
 
 _IFACE_COLOR = {"lumen": "#2c7fb8", "blood": "#d95f0e", "bigg_external": "#2b8cbe"}
 _LABEL_COLOR = {"secretion": "#31a354", "uptake": "#756bb1"}
@@ -152,13 +153,17 @@ class HostImpactView(QWidget):
         self.run_status = QLabel("")
         # 2-interface flux 표
         self.iface_table = QTableWidget(0, 4)
-        self.iface_table.setHorizontalHeaderLabels(["Interface", "Metabolite", "Flux", "Direction"])
+        self.iface_table.setHorizontalHeaderLabels(
+            ["Interface", "Metabolite", "Flux (mmol gDW⁻¹ h⁻¹)", "Direction"])
         self.iface_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        make_read_only(self.iface_table)
         # microbe→host cross-feeding 표
         self.cross_label = QLabel("Microbe → Host cross-feeding")
         self.cross_table = QTableWidget(0, 2)
-        self.cross_table.setHorizontalHeaderLabels(["Metabolite", "Flux (lumen transfer)"])
+        self.cross_table.setHorizontalHeaderLabels(
+            ["Metabolite", "Lumen transfer (mmol gDW⁻¹ h⁻¹)"])
         self.cross_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        make_read_only(self.cross_table)
         self.network_label = QLabel("Interaction Network")
         self.show_currency_metabolites = False
         self.current_run_dir: Path | None = None
@@ -195,6 +200,43 @@ class HostImpactView(QWidget):
         layout.addLayout(figure_row)
         layout.addWidget(self.run_status)
         layout.addWidget(splitter, 1)
+        # Any edit to an answer-determining input invalidates the displayed result: a host
+        # viability verdict computed for model/medium A must not sit under inputs saying B.
+        for line_edit in (
+            self.host_path_input,
+            self.host_objective_input,
+            self.model_dir_input,
+            self.host_medium_input,
+            self.microbe_medium_input,
+            self.search_target_input,
+        ):
+            line_edit.textChanged.connect(self.invalidate_results)
+        for spin in (
+            self.tradeoff_spin, self.microbial_biomass_spin, self.host_biomass_spin,
+            self.min_size_spin, self.max_size_spin,
+        ):
+            spin.valueChanged.connect(self.invalidate_results)
+        for check in (
+            self.recursive_check, self.keep_host_uptake_check, self.include_currency_check
+        ):
+            check.toggled.connect(self.invalidate_results)
+        self.search_metric_combo.currentTextChanged.connect(self.invalidate_results)
+
+    def invalidate_results(self, *_args: Any) -> None:
+        """Drop the displayed host result when the request that produced it changed."""
+        if (
+            self.iface_table.rowCount() == 0
+            and self.cross_table.rowCount() == 0
+            and not self.viability_label.text()
+        ):
+            return
+        self.iface_table.setRowCount(0)
+        self.cross_table.setRowCount(0)
+        self.viability_label.setText("")
+        self.viability_label.setStyleSheet("")
+        self.current_run_dir = None
+        self.network_payload = None
+        self.run_status.setText("Inputs changed — previous result cleared; re-run to update.")
 
     def request(self) -> dict[str, Any]:
         """Return the current host-microbe run request from GUI controls."""
@@ -278,7 +320,7 @@ class HostImpactView(QWidget):
         for i, f in enumerate(rows):
             cells = [f.interface, f.metabolite, f"{f.flux:.4g}", f.label or "—"]
             for c, text in enumerate(cells):
-                item = QTableWidgetItem(text)
+                item = read_only_item(text)
                 if c == 0 and f.interface in _IFACE_COLOR:
                     item.setForeground(QColor(_IFACE_COLOR[f.interface]))
                 if c == 3 and f.label in _LABEL_COLOR:
@@ -290,8 +332,8 @@ class HostImpactView(QWidget):
         items = sorted(impact.microbe_to_host.items())
         self.cross_table.setRowCount(len(items))
         for i, (met, flux) in enumerate(items):
-            self.cross_table.setItem(i, 0, QTableWidgetItem(met))
-            self.cross_table.setItem(i, 1, QTableWidgetItem(f"{flux:.4g}"))
+            self.cross_table.setItem(i, 0, read_only_item(met))
+            self.cross_table.setItem(i, 1, read_only_item(f"{flux:.4g}"))
 
     def load_bigg_summary(self, payload: dict[str, Any], *, run_dir: Path | None = None) -> None:
         """Load parsed `host_microbe_bigg_summary.json` into tables and network."""

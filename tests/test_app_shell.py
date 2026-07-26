@@ -288,6 +288,18 @@ def test_poll_completed_fixture_auto_loads_run(tmp_path, monkeypatch):
     runner.shutdown()
 
 
+def _drain_sandbox_job(w, runner, timeout: float = 10.0) -> None:
+    """Round-5 P2: the sandbox now solves through JobRunner instead of freezing the Qt main
+    thread, so the preview result arrives via `_poll_completed_jobs` like every other view."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and w._sandbox_jobs:
+        w._poll_completed_jobs()
+        time.sleep(0.01)
+    assert not w._sandbox_jobs, "sandbox job did not complete"
+
+
 def test_sandbox_preview_button_runs_service(monkeypatch):
     from types import SimpleNamespace
 
@@ -303,10 +315,13 @@ def test_sandbox_preview_button_runs_service(monkeypatch):
 
     monkeypatch.setattr(cmig.service, "EngineService", FakeEngineService)
     _app()
-    w = build_main_window()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
     w.sandbox_view.add_bound("EX_glc__D_e", -1.0, 1000.0)
     w.sandbox_view.preview_btn.click()
+    _drain_sandbox_job(w, runner)
     assert "preview" in w.sandbox_view.status.text()
+    runner.shutdown()
 
 
 def test_sandbox_rejects_multiple_bounds_before_silent_ignore(monkeypatch):
@@ -351,15 +366,18 @@ def test_sandbox_debounce_triggers_preview_after_bound_edit(monkeypatch):
 
     monkeypatch.setattr(cmig.service, "EngineService", FakeEngineService)
     _app()
-    w = build_main_window()
+    runner = JobRunner(max_workers=1)
+    w = build_main_window(runner=runner)
     w.sandbox_view._debounce.setInterval(20)
     w.sandbox_view.add_bound("EX_glc__D_e", -1.0, 1000.0)
     loop = QEventLoop()
     w.sandbox_view._debounce.timeout.connect(loop.quit)
     QTimer.singleShot(2000, loop.quit)
     loop.exec()
+    _drain_sandbox_job(w, runner)
     assert calls["n"] == 1
     assert "preview" in w.sandbox_view.status.text()
+    runner.shutdown()
 
 
 def test_search_button_requires_model_folder(monkeypatch, tmp_path):
@@ -528,6 +546,10 @@ def test_search_figure_export_copies_selected_svg(monkeypatch, tmp_path):
     (run_dir / "search_scatter.svg").write_text("<svg>scatter</svg>")
     target = tmp_path / "export.svg"
     w = build_main_window()
+    # Round-5 P2 / verifier V-1: the export is keyed to the run the Search table is
+    # *displaying*, so that an invalidated result cannot be exported after the user has been
+    # told it was discarded. `current_run_dir` is what a real completed run sets.
+    w.search_view.current_run_dir = run_dir
     w.current_search_dir = run_dir
     w.search_view.figure_mode_combo.setCurrentText("Scatter")
     monkeypatch.setattr(
@@ -617,6 +639,9 @@ def test_host_figure_export_copies_selected_svg(monkeypatch, tmp_path):
     (run_dir / "interaction_heatmap.svg").write_text("<svg>heatmap</svg>")
     target = tmp_path / "export.svg"
     w = build_main_window()
+    # Round-5 P2: the export is keyed to the run the Host tab is *displaying*, not to a
+    # window-level pointer that a failed load could have advanced past it.
+    w.host_view.current_run_dir = run_dir
     w.current_host_microbe_dir = run_dir
     w.host_view.figure_mode_combo.setCurrentText("Heatmap")
     monkeypatch.setattr(
@@ -664,12 +689,17 @@ def test_community_solve_button_writes_taxonomy_and_overrides_abundance(monkeypa
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
     w.community_builder.model_dir_input.setText(str(pool_dir))
+    # Round-5 P2: `cmig solve` refuses to run without an explicit namespace decision, and the
+    # GUI now mirrors that gate instead of always failing at rc=2. The GUI must never supply
+    # the confirmation on the user's behalf, so the test confirms it explicitly.
+    w.community_builder.assume_bigg_check.setChecked(True)
     w.community_builder.add_member("iML1515", 0.75)
     w.community_builder.f_slider.setValue(30)
     jid = w.run_community_solve()
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
     assert seen["argv"][0] == "solve"
+    assert "--assume-bigg-namespace" in seen["argv"]
     assert seen["argv"][seen["argv"].index("--tradeoff-f") + 1] == "0.3"
     tax_path = Path(seen["argv"][seen["argv"].index("--taxonomy") + 1])
     assert tax_path.exists()

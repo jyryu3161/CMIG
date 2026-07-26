@@ -14,6 +14,7 @@ from typing import Any
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -24,11 +25,11 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from cmig.gui.builder import make_read_only, read_only_item
 from cmig.service import JobRunner, make_sweep_job
 
 # sign 라벨 → UI 색 (secretion=초록 / uptake=보라, §11 diverging)
@@ -62,6 +63,7 @@ class SweepView(QWidget):
         self.table = QTableWidget(0, len(self._COLS))
         self.table.setHorizontalHeaderLabels(["Condition", "Value", "Status", "Cache"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        make_read_only(self.table)
         layout.addWidget(self.title)
         layout.addWidget(self.status)
         layout.addLayout(config_row)
@@ -81,7 +83,7 @@ class SweepView(QWidget):
             val = "—" if r.value is None else f"{r.value:.4g}"
             cells = [r.condition_id, val, r.status, "hit" if r.cache_hit else "miss"]
             for c, text in enumerate(cells):
-                item = QTableWidgetItem(text)
+                item = read_only_item(text)
                 if r.status == "failed":
                     item.setForeground(QColor("#d62728"))
                 self.table.setItem(i, c, item)
@@ -98,8 +100,9 @@ class ExternalProfileView(QWidget):
         self.title = QLabel("External Profile")
         self.table = QTableWidget(0, len(self._COLS))
         self.table.setHorizontalHeaderLabels(
-            ["Metabolite", "Net flux", "Direction", "FVA [lo, hi]"])
+            ["Metabolite", "Net flux (mmol gDW⁻¹ h⁻¹)", "Direction", "FVA [lo, hi]"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        make_read_only(self.table)
         self.target_label = QLabel("")
         layout.addWidget(self.title)
         layout.addWidget(self.table)
@@ -119,7 +122,7 @@ class ExternalProfileView(QWidget):
                 label, fva,
             ]
             for c, text in enumerate(cells):
-                item = QTableWidgetItem(text)
+                item = read_only_item(text)
                 if c == 2 and label in _LABEL_COLOR:
                     item.setForeground(QColor(_LABEL_COLOR[label]))
                 self.table.setItem(i, c, item)
@@ -162,16 +165,28 @@ class DfbaSpatialView(QWidget):
         self.t_end_spin.setRange(0.01, 10000.0)
         self.t_end_spin.setValue(5.0)
         self.t_end_spin.setDecimals(3)
+        self.t_end_spin.setSuffix(" h")
         self.dt_spin = QDoubleSpinBox()
         self.dt_spin.setRange(1e-5, 1000.0)
         self.dt_spin.setValue(0.1)
         self.dt_spin.setDecimals(5)
+        self.dt_spin.setSuffix(" h")
         self.biomass_spin = QDoubleSpinBox()
         self.biomass_spin.setRange(1e-9, 1000.0)
         self.biomass_spin.setValue(0.01)
         self.biomass_spin.setDecimals(6)
+        self.biomass_spin.setSuffix(" gDW L⁻¹")
+        # Without this, growth can be fed by unconstrained default-medium substrates that are
+        # never depleted, and the CLI's own summary declares the run NOT interpretable. The
+        # control has to be reachable so the user can make the run interpretable, not only be
+        # told that it is not (round-5 coordinator CC-6).
+        self.close_untracked_check = QCheckBox("Close untracked uptake")
+        self.close_untracked_check.setToolTip(
+            "Close every uptake exchange outside 'Initial' before integrating, so a "
+            "substrate/Km experiment is actually controlled."
+        )
         self.run_dfba_btn = QPushButton("Run dFBA")
-        dfba_row.addWidget(QLabel("Initial"))
+        dfba_row.addWidget(QLabel("Initial (mmol L⁻¹)"))
         dfba_row.addWidget(self.initial_input)
         dfba_row.addWidget(QLabel("T end"))
         dfba_row.addWidget(self.t_end_spin)
@@ -179,6 +194,7 @@ class DfbaSpatialView(QWidget):
         dfba_row.addWidget(self.dt_spin)
         dfba_row.addWidget(QLabel("Biomass"))
         dfba_row.addWidget(self.biomass_spin)
+        dfba_row.addWidget(self.close_untracked_check)
         dfba_row.addWidget(self.run_dfba_btn)
 
         spatial_row = QHBoxLayout()
@@ -220,10 +236,15 @@ class DfbaSpatialView(QWidget):
         spatial_row.addWidget(self.run_spatial_btn)
 
         self.status = QLabel("")
+        self.warning_label = QLabel("")
+        self.warning_label.setWordWrap(True)
+        self.warning_label.setStyleSheet("color: #d62728;")
+        self.warning_label.setVisible(False)
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Run", "Status", "Final time", "Readout"])
+        self.table.setHorizontalHeaderLabels(["Run", "Status", "Final time (h)", "Readout"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setMaximumHeight(130)
+        make_read_only(self.table)
         self.figure_label = QLabel("No dynamics figure loaded.")
         self.figure_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.figure_label.setMinimumHeight(460)
@@ -234,8 +255,30 @@ class DfbaSpatialView(QWidget):
         layout.addLayout(dfba_row)
         layout.addLayout(spatial_row)
         layout.addWidget(self.status)
+        layout.addWidget(self.warning_label)
         layout.addWidget(self.table)
         layout.addWidget(self.figure_label)
+        for line_edit in (self.model_path_input, self.initial_input,
+                          self.spatial_metabolite_input):
+            line_edit.textChanged.connect(self.invalidate_results)
+        for spin in (self.t_end_spin, self.dt_spin, self.biomass_spin,
+                     self.grid_size_spin, self.steps_spin, self.spatial_dt_spin,
+                     self.diffusion_spin):
+            spin.valueChanged.connect(self.invalidate_results)
+        for combo in (self.source_combo, self.sink_combo):
+            combo.currentTextChanged.connect(self.invalidate_results)
+        self.close_untracked_check.toggled.connect(self.invalidate_results)
+
+    def invalidate_results(self, *_args: Any) -> None:
+        """Drop the displayed timecourse when its inputs no longer describe it."""
+        if self.table.rowCount() == 0:
+            return
+        self.table.setRowCount(0)
+        self.warning_label.setVisible(False)
+        self.warning_label.setText("")
+        self.figure_label.setPixmap(QPixmap())
+        self.figure_label.setText("Inputs changed — previous result cleared; re-run to update.")
+        self.status.setText("Inputs changed — previous result cleared; re-run to update.")
 
     def browse_model(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -257,6 +300,7 @@ class DfbaSpatialView(QWidget):
             "t_end": self.t_end_spin.value(),
             "dt": self.dt_spin.value(),
             "initial_biomass": self.biomass_spin.value(),
+            "close_untracked_uptake": self.close_untracked_check.isChecked(),
         }
 
     def spatial_request(self) -> dict[str, Any]:
@@ -274,34 +318,69 @@ class DfbaSpatialView(QWidget):
         }
 
     def load_dfba_summary(self, payload: dict[str, Any], *, run_dir: Any) -> None:
+        """Render a dFBA run — including its own verdict on whether it is interpretable.
+
+        `cmig dfba` records `warnings` and `n_untracked_uptake` when growth was supported by
+        unconstrained default-medium substrates outside the tracked set; in that case its own
+        artifact says a substrate/Km result is NOT interpretable. Presenting such a run as an
+        ordinary `completed` row with a biomass number is the presentation layer discarding
+        the honest signal (round-5 coordinator CC-6), so the warning is shown prominently and
+        the status cell is flagged rather than reading plain `completed`.
+        """
         final_conc = payload.get("final_concentrations", {})
         readout = ", ".join(f"{k}={float(v):.3g}" for k, v in dict(final_conc).items())
+        warnings = [str(w) for w in (payload.get("warnings") or [])]
+        n_untracked = payload.get("n_untracked_uptake")
+        status = str(payload.get("status", ""))
         self._set_single_row(
             "dFBA",
-            str(payload.get("status", "")),
+            f"{status} ⚠ see warnings" if warnings else status,
             float(payload.get("final_t", 0.0)),
             f"biomass={float(payload.get('final_biomass', 0.0)):.3g}"
             + (f"; {readout}" if readout else ""),
         )
-        self.status.setText(f"dFBA loaded: {run_dir}")
+        untracked_note = (
+            f" · {n_untracked} untracked uptake substrate(s)"
+            if isinstance(n_untracked, int) and n_untracked > 0
+            else ""
+        )
+        self.status.setText(
+            f"dFBA loaded: {run_dir}"
+            + (f" · {len(warnings)} warning(s){untracked_note}" if warnings else untracked_note)
+        )
+        self._show_warnings(warnings)
         self._load_figure(run_dir, "dfba_timecourse.svg")
 
     def load_spatial_summary(self, payload: dict[str, Any], *, run_dir: Any) -> None:
+        warnings = [str(w) for w in (payload.get("warnings") or [])]
+        status = str(payload.get("status", ""))
         self._set_single_row(
             "Spatial",
-            str(payload.get("status", "")),
+            f"{status} ⚠ see warnings" if warnings else status,
             float(payload.get("final_t", 0.0)),
             f"range={float(payload.get('final_min', 0.0)):.3g}.."
             f"{float(payload.get('final_max', 0.0)):.3g}",
         )
-        self.status.setText(f"Spatial preview loaded: {run_dir}")
+        self.status.setText(
+            f"Spatial preview loaded: {run_dir}"
+            + (f" · {len(warnings)} warning(s)" if warnings else "")
+        )
+        self._show_warnings(warnings)
         self._load_figure(run_dir, "spatial_snapshots.svg")
+
+    def _show_warnings(self, warnings: list[str]) -> None:
+        if not warnings:
+            self.warning_label.setVisible(False)
+            self.warning_label.setText("")
+            return
+        self.warning_label.setText("⚠ " + "\n⚠ ".join(warnings))
+        self.warning_label.setVisible(True)
 
     def _set_single_row(self, run_type: str, status: str, final_t: float, readout: str) -> None:
         self.table.setRowCount(1)
         values = [run_type, status, f"{final_t:.4g}", readout]
         for idx, value in enumerate(values):
-            self.table.setItem(0, idx, QTableWidgetItem(value))
+            self.table.setItem(0, idx, read_only_item(value))
 
     def _load_figure(self, run_dir: Any, artifact: str) -> None:
         path = run_dir / artifact
