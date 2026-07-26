@@ -222,6 +222,13 @@ def write_solve_output(
         )
         payload = {
             "manifest_schema_version": "2.0",
+            # Says which hash this is. `run_hash` here is the frozen 11-component solve hash;
+            # a workflow envelope writes `manifest_scope: "workflow"` over a different component
+            # set entirely. Consumers used to distinguish the two by the *absence* of the key,
+            # which is not a fact a reader can check — round-5 flagged the claim "manifest scope
+            # `solve`" as naming a key that did not exist. Outside the hash: it names the payload,
+            # it is not an input to it, so no published run_hash moves.
+            "manifest_scope": "solve",
             "run_hash": manifest.run_hash,                       # compute_run_hash
             "float_decimals": manifest.float_decimals,
             # canonical_json 은 비유한 float sentinel·정렬·allow_nan=False (결정적·재현)
