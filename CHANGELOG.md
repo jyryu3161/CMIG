@@ -222,6 +222,53 @@ semantic versioning for public releases.
   (`host_coupling.host_exchange_resolver`) and the reported map and the applied bounds agree by
   construction. With a reviewed map the same input now gives `5.0`.
 
+- **BREAKING (scientific): a MAINTENANCE objective is no longer reported as growth.** Round 5's
+  objective-structure guard admitted `BIOMASS_maintenance` in silence, because the id contains the
+  word "biomass" — and that is what Recon3D actually **ships as its default objective**, optimizing
+  to `755.0032155506631`. A maintenance turnover rate was therefore free to be published as a growth
+  rate by `model-quality`, `host-generic` and `host-benchmark` with no caveat anywhere. Maintenance
+  hints (`maintenance`, `atpm`, `non-growth`/`nongrowth`/`ngam`) are now tested **before** the
+  biomass hints — deliberately, since the conventional spelling of the concept ("non-growth
+  associated maintenance") contains the word `growth`.
+
+  The guard also reached only one of its call sites in the round-5 shape: `model_quality.py`,
+  `model_pool.py` and `ModelSummary.as_dict()` all still passed the **count** alone, which skips
+  every single-term check. Measured, `model-quality` — the one command whose entire job is to vet a
+  GEM before publication — audited RECON1 (objective `S6T14g`, a Golgi sulfotransferase, optimum
+  `0.0`) and emitted an **empty** objective warning; passing ids would not have helped either,
+  because `getattr(str, 'id', '?')` rendered the message as "objective reaction ?". All three sites
+  now pass the reactions or ids, and `objective_structure_warning` accepts either. `model_quality`'s
+  `run_hash` reproduces `57283fa9b1393cfa…` bit-for-bit, so no hash moved.
+
+  `HostModelSummary` now carries `objective_warning`, `n_boundary_reactions` and
+  `n_nonexchange_boundary_uptake`, and `host-generic` / `host-benchmark` publish all three, so a
+  generic GEM discloses its 95 sink/demand suppliers *before* anyone couples anything to it. The
+  limitation is deliberate and worth writing down: the check is lexical, so a reduced-precursor
+  biomass reaction named without the word "maintenance" is not caught, and structure does not
+  separate the cases either (Recon3D's maintenance objective has 37 metabolites against growth's
+  41). Of the three biomass/growth-named reactions Recon3D ships, two warn and one correctly does
+  not; RECON1 ships none.
+
+  **Non-hashed provenance marker:** `host_isolation_policy`, value `all_boundary_uptake_v2` (prior
+  era `model_exchanges_only_v1`). It dates *the host-coupling answer*, where
+  `boundary_isolation_policy` dates *the shared primitive*; both are members of
+  `workflow_manifest.NON_HASHED_PROVENANCE_MARKERS`, so both are stamped by the writers and both
+  reach `cmig inspect-run` — verified end-to-end on a workflow manifest (top level) and a solve
+  manifest (inside `provenance`).
+
+- Tracked provenance for the human GEMs: `data/gems/GEM_SOURCES.json` (retrieval date, `.xml` and
+  `.xml.gz` SHA-256 and byte counts, server `Last-Modified`, structural counts, and the shipped
+  default objective **with its warning**), `data/gems/README.md`, and
+  `scripts/download_human_gems.py` with `--verify` / `--verify --counts`. The model bytes stay
+  gitignored: BiGG is **not** under a named open licence but a custom UCSD non-commercial licence
+  (`http://bigg.ucsd.edu/license`), and `bigg.ucsd.edu` serves plain HTTP only — an `https://`
+  request is refused at the TCP level, so any code using `https://bigg.ucsd.edu/...` fails outright.
+  `data/gems` is also now part of the human-GEM resolution order (`cmig/io/gem_paths.py`), shared by
+  the CLI `--model` defaults and the tests so they cannot disagree; `tests/test_recon3d_host.py`,
+  which had skipped for the project's entire life because the order never looked where the download
+  lands, now runs. Its old assertion `biomass > 1.0` **passed on the maintenance optimum**, so it
+  now pins the value and requires the maintenance verdict beside it.
+
 - Round 5's objective-structure guard now reaches the host-coupling commands. `--host-objective` is
   optional, so `host-microbe-bigg`, `host-search-bigg` and `host-ko-impact` published
   `host_objective` computed on whatever the SBML shipped, with no caveat anywhere (RECON1's default
