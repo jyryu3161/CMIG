@@ -144,7 +144,45 @@ Changes: 13 files modified (+1864/−184), plus `cmig/core/host_ko_impact.py` an
 9 new test files. Nothing committed — all changes are uncommitted working-tree
 edits for your review.
 
-## Known-open items (not fixed, ranked)
+## Status update — phase 4 (2026-07-26): all items below are now FIXED
+
+Everything in this section was subsequently implemented and verified in phase 4
+(commit `3b6d57c`, branch `fix/reproducibility-and-scenario-validity`). The list
+is retained as the record of what the five evaluations found. Highlights:
+
+- **Item 1 (manifest / `run_hash`)** — a versioned workflow manifest now covers
+  every science command, recording the answer-determining parameters. The frozen
+  11-component `community_solve` hash is untouched and verified bit-identical
+  (`29844e29…cef29ab`); `golden verify` is green on both solvers. Hash
+  determinism was checked in both directions: identical inputs reproduce it,
+  changing `--growth-fraction` changes it.
+- **Item 2 (linear-scalarisation collapse)** — `--multi-metric pareto` returns a
+  genuine non-dominated front. Where the weighted sum returned only the acetate
+  vertex (ac 12.112, rest 0), the front now also surfaces a trade-off point at
+  ac 5.05 with lac__D 1.078, lac__L 1.062, ppa 0.783, succ 0.853.
+- **Item 5 (edge identifiability)** — verified on a real 3-member solve: 16
+  cross-feeding edges labelled `proportional_shared_pool` / `identifiable=False`
+  against 80 direct exchange edges `direct_flux` / `identifiable=True`.
+- **Item 3** — `target_influence_share` is now a flat 0.500 across the sweep
+  (was an exactly inverted 0.75/0.50/0.25).
+- **Item 4** — a failed scientific solve exits non-zero and figures drawn from a
+  failed solve carry a "NOT A RESULT" banner.
+
+The tidy schema bump (1.1 → 1.2) required regenerating the golden parquets. This
+was done by a self-gating script that refuses to write unless every number is
+bit-identical once the version stamp and new columns are excluded; independent
+inspection confirmed `nodes`/`profile` differ **only** by `schema_version` and
+that `weight` values are unchanged.
+
+Gates after phase 4: **pytest 731 passed, 2 pre-existing skips, 0 failed**
+(+121 regression tests total), ruff clean, `golden verify` green.
+
+**What genuinely remains is not a defect:** no human GEM ships, so every S3
+number is a surrogate — scenario 3 becomes publication-grade only with a real
+host model (Recon3D / Human-GEM) and a reviewed interface map. The bundled pool
+is also only 5 GEMs, so S1 tractability at 20–100 members remains unmeasured.
+
+## Known-open items as found (now resolved — see above)
 
 Reconciled against phase 3's explicit deferral list.
 
