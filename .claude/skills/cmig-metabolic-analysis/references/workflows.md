@@ -381,7 +381,7 @@ Run a user-provided MICOM taxonomy community solve.
   before comparing any two edges.
 ```bash
 uv run cmig solve --taxonomy taxonomy.csv \
-  --medium medium_presets/western_diet.csv --solver gurobi \
+  --medium medium_presets/gut_overlay_agora_western.csv --solver gurobi \
   --tradeoff-f 0.5 --out runs/solve
 ```
 

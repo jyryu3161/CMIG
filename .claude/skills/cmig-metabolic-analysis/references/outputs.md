@@ -23,7 +23,9 @@ uv run cmig inspect-run --run-dir runs/<name> --format json
 - `summary_file` — which summary JSON was detected.
 - `artifacts` — the files present in the run directory.
 - `manifest` — compacted manifest fields when a `manifest.json` exists, including
-  `provenance.medium_policy`, `diagnostic`, `warnings` and `summary`.
+  the three non-hashed **policy markers** (`medium_policy`,
+  `boundary_isolation_policy`, `host_isolation_policy` — see below),
+  `diagnostic`, `warnings` and `summary`.
 
 Use `--format text` for a quick human read. Report `status`, `status_source`, both
 fingerprints, and the headline numbers back to the user — a bare "done" hides
@@ -287,12 +289,21 @@ that exists but is corrupt is an **error**, not `unknown`.
    in place invalidates the run.
 2. Record the `run_hash`, the `result_digest`, and the solver used (see
    `references/scientific-validity.md` §4).
-3. **Check `provenance.medium_policy` on any run that used `--medium`.** A
-   trustworthy run records `exchange_reactions_by_metabolite_v2`. If the field is
-   absent or reads `open_uptakes_exact_key_v1`, the medium was never properly
-   applied and **the run must be re-done** — its `medium_checksum` and `run_hash`
-   certify a medium that did not take effect, and the hash will not reveal it
-   because the fix changed numbers without moving hashes.
+3. **Check the three policy markers.** Each records a semantics change that moved
+   published answers **without moving `run_hash`**, so the hash cannot reveal it
+   and the marker is the only mechanical signal. All three are non-hashed and all
+   three reach `inspect-run`; a missing one means the run predates that fix.
+
+   | marker | trustworthy value | if absent / older |
+   | ------ | ----------------- | ----------------- |
+   | `medium_policy` | `exchange_reactions_by_metabolite_v2` | `open_uptakes_exact_key_v1` or absent ⇒ the `--medium` file never took effect; **re-do the run** |
+   | `boundary_isolation_policy` | `boundary_reactions_v1` | absent ⇒ closure enumerated `model.exchanges`/`model.medium`, so sinks and demands stayed open. Only matters on a model that *has* them: the bundled microbial GEMs have none, the human GEMs have 95 |
+   | `host_isolation_policy` | `all_boundary_uptake_v2` | `model_exchanges_only_v1` or absent ⇒ a host coupling run's `host_objective` may have been fed by the host's own sinks rather than by the community. Measured on Recon3D: `368.010247546` before, `0.0` after, **same `run_hash`** |
+
+   On a host-coupling run also read `host.boundary_isolation` and
+   `summary.host_boundary_isolated` in the summary JSON: an objective computed
+   with the background left open (`--keep-host-uptake`) is **not** attributable to
+   the microbes, and the `warnings` list says so with the count.
 4. For a publication run, prefer `cmig publication-benchmark`, which produces a
    single checksummed manifest with a `publication_ready` flag combining the
    quality audit, community solve, search, optional dFBA sensitivity, and

@@ -404,6 +404,28 @@ requested `medium_checksum` and minted a `run_hash` certifying it.
   (exit 2) in both `solve` and `search`. Pick one. It used to pick a silent winner
   and reordering identical rows changed community growth under an identical
   checksum.
+- **`--medium` is an OVERLAY, not a replacement — so it does not close oxygen.**
+  CMIG merges the requested uptakes onto MICOM's default community medium, which
+  is permissive, so **every metabolite the file does not name keeps its default
+  bound.** Measured on a glucose-only spec applied to `iML1515 + iYO844`: 23
+  uptakes stayed open that the spec never requested, `EX_o2_m` among them at
+  **999999.0**. Every "anaerobic gut community" result CMIG produced on a custom
+  medium before this was found was computed with oxygen freely available. The cost,
+  measured on `iML1515+iYO844+iHN637` at `cooperative_tradeoff(f=0.5)`, Gurobi:
+  community growth **1.2677557** with the inherited oxygen against
+  **0.6990206751** with `EX_o2_m = 0.001` — an **81 % overestimate from one
+  absent row**.
+  - Use the shipped `medium_presets/gut_overlay_*.csv`. Each names oxygen
+    explicitly at MICOM's own published `0.001` and carries a
+    background-closure block (`uptake_limit = 0`) for every metabolite the pool
+    would otherwise leave open; `uptake_limit = 0` is the only way a CSV can say
+    "the environment does not supply this" under merge semantics.
+  - **Do not cite `western_diet.csv` or `high_fiber.csv` as diets.** They are
+    single-row glucose files with no source, 134× and 76× the published AGORA
+    bounds, with no oxygen row and — despite the name — no fibre at all. They are
+    retained only as a smoke fixture.
+  - A closure block is **pool-specific**, so an overlay carried to a different
+    model set may leave nutrients open again. Re-measure rather than assume.
 - **`--allow-unknown-medium` costs more than it looks.** Without it, a medium id
   with no counterpart in the community is a hard input error (**exit 2**). With
   it, those nutrients are **dropped** and the run continues. Measured on a
