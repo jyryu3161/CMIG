@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from PySide6.QtCore import QObject, QStandardPaths, Qt, QTimer
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
     QHeaderView,
@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QTableWidget,
-    QTableWidgetItem,
     QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
@@ -42,6 +41,8 @@ from cmig.gui.builder import (
     ConstraintSandboxView,
     ScenarioCompareView,
     SearchView,
+    make_read_only,
+    read_only_item,
 )
 from cmig.gui.editors import MediumEditor, ModelManagerPanel
 from cmig.gui.host_view import HostImpactView
@@ -64,6 +65,41 @@ I18N: dict[str, dict[str, str]] = {
         "ready": "Ready",
     },
 }
+
+
+def _single_target(text: str) -> tuple[str, str]:
+    """Parse the Target box into (target, error_message) without ever substituting a default.
+
+    The box used to mean two different metabolites depending on which button was pressed
+    ("but" for Run Search, "ac" for Rank Gene KOs) and silently truncated `ac,but` to `ac`.
+    A scientific request is never guessed here: an empty or multi-valued box is refused.
+    """
+    raw = text.strip()
+    if not raw:
+        return "", (
+            "Enter the target metabolite (e.g. but or ac). "
+            "CMIG does not substitute a default target."
+        )
+    if "," in raw:
+        return "", (
+            "Multi-target search is CLI-only (`cmig search --targets ac,but`). "
+            "Enter a single metabolite here."
+        )
+    return raw, ""
+
+
+def _finish_after_artifacts(ctx: Any) -> None:
+    """Mark a GUI job complete once its artifacts have been committed to disk.
+
+    Deliberately does NOT re-check cancellation. By this point `main(argv)` (or
+    `solve_fixture`) has already written `manifest.json`, the CSVs and the figures. Raising
+    `JobCancelled` here made `JobRunner` drop the outcome and record `cancelled` while a
+    complete, valid run directory sat on disk — a durable contradiction, and a silent loss
+    of a multi-minute solve the user can never get back. A cancel that arrives after the
+    work is finished is reported as finished; the pre-run check still short-circuits a job
+    that has not started.
+    """
+    ctx.report_progress(1, 1)
 
 
 def _search_temp_root() -> Path:
@@ -125,15 +161,36 @@ class RuntimeJobsPanel(QTableWidget):
         self.setHorizontalHeaderLabels(
             [tr["col_job"], tr["col_kind"], tr["col_status"], tr["col_progress"]])
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        make_read_only(self)
 
-    def refresh(self, runner: JobRunner, job_ids: list[str]) -> None:
-        """JobRunner.poll 로 각 job 의 실제 상태를 표에 반영(orphan 아님)."""
+    def refresh(
+        self,
+        runner: JobRunner,
+        job_ids: list[str],
+        cancelling: frozenset[str] | set[str] = frozenset(),
+    ) -> None:
+        """JobRunner.poll 로 각 job 의 실제 상태를 표에 반영(orphan 아님).
+
+        A job whose cancel has been *requested* but which is still inside a non-interruptible
+        solver call is shown as `cancelling (solver still running)` rather than plain
+        `running` — the previous label made the cancel look like it had done nothing.
+        """
         self.setRowCount(len(job_ids))
         for row, jid in enumerate(job_ids):
             job = runner.poll(jid)
-            prog = f"{job.progress[0]}/{job.progress[1]}" if job.progress else "—"
-            for col, text in enumerate([job.job_id, job.kind, job.status.value, prog]):
-                self.setItem(row, col, QTableWidgetItem(text))
+            # GUI jobs only check cancellation at run boundaries, so an in-flight MICOM/Gurobi
+            # call keeps burning CPU after cancel(); say so instead of implying it stopped.
+            progress = (
+                f"{job.progress[0]}/{job.progress[1]}"
+                if job.progress and job.progress[1] > 1
+                # 0/1 → 1/1 is a two-state placeholder, not measured progress.
+                else "—"
+            )
+            status = job.status.value
+            if jid in cancelling and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+                status = "cancelling (solver still running)"
+            for col, text in enumerate([job.job_id, job.kind, status, progress]):
+                self.setItem(row, col, read_only_item(text))
 
     def selected_job_id(self) -> str | None:
         row = self.currentRow()
@@ -151,6 +208,9 @@ class JobsBridge(QObject):
         self._runner = runner
         self._panel = panel
         self._job_ids: list[str] = []
+        #: jobs for which the user pressed Cancel; the request is cooperative, so a job stays
+        #: here until it actually reaches a terminal state.
+        self.cancelling: set[str] = set()
         self._timer = QTimer(self)
         self._timer.setInterval(interval_ms)
         self._timer.timeout.connect(self.refresh)
@@ -160,10 +220,13 @@ class JobsBridge(QObject):
         self.refresh()
 
     def refresh(self) -> None:
-        self._panel.refresh(self._runner, self._job_ids)
+        self._panel.refresh(self._runner, self._job_ids, frozenset(self.cancelling))
 
     def start(self) -> None:
         self._timer.start()
+
+    def stop(self) -> None:
+        self._timer.stop()
 
 
 class CmigMainWindow(QMainWindow):
@@ -179,17 +242,21 @@ class CmigMainWindow(QMainWindow):
         self.jobs_panel = RuntimeJobsPanel(self.tr_map)
         self.bridge = JobsBridge(self.runner, self.jobs_panel)
         self._fixture_jobs: dict[str, Path] = {}
-        self._search_jobs: dict[str, Path] = {}
+        # Each Search-tab map holds (out_dir, the answer-determining inputs at submit time)
+        # so an arriving result can say which request it belongs to.
+        self._search_jobs: dict[str, tuple[Path, dict[str, str]]] = {}
         self._host_microbe_jobs: dict[str, Path] = {}
-        self._host_search_jobs: dict[str, Path] = {}
-        self._gene_ko_jobs: dict[str, Path] = {}
-        self._strain_growth_jobs: dict[str, Path] = {}
-        self._abundance_impact_jobs: dict[str, Path] = {}
+        self._host_search_jobs: dict[str, tuple[Path, dict[str, str]]] = {}
+        self._gene_ko_jobs: dict[str, tuple[Path, dict[str, str]]] = {}
+        self._strain_growth_jobs: dict[str, tuple[Path, dict[str, str]]] = {}
+        self._abundance_impact_jobs: dict[str, tuple[Path, dict[str, str]]] = {}
         self._dfba_jobs: dict[str, Path] = {}
         self._spatial_jobs: dict[str, Path] = {}
         self._community_jobs: dict[str, Path] = {}
         self._sweep_fixture_jobs: dict[str, Path] = {}
         self._medium_growth_jobs: dict[str, Path] = {}
+        #: sandbox job id -> (commit?, the bound constraint the result will belong to)
+        self._sandbox_jobs: dict[str, tuple[bool, Any]] = {}
         self.current_manifest: dict[str, Any] | None = None
         self.current_graph_payload: dict[str, Any] | None = None
         self.current_model_review: dict[str, Any] | None = None
@@ -232,9 +299,16 @@ class CmigMainWindow(QMainWindow):
         layout.addWidget(self.central_stack)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Without minimum widths the centre widget's size hint squeezed both side panes to
+        # 90 px at the shipped 1500x950 default, making Runtime & Jobs unreadable — and it is
+        # the only surface from which a job can be selected and cancelled.
+        self.explorer.setMinimumWidth(180)
+        self.jobs_panel.setMinimumWidth(260)
+        splitter.setChildrenCollapsible(False)
         splitter.addWidget(self.explorer)
         splitter.addWidget(center)
         splitter.addWidget(self.jobs_panel)
+        splitter.setStretchFactor(1, 1)
         splitter.setSizes([200, 600, 250])
         self.setCentralWidget(splitter)
         self.statusBar().showMessage(self.tr_map["ready"])
@@ -247,16 +321,36 @@ class CmigMainWindow(QMainWindow):
         self._completion_timer.start()
         self.bridge.start()
 
+    def closeEvent(self, event: Any) -> None:
+        """Stop the GUI's timers and the job pool so closing the window ends the session.
+
+        The window used to vanish while non-daemon executor threads kept a Gurobi licence
+        seat and >1 GB RSS with no UI left to observe or stop them. Cancellation is
+        cooperative, so an in-flight solver call still runs to its next checkpoint — queued
+        jobs, however, are cancelled outright and never start.
+        """
+        self._completion_timer.stop()
+        self.bridge.stop()
+        for jid in list(self.bridge._job_ids):
+            if self.runner.poll(jid).status in (JobStatus.PENDING, JobStatus.RUNNING):
+                self.runner.cancel(jid)
+        self.runner.shutdown(wait=False, cancel_futures=True)
+        super().closeEvent(event)
+
     def _install_workflow_actions(self) -> None:
         toolbar = self.addToolBar("Workflow")
         self.import_model_action = QAction("Import Model", self)
         self.import_model_action.triggered.connect(self._import_model_dialog)
+        self.import_model_action.setShortcut(QKeySequence("Ctrl+I"))
         self.open_run_action = QAction("Open Run", self)
         self.open_run_action.triggered.connect(self._open_run_dialog)
+        self.open_run_action.setShortcut(QKeySequence.StandardKey.Open)
         self.run_fixture_action = QAction("Run Fixture", self)
         self.run_fixture_action.triggered.connect(self._run_fixture_dialog)
+        self.run_fixture_action.setShortcut(QKeySequence("Ctrl+R"))
         self.cancel_job_action = QAction("Cancel Selected Job", self)
         self.cancel_job_action.triggered.connect(self._cancel_selected_job)
+        self.cancel_job_action.setShortcut(QKeySequence("Ctrl+."))
         self.advanced_tools_action = QAction("Show Advanced Tools", self)
         self.advanced_tools_action.setCheckable(True)
         self.advanced_tools_action.toggled.connect(self._set_advanced_tabs_visible)
@@ -326,7 +420,15 @@ class CmigMainWindow(QMainWindow):
             self.statusBar().showMessage(f"Job already {job.status.value}: {job_id}")
             return
         self.runner.cancel(job_id)
-        self.statusBar().showMessage(f"Cancel requested: {job_id}")
+        self.bridge.cancelling.add(job_id)
+        self.bridge.refresh()
+        # Cancellation is cooperative and GUI jobs only check it at run boundaries, so saying
+        # just "Cancel requested" let the user believe the solve had stopped when it had not.
+        self.statusBar().showMessage(
+            f"Cancel requested for {job_id}. The solver cannot be interrupted mid-solve — "
+            f"this run keeps using CPU until it reaches its next checkpoint. If it has "
+            f"already written its artifacts it will still be reported as complete."
+        )
 
     def _open_explorer_item(self, item: QTreeWidgetItem, _column: int) -> None:
         path = item.data(0, Qt.ItemDataRole.UserRole)
@@ -393,11 +495,15 @@ class CmigMainWindow(QMainWindow):
             self.scenario_compare.run_b_input.setText(path)
 
     def _export_host_figure(self) -> None:
-        if self.current_host_microbe_dir is None:
+        # Key the export to the run the tables are actually *displaying*. The window-level
+        # pointer used to advance on a failed load, so Export Figure could write run B's SVG
+        # while every number on screen still belonged to run A.
+        run_dir = self.host_view.current_run_dir
+        if run_dir is None:
             self.host_view.run_status.setText("No host-microbe result is loaded.")
             return
         artifact = self.host_view.selected_figure_artifact()
-        src = self.current_host_microbe_dir / artifact
+        src = run_dir / artifact
         if not src.exists():
             self.host_view.run_status.setText(f"Figure artifact not found: {artifact}")
             return
@@ -413,11 +519,16 @@ class CmigMainWindow(QMainWindow):
         self.host_view.run_status.setText(f"Exported figure: {target}")
 
     def _export_search_figure(self) -> None:
-        if self.current_search_dir is None:
+        # Same rule as the Host tab: export the run the table is displaying, and nothing else.
+        # There is deliberately NO fallback to `current_search_dir`: invalidation clears
+        # `current_run_dir` and tells the user the result was discarded, and a fallback would
+        # then still export that discarded run and report success (verifier V-1).
+        run_dir = self.search_view.current_run_dir
+        if run_dir is None:
             self.search_view.status.setText("No search result is loaded.")
             return
         artifact = self.search_view.selected_figure_artifact()
-        src = self.current_search_dir / artifact
+        src = run_dir / artifact
         if not src.exists():
             self.search_view.status.setText(f"Search figure artifact not found: {artifact}")
             return
@@ -455,41 +566,63 @@ class CmigMainWindow(QMainWindow):
     def _run_sandbox_commit(self) -> None:
         self._run_sandbox(commit=True)
 
-    def _run_sandbox(self, *, commit: bool) -> None:
+    def _run_sandbox(self, *, commit: bool) -> str:
+        """Submit the sandbox baseline+constrained solve through JobRunner.
+
+        This slot used to call `EngineService().sandbox_fixture()` directly — 2190 ms of a
+        completely frozen event loop on the 3-member golden fixture, auto-fired 500 ms after
+        any table edit. It is the only solve view that bypassed JobRunner; now it does not.
+        """
+        from cmig.service import JobContext
+
         constraints = self.sandbox_view.constraints()
+        if self.sandbox_view.invalid_rows:
+            rows = ", ".join(str(r) for r in self.sandbox_view.invalid_rows)
+            self.sandbox_view.delta_view.setRowCount(0)
+            self.sandbox_view.status.setText(
+                f"row {rows}: bound is not a number — fix it before previewing."
+            )
+            return ""
         if not constraints:
             self.sandbox_view.status.setText("Add a bound constraint first.")
-            return
-        out_dir = None
-        if commit:
-            selected = QFileDialog.getExistingDirectory(self, "Select Commit Output Directory")
-            if not selected:
-                return
-            out_dir = selected
-        c = constraints[0]
+            return ""
         if len(constraints) > 1:
             self.sandbox_view.status.setText(
                 "Sandbox fixture supports one bound at a time; "
                 "remove extra rows before preview or commit."
             )
-            return
-        try:
+            return ""
+        out_dir = None
+        if commit:
+            selected = QFileDialog.getExistingDirectory(self, "Select Commit Output Directory")
+            if not selected:
+                return ""
+            out_dir = selected
+        # Snapshot the request in the GUI thread; the worker must never read a QWidget.
+        c = constraints[0]
+        reaction_id, lower, upper = c.reaction_id, c.lower, c.upper
+
+        def _job(ctx: JobContext) -> Any:
             from cmig.service import EngineService
 
-            result = EngineService().sandbox_fixture(
-                reaction_id=c.reaction_id,
-                lower=c.lower,
-                upper=c.upper,
+            ctx.raise_if_cancelled()
+            return EngineService().sandbox_fixture(
+                reaction_id=reaction_id,
+                lower=lower,
+                upper=upper,
                 commit=commit,
                 out_dir=out_dir,
             )
-        except Exception as e:
-            self.sandbox_view.status.setText(f"Sandbox failed: {e}")
-            return
-        if commit and result.run_hash:
-            self.sandbox_view.show_commit(result.delta, result.run_hash)
-        else:
-            self.sandbox_view.show_preview(result.delta)
+
+        jid = self.submit_job("sandbox_fixture", _job)
+        # Remember which bound this result will belong to: the table is still editable while
+        # the solve runs, so the delta must be able to name its own request on arrival.
+        self._sandbox_jobs[jid] = (commit, c)
+        self.sandbox_view.preview_btn.setEnabled(False)
+        self.sandbox_view.commit_btn.setEnabled(False)
+        self.sandbox_view.status.setText(f"sandbox solve started: {jid}")
+        self.statusBar().showMessage(f"Started sandbox solve: {jid}")
+        return jid
 
     def set_central(self, widget: QWidget) -> None:
         """중앙 위젯 교체(예: Interaction Graph Viewer 도킹)."""
@@ -546,6 +679,12 @@ class CmigMainWindow(QMainWindow):
         try:
             bundle = TidyBundle.read(run_dir)
         except Exception as e:
+            # A failed load must not leave the *previous* run's provenance on screen: the
+            # run_hash in the status bar and the profile table would still describe run A.
+            self.current_manifest = None
+            self.current_graph_payload = None
+            self.profile_view.load_profile([])
+            self.profile_view.load_targets(None)
             self.statusBar().showMessage(f"Run load failed: {e}")
             return
         manifest_path = run_dir / "manifest.json"
@@ -566,7 +705,9 @@ class CmigMainWindow(QMainWindow):
         from cmig.core.host_impact import HostImpact
 
         run_dir = Path(path).resolve()
-        self.current_host_microbe_dir = run_dir
+        # The pointer is only advanced after a successful parse (see the end of this method).
+        # Advancing it up front meant Export Figure could write a *different* run's SVG while
+        # every table on screen still showed the previously loaded run.
         summary_path = run_dir / "host_microbe_bigg_summary.json"
         if not summary_path.exists():
             self.statusBar().showMessage(f"Host-microbe summary not found: {summary_path}")
@@ -605,6 +746,16 @@ class CmigMainWindow(QMainWindow):
             self.statusBar().showMessage(f"Host-microbe load failed: {e}")
             return False
 
+        if not isinstance(host_payload, dict) or "viable" not in host_payload:
+            # Absence of the host block is missing data, not a biological finding. Defaulting
+            # to viable=False rendered a red "non-viable — microbiome support insufficient",
+            # i.e. a scientific conclusion manufactured from an incomplete file.
+            self.statusBar().showMessage(
+                f"No `host` block in {summary_path.name}; host viability cannot be reported "
+                f"for {run_dir}."
+            )
+            return False
+
         host_result = SimpleNamespace(
             viable=bool(host_payload.get("viable", False)),
             status=str(host_payload.get("status", "unknown")),
@@ -628,6 +779,7 @@ class CmigMainWindow(QMainWindow):
         self.host_view.load_impact(impact)
         self.host_view.show_currency_metabolites = self.host_view.include_currency_check.isChecked()
         self.host_view.load_bigg_summary(payload, run_dir=run_dir)
+        self.current_host_microbe_dir = run_dir      # only after a successful parse
         self.explorer.add_run(run_dir.name, run_dir)
         self.tabs.setCurrentWidget(self.host_view)
         self.statusBar().showMessage(
@@ -684,8 +836,7 @@ class CmigMainWindow(QMainWindow):
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
             outcome = EngineService().solve_fixture(solver=solver, out_dir=run_dir)
-            ctx.raise_if_cancelled()
-            ctx.report_progress(1, 1)
+            _finish_after_artifacts(ctx)
             return outcome
 
         jid = self.submit_job("solve_fixture", _job)
@@ -711,8 +862,10 @@ class CmigMainWindow(QMainWindow):
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        target_text = self.search_view.targets_input.text().strip() or "but"
-        target = target_text.split(",", 1)[0].strip() or "but"
+        target, target_error = _single_target(self.search_view.targets_input.text())
+        if target_error:
+            self.search_view.status.setText(target_error)
+            return ""
         model_dir = self.search_view.model_dir_input.text().strip()
         strategy = self.search_view.strategy_combo.currentText()
         min_size = str(self.search_view.min_size_spin.value())
@@ -744,8 +897,7 @@ class CmigMainWindow(QMainWindow):
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"search failed with rc={rc}")
-            ctx.raise_if_cancelled()
-            ctx.report_progress(1, 1)
+            _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / output_name).read_text())
             if not isinstance(payload, dict):
                 raise RuntimeError("search output is not a JSON object")
@@ -753,7 +905,7 @@ class CmigMainWindow(QMainWindow):
 
         out_dir = Path(tempfile.mkdtemp(prefix="cmig-search-", dir=_search_temp_root())).resolve()
         jid = self.submit_job("search_fixture", _job)
-        self._search_jobs[jid] = out_dir
+        self._search_jobs[jid] = (out_dir, self.search_view.request_fields("search"))
         self.search_view.run_btn.setEnabled(False)
         self.search_view.status.setText(f"search started: {jid}")
         return jid
@@ -814,8 +966,7 @@ class CmigMainWindow(QMainWindow):
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"host-microbe run failed with rc={rc}")
-            ctx.raise_if_cancelled()
-            ctx.report_progress(1, 1)
+            _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "host_microbe_bigg_summary.json").read_text())
             if not isinstance(payload, dict):
                 raise RuntimeError("host-microbe output is not a JSON object")
@@ -893,15 +1044,14 @@ class CmigMainWindow(QMainWindow):
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"host-search run failed with rc={rc}")
-            ctx.raise_if_cancelled()
-            ctx.report_progress(1, 1)
+            _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "host_search_summary.json").read_text())
             if not isinstance(payload, dict):
                 raise RuntimeError("host-search output is not a JSON object")
             return payload
 
         jid = self.submit_job("host_search_bigg", _job)
-        self._host_search_jobs[jid] = out_dir
+        self._host_search_jobs[jid] = (out_dir, self.search_view.request_fields("host_search"))
         self.host_view.run_search_btn.setEnabled(False)
         self.host_view.run_status.setText(f"host-search started: {jid}")
         self.statusBar().showMessage(f"Started host-search run: {jid}")
@@ -916,8 +1066,10 @@ class CmigMainWindow(QMainWindow):
         members = self.search_view.ko_members_input.text().strip()
         member = self.search_view.ko_member_input.text().strip()
         genes = self.search_view.ko_genes_input.text().strip()
-        target_text = self.search_view.targets_input.text().strip() or "ac"
-        target = target_text.split(",", 1)[0].strip() or "ac"
+        target, target_error = _single_target(self.search_view.targets_input.text())
+        if target_error:
+            self.search_view.status.setText(target_error)
+            return ""
         if not model_dir or not members:
             self.search_view.status.setText(
                 "Model folder and KO members are required."
@@ -926,6 +1078,12 @@ class CmigMainWindow(QMainWindow):
         if genes and not member:
             self.search_view.status.setText("Gene ids require a specific edited member.")
             return ""
+        # Snapshot every answer-determining widget value HERE, on the GUI thread, before the
+        # closure is handed to the executor. Reading `.value()` inside `_job` meant a queued
+        # run silently executed the parameters the user typed *after* clicking, and read a
+        # QWidget from a worker thread (undefined behaviour in Qt). Coordinator CC-8.
+        max_genes = str(self.search_view.ko_max_genes_spin.value())
+        top_k = str(self.search_view.top_k_spin.value())
         out_dir = Path(
             tempfile.mkdtemp(prefix="cmig-gene-ko-", dir=_search_temp_root())
         ).resolve()
@@ -938,8 +1096,8 @@ class CmigMainWindow(QMainWindow):
                 "--model-dir", model_dir,
                 "--members", members,
                 "--target", target,
-                "--max-genes", str(self.search_view.ko_max_genes_spin.value()),
-                "--top-k", str(self.search_view.top_k_spin.value()),
+                "--max-genes", max_genes,
+                "--top-k", top_k,
                 "--out", str(out_dir),
             ]
             if member:
@@ -949,15 +1107,14 @@ class CmigMainWindow(QMainWindow):
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"gene KO search failed with rc={rc}")
-            ctx.raise_if_cancelled()
-            ctx.report_progress(1, 1)
+            _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "gene_ko_summary.json").read_text())
             if not isinstance(payload, dict):
                 raise RuntimeError("gene KO output is not a JSON object")
             return payload
 
         jid = self.submit_job("gene_ko_search", _job)
-        self._gene_ko_jobs[jid] = out_dir
+        self._gene_ko_jobs[jid] = (out_dir, self.search_view.request_fields("gene_ko"))
         self.search_view.run_ko_btn.setEnabled(False)
         self.search_view.status.setText(f"gene KO search started: {jid}")
         self.statusBar().showMessage(f"Started gene KO search: {jid}")
@@ -987,15 +1144,16 @@ class CmigMainWindow(QMainWindow):
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"strain growth failed with rc={rc}")
-            ctx.raise_if_cancelled()
-            ctx.report_progress(1, 1)
+            _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "strain_growth_summary.json").read_text())
             if not isinstance(payload, dict):
                 raise RuntimeError("strain growth output is not a JSON object")
             return payload
 
         jid = self.submit_job("strain_growth", _job)
-        self._strain_growth_jobs[jid] = out_dir
+        self._strain_growth_jobs[jid] = (
+            out_dir, self.search_view.request_fields("strain_growth")
+        )
         self.search_view.run_growth_btn.setEnabled(False)
         self.search_view.status.setText(f"strain growth started: {jid}")
         self.statusBar().showMessage(f"Started strain growth report: {jid}")
@@ -1009,8 +1167,10 @@ class CmigMainWindow(QMainWindow):
         model_dir = self.search_view.model_dir_input.text().strip()
         member = self.search_view.growth_member_input.text().strip()
         fractions = self.search_view.abundance_fractions_input.text().strip()
-        target_text = self.search_view.targets_input.text().strip() or "ac"
-        target = target_text.split(",", 1)[0].strip() or "ac"
+        target, target_error = _single_target(self.search_view.targets_input.text())
+        if target_error:
+            self.search_view.status.setText(target_error)
+            return ""
         if not model_dir or not member:
             self.search_view.status.setText(
                 "Model folder and target member are required for ratio impact."
@@ -1034,15 +1194,16 @@ class CmigMainWindow(QMainWindow):
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"abundance impact failed with rc={rc}")
-            ctx.raise_if_cancelled()
-            ctx.report_progress(1, 1)
+            _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "abundance_impact_summary.json").read_text())
             if not isinstance(payload, dict):
                 raise RuntimeError("abundance impact output is not a JSON object")
             return payload
 
         jid = self.submit_job("abundance_impact", _job)
-        self._abundance_impact_jobs[jid] = out_dir
+        self._abundance_impact_jobs[jid] = (
+            out_dir, self.search_view.request_fields("abundance_impact")
+        )
         self.search_view.run_abundance_btn.setEnabled(False)
         self.search_view.status.setText(f"ratio impact started: {jid}")
         self.statusBar().showMessage(f"Started ratio impact sweep: {jid}")
@@ -1077,11 +1238,12 @@ class CmigMainWindow(QMainWindow):
                 "--initial-biomass", f"{float(request['initial_biomass']):.6g}",
                 "--out", str(out_dir),
             ]
+            if request.get("close_untracked_uptake"):
+                argv.append("--close-untracked-uptake")
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"dFBA failed with rc={rc}")
-            ctx.raise_if_cancelled()
-            ctx.report_progress(1, 1)
+            _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "dfba_summary.json").read_text())
             if not isinstance(payload, dict):
                 raise RuntimeError("dFBA output is not a JSON object")
@@ -1125,8 +1287,7 @@ class CmigMainWindow(QMainWindow):
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"spatial preview failed with rc={rc}")
-            ctx.raise_if_cancelled()
-            ctx.report_progress(1, 1)
+            _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "spatial_summary.json").read_text())
             if not isinstance(payload, dict):
                 raise RuntimeError("spatial output is not a JSON object")
@@ -1156,6 +1317,19 @@ class CmigMainWindow(QMainWindow):
             )
             return ""
         members = self.community_builder.members()
+        if self.community_builder.invalid_rows:
+            rows = ", ".join(str(r) for r in self.community_builder.invalid_rows)
+            self.community_builder.status.setText(
+                f"row {rows}: abundance is not a number — fix it before running."
+            )
+            return ""
+        # `cmig solve` blocks on the namespace gate unless it is given a reviewed decisions
+        # file or an explicit BiGG confirmation, and the GUI could set neither — so this tab
+        # failed in 0.2 s for every user pool with the real reason on the process's stdout.
+        namespace_argv, namespace_error = self.community_builder.namespace_policy()
+        if namespace_error:
+            self.community_builder.status.setText(namespace_error)
+            return ""
         tradeoff_f = self.community_builder.tradeoff_f()
         out_dir = Path(
             tempfile.mkdtemp(prefix="cmig-community-", dir=_search_temp_root())
@@ -1180,12 +1354,12 @@ class CmigMainWindow(QMainWindow):
                 "--taxonomy", str(tax_path),
                 "--tradeoff-f", f"{tradeoff_f:.6g}",
                 "--out", str(out_dir),
+                *namespace_argv,
             ]
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"community solve failed with rc={rc}")
-            ctx.raise_if_cancelled()
-            ctx.report_progress(1, 1)
+            _finish_after_artifacts(ctx)
             manifest_path = out_dir / "manifest.json"
             manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
             return {"manifest": manifest}
@@ -1221,8 +1395,7 @@ class CmigMainWindow(QMainWindow):
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"sweep-fixture failed with rc={rc}")
-            ctx.raise_if_cancelled()
-            ctx.report_progress(1, 1)
+            _finish_after_artifacts(ctx)
             return {"out_dir": str(out_dir)}
 
         jid = self.submit_job("sweep_fixture", _job)
@@ -1277,8 +1450,7 @@ class CmigMainWindow(QMainWindow):
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"growth check failed with rc={rc}")
-            ctx.raise_if_cancelled()
-            ctx.report_progress(1, 1)
+            _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "strain_growth_summary.json").read_text())
             if not isinstance(payload, dict):
                 raise RuntimeError("growth check output is not a JSON object")
@@ -1325,24 +1497,67 @@ class CmigMainWindow(QMainWindow):
         self.scenario_compare.status.setText(f"compare complete: {dir_a} vs {dir_b}")
         self.statusBar().showMessage("Scenario compare complete")
 
+    def _register_run_output(self, out_dir: Path) -> None:
+        """Make a GUI-only run reachable: it is the directory holding manifest.json.
+
+        GUI workflows write to an OS temp dir that never appeared anywhere in the UI, so a
+        GUI-only researcher could not find the run_hash a publication needs (and macOS purges
+        `/var/folders/**/T` periodically).
+        """
+        self.explorer.add_run(out_dir.name, out_dir)
+
     def _poll_completed_jobs(self) -> None:
+        for jid, (commit, constraint) in list(self._sandbox_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+                continue
+            # Every terminal state releases the buttons — including DONE with a None result,
+            # which previously matched no branch and left the job stranded in the dict with
+            # Preview and Commit disabled for the rest of the session.
+            self._sandbox_jobs.pop(jid, None)
+            self.sandbox_view.preview_btn.setEnabled(True)
+            self.sandbox_view.commit_btn.setEnabled(True)
+            if job.status is not JobStatus.DONE:
+                self.sandbox_view.status.setText(
+                    f"Sandbox {job.status.value}: {job.error or jid}"
+                )
+                continue
+            result = job.result
+            if result is None or getattr(result, "delta", None) is None:
+                self.sandbox_view.status.setText(
+                    f"Sandbox finished with no result to display: {jid}"
+                )
+                continue
+            run_hash = getattr(result, "run_hash", None)
+            if commit and run_hash:
+                self.sandbox_view.show_commit(result.delta, run_hash, constraint)
+            else:
+                self.sandbox_view.show_preview(result.delta, constraint)
+            self.runner.release_payload(jid)
         for jid in list(self._fixture_jobs):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE:
                 self._fixture_jobs.pop(jid, None)
                 self.load_completed_fixture(jid)
+                # The fixture outcome holds a whole MICOM community; release it once the UI
+                # has rendered it so a long session does not grow without bound.
+                self.runner.release_payload(jid)
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._fixture_jobs.pop(jid, None)
                 self.statusBar().showMessage(f"Fixture job {job.status.value}: {jid}")
-        for jid, out_dir in list(self._search_jobs.items()):
+        for jid, (out_dir, requested) in list(self._search_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._search_jobs.pop(jid, None)
                 self.current_search_dir = out_dir
-                self.search_view.load_summary(job.result, run_dir=out_dir)
+                self.search_view.load_summary(
+                    job.result, run_dir=out_dir,
+                    request_note=self.search_view.superseded_note(requested, "search"),
+                )
                 self.search_view.run_btn.setEnabled(True)
                 self.tabs.setCurrentWidget(self.search_view)
-                self.statusBar().showMessage(f"Search complete: {jid}")
+                self._register_run_output(out_dir)
+                self.statusBar().showMessage(f"Search complete: {jid} → {out_dir}")
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._search_jobs.pop(jid, None)
                 self.search_view.run_btn.setEnabled(True)
@@ -1360,7 +1575,7 @@ class CmigMainWindow(QMainWindow):
                 self.host_view.run_status.setText(
                     f"host-microbe {job.status.value}: {job.error or jid}"
                 )
-        for jid, out_dir in list(self._host_search_jobs.items()):
+        for jid, (out_dir, requested) in list(self._host_search_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._host_search_jobs.pop(jid, None)
@@ -1368,16 +1583,20 @@ class CmigMainWindow(QMainWindow):
                 self.current_search_dir = out_dir
                 summary = _host_search_summary_for_search_view(job.result)
                 self.search_view.figure_mode_combo.setCurrentText("Ranking")
-                self.search_view.load_summary(summary, run_dir=out_dir)
+                self.search_view.load_summary(
+                    summary, run_dir=out_dir,
+                    request_note=self.search_view.superseded_note(requested, "host_search"),
+                )
                 self.tabs.setCurrentWidget(self.search_view)
-                self.statusBar().showMessage(f"Host-search complete: {jid}")
+                self._register_run_output(out_dir)
+                self.statusBar().showMessage(f"Host-search complete: {jid} → {out_dir}")
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._host_search_jobs.pop(jid, None)
                 self.host_view.run_search_btn.setEnabled(True)
                 self.host_view.run_status.setText(
                     f"host-search {job.status.value}: {job.error or jid}"
                 )
-        for jid, out_dir in list(self._gene_ko_jobs.items()):
+        for jid, (out_dir, requested) in list(self._gene_ko_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._gene_ko_jobs.pop(jid, None)
@@ -1385,16 +1604,20 @@ class CmigMainWindow(QMainWindow):
                 self.current_search_dir = out_dir
                 summary = _gene_ko_summary_for_search_view(job.result)
                 self.search_view.figure_mode_combo.setCurrentText("Ranking")
-                self.search_view.load_summary(summary, run_dir=out_dir)
+                self.search_view.load_summary(
+                    summary, run_dir=out_dir,
+                    request_note=self.search_view.superseded_note(requested, "gene_ko"),
+                )
                 self.tabs.setCurrentWidget(self.search_view)
-                self.statusBar().showMessage(f"Gene KO search complete: {jid}")
+                self._register_run_output(out_dir)
+                self.statusBar().showMessage(f"Gene KO search complete: {jid} → {out_dir}")
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._gene_ko_jobs.pop(jid, None)
                 self.search_view.run_ko_btn.setEnabled(True)
                 self.search_view.status.setText(
                     f"gene KO search {job.status.value}: {job.error or jid}"
                 )
-        for jid, out_dir in list(self._strain_growth_jobs.items()):
+        for jid, (out_dir, requested) in list(self._strain_growth_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._strain_growth_jobs.pop(jid, None)
@@ -1402,16 +1625,20 @@ class CmigMainWindow(QMainWindow):
                 self.current_search_dir = out_dir
                 summary = _strain_growth_summary_for_search_view(job.result)
                 self.search_view.figure_mode_combo.setCurrentText("Ranking")
-                self.search_view.load_summary(summary, run_dir=out_dir)
+                self.search_view.load_summary(
+                    summary, run_dir=out_dir,
+                    request_note=self.search_view.superseded_note(requested, "strain_growth"),
+                )
                 self.tabs.setCurrentWidget(self.search_view)
-                self.statusBar().showMessage(f"Strain growth complete: {jid}")
+                self._register_run_output(out_dir)
+                self.statusBar().showMessage(f"Strain growth complete: {jid} → {out_dir}")
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._strain_growth_jobs.pop(jid, None)
                 self.search_view.run_growth_btn.setEnabled(True)
                 self.search_view.status.setText(
                     f"strain growth {job.status.value}: {job.error or jid}"
                 )
-        for jid, out_dir in list(self._abundance_impact_jobs.items()):
+        for jid, (out_dir, requested) in list(self._abundance_impact_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._abundance_impact_jobs.pop(jid, None)
@@ -1419,9 +1646,13 @@ class CmigMainWindow(QMainWindow):
                 self.current_search_dir = out_dir
                 summary = _abundance_impact_summary_for_search_view(job.result)
                 self.search_view.figure_mode_combo.setCurrentText("Ranking")
-                self.search_view.load_summary(summary, run_dir=out_dir)
+                self.search_view.load_summary(
+                    summary, run_dir=out_dir,
+                    request_note=self.search_view.superseded_note(requested, "abundance_impact"),
+                )
                 self.tabs.setCurrentWidget(self.search_view)
-                self.statusBar().showMessage(f"Ratio impact complete: {jid}")
+                self._register_run_output(out_dir)
+                self.statusBar().showMessage(f"Ratio impact complete: {jid} → {out_dir}")
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._abundance_impact_jobs.pop(jid, None)
                 self.search_view.run_abundance_btn.setEnabled(True)
@@ -1478,17 +1709,19 @@ class CmigMainWindow(QMainWindow):
                 self.sweep_view.run_btn.setEnabled(True)
                 rows = _load_sweep_rows(out_dir / "sweep.parquet")
                 self.sweep_view.load_results(rows)
-                self.sweep_view.status.setText(f"sweep complete: {len(rows)} runs")
-                self.statusBar().showMessage(f"Sweep complete: {jid}")
+                self.sweep_view.status.setText(f"sweep complete: {len(rows)} runs → {out_dir}")
+                self._register_run_output(out_dir)
+                self.statusBar().showMessage(f"Sweep complete: {jid} → {out_dir}")
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._sweep_fixture_jobs.pop(jid, None)
                 self.sweep_view.run_btn.setEnabled(True)
                 self.sweep_view.status.setText(f"sweep {job.status.value}: {job.error or jid}")
-        for jid in list(self._medium_growth_jobs):
+        for jid, out_dir in list(self._medium_growth_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._medium_growth_jobs.pop(jid, None)
                 self.medium_editor.check_growth_btn.setEnabled(True)
+                self._register_run_output(out_dir)
                 members = job.result.get("members", [])
                 if members and isinstance(members[0], dict):
                     growth = members[0].get("single_growth")
@@ -1531,7 +1764,12 @@ def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, A
         "target": target,
         "strategy": f"host-search/{payload.get('metric', '')}",
         "top_ranked": rows,
-        "warnings": [],
+        # Forward CLI warnings verbatim — the GUI is not allowed to be quieter than the CLI.
+        "warnings": list(payload.get("warnings") or []),
+        "column_labels": [
+            "Members", "Target", "Score", "Target transfer (mmol gDW⁻¹ h⁻¹)",
+            "Community growth (h⁻¹)", "FVA Range", "Status",
+        ],
     }
 
 
@@ -1559,6 +1797,10 @@ def _gene_ko_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:
         # Forward CLI warnings (truncation / random selection) so the GUI status bar surfaces
         # them too — never silently drop them (the honesty fix must hold on the GUI path).
         "warnings": list(payload.get("warnings") or []),
+        "column_labels": [
+            "Member:gene", "Target", "KO score", "Target flux (mmol gDW⁻¹ h⁻¹)",
+            "Community growth (h⁻¹)", "FVA Range", "Status",
+        ],
     }
 
 
@@ -1580,7 +1822,13 @@ def _strain_growth_summary_for_search_view(payload: dict[str, Any]) -> dict[str,
         "target": "growth",
         "strategy": "strain-growth",
         "top_ranked": rows,
-        "warnings": [],
+        "warnings": list(payload.get("warnings") or []),
+        # Both quantities here are growth rates in h⁻¹; the default "Flux" header implied
+        # mmol gDW⁻¹ h⁻¹ and was the concrete misread risk.
+        "column_labels": [
+            "Member", "Quantity", "Community member growth (h⁻¹)", "Single growth (h⁻¹)",
+            "Community growth (h⁻¹)", "FVA Range", "Status",
+        ],
     }
 
 
@@ -1596,11 +1844,17 @@ def _abundance_impact_summary_for_search_view(payload: dict[str, Any]) -> dict[s
         label = f"{target_member}@{abundance:.3g}" if isinstance(abundance, (int, float)) else (
             f"{target_member}@{abundance}"
         )
+        # The member's own exchange and the community's net exchange can disagree completely
+        # (7.14 vs 0.0 on real output). Showing only the member value under a column headed
+        # "Flux" next to "Target = ac" made the GUI ranking contradict the community result,
+        # so both are surfaced side by side under labels that say which is which.
+        community_exchange = item.get("community_target_exchange")
         rows.append({
             "members": [label],
             "score": item.get("target_influence_share"),
             "target_flux": item.get("target_member_exchange"),
             "community_growth": item.get("community_growth"),
+            "aux_text": "—" if community_exchange is None else f"{float(community_exchange):.4g}",
             "status": item.get("status", ""),
             "diagnostic": item.get("diagnostic"),
         })
@@ -1608,7 +1862,12 @@ def _abundance_impact_summary_for_search_view(payload: dict[str, Any]) -> dict[s
         "target": target,
         "strategy": "abundance-impact",
         "top_ranked": rows,
-        "warnings": [],
+        "warnings": list(payload.get("warnings") or []),
+        "column_labels": [
+            "Member@abundance", "Target", "Influence share (dimensionless)",
+            "Member exchange (mmol gDW⁻¹ h⁻¹)", "Community growth (h⁻¹)",
+            "Community exchange (mmol gDW⁻¹ h⁻¹)", "Status",
+        ],
     }
 
 

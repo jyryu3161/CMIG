@@ -24,13 +24,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QSpinBox,
     QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from cmig.core.namespace import NamespaceGateResult
 from cmig.core.tidy import TidyBundle
+from cmig.gui.builder import make_read_only, read_only_item
 from cmig.gui.graph_data import filter_elements, gate_ui_data, graph_payload
 
 _ASSET = Path(__file__).parent / "assets" / "graph.html"
@@ -65,10 +65,11 @@ class InteractionGraphView(QWidget):
         self.top_edges_spin.valueChanged.connect(self._apply_filters)
         self.edge_table = QTableWidget(0, 5)
         self.edge_table.setHorizontalHeaderLabels(
-            ["Source", "Target", "Metabolite", "Type", "Flux"]
+            ["Source", "Target", "Metabolite", "Type", "Flux (mmol gDW⁻¹ h⁻¹)"]
         )
         self.edge_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.edge_table.setMaximumHeight(190)
+        make_read_only(self.edge_table)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         controls = QHBoxLayout()
@@ -205,7 +206,7 @@ class InteractionGraphView(QWidget):
                 f"{float(edge.get('weight') or 0.0):.4g}",
             ]
             for col, value in enumerate(values):
-                item = QTableWidgetItem(value)
+                item = read_only_item(value)
                 if col == 3 and edge.get("etype") in colors:
                     item.setForeground(QColor(colors[str(edge.get("etype"))]))
                 self.edge_table.setItem(row, col, item)

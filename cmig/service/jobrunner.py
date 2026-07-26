@@ -111,7 +111,15 @@ class JobRunner:
         fn: Callable[[JobContext], Any],
         event: threading.Event,
         on_progress: Callable[[int, int], None] | None,
-    ) -> Any:
+    ) -> None:
+        """Run one job. Returns None *by design*.
+
+        The payload is published on `self._jobs[job_id].result`, which `poll()`/`result()`
+        read. Returning it here as well would also store it on the `Future`, giving the
+        payload a second owner that `release_payload()` cannot reach without discarding the
+        future — and discarding the future breaks `result()`. One owner, one release point.
+        """
+
         def progress_cb(done: int, total: int) -> None:
             with self._lock:
                 self._jobs[job_id].progress = (done, total)
@@ -139,7 +147,6 @@ class JobRunner:
         with self._lock:
             self._jobs[job_id].status = JobStatus.DONE
             self._jobs[job_id].result = result
-        return result
 
     def poll(self, job_id: str) -> Job:
         """현재 job 상태 스냅샷(thread-safe read)."""
@@ -177,8 +184,28 @@ class JobRunner:
             kind, fn, on_progress = self._specs[job_id]
         return self.submit(kind, fn, on_progress=on_progress)
 
-    def shutdown(self, wait: bool = True) -> None:
-        self._executor.shutdown(wait=wait)
+    def release_payload(self, job_id: str) -> None:
+        """Drop a terminal job's heavy payload once the UI has consumed it.
+
+        `Job.result` can hold an entire MICOM community; keeping every completed job's
+        payload alive for the process lifetime made a long GUI session grow without bound.
+        The lightweight status row (id/kind/status/error) is kept so history stays visible,
+        and `poll()`/`result()` keep working — `result()` simply returns None afterwards
+        rather than raising. The future is deliberately retained: `_run` stores nothing on
+        it, so it costs nothing, and dropping it would make `result(job_id)` raise a bare
+        KeyError for any caller still holding the id.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+                return
+            job.result = None
+            if job.status is JobStatus.DONE:
+                # FAILED/CANCELLED specs are kept so retry() still works.
+                self._specs.pop(job_id, None)
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
+        self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 
 
 def make_sweep_job(
