@@ -47,3 +47,10 @@ docs/.pdca-snapshots/
 
 # OS
 .DS_Store
+
+# Large external GEMs downloaded from BiGG / VMH: keep local, not in source control.
+# data/gems/README.md and the download script ARE tracked.
+data/gems/*.xml
+data/gems/*.xml.gz
+data/gems/*.mat
+data/gems/*.json
