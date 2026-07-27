@@ -213,6 +213,13 @@ def _sample_candidates(
 # has to reach both the per-candidate diagnostic and the run-level warnings.
 UNAPPLIED_MEDIUM_PREFIX = "requested medium exchanges not applied (no counterpart in the model)"
 
+# Round 6 (track B, instance 1): a merged medium is an overlay on MICOM's permissive default, not a
+# defined medium. Measured on iML1515+iYO844+iHN637 with the shipped `western_diet.csv`: `EX_o2_m`
+# stayed at 999999 and community growth came out 1.2677557 against 0.6990206751 with oxygen closed —
+# an 81 % overestimate from one absent row. The count is stated so a search cannot report a
+# "medium" result whose background nobody looked at.
+MERGED_MEDIUM_PREFIX = "medium was MERGED onto the model's default, not applied exactly"
+
 
 def _apply_search_medium(
     community: Any,
@@ -224,12 +231,24 @@ def _apply_search_medium(
     """Apply the requested medium to one consortium. Returns a diagnostic when it was not whole."""
     if medium_spec is None:
         return None
-    from cmig.core.medium_spec import apply_medium_checked
+    from cmig.core.medium_spec import MEDIUM_APPLICATION_MERGE, medium_application_report
 
-    _original, unknown = apply_medium_checked(community, medium_spec, strict=strict_medium)
-    if not unknown:
+    translation = medium_application_report(community, medium_spec, strict=strict_medium)
+    parts: list[str] = []
+    if translation.unmatched:
+        parts.append(f"{UNAPPLIED_MEDIUM_PREFIX}: {sorted(translation.unmatched)}")
+    if (
+        translation.application_mode == MEDIUM_APPLICATION_MERGE
+        and translation.undeclared_suppliers
+    ):
+        parts.append(
+            f"{MERGED_MEDIUM_PREFIX}: {len(translation.undeclared_suppliers)} boundary reactions "
+            "outside the requested medium can still supply mass, e.g. "
+            f"{list(translation.undeclared_suppliers[:6])}"
+        )
+    if not parts:
         return None
-    note = f"{UNAPPLIED_MEDIUM_PREFIX}: {sorted(unknown)}"
+    note = "; ".join(parts)
     if notes is not None:
         notes.add(note)
     return note

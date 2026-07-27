@@ -7,10 +7,138 @@ semantic versioning for public releases.
 
 ### Added
 
+- **Literature-grounded gut medium overlays** (`medium_presets/gut_overlay_*.csv`, 7 files) with a
+  tracked provenance document (`medium_presets/PROVENANCE_gut_media.md`), row-level provenance
+  (`medium_presets/provenance_rows.csv`), mirrored source data (`medium_presets/sources/`) and a
+  deterministic builder (`scripts/build_gut_media.py`, `--check`/`--report`). The reference pair comes
+  from AGORA Supplementary Table 12 (doi:10.1038/nbt.3703), which publishes the Western and high-fibre
+  diets directly in mmol gDW⁻¹ h⁻¹ so no unit conversion is needed; a second pair converts VMH
+  diet-designer exports from mmol person⁻¹ day⁻¹ via `v = D · f_colon / (B_gDW · 24)` with every
+  constant sourced or explicitly labelled an assumption, and agrees with the AGORA bound to 1.5×.
+- **Medium overlays now close the background, including oxygen.** `--medium` merges onto MICOM's
+  default, so any metabolite a file did not name kept a permissive bound — `EX_o2_m = 999999.0`, an
+  aerobic colon. Measured on a 3-member community, the legacy glucose-only preset gives community
+  growth 1.2678 h⁻¹ with the inherited oxygen and 0.6990 h⁻¹ with `EX_o2_m = 0.001`: an **81 %
+  overestimate**. Every shipped overlay now names oxygen at MICOM's published 0.001 and carries a
+  background-closure block (`uptake_limit = 0`) for every metabolite the model pool would otherwise
+  leave open; measured, nothing remains open that the overlay does not name. `--medium` is documented
+  as an overlay in `README.md`. A general fix needs `--exact-medium` in the CLI plus a
+  `medium_application_mode` manifest field — recorded in `PROVENANCE_gut_media.md` §9, not implemented.
+- **Fibre coverage of the bundled model pool measured and documented**: only 1 of AGORA's 24 fibre
+  entries (raffinose) has an exchange in any bundled model, so a "high fibre" run on this pool is not
+  a fibre-degradation experiment. `tests/test_medium_presets_gut.py` (18 tests, each mutation-verified)
+  re-derives every shipped number from the mirrored sources and checks aliasing, per-model coverage,
+  background closure, the anaerobic-O₂ term, the magnitude band and the PDF transcription.
+  The pre-existing `western_diet.csv` / `high_fiber.csv` are single-row glucose files with no cited
+  source, 134× and 76× the published AGORA bounds; retained only as a smoke fixture and documented as
+  not citable as diets.
 - Claude Code agent skill `cmig-metabolic-analysis` (`.claude/skills/`) that routes requests to the
   correct `cmig` workflow and enforces the scientific-validity guardrails, plus a
   `.claude-plugin/marketplace.json` making it installable following the anthropics/life-sciences
   marketplace pattern.
+
+### Documentation
+
+- **Skill/README guardrails synced with the round-5 hardening.** The skill layer predated the
+  round-5 scientific fixes and named none of their vocabulary, so following it faithfully could
+  still produce a wrong conclusion. Added, in `.claude/skills/cmig-metabolic-analysis/` and
+  mirrored in `README.md`:
+  - **Multi-target search.** `--targets` / `--target-preset scfa` / `--multi-metric` /
+    `--target-directions` were entirely undocumented. A "total SCFA" question answered with the
+    default `normalized_weighted` scalarisation collapses onto a single-metabolite specialist:
+    measured over the 5 bundled models, all 9 ranked candidates returned `ac=0, but=0, ppa=0,
+    succ=0`, and rank 1 (`iHN637+iSFV_1184`) was reported as `lac__D=17.44, ac=0` — while
+    `--multi-metric pareto` shows that same pair reaching `ac=27.75`. All three metrics were run
+    over the identical pool; the same pair is reported as `lac__D=17.44` (`normalized_weighted`),
+    `ac=8.19 + succ=10.41` (`carbon_equivalent`), or `ac=27.75` (`pareto` rank 1) — so
+    `normalized_weighted` claims lactate and no succinate while `carbon_equivalent` claims
+    succinate and no lactate, about one community on one medium. **`carbon_equivalent` is not an
+    escape from the collapse**: it returned `but=0, lac__D=0, lac__L=0, ppa=0` for all 9 of its
+    ranked candidates. The docs now state that the vertex collapse is a property of linear
+    scalarisation rather than of the weighting, so only `pareto` answers a "best overall"
+    question. The `pareto` **mode** (an N-dimensional epsilon-constraint frontier, any number of
+    targets) is distinguished from the `pareto` **column** on a scalarised ranking (computed only
+    for exactly 2 targets; `False` elsewhere means "not evaluated", not "dominated").
+  - **`edges.parquet.weight` is a per-taxon flux.** Comparing raw edge magnitudes inverts member
+    rankings; measured on a 2-member solve, acetate edges were `3.876` (abundance 0.1) vs `0.459`
+    (abundance 0.9) while the community contributions were `0.388` vs `0.413`. Documented the
+    reconstruction (exclude `cross_feeding`, sign by direction, multiply by abundance → equals
+    `profile.net_flux`) and pointed at the `edges.weight basis:` line `inspect-run` prints.
+  - **Custom-medium invalidation.** Pre-fix runs that used `--medium` must be re-run, the
+    `run_hash` will not reveal it, and `provenance.medium_policy` is the discriminator. Documented
+    the real cost of `--allow-unknown-medium` (exit 0, `status: degraded`, dropped nutrients, and a
+    `medium_checksum` still covering the full requested medium) and the namespace-alias input error.
+  - **dFBA interpretability.** `--close-untracked-uptake` was undocumented, so the previous advice
+    sent users to audit `--dt`/`--km` on an experiment where Km is not rate-limiting. On
+    `models/iML1515.xml` the naive recipe reports `status: completed` and a biomass number with
+    `n_untracked_uptake: 14`.
+  - **Exit-code contract** (`0` / `2` input error / `3` failed science) and `--allow-failed-run`,
+    which no skill or README text mentioned.
+  - **Two fingerprints:** `run_hash` certifies the inputs, `result_digest` certifies the answer;
+    `artifact_integrity`; `cmig golden verify-envelope`; and the honest scope note that `cmig solve`
+    emits no `result_digest`. Also documented `result_digest.cross_run_comparable` — digests are
+    comparable *between* runs only for `host_map`, so cross-run comparison elsewhere manufactures
+    false alarms.
+  - **`inspect-run`'s payload (`schema_version 1.2`)**: documented `status_source` and all ten of
+    its values, `degraded` as a tier, and `result_digest_absent_reason` with its four values. Stated
+    that **`unknown` is a real answer, not a tool failure** — a recognised summary recording no
+    run-level outcome now reports `status: unknown` / `status_source: no_status_signal` instead of a
+    fabricated `ok` — and that `acceptance.interpretable: false` is a **veto** that overrides a
+    rosier `manifest.status` and owns `status_source` when it wins, so the two can legitimately
+    disagree. Also flagged that the status vocabulary is **not closed**: `infeasible` and `stalled`
+    still reach `status` verbatim because the legacy alias table maps only `optimal`/`completed`, so
+    a gate matching just the four tiers will miss them.
+  - **`cmig host-ko-impact`** — a shipped workflow (GUI `Host / Knockout Impact`) that the skill's
+    routing table and per-command reference both omitted.
+  - `strain-growth --single-medium` (`model_default` reports native capability, not an interaction
+    effect), `abundance-impact --fva`, `--accept-unreviewed-map` and the D/L stereoisomer hazard it
+    waives, `--keep-host-uptake`, and the `search_unevaluated.csv` partition.
+- **Preflight step added** to the skill (`uv run cmig version && uv run cmig solvers`): a
+  genome-scale analysis can run 15+ minutes, and an environment missing the `engine` extra fails
+  only once it reaches the solve. Documented the subtler case it also catches — `uv run` resolves the
+  **nearest** project root, so running it from a git worktree or sibling checkout (each carrying its
+  own `pyproject.toml`) resolves a *different* project and provisions a fresh minimal `.venv` with no
+  `engine` extra; `cmig workflows` still succeeds there while every analysis command fails with
+  `… 는 엔진 stack 필요`, and that message names a fix that would sync the wrong project. Measured:
+  from the synced checkout `uv run` gives `…/CMIG/.venv` with `micom 0.39.0`; from a worktree of the
+  same repo it creates `…/CMIG-wt-*/.venv` with 14 packages and no micom. `uv run cmig …` remains the
+  documented invocation, matching the examples `cmig workflows` emits.
+- Documented that `cmig solvers` lists `highs` although no command's `--solver` accepts it, and that
+  the bundled `models/` pool is not a gut community (only *E. coli* is a common gut resident), so
+  results over it are a methods demonstration rather than gut biology.
+- Corrected stale multi-target artifact claims: multi-target `search` writes `pool_taxonomy.csv`,
+  `search_plot.tiff` and conditionally `search_unevaluated.csv`, and does **not** write
+  `search_member_matrix.csv` or `search_scatter.svg`.
+- **Corrected over-confident guardrails found by independent verification.** Each had asserted more
+  than the code supports:
+  - `--close-untracked-uptake` **must be paired with a complete `--initial`**, and
+    `dfba-sensitivity` accepts `--initial`. The previously prescribed example failed on the model it
+    named: exit 3, 4/4 rows stalled at `final_biomass 0.01` (the initial value — no dynamics), after
+    closing 22 exchanges. Supplying all 14 nutrients from a plain run's `untracked_uptake` gives
+    exit 0, `interpretable: True`, 4/4 completed, and a real step-size signal (0.0536 at dt 0.1 vs
+    0.0503 at dt 0.2). Both forms are now shown.
+  - `--allow-failed-run` is **not universal.** It is rejected by `dfba`, `model-quality`,
+    `publication-benchmark`, `spatial-preview` and `model-review` as an argparse error — which exits
+    **2**, the same code documented for a bad medium spec, so the docs now warn against debugging
+    the wrong thing.
+  - `--robustness-fva` is **silently inert in multi-target mode** (`cli/main.py:4151` returns to the
+    multi-target path before the flag is read; no columns, no warning, exit 0). It had been
+    prescribed *in that mode* as the remedy for the scalarisation collapse. Documented as a current
+    limitation, with `--multi-metric pareto` as the available route.
+  - `publication-benchmark` exposes **33 options** (previously undocumented) and accepts **no
+    `--close-untracked-uptake`**, so `publication_ready` cannot certify the dFBA guardrail; a
+    load-bearing dFBA endpoint must come from a separate `dfba-sensitivity` run.
+  - Recon3D loads in **~6–7 s**, not the ~30–60 s previously stated as "verified".
+  - The edge→`net_flux` reconstruction is **not exact for every metabolite**: 23/25 agreed to
+    <1e-9 while `mobd` and `btn` were off by ~1e-8 near the 1e-6 noise floor, and 19 of 44 edge
+    metabolites had no profile row at all.
+  - `per_target_capability_not_simultaneous` lives in **`flux_basis`**, not `diagnostic`.
+  - `inspect-run` exits **2** on an unusable directory (missing `--run-dir`, corrupt
+    `manifest.json`), not only 3 on `artifact_integrity: mismatch`.
+  - `status: degraded` is the **normal** search outcome when any candidate is unevaluable.
+  - Added `host_ko_impact.csv`, `gene-ko-search --rank-by {effect,remaining}` (which sets the whole
+    KO ordering), `host-search-bigg --include-currency-metabolites`, and
+    `strain-growth`'s `medium_metabolites_unavailable_to_member`.
 - Integrated publication benchmark with model quality, community, search, dFBA sensitivity, host
   scale/mapping/coupling, checksums, acceptance checks, and artifact manifests.
 - Annotation-aware host interface mapping and objective-fixed FVA transfer intervals.
@@ -23,6 +151,137 @@ semantic versioning for public releases.
   commands no longer prefill an equal-mass assumption.
 
 ### Changed
+
+- **BREAKING (scientific): isolation is now computed against `model.boundary`, not
+  `model.exchanges` or `model.medium`.** CMIG closed what it *enumerated*, and every enumeration it
+  used is a strict subset of what can supply mass. `cobra` exposes three views and only one is
+  complete: `model.boundary == exchanges ∪ sinks ∪ demands`. Measured on Recon3D (cobra 0.31.1):
+
+  ```
+  boundary 1806 = exchanges 1560 + sinks 101 + demands 145
+  boundary able to supply mass: 1655, of which 95 are NOT in model.exchanges, each at lb = -1000
+  ```
+
+  This was one defect in five places, rediscovered in three separate review rounds. All five now
+  route through one primitive, `cmig/core/boundary.py`, whose invariant is *after isolation, no
+  boundary reaction may supply mass except the explicitly declared ones, at their declared bounds*
+  — asserted generically (`boundary_isolation_violations`) across Recon3D, RECON1, iML1515, iYO844
+  and iHN637 by driving the production paths.
+
+  **Published numbers move. Measured on Recon3D with `BIOMASS_reaction` as the host objective and
+  the bundled 3-member pool (`iML1515+iYO844+iHN637`, `cooperative_tradeoff f=0.5`, Gurobi):**
+
+  | | host `BIOMASS_reaction` | illegal suppliers | supplying at the optimum |
+  |---|---|---|---|
+  | before (closed `host.exchanges`) | `368.0102475464423` | 95 | 1 `EX_`, 33 `SK_`/`DM_` |
+  | before, microbial availability **ZEROED** | `368.01024754644214` | 95 | — |
+  | after (closes `model.boundary`) | `0.0` | **0** | 0 |
+
+  The two "before" values differ by ~2 ULP, not bit-identically — an earlier report overstated
+  that — but the substance stands: **the published host objective was independent of the
+  microbiome.** `0.0` is the correct answer, because this pool delivers only acetate, ethanol and
+  currency metabolites to a generic human cell model.
+
+  `apply_medium_translated(exact=True)` was likewise not exact: it assigned `model.medium`, and
+  cobra's own setter computes `exchange_rxns = frozenset(self.exchanges)` and turns off only those.
+  It now isolates the whole boundary, so `exact` means exact for the first time. `minimal_medium`
+  inherited the same defect and could return a **zero-component** "minimal medium" that passed its
+  own re-solve validation; it now refuses (`MILPInfeasibleError`) rather than certifying an empty
+  nutrient set, and records any `forced_supply` it could not close. `dfba
+  --close-untracked-uptake` could be fed by a sink with `untracked_uptake: {}` and `warnings: []`;
+  it now closes and reports against the boundary, restoring the round-2 D5 guarantee.
+
+  A merged medium (`--medium` without exact semantics) is still an *overlay* on MICOM's permissive
+  default: measured on the shipped `medium_presets/western_diet.csv`, `EX_o2_m` stayed at
+  `999999.0` and community growth came out `1.2677557` against `0.6990206751` with oxygen closed —
+  an **81 % overestimate from one absent row**. That mode is unchanged by default, but it is no
+  longer silent: `medium_application_mode` and `n_undeclared_boundary_suppliers` are recorded in
+  the solve manifest's non-hashed provenance, and `search` states the count in its warnings.
+
+  **Non-hashed provenance marker:** `boundary_isolation_policy`, value `boundary_reactions_v1` (the
+  prior era is `exchange_view_v0` and has no key at all). It is stamped by the *writer* on both
+  solve and workflow manifests, and `cmig inspect-run` shows it — verified end-to-end. The marker
+  set now lives in one mapping (`workflow_manifest.NON_HASHED_PROVENANCE_MARKERS`) that
+  `_compact_manifest` also reads, because that whitelist had already swallowed one marker
+  (`host_isolation_policy` reached `manifest.json` and `inspect-run` returned `None` for it).
+
+  **Frozen hashes are unmoved:** gurobi `29844e2910360332…cef29ab`, osqp `a422eb89d019f917…404d3d9d`;
+  `golden verify-envelope` 13/13.
+
+  **Action required:** any run that reported a host objective, a "defined medium" result, a minimal
+  medium, or a `--close-untracked-uptake` dFBA on a model with sinks or demands is suspect. Human
+  GEMs (Recon3D, Human-GEM, RECON1-class) ship them; the bundled microbial GEMs do not, so runs
+  confined to `models/` are unaffected. A manifest with no `boundary_isolation_policy` key is from
+  the old era.
+
+- **BREAKING (scientific): host-coupling id resolution is case-preserving.** `run_bigg_host_microbe`
+  built a host exchange id from the **raw** metabolite id and `solve_bigg_host` from the
+  **lowercased** one. Measured: `matched_exchanges {'lac__D': 'EX_lac__D_e'}` was published while
+  the LP opened `EX_lac__d_e`, which does not exist — host biomass `0.0`, `warnings: []`. BiGG
+  metabolite ids are case-sensitive, so both sides now call one resolver
+  (`host_coupling.host_exchange_resolver`) and the reported map and the applied bounds agree by
+  construction. With a reviewed map the same input now gives `5.0`.
+
+- **BREAKING (scientific): a MAINTENANCE objective is no longer reported as growth.** Round 5's
+  objective-structure guard admitted `BIOMASS_maintenance` in silence, because the id contains the
+  word "biomass" — and that is what Recon3D actually **ships as its default objective**, optimizing
+  to `755.0032155506631`. A maintenance turnover rate was therefore free to be published as a growth
+  rate by `model-quality`, `host-generic` and `host-benchmark` with no caveat anywhere. Maintenance
+  hints (`maintenance`, `atpm`, `non-growth`/`nongrowth`/`ngam`) are now tested **before** the
+  biomass hints — deliberately, since the conventional spelling of the concept ("non-growth
+  associated maintenance") contains the word `growth`.
+
+  The guard also reached only one of its call sites in the round-5 shape: `model_quality.py`,
+  `model_pool.py` and `ModelSummary.as_dict()` all still passed the **count** alone, which skips
+  every single-term check. Measured, `model-quality` — the one command whose entire job is to vet a
+  GEM before publication — audited RECON1 (objective `S6T14g`, a Golgi sulfotransferase, optimum
+  `0.0`) and emitted an **empty** objective warning; passing ids would not have helped either,
+  because `getattr(str, 'id', '?')` rendered the message as "objective reaction ?". All three sites
+  now pass the reactions or ids, and `objective_structure_warning` accepts either. `model_quality`'s
+  `run_hash` reproduces `57283fa9b1393cfa…` bit-for-bit, so no hash moved.
+
+  `HostModelSummary` now carries `objective_warning`, `n_boundary_reactions` and
+  `n_nonexchange_boundary_uptake`, and `host-generic` / `host-benchmark` publish all three, so a
+  generic GEM discloses its 95 sink/demand suppliers *before* anyone couples anything to it. The
+  limitation is deliberate and worth writing down: the check is lexical, so a reduced-precursor
+  biomass reaction named without the word "maintenance" is not caught, and structure does not
+  separate the cases either (Recon3D's maintenance objective has 37 metabolites against growth's
+  41). Of the three biomass/growth-named reactions Recon3D ships, two warn and one correctly does
+  not; RECON1 ships none.
+
+  **Non-hashed provenance marker:** `host_isolation_policy`, value `all_boundary_uptake_v2` (prior
+  era `model_exchanges_only_v1`). It dates *the host-coupling answer*, where
+  `boundary_isolation_policy` dates *the shared primitive*; both are members of
+  `workflow_manifest.NON_HASHED_PROVENANCE_MARKERS`, so both are stamped by the writers and both
+  reach `cmig inspect-run` — verified end-to-end on a workflow manifest (top level) and a solve
+  manifest (inside `provenance`).
+
+- Tracked provenance for the human GEMs: `data/gems/GEM_SOURCES.json` (retrieval date, `.xml` and
+  `.xml.gz` SHA-256 and byte counts, server `Last-Modified`, structural counts, and the shipped
+  default objective **with its warning**), `data/gems/README.md`, and
+  `scripts/download_human_gems.py` with `--verify` / `--verify --counts`. The model bytes stay
+  gitignored: BiGG is **not** under a named open licence but a custom UCSD non-commercial licence
+  (`http://bigg.ucsd.edu/license`), and `bigg.ucsd.edu` serves plain HTTP only — an `https://`
+  request is refused at the TCP level, so any code using `https://bigg.ucsd.edu/...` fails outright.
+  `data/gems` is also now part of the human-GEM resolution order (`cmig/io/gem_paths.py`), shared by
+  the CLI `--model` defaults and the tests so they cannot disagree; `tests/test_recon3d_host.py`,
+  which had skipped for the project's entire life because the order never looked where the download
+  lands, now runs. Its old assertion `biomass > 1.0` **passed on the maintenance optimum**, so it
+  now pins the value and requires the maintenance verdict beside it.
+
+- Round 5's objective-structure guard now reaches the host-coupling commands. `--host-objective` is
+  optional, so `host-microbe-bigg`, `host-search-bigg` and `host-ko-impact` published
+  `host_objective` computed on whatever the SBML shipped, with no caveat anywhere (RECON1's default
+  objective is `S6T14g`, a Golgi sulfotransferase whose optimum is `0.0`). The guard is called once
+  in `run_bigg_host_microbe`, which all three commands go through, and its verdict travels as
+  `objective_warning` plus a `warnings` entry.
+
+- `solve_host` refuses a model whose exchange interface it cannot classify. It implements the
+  `_lumen`/`_blood` contract by closing the lumen; Recon3D exposes 1560 `EX_*` reactions in neither
+  interface, so the closure matched none of them and the LP ran with the whole boundary open —
+  and because Recon3D has `ATPM` it passed the maintenance check and returned `viable=True` off a
+  phantom-fed objective. It now returns `host_interface_absent` and names `solve_generic_host` /
+  `solve_bigg_host` as the right entry points for a generic GEM.
 
 - **BREAKING (scientific): `--medium` now actually applies.** `apply_medium_checked` gated on
   `model.medium`, which lists only *currently open* uptakes, so a closed exchange could never be

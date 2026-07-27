@@ -24,7 +24,6 @@ from cmig import CMIG_CORE_VERSION
 from cmig.core.golden import DEFAULT_DECIMALS
 from cmig.core.interactions import CROSS_FEEDING_ALLOCATION_METHOD
 from cmig.core.manifest import RunHashComponents, RunManifest, canonical_json
-from cmig.core.medium_spec import MEDIUM_POLICY
 
 KNOWN_SOLVE_ARTIFACTS = frozenset({
     "nodes.parquet",
@@ -162,14 +161,21 @@ def build_run_components(
 
 
 def solve_provenance(provenance: dict[str, Any] | None) -> dict[str, Any]:
-    """Provenance block of a solve manifest, with `medium_policy` stamped by the WRITER.
+    """Provenance block of a solve manifest, with the policy markers stamped by the WRITER.
 
     Writer-last, deliberately. The previous spelling was ``{"medium_policy": MEDIUM_POLICY,
     **(provenance or {})}``, which let a caller passing its own `medium_policy` key silently win —
     contradicting the adjacent comment's claim that no solve path can omit it. No caller does today;
     the ordering is what makes the claim true rather than merely currently unfalsified.
+
+    Round 6: the marker set comes from
+    :data:`cmig.core.workflow_manifest.NON_HASHED_PROVENANCE_MARKERS` rather than being restated,
+    so a solve manifest and a workflow manifest cannot disclose different policy sets, and
+    ``inspect-run``'s whitelist (which reads the same mapping) cannot fall behind either.
     """
-    return {**(provenance or {}), "medium_policy": MEDIUM_POLICY}
+    from cmig.core.workflow_manifest import NON_HASHED_PROVENANCE_MARKERS
+
+    return {**(provenance or {}), **NON_HASHED_PROVENANCE_MARKERS}
 
 
 def write_solve_output(

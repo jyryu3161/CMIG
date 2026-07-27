@@ -24,6 +24,12 @@ class DiagnosticCode(enum.Enum):
     MEDIUM_UNAPPLIED = "medium_unapplied"     # medium exchange 가 community 에 없음
     MEMBERS_MISSING = "members_missing"       # MICOM summary 멤버 누락 (I-1)
     HOST_MAINTENANCE_ABSENT = "host_maintenance_absent"
+    # Round 6 (track B, P2): `solve_host` implements CMIG's 2-interface contract by closing
+    # `EX_*_lumen` and leaving `EX_*_blood` open. On a generic GEM there are no such ids, so it
+    # closed nothing and solved a model whose entire boundary was open — Recon3D even has `ATPM`,
+    # so it returned `viable=True` with a phantom-fed objective instead of failing. A model that
+    # cannot express the contract must say so rather than answer a different question.
+    HOST_INTERFACE_ABSENT = "host_interface_absent"
 
 
 @dataclass(frozen=True)
@@ -63,6 +69,7 @@ _PRIORITY: tuple[DiagnosticCode, ...] = (
     DiagnosticCode.MEDIUM_UNAPPLIED,
     DiagnosticCode.MEMBERS_MISSING,
     DiagnosticCode.HOST_MAINTENANCE_ABSENT,
+    DiagnosticCode.HOST_INTERFACE_ABSENT,
 )
 
 

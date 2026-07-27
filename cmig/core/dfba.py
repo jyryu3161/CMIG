@@ -157,12 +157,17 @@ def _growth_of(model: Any, sol: Any) -> float:
 
 
 def _exposes_exchanges(model: Any) -> bool:
-    """True iff the model can enumerate its exchange reactions (cobra models can)."""
-    try:
-        iter(model.exchanges)
-    except (AttributeError, TypeError):
-        return False
-    return True
+    """True iff the model can enumerate every reaction that may supply it mass.
+
+    Round 6 (track B, instance 4): this used to probe ``model.exchanges``. That view excludes
+    sinks and demands, so both the closure and the diagnostic below were blind to them — measured
+    on a sink-fed run: the tracked substrate stayed at 0.0 while biomass went 0.01 -> 5.01 ->
+    2510.01, with ``untracked_uptake: {}`` and ``warnings: []``. ``model.boundary`` is the
+    complete view; see :mod:`cmig.core.boundary`.
+    """
+    from cmig.core.boundary import exposes_boundary
+
+    return exposes_boundary(model)
 
 
 def _record_untracked_uptake(
@@ -171,10 +176,18 @@ def _record_untracked_uptake(
     managed: list[str],
     untracked_uptake: dict[str, float],
 ) -> None:
-    """Accumulate the peak uptake rate of every exchange the run does not track."""
+    """Accumulate the peak supply rate of every boundary reaction the run does not track.
+
+    "Supply" rather than "negative flux": for a boundary reaction written ``--> met`` the
+    supplying direction is *positive*, so the old ``flux < -1e-9`` test could not see a supplying
+    demand at all. :func:`cmig.core.boundary.supply_rate` decides the direction from the
+    stoichiometry.
+    """
+    from cmig.core.boundary import SUPPLY_TOLERANCE, boundary_reactions, supply_rate
+
     if not _exposes_exchanges(model):
         return
-    for reaction in model.exchanges:
+    for reaction in boundary_reactions(model):
         rid = str(reaction.id)
         if rid in managed:
             continue
@@ -182,8 +195,9 @@ def _record_untracked_uptake(
             flux = float(sol.fluxes[rid])
         except (KeyError, TypeError, ValueError):
             continue
-        if flux < -1e-9:
-            untracked_uptake[rid] = max(untracked_uptake.get(rid, 0.0), -flux)
+        rate = supply_rate(reaction, flux)
+        if rate > SUPPLY_TOLERANCE:
+            untracked_uptake[rid] = max(untracked_uptake.get(rid, 0.0), rate)
 
 
 def _untracked_warnings(
@@ -242,15 +256,15 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
             if not _exposes_exchanges(model):
                 # Silently not closing them would report a controlled experiment that never was.
                 raise ValueError(
-                    "--close-untracked-uptake needs a model exposing .exchanges; "
+                    "--close-untracked-uptake needs a model exposing .boundary; "
                     "this model does not, so untracked uptake cannot be closed"
                 )
-            for reaction in model.exchanges:
-                if str(reaction.id) in managed:
-                    continue
-                if reaction.lower_bound < 0:
-                    closed_untracked.append(str(reaction.id))
-                    reaction.lower_bound = 0.0
+            from cmig.core.boundary import close_boundary_supply
+
+            # Against `model.boundary`, so a sink or demand cannot feed the run behind the
+            # experiment's back. The managed exchanges are the declared substrates and are kept.
+            closure = close_boundary_supply(model, keep=managed)
+            closed_untracked = list(closure.closed)
 
         conc = dict(config.initial_concentrations)
         biomass = config.initial_biomass

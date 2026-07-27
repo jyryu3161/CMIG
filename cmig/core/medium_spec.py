@@ -13,8 +13,9 @@ import csv
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 _DECIMALS = 6
 
@@ -26,6 +27,24 @@ _DECIMALS = 6
 # **non-hashed** `provenance` block instead: enough to tell the two eras apart mechanically,
 # without touching the frozen contract. See the CHANGELOG entry.
 MEDIUM_POLICY = "exchange_reactions_by_metabolite_v2"   # was: open_uptakes_exact_key_v1
+
+# Round 6 (track B, instances 1 and 3): a medium is applied in exactly one of two modes, and they
+# give **different answers on identical input**, so which one ran has to travel with the result.
+#
+#   merge  — the requested uptakes are added on top of whatever the model already offers. MICOM's
+#            default community medium is permissive, so this leaves undeclared nutrients open;
+#            measured on iML1515+iYO844+iHN637 with the shipped `western_diet.csv`, `EX_o2_m`
+#            stayed at 999999 and community growth came out 1.2677557 against 0.6990206751 with
+#            oxygen closed — an 81 % overestimate from one absent row.
+#   exact  — the requested uptakes are the model's ONLY mass sources. Every other boundary
+#            reaction that could supply mass is closed, `model.boundary` included, so this is a
+#            defined medium rather than an overlay.
+#
+# `exact` used to be a lie: it delegated to cobra's `Model.medium` setter, which does
+# `frozenset(self.exchanges)` and cannot close a sink or a demand. It now goes through
+# `cmig.core.boundary`, which is written against `model.boundary`.
+MEDIUM_APPLICATION_MERGE = "merge_onto_model_default"
+MEDIUM_APPLICATION_EXACT = "exact_boundary_isolation"
 
 
 @dataclass(frozen=True)
@@ -141,8 +160,22 @@ def unknown_medium_exchanges(community: object, spec: MediumSpec) -> list[str]:
     return list(translate_medium_for_model(community, spec).unmatched)
 
 
+def medium_application_report(
+    community: object, spec: MediumSpec, *, strict: bool = True, exact: bool = False
+) -> MediumTranslation:
+    """Apply ``spec`` and return the full record of how it was applied.
+
+    Same single code path as :func:`apply_medium_checked` — this is the entry point for callers
+    that publish provenance (``solve``, ``search``), which need
+    :meth:`MediumTranslation.as_provenance` and not just the unmatched list. Round 6: two
+    functions that apply a medium differently is how the product ended up with two medium
+    semantics in the first place, so there is exactly one implementation and two views of it.
+    """
+    return apply_medium_translated(community, spec, strict=strict, exact=exact)
+
+
 def apply_medium_checked(
-    community: object, spec: MediumSpec, *, strict: bool = True
+    community: object, spec: MediumSpec, *, strict: bool = True, exact: bool = False
 ) -> tuple[dict[str, float], list[str]]:
     """community.medium 에 spec 적용 + 미적용(대응 exchange 부재) exchange 목록 반환.
 
@@ -157,10 +190,16 @@ def apply_medium_checked(
     누락됐다. 그러면서 manifest 는 요청된 medium_checksum 과 고유 run_hash 를 찍어, 쓰지 않은
     배지 위의 run 으로 발표된다. 이제 :func:`apply_medium_translated` 와 **동일한 단일 경로**
     (대사체 기준 exchange 반응 조회)를 쓴다 — subcommand 마다 배지 의미가 갈리지 않는다.
+
+    Round 6 (track B, instance 1): ``exact`` is now selectable here too. It defaults to False —
+    isolation is opt-in-to-close, and flipping the default would silently reinterpret every
+    stored medium file — but the *choice* is no longer unavailable, and which mode ran is recorded
+    in the manifest's non-hashed provenance so the two eras cannot be confused. Callers that
+    publish provenance should use :func:`medium_application_report` instead of this two-tuple.
     """
     spec.validate()
     original = dict(community.medium)  # type: ignore[attr-defined]
-    translation = apply_medium_translated(community, spec, strict=strict, exact=False)
+    translation = apply_medium_translated(community, spec, strict=strict, exact=exact)
     return original, list(translation.unmatched)
 
 
@@ -201,10 +240,29 @@ class MediumTranslation:
     spec: MediumSpec                      # translated (keys are this model's exchange ids)
     mapping: dict[str, str]               # source exchange id → this model's exchange id
     unmatched: tuple[str, ...]            # source exchange ids with no counterpart in the model
+    # Round 6 (track B): which medium semantics actually ran, and — under `exact` — what was
+    # closed to achieve them. Carried on the translation rather than returned separately so that
+    # every caller of `apply_medium_translated` can disclose it without changing its signature.
+    application_mode: str = MEDIUM_APPLICATION_MERGE
+    isolation: Any = None                 # cmig.core.boundary.BoundaryIsolation | None
+    #: Boundary reactions still able to supply mass that the spec does not declare. Empty under
+    #: `exact`. Under `merge` this is the count that made the 81 % oxygen overestimate publishable.
+    undeclared_suppliers: tuple[str, ...] = ()
 
     @property
     def matched_count(self) -> int:
         return len(self.mapping)
+
+    def as_provenance(self) -> dict[str, Any]:
+        """JSON-ready, non-hashed record of how the medium was applied."""
+        record: dict[str, Any] = {
+            "medium_application_mode": self.application_mode,
+            "n_undeclared_boundary_suppliers": len(self.undeclared_suppliers),
+            "undeclared_boundary_suppliers": list(self.undeclared_suppliers[:20]),
+        }
+        if self.isolation is not None:
+            record["boundary_isolation"] = self.isolation.as_dict()
+        return record
 
 
 def translate_medium_for_model(model: object, spec: MediumSpec) -> MediumTranslation:
@@ -282,27 +340,58 @@ def apply_medium_translated(
     ``strict=True`` refuses when a requested metabolite has no exchange in this model — that is a
     request the model cannot honour, so silently dropping it would fake a controlled medium.
 
-    ``exact=True`` makes the translated spec the *whole* medium (cobra closes every other
-    exchange), which is what "both legs on the same defined medium" requires. ``exact=False``
-    merges onto whatever the model already offers.
+    ``exact=True`` makes the translated spec the *whole* set of mass sources the model has, which
+    is what "both legs on the same defined medium" requires. ``exact=False`` merges onto whatever
+    the model already offers.
 
     Unlike :func:`apply_medium_checked`, this does not gate on ``model.medium`` — that property
     lists only *currently open* uptakes, so gating on it makes opening a closed nutrient
     impossible, which is precisely how a medium silently applies to nothing.
+
+    Round 6 (track B, instance 3): ``exact=True`` used to assign ``model.medium``, and cobra's own
+    setter computes ``exchange_rxns = frozenset(self.exchanges)`` and turns off only those. Sinks
+    and demands are not exchanges, so on Recon3D 95 boundary reactions stayed at
+    ``lower_bound = -1000`` and "exact" was not exact — measured: declared uptake 1.0, achieved
+    growth 1000.0, the sink still wide open. It now goes through :mod:`cmig.core.boundary`, which
+    enumerates ``model.boundary``. Because the per-reaction arithmetic is identical to cobra's
+    ``set_active_bound``, a model with no sinks or demands gets bit-identical bounds either way.
     """
+    from cmig.core.boundary import (
+        isolate_boundary,
+        mass_supplying_boundary,
+        open_boundary_supply,
+    )
+
     translation = translate_medium_for_model(model, spec)
     if strict and translation.unmatched:
         raise ValueError(
             "medium exchange has no counterpart in the target model "
             f"(matched on metabolite): {list(translation.unmatched)}"
         )
+    declared = dict(translation.spec.uptake)
     if exact:
-        target = dict(translation.spec.uptake)
-    else:
-        target = dict(getattr(model, "medium", {}) or {})
-        target.update(translation.spec.uptake)
-    model.medium = target  # type: ignore[attr-defined]
-    return translation
+        isolation = isolate_boundary(model, declared, strict_unmatched=False)
+        return replace(
+            translation,
+            application_mode=MEDIUM_APPLICATION_EXACT,
+            isolation=isolation,
+            undeclared_suppliers=(),
+        )
+    open_boundary_supply(model, declared, strict=False)
+    # Merge mode leaves everything the model already offered open. That is a legitimate mode, but
+    # it is not the medium the manifest's `medium_checksum` names, so the difference is measured
+    # and handed back rather than assumed to be empty.
+    undeclared = tuple(
+        reaction_id
+        for reaction_id in sorted(mass_supplying_boundary(model))
+        if reaction_id not in declared
+    )
+    return replace(
+        translation,
+        application_mode=MEDIUM_APPLICATION_MERGE,
+        isolation=None,
+        undeclared_suppliers=undeclared,
+    )
 
 
 def compare_effective_media(

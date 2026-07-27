@@ -1,0 +1,98 @@
+{
+  "schema_version": "1.0",
+  "purpose": "Provenance for the large external human genome-scale models used as the CMIG host. The model files themselves are gitignored (see README.md); this manifest and scripts/download_human_gems.py are the tracked record.",
+  "resource": {
+    "name": "BiGG Models",
+    "site_url": "http://bigg.ucsd.edu/",
+    "note": "bigg.ucsd.edu is HTTP-only as of 2026-07-26; an https:// request is refused at the TCP level (ECONNREFUSED on :443), not downgraded. Verified with curl.",
+    "download_url_pattern": "http://bigg.ucsd.edu/static/models/<BiGG_id>.xml.gz",
+    "resource_citation": "King ZA, Lu JS, Dräger A, Miller PC, Federowicz S, Lerman JA, Ebrahim A, Palsson BO, Lewis NE. BiGG Models: A platform for integrating, standardizing, and sharing genome-scale models. Nucleic Acids Research. 2016;44(D1):D515-D522. doi:10.1093/nar/gkv1049",
+    "resource_citation_verified": "Quoted from http://bigg.ucsd.edu/license under 'How do I cite BiGG Models?', retrieved 2026-07-26. The site states: 'When using the BiGG Models knowledgebase in your research, we kindly ask that you cite the latest publication.'",
+    "license_name": "Custom UCSD non-commercial license (NOT a named open-source or Creative Commons license)",
+    "license_url": "http://bigg.ucsd.edu/license",
+    "license_quote": "Copyright © 2019 The Regents of the University of California — All Rights Reserved. Permission to use, copy, modify and distribute any part of BiGG Models for educational, research and non-profit purposes, without fee, and without a written agreement is hereby granted, provided that the above copyright notice, this paragraph and the following three paragraphs appear in all copies. Those desiring to incorporate BiGG Models into commercial products or use for commercial purposes should contact the Technology Transfer & Intellectual Property Services, University of California, San Diego, 9500 Gilman Drive, Mail Code 0910, La Jolla, CA 92093-0910, Ph: (858) 534-5815, FAX: (858) 534-7345, e-mail: invent@ucsd.edu.",
+    "license_retrieved": "2026-07-26",
+    "license_implication": "CMIG is Apache-2.0; these model files are not. They must not be redistributed inside a CMIG wheel/sdist and must not be used commercially without a UCSD agreement. That is why they are gitignored and downloaded on demand."
+  },
+  "models": [
+    {
+      "id": "Recon3D",
+      "file": "Recon3D.xml",
+      "archive_file": "Recon3D.xml.gz",
+      "source_url": "http://bigg.ucsd.edu/static/models/Recon3D.xml.gz",
+      "bigg_model_url": "http://bigg.ucsd.edu/models/Recon3D",
+      "retrieved": "2026-07-26",
+      "archive_sha256": "f45f88f908a1ed1a262148bbf327d34f1d20a36383e68a67d6078d626a6774d8",
+      "archive_bytes": 1240856,
+      "sha256": "cdf8ad5f20e90d5ffe9ae0d58f12c99d2b9f04a4b892beaf2f89c0c1a403fd58",
+      "bytes": 28573403,
+      "server_last_modified": "Fri, 01 Nov 2019 16:07:09 GMT",
+      "counts": {
+        "reactions": 10600,
+        "metabolites": 5835,
+        "genes": 2248,
+        "boundary_reactions": 1806,
+        "exchange_reactions_EX_prefix": 1560,
+        "cobra_model_exchanges": 1560,
+        "cobra_model_sinks": 101,
+        "cobra_model_demands": 145,
+        "compartments": ["c", "e", "g", "i", "l", "m", "n", "r", "x"]
+      },
+      "counts_measured_by": "cobra 0.31.1 read_sbml_model; see scripts/download_human_gems.py --verify",
+      "shipped_default_objective": {
+        "reaction": "BIOMASS_maintenance",
+        "reaction_name": "Biomass maintenance reaction without replication precursors",
+        "optimum_gurobi": 755.0032155506631,
+        "warning": "This is a MAINTENANCE objective, not growth. 755.003 is NOT a growth rate and must never be labelled one. For a growth question set the objective explicitly to BIOMASS_reaction ('Generic Human Biomass Reaction', 41 metabolites)."
+      },
+      "biomass_like_reactions": [
+        {"id": "BIOMASS_reaction", "name": "Generic Human Biomass Reaction", "bounds": [0.0, 1000.0], "n_metabolites": 41},
+        {"id": "BIOMASS_maintenance", "name": "Biomass maintenance reaction without replication precursors", "bounds": [0.0, 1000.0], "n_metabolites": 37},
+        {"id": "BIOMASS_maintenance_noTrTr", "name": "Biomass maintenance reaction without replication, transcription, and translation precursors", "bounds": [0.0, 1000.0], "n_metabolites": 14}
+      ],
+      "publication": {
+        "citation": "Brunk E, Sahoo S, Zielinski DC, Altunkaya A, Dräger A, Mih N, Gatto F, Nilsson A, Preciat Gonzalez GA, Aurich MK, Prlić A, Sastry A, Danielsdottir AD, Heinken A, Noronha A, Rose PW, Burley SK, Fleming RMT, Nielsen J, Thiele I, Palsson BO. Recon3D enables a three-dimensional view of gene variation in human metabolism. Nature Biotechnology. 2018;36(3):272-281. doi:10.1038/nbt.4072",
+        "doi": "10.1038/nbt.4072",
+        "pmid": "29457794",
+        "pmcid": "PMC5840010",
+        "verified": "PMID taken from http://bigg.ucsd.edu/api/v2/models/Recon3D ('reference_id': '29457794'); title/journal/volume/pages cross-checked against PubMed esummary and Crossref api.crossref.org/works/10.1038/nbt.4072 on 2026-07-26."
+      }
+    },
+    {
+      "id": "RECON1",
+      "file": "RECON1.xml",
+      "archive_file": "RECON1.xml.gz",
+      "source_url": "http://bigg.ucsd.edu/static/models/RECON1.xml.gz",
+      "bigg_model_url": "http://bigg.ucsd.edu/models/RECON1",
+      "retrieved": "2026-07-26",
+      "archive_sha256": "ae3e5424875fceb450be53dce38964d9bd41234e05587b7e26bfe198d442be47",
+      "archive_bytes": 594182,
+      "sha256": "7f13351adba449cc54eb056b8310ab769bb85b1d90f72b93a12d3c2c529da7ed",
+      "bytes": 15163732,
+      "server_last_modified": "Fri, 01 Nov 2019 15:37:24 GMT",
+      "counts": {
+        "reactions": 3741,
+        "metabolites": 2766,
+        "genes": 1905,
+        "boundary_reactions": 430,
+        "exchange_reactions_EX_prefix": 404,
+        "compartments": ["c", "e", "g", "l", "m", "n", "r", "x"]
+      },
+      "counts_measured_by": "cobra 0.31.1 read_sbml_model; see scripts/download_human_gems.py --verify",
+      "shipped_default_objective": {
+        "reaction": "S6T14g",
+        "reaction_name": "Galactose/N-acetylglucosamine 6-O-sulfotransferase, Golgi apparatus",
+        "optimum_gurobi": 0.0,
+        "warning": "The shipped objective is a Golgi SULFOTRANSFERASE reaction, not biomass. RECON1 as distributed by BiGG has NO biomass reaction at all (zero reactions whose id or name contains 'biomass' or 'growth'), so it cannot answer a growth question without a user-supplied biomass reaction. Its optimum of 0.0 is not a growth rate and not evidence of non-viability."
+      },
+      "biomass_like_reactions": [],
+      "publication": {
+        "citation": "Duarte NC, Becker SA, Jamshidi N, Thiele I, Mo ML, Vo TD, Srivas R, Palsson BØ. Global reconstruction of the human metabolic network based on genomic and bibliomic data. Proceedings of the National Academy of Sciences. 2007;104(6):1777-1782. doi:10.1073/pnas.0610772104",
+        "doi": "10.1073/pnas.0610772104",
+        "pmid": "17267599",
+        "pmcid": "PMC1794290",
+        "verified": "PMID taken from http://bigg.ucsd.edu/api/v2/models/RECON1 ('reference_id': '17267599'); title/journal/volume/pages cross-checked against PubMed esummary and Crossref api.crossref.org/works/10.1073/pnas.0610772104 on 2026-07-26."
+      }
+    }
+  ]
+}

@@ -118,7 +118,10 @@ def audit_model_quality(
     genes = list(model.genes)
     exchanges = list(model.exchanges)
     internal = [reaction for reaction in reactions if not bool(reaction.boundary)]
-    objective_reactions = sorted(str(r.id) for r in linear_reaction_coefficients(model))
+    objective_coefficient_reactions = sorted(
+        linear_reaction_coefficients(model), key=lambda reaction: str(reaction.id)
+    )
+    objective_reactions = [str(r.id) for r in objective_coefficient_reactions]
 
     checkable = 0
     balanced = 0
@@ -172,7 +175,13 @@ def audit_model_quality(
     # rather than reporting the optimum under a growth label.
     from cmig.io.model_import import objective_structure_warning
 
-    objective_note = objective_structure_warning(len(objective_reactions))
+    # R6-H: the reactions are passed, not only their count. Count-only was the pre-round-5
+    # signature and it skips every single-term check, so this audit — the one command whose whole
+    # job is to vet a GEM before publication — reported RECON1's objective `S6T14g` (a Golgi
+    # sulfotransferase) and Recon3D's `BIOMASS_maintenance` with an empty objective warning.
+    objective_note = objective_structure_warning(
+        len(objective_reactions), objective_coefficient_reactions
+    )
     if objective_note:
         warnings.append(objective_note)
     if solve_status != "optimal":
