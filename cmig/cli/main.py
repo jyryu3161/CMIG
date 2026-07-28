@@ -88,6 +88,7 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "--top-k",
             "--robustness-fva",
             "--medium",
+            "--allow-unknown-medium",
             "--recursive",
         ],
         "key_outputs": [
@@ -108,7 +109,9 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         "cli_command": "cmig strain-growth",
         "purpose": "Compare each strain's single-model growth with its community growth.",
         "required_args": ["--model-dir or --taxonomy", "--out"],
-        "common_options": ["--medium", "--tradeoff-f", "--recursive"],
+        "common_options": [
+            "--medium", "--allow-unknown-medium", "--tradeoff-f", "--recursive",
+        ],
         "key_outputs": [
             "strain_growth_summary.json",
             "strain_growth.csv",
@@ -121,7 +124,10 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         "cli_command": "cmig abundance-impact",
         "purpose": "Sweep one member abundance and quantify growth and target flux changes.",
         "required_args": ["--model-dir or --taxonomy", "--member", "--out"],
-        "common_options": ["--fractions", "--target", "--medium", "--tradeoff-f", "--recursive"],
+        "common_options": [
+            "--fractions", "--target", "--medium", "--allow-unknown-medium",
+            "--tradeoff-f", "--recursive",
+        ],
         "key_outputs": [
             "abundance_impact_summary.json",
             "abundance_impact.csv",
@@ -150,6 +156,8 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "--direction",
             "--growth-fraction",
             "--top-k",
+            "--medium",
+            "--allow-unknown-medium",
             "--recursive",
         ],
         "key_outputs": ["gene_ko_summary.json", "gene_ko_rankings.csv", "gene_ko_plot.svg"],
@@ -175,6 +183,7 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "--host-objective",
             "--microbe-medium",
             "--host-medium",
+            "--allow-unknown-medium",
             "--exclude-metabolites",
             "--include-currency-metabolites",
             "--recursive",
@@ -209,7 +218,7 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         ],
         "common_options": [
             "--ko-level", "--target", "--interface-map", "--host-medium", "--microbe-medium",
-            "--host-objective", "--keep-host-uptake",
+            "--allow-unknown-medium", "--host-objective", "--keep-host-uptake",
         ],
         "key_outputs": ["host_ko_impact_summary.json", "host_ko_impact.csv"],
         "example": (
@@ -242,6 +251,9 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "--host-reference",
             "--target-reference",
             "--host-objective",
+            "--microbe-medium",
+            "--host-medium",
+            "--allow-unknown-medium",
             "--recursive",
         ],
         "key_outputs": [
@@ -308,6 +320,7 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "--tradeoff-fs",
             "--solvers",
             "--mediums",
+            "--allow-unknown-medium",
             "--member-sets",
             "--abundance-variants",
             "--bounds-variants",
@@ -1337,6 +1350,7 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
             exchange_suffix=args.exchange_suffix,
             exclude_metabolites=exclude,
             close_unlisted_host_uptake=not args.keep_host_uptake,
+            strict_medium=not args.allow_unknown_medium,
         )
         out = Path(args.out)
         run_artifacts = _write_host_microbe_bigg_outputs(result, taxonomy, out)
@@ -1355,6 +1369,10 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
     host_run_status = _worst_status(
         _run_status_from_solve(str(result.community_status)),
         _run_status_from_solve(str(result.host_result.status)),
+        # A run that applied part of the requested medium did not run the requested experiment.
+        # It is a real result — that is why it is not `failed` — but it is not the `ok` a reader
+        # would compare against a strict run, so the tier says so and `inspect-run` shows it.
+        _medium_run_status(result),
     )
     _emit_workflow_manifest(
         out,
@@ -1383,6 +1401,10 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
         status=host_run_status,
         artifacts=run_artifacts,
         warnings=list(result.warnings),
+        # R7: the solver/medium cause, not only the status word. Round 6 published
+        # `host_status=solver_failed` with the engine's own diagnostic recorded nowhere the
+        # manifest could reach, so `inspect-run` on that directory could not say why.
+        diagnostic=result.host_result.diagnostic,
         summary={
             "community_growth": _finite_or_none(float(result.community_growth)),
             "host_objective": _finite_or_none(float(result.host_result.biomass)),
@@ -1392,6 +1414,8 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
             # viability travels with it. `inspect-run` shows this summary verbatim.
             "host_viable": bool(result.host_result.viable),
             "n_matched_exchanges": len(result.matched_exchanges),
+            # Named, not counted: "1 exchange dropped" is not something a reader can check.
+            "unapplied_medium_exchanges": list(result.unapplied_medium_exchanges),
             # Non-hashed: the isolation actually applied, so a reader of `inspect-run` can tell a
             # closed-background host objective from an open-background one without re-running.
             "host_boundary_isolated": bool(
@@ -1785,6 +1809,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                 _parse_csv_strings(args.exclude_metabolites, flag="--exclude-metabolites")
             )
         rows: list[dict[str, Any]] = []
+        unapplied_medium: set[str] = set()
         for members in candidates:
             sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
             try:
@@ -1803,6 +1828,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                     exchange_suffix=args.exchange_suffix,
                     exclude_metabolites=exclude,
                     close_unlisted_host_uptake=not args.keep_host_uptake,
+                    strict_medium=not args.allow_unknown_medium,
                 )
                 # R5 final P0-3: `evaluation_status` used to be the literal "ok" here, but
                 # `core/host_coupling.solve_bigg_host` RETURNS `HostSolveResult(False, status,
@@ -1815,6 +1841,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                 # `host-microbe-bigg` already does.
                 host_status = str(result.host_result.status)
                 community_status = str(result.community_status)
+                unapplied_medium.update(result.unapplied_medium_exchanges)
                 evaluation_status = _worst_status(
                     _run_status_from_solve(community_status),
                     _run_status_from_solve(host_status),
@@ -1886,12 +1913,28 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         ranked_rows.sort(key=lambda row: (-float(row["score"]), tuple(row["members"])))
         unevaluated_rows.sort(key=lambda row: tuple(row["members"]))
         search_warnings: list[str] = []
+        if unapplied_medium:
+            from cmig.core.host_coupling import MEDIUM_DROPPED_PREFIX
+
+            search_warnings.append(f"{MEDIUM_DROPPED_PREFIX}: {sorted(unapplied_medium)}")
         if unevaluated_rows:
             search_warnings.append(
                 f"{len(unevaluated_rows)} of {len(candidates)} candidates could not be "
                 "evaluated and are excluded from the ranking (see unevaluated): "
                 + ", ".join("+".join(row["members"]) for row in unevaluated_rows)
             )
+            # R7: the members were named and the *reason* was not, so a run where every candidate
+            # failed on one bad medium row read as "this pool cannot be evaluated". The distinct
+            # causes are lifted to the run level; the per-row diagnostic still holds the detail.
+            causes = sorted({
+                str(row["diagnostic"]) for row in unevaluated_rows if row.get("diagnostic")
+            })
+            if causes:
+                search_warnings.append(
+                    "reasons the excluded candidates could not be evaluated: " + " | ".join(
+                        cause[:300] for cause in causes[:5]
+                    )
+                )
         if not ranked_rows:
             search_warnings.append("no candidate was evaluable; the ranking is empty")
         out = Path(args.out)
@@ -1964,6 +2007,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         status=_worst_status(
             "ok" if ranked_rows else "failed",
             "degraded" if unevaluated_rows else "ok",
+            "degraded" if unapplied_medium else "ok",
         ),
         artifacts=run_artifacts,
         warnings=search_warnings,
@@ -1977,6 +2021,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         _worst_status(
             "ok" if ranked_rows else "failed",
             "degraded" if unevaluated_rows else "ok",
+            "degraded" if unapplied_medium else "ok",
         ),
         args,
     )
@@ -2058,6 +2103,9 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
             "exchange_suffix": args.exchange_suffix,
             "exclude_metabolites": exclude,
             "close_unlisted_host_uptake": not args.keep_host_uptake,
+            # Comparability first: the strictness is part of the shared setup, so baseline and
+            # every knockout arm apply the identical medium (whole, or whole-minus-the-same-rows).
+            "strict_medium": not args.allow_unknown_medium,
         }
 
         def _fresh_host() -> Any:
@@ -2110,10 +2158,21 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
                     host_objective=float("nan"), target_transfer=float("nan"),
                     diagnostic=str(e),
                 ))
+        # The dropped ids are a property of the shared setup, so they are stated once at the run
+        # level rather than repeated per arm — and they degrade the comparison, because every arm
+        # stands on a medium that is not the file the manifest names.
+        degraded_reasons = (
+            [
+                f"{_medium_dropped_prefix()}: "
+                f"{list(baseline_coupling.unapplied_medium_exchanges)}"
+            ]
+            if baseline_coupling.unapplied_medium_exchanges else []
+        )
         result = assemble_result(
             target=args.target,
             baseline=baseline,
             arms=arms,
+            degraded_reasons=degraded_reasons,
             biomass_basis={
                 "kind": args.biomass_basis_kind,
                 "source": args.biomass_basis_source,
@@ -2370,6 +2429,8 @@ def _evaluate_ko_target(
     write_sbml_model: Any,
     search_model_pool: Any,
     engine_factory: Callable[[], Any],
+    medium_spec: Any = None,
+    strict_medium: bool = True,
 ) -> dict[str, Any]:
     """Knock out one gene/reaction in one member, re-rank the fixed consortium, return a row.
 
@@ -2388,7 +2449,10 @@ def _evaluate_ko_target(
         write_sbml_model(ko_model, str(ko_file))
         ko_taxonomy = sub_taxonomy.copy()
         ko_taxonomy.loc[ko_taxonomy["id"].astype(str) == member_id, "file"] = str(ko_file)
-        ko_result = search_model_pool(engine_factory(), ko_taxonomy, config)
+        ko_result = search_model_pool(
+            engine_factory(), ko_taxonomy, config,
+            medium_spec=medium_spec, strict_medium=strict_medium,
+        )
         # P0-B: 평가 불가 후보는 이제 `ranks` 에 들어가지 않는다. KO 가 consortium 을 풀 수 없게
         # 만든 경우가 바로 그것이며, 그것은 0 이 아니라 "평가 불가" 로 보고해야 한다.
         if not ko_result.ranks:
@@ -2504,6 +2568,7 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         from cobra.io import read_sbml_model, write_sbml_model
 
         from cmig.core.engine import MicomEngine
+        from cmig.core.medium_spec import load_medium
         from cmig.core.model_pool import taxonomy_from_model_dir
         from cmig.core.search import Direction
         from cmig.core.search_product import (
@@ -2586,7 +2651,16 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             growth_fraction=args.growth_fraction,
             solver=args.solver,
         )
-        baseline_result = search_model_pool(MicomEngine(), sub, config)
+        # R7: baseline and every knockout arm get the *same* medium arguments. A KO delta is only
+        # attributable to the knockout if both arms stood on one medium, and until now neither arm
+        # stood on the user's medium at all — `search_model_pool` has accepted `medium_spec` since
+        # round 5 and this command passed none.
+        medium_spec = load_medium(args.medium) if args.medium else None
+        strict_medium = not args.allow_unknown_medium
+        baseline_result = search_model_pool(
+            MicomEngine(), sub, config,
+            medium_spec=medium_spec, strict_medium=strict_medium,
+        )
         if not baseline_result.ranks:
             # P0-B: 기준선이 평가 불가면 어떤 KO delta 도 의미가 없다 — 0 을 만들어내지 않는다.
             reason = (
@@ -2637,6 +2711,8 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
                     write_sbml_model=write_sbml_model,
                     search_model_pool=search_model_pool,
                     engine_factory=MicomEngine,
+                    medium_spec=medium_spec,
+                    strict_medium=strict_medium,
                 )
 
             rows = _map_ko_evaluations(items, _evaluate, jobs=args.jobs)
@@ -2717,7 +2793,13 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         out,
         "gene_ko_search",
         lambda: {
-            **_workflow_base("gene_ko_search", args, sub, medium=_medium_component_for(args, None)),
+            **_workflow_base(
+                "gene_ko_search", args, sub,
+                # R7: this was pinned to `None`, so a screen run on a custom medium fingerprinted
+                # as a screen run on MICOM's default — the same class of false provenance round 5
+                # found in `solve`.
+                medium=_medium_component_for(args, medium_spec),
+            ),
             "target_spec": {
                 "target": args.target,
                 "direction": args.direction,
@@ -4937,12 +5019,19 @@ def _biomass_basis_component(args: argparse.Namespace) -> dict[str, Any]:
 
 def _host_medium_component(args: argparse.Namespace) -> dict[str, Any]:
     """Host workflows carry their media inside host_spec; the medium slot records the microbial
-    side plus the fact that no separate --medium was applied."""
+    side plus the fact that no separate --medium was applied.
+
+    Round 7: ``allow_unknown_medium`` was omitted here, so the two host runs that apply *different
+    media* — the whole file, or the file minus the rows the community cannot honour — would have
+    minted the same ``run_hash``. Round 5 put the flag inside the `medium` component precisely
+    because it is answer-determining; this builder was the one that dropped it.
+    """
     from cmig.core.workflow_manifest import medium_component, optional_file_checksum
 
     return medium_component(
         getattr(args, "microbe_medium", None),
         optional_file_checksum(getattr(args, "microbe_medium", None)) or "no_microbe_medium",
+        allow_unknown=bool(getattr(args, "allow_unknown_medium", False)),
     )
 
 
@@ -5183,6 +5272,32 @@ def _dfba_run_status(status: str) -> str:
     if status == "stalled":
         return "degraded"
     return "failed"
+
+
+def _medium_dropped_prefix() -> str:
+    """The one phrase every command uses for "the medium was applied minus these rows"."""
+    from cmig.core.host_coupling import MEDIUM_DROPPED_PREFIX
+
+    return MEDIUM_DROPPED_PREFIX
+
+
+def _medium_run_status(result: Any) -> str:
+    """`degraded` when a host run applied only part of the medium it was given.
+
+    Round 7. `--allow-unknown-medium` is an honest mode, not a free pass: the run that used it
+    stands on a *different* medium from the file it names, so it must not be published at the
+    same tier as a strict run. This mirrors what `solve` already does (its unapplied exchanges
+    become a `MEDIUM_UNAPPLIED` diagnostic, from which `inspect-run` derives `degraded`).
+    """
+    from cmig.core.host_coupling import HOST_MEDIUM_DROPPED_PREFIX
+
+    if getattr(result, "unapplied_medium_exchanges", ()):
+        return "degraded"
+    host_result = getattr(result, "host_result", None)
+    host_warnings = list(getattr(host_result, "warnings", []) or [])
+    if any(warning.startswith(HOST_MEDIUM_DROPPED_PREFIX) for warning in host_warnings):
+        return "degraded"
+    return "ok"
 
 
 def _worst_status(*statuses: str) -> str:
@@ -7352,6 +7467,19 @@ def _cmd_sandbox_fixture(args: argparse.Namespace) -> int:
     return 0
 
 
+#: Round 7. Five commands could relax an inapplicable medium and four could not, so the same
+#: medium file was a documented degradation on `solve` and a hard stop on every host command.
+#: One helper, so the next command that grows a `--medium` cannot forget the relaxation again.
+def _add_allow_unknown_medium(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--allow-unknown-medium",
+        action="store_true",
+        dest="allow_unknown_medium",
+        help="apply the medium minus the exchanges this model has no counterpart for, instead of "
+        "refusing; the dropped ids are named in warnings and the run is reported as degraded",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cmig", description="CMIG headless community metabolic core")
     sub = p.add_subparsers(dest="command", required=True)
@@ -7522,6 +7650,7 @@ def build_parser() -> argparse.ArgumentParser:
         "(annotation matches can pair chemically distinct metabolites, e.g. D/L "
         "stereoisomers); the run is warned and the entries are named",
     )
+    _add_allow_unknown_medium(hmb)
     hmb.add_argument(
         "--allow-failed-run", action="store_true", dest="allow_failed_run",
         help="exit 0 even when the scientific solve failed (default: exit 3, so a "
@@ -7596,6 +7725,7 @@ def build_parser() -> argparse.ArgumentParser:
         "(annotation matches can pair chemically distinct metabolites, e.g. D/L "
         "stereoisomers); the run is warned and the entries are named",
     )
+    _add_allow_unknown_medium(hki)
     hki.add_argument(
         "--allow-failed-run", action="store_true", dest="allow_failed_run",
         help="exit 0 even when the scientific solve failed (default: exit 3, so a "
@@ -7710,6 +7840,7 @@ def build_parser() -> argparse.ArgumentParser:
         "(annotation matches can pair chemically distinct metabolites, e.g. D/L "
         "stereoisomers); the run is warned and the entries are named",
     )
+    _add_allow_unknown_medium(hs)
     hs.add_argument(
         "--allow-failed-run", action="store_true", dest="allow_failed_run",
         help="exit 0 even when the scientific solve failed (default: exit 3, so a "
@@ -7857,6 +7988,13 @@ def build_parser() -> argparse.ArgumentParser:
         "first (the previous ordering, in which a zero-effect KO could hold rank 1)",
     )
     gk.add_argument("--top-k", type=int, default=20, dest="top_k")
+    # Round 7 census: `gene-ko-search` was listed as "missing --allow-unknown-medium", but the
+    # capability underneath was missing too — it never passed a medium to `search_model_pool` at
+    # all, so a knockout screen silently ran on MICOM's permissive default while its sibling
+    # `search` honoured `--medium`. Shipping only the relaxation flag would have wired a switch
+    # to nothing, which is the fabricated-capability failure in miniature.
+    gk.add_argument("--medium", default=None, help="optional community medium csv/json")
+    _add_allow_unknown_medium(gk)
     gk.add_argument(
         "--allow-failed-run", action="store_true", dest="allow_failed_run",
         help="exit 0 even when the scientific solve failed (default: exit 3, so a "

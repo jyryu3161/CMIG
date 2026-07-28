@@ -186,10 +186,18 @@ def assemble_result(
     biomass_basis: dict[str, Any],
     comparability: dict[str, Any],
     extra_warnings: list[str] | None = None,
+    degraded_reasons: list[str] | None = None,
 ) -> HostKoImpactResult:
-    """Combine arms into a result with derived status and honesty warnings."""
+    """Combine arms into a result with derived status and honesty warnings.
+
+    ``degraded_reasons`` are setup facts that make the comparison less than what was asked for
+    without invalidating it — round 7's case is a medium applied minus the rows the community
+    could not honour. They are both warnings *and* status: a caller that could add the warning
+    but not the tier would leave `inspect-run` reporting `ok` for a run standing on a different
+    medium from the one its manifest names.
+    """
     deltas = [compute_host_ko_delta(baseline, arm) for arm in arms]
-    warnings: list[str] = list(extra_warnings or [])
+    warnings: list[str] = list(extra_warnings or []) + list(degraded_reasons or [])
 
     if not baseline.is_comparable:
         warnings.append(
@@ -226,7 +234,7 @@ def assemble_result(
 
     if not baseline.is_comparable:
         status = "failed"
-    elif non_comparable or not baseline.matched_exchanges:
+    elif non_comparable or not baseline.matched_exchanges or degraded_reasons:
         status = "degraded"
     else:
         status = "ok"

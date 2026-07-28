@@ -328,6 +328,9 @@ def host_search(tmp_path, monkeypatch):
             microbe_medium=None, host_medium=None, exchange_suffix="_e", interface_map=None,
             host_objective=None, exclude_metabolites=None, include_currency_metabolites=False,
             keep_host_uptake=False, accept_unreviewed_map=False, allow_failed_run=False,
+            # Round 7 added `--allow-unknown-medium` to every host command; a hand-built
+            # Namespace has to track the parser or it tests a CLI that does not exist.
+            allow_unknown_medium=False,
             out=str(out),
         ))
         return (

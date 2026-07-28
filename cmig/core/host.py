@@ -157,6 +157,11 @@ class BiggHostMicrobeResult:
     # commands go through `run_bigg_host_microbe`, so the guard is called once, here.
     objective_warning: str | None = None
     objective_reactions: list[str] = field(default_factory=list)
+    # Round 7: which requested medium exchanges the community/host could not honour and were
+    # therefore dropped under `--allow-unknown-medium`. Empty under the strict default, because
+    # strict refuses instead of dropping. It exists so the *commands* can derive `degraded`
+    # from a measurement rather than from parsing their own warning strings.
+    unapplied_medium_exchanges: tuple[str, ...] = ()
 
 
 def _met_from_host_exchange(exchange_id: str) -> str:

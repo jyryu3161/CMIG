@@ -957,6 +957,8 @@ class CmigMainWindow(QMainWindow):
                 argv.append("--keep-host-uptake")
             if request["include_currency_metabolites"]:
                 argv.append("--include-currency-metabolites")
+            if request["allow_unknown_medium"]:
+                argv.append("--allow-unknown-medium")
             if request["host_medium"]:
                 argv.extend(["--host-medium", str(request["host_medium"])])
             if request["microbe_medium"]:
@@ -1035,6 +1037,8 @@ class CmigMainWindow(QMainWindow):
                 argv.append("--keep-host-uptake")
             if request["include_currency_metabolites"]:
                 argv.append("--include-currency-metabolites")
+            if request["allow_unknown_medium"]:
+                argv.append("--allow-unknown-medium")
             if request["host_medium"]:
                 argv.extend(["--host-medium", str(request["host_medium"])])
             if request["microbe_medium"]:
