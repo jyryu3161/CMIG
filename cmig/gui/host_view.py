@@ -104,6 +104,15 @@ class HostImpactView(QWidget):
         self.recursive_check = QCheckBox("Recursive")
         self.keep_host_uptake_check = QCheckBox("Keep host uptake")
         self.include_currency_check = QCheckBox("Currency metabolites")
+        # Round 7: the GUI already offered both media, so it inherited the CLI's over-constraint
+        # exactly. A capability wired into the CLI and not the GUI is the same defect one surface
+        # over — round 5's whole GUI/CLI-parity finding.
+        self.allow_unknown_medium_check = QCheckBox("Allow unknown medium")
+        self.allow_unknown_medium_check.setToolTip(
+            "Apply the medium minus the exchanges these models have no counterpart for, instead "
+            "of refusing. The dropped ids are named in the run warnings and the run is reported "
+            "as degraded."
+        )
         self.run_btn = QPushButton("Run Host-Microbe")
         self.run_search_btn = QPushButton("Rank Combinations")
         run_row.addWidget(QLabel("tradeoff f"))
@@ -117,6 +126,7 @@ class HostImpactView(QWidget):
         run_row.addWidget(self.recursive_check)
         run_row.addWidget(self.keep_host_uptake_check)
         run_row.addWidget(self.include_currency_check)
+        run_row.addWidget(self.allow_unknown_medium_check)
         run_row.addStretch(1)
         run_row.addWidget(self.run_btn)
         run_row.addWidget(self.run_search_btn)
@@ -217,7 +227,8 @@ class HostImpactView(QWidget):
         ):
             spin.valueChanged.connect(self.invalidate_results)
         for check in (
-            self.recursive_check, self.keep_host_uptake_check, self.include_currency_check
+            self.recursive_check, self.keep_host_uptake_check, self.include_currency_check,
+            self.allow_unknown_medium_check,
         ):
             check.toggled.connect(self.invalidate_results)
         self.search_metric_combo.currentTextChanged.connect(self.invalidate_results)
@@ -263,6 +274,7 @@ class HostImpactView(QWidget):
             "recursive": self.recursive_check.isChecked(),
             "keep_host_uptake": self.keep_host_uptake_check.isChecked(),
             "include_currency_metabolites": self.include_currency_check.isChecked(),
+            "allow_unknown_medium": self.allow_unknown_medium_check.isChecked(),
         }
 
     def set_running(self, job_id: str) -> None:

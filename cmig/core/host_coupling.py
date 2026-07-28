@@ -49,6 +49,36 @@ DEFAULT_BIGG_COUPLING_EXCLUDE = frozenset({"h", "h2o", "co2"})
 #: :data:`cmig.core.workflow_manifest.NON_HASHED_PROVENANCE_MARKERS`, so both reach `inspect-run`.
 HOST_ISOLATION_POLICY = "all_boundary_uptake_v2"   # was: model_exchanges_only_v1
 
+# ── Round 7: medium applicability on the host path ─────────────────────────────────────────────
+# `run_bigg_host_microbe` hard-coded `apply_medium_checked(..., strict=True)` and no host command
+# exposed `--allow-unknown-medium`, so a medium that `solve`/`search`/`strain-growth`/
+# `abundance-impact`/`sweep` all run with a documented degradation was **fatal** on
+# `host-microbe-bigg`, `host-search-bigg` and `host-ko-impact`. Measured on the shipped
+# `medium_presets/gut_overlay_vmh_high_fiber_x100.csv` against `iML1515+iYO844+iHN637`: exactly
+# one row of eighty (`EX_n2_m`, requested limit 0.0) has no counterpart in that pool.
+#
+# The messages below are constants because their *content* is the fix. The round-6 scenario
+# surfaced `microbial community solve was not optimal (status=solver_failed)` for a medium
+# problem, which sends a reader to debug the solver. A message that names the ids and the flag
+# that unblocks them is the difference between a five-minute fix and a wrong conclusion.
+MEDIUM_NOT_APPLICABLE = (
+    "microbial medium exchange has no counterpart in the microbial community "
+    "(matched on metabolite)"
+)
+HOST_MEDIUM_NOT_APPLICABLE = "host medium entry has no exchange in the host model"
+MEDIUM_RELAXATION_HINT = (
+    "pass --allow-unknown-medium to drop them and continue; the run is then reported as "
+    "degraded and the dropped ids are named in warnings"
+)
+MEDIUM_DROPPED_PREFIX = (
+    "requested microbial medium exchanges were NOT applied — no counterpart in the community "
+    "(--allow-unknown-medium)"
+)
+HOST_MEDIUM_DROPPED_PREFIX = (
+    "requested host medium entries were NOT applied — no exchange in the host model "
+    "(--allow-unknown-medium)"
+)
+
 
 def host_exchange_resolver(
     exchange_ids: set[str],
@@ -98,9 +128,17 @@ def solve_bigg_host(
     exchange_suffix: str = "_e",
     exclude_metabolites: set[str] | frozenset[str] | None = DEFAULT_BIGG_COUPLING_EXCLUDE,
     close_unlisted_uptake: bool = True,
+    strict_medium: bool = True,
     solver: str = "gurobi",
 ) -> HostSolveResult:
-    """Solve a host GEM using microbial availability and an optional reviewed interface map."""
+    """Solve a host GEM using microbial availability and an optional reviewed interface map.
+
+    ``strict_medium=True`` (the default) refuses a ``host_medium`` entry the host has no exchange
+    for. Round 7: those entries used to be dropped in silence — ``add_availability`` returned
+    ``(None, flux)`` and nothing recorded it — so a half-applied host background was published
+    with every artifact reporting a complete run. Unmatched *microbial* availability was already
+    disclosed (``unmatched_metabolites``); the host's own medium was the one that was not.
+    """
     from cobra.util.solver import linear_reaction_coefficients
 
     from cmig.core.namespace import _normalize_metabolite_id
@@ -209,6 +247,7 @@ def solve_bigg_host(
                 return reaction_id, flux
             return None, flux
 
+        unapplied_host_medium: list[str] = []
         for key, value in host_medium.items():
             reaction_id, flux = add_availability(
                 str(key), value, label=f"host_medium[{key!r}]"
@@ -216,6 +255,17 @@ def solve_bigg_host(
             if reaction_id is not None:
                 metabolite = _normalize_metabolite_id(str(key))
                 background_caps[metabolite] = background_caps.get(metabolite, 0.0) + flux
+            else:
+                unapplied_host_medium.append(str(key))
+        if unapplied_host_medium:
+            if strict_medium:
+                raise ValueError(
+                    f"{HOST_MEDIUM_NOT_APPLICABLE}: {sorted(unapplied_host_medium)}. "
+                    f"{MEDIUM_RELAXATION_HINT}"
+                )
+            isolation_warnings.append(
+                f"{HOST_MEDIUM_DROPPED_PREFIX}: {sorted(unapplied_host_medium)}"
+            )
         excluded = set(exclude_metabolites or set())
         # metabolite -> the host reaction id its availability was actually applied to. Round 6
         # [P0]: this used to be a *set* of normalized metabolites, and the FVA block below then
@@ -333,9 +383,17 @@ def run_bigg_host_microbe(
     exchange_suffix: str = "_e",
     exclude_metabolites: set[str] | frozenset[str] | None = DEFAULT_BIGG_COUPLING_EXCLUDE,
     close_unlisted_host_uptake: bool = True,
+    strict_medium: bool = True,
     engine: Any = None,
 ) -> BiggHostMicrobeResult:
-    """MICOM community secretion to reviewed-map/BiGG host coupling."""
+    """MICOM community secretion to reviewed-map/BiGG host coupling.
+
+    ``strict_medium`` governs **both** media a host run carries (``microbe_medium`` and
+    ``host_medium``) and is the single thing every host command's ``--allow-unknown-medium``
+    sets. Default ``True`` — a medium the model cannot honour is refused, exactly as it was
+    before round 7; what changed is that the refusal is now overridable, says which of the two
+    media failed, and names the ids and the flag.
+    """
     from cmig.core.engine import MicomEngine
     from cmig.core.host_impact import host_impact
     from cmig.core.namespace import _normalize_metabolite_id
@@ -359,10 +417,25 @@ def run_bigg_host_microbe(
         basis_source=biomass_basis_source,
     )
     community = community_engine.build_community(taxonomy, cmig_solver=solver)
+    unapplied_medium: tuple[str, ...] = ()
     if microbe_medium is not None:
-        from cmig.core.medium_spec import apply_medium_checked
+        from cmig.core.medium_spec import medium_application_report, translate_medium_for_model
 
-        apply_medium_checked(community, microbe_medium, strict=True)
+        # The strictness decision is made here, on the same translation the application uses, so
+        # the refusal can name the ids *and* the remedy. Delegating it to
+        # `apply_medium_translated(strict=True)` produced "medium exchange has no counterpart in
+        # the target model" — true, but a host run has two media and the message named neither
+        # the medium nor the way forward.
+        preview = translate_medium_for_model(community, microbe_medium)
+        if strict_medium and preview.unmatched:
+            raise ValueError(
+                f"{MEDIUM_NOT_APPLICABLE}: {list(preview.unmatched)}. {MEDIUM_RELAXATION_HINT}"
+            )
+        translation = medium_application_report(community, microbe_medium, strict=False)
+        unapplied_medium = tuple(translation.unmatched)
+    medium_warnings = (
+        [f"{MEDIUM_DROPPED_PREFIX}: {list(unapplied_medium)}"] if unapplied_medium else []
+    )
     community_result = community_engine.cooperative_tradeoff(
         community, tradeoff_f, cmig_solver=solver
     )
@@ -384,11 +457,23 @@ def run_bigg_host_microbe(
                 if scale.basis_kind == "validation" else []
             ) + [
                 f"microbial community solve was not optimal (status={community_result.status})"
-            ] + list(getattr(community_result, "warnings", []) or [])
+            ]
+            # Round 7: the cause was reachable nowhere. The round-6 scenario published
+            # `status=solver_failed` with two generic warnings, and the engine's own diagnostic
+            # ("pFBA flux stage failed: OptimizationError: could not get community growth rate.")
+            # went only onto the inner `HostSolveResult`, which no host command writes out. A
+            # reader could not tell an infeasible community from a rejected medium, and the
+            # message they did get pointed at the solver.
+            + ([
+                f"microbial community solve diagnostic: {community_result.diagnostic}"
+            ] if getattr(community_result, "diagnostic", None) else [])
+            + medium_warnings
+            + list(getattr(community_result, "warnings", []) or [])
             + ([f"host objective: {objective_warning}"] if objective_warning else []),
             coupling_scale=scale,
             objective_warning=objective_warning,
             objective_reactions=host_objective_reactions,
+            unapplied_medium_exchanges=unapplied_medium,
         )
     community_secretion = {
         metabolite: flux
@@ -455,9 +540,10 @@ def run_bigg_host_microbe(
         exchange_suffix=exchange_suffix,
         exclude_metabolites=exclude_metabolites,
         close_unlisted_uptake=close_unlisted_host_uptake,
+        strict_medium=strict_medium,
         solver=solver,
     )
-    warnings: list[str] = []
+    warnings: list[str] = list(medium_warnings)
     if scale.basis_kind == "validation":
         warnings.append(
             "biomass basis is validation-only; result is not publication-ready"
@@ -537,4 +623,5 @@ def run_bigg_host_microbe(
         coupling_scale=scale,
         objective_warning=objective_warning,
         objective_reactions=host_objective_reactions,
+        unapplied_medium_exchanges=unapplied_medium,
     )

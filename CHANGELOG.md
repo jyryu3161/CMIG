@@ -150,6 +150,50 @@ semantic versioning for public releases.
 - Mandatory host/microbial gDW basis kind and measurement/citation provenance; GUI and publication
   commands no longer prefill an equal-mass assumption.
 
+### Fixed
+
+- **The host-coupling path was over-constrained relative to every other path: `--allow-unknown-medium`
+  now exists on `host-microbe-bigg`, `host-search-bigg`, `host-ko-impact` and `gene-ko-search`.**
+  `core/host_coupling.run_bigg_host_microbe` hard-coded `apply_medium_checked(..., strict=True)` and
+  no host command exposed a way to relax it, so a medium that `solve` / `search` / `strain-growth` /
+  `abundance-impact` / `sweep` all run with a documented degradation was **fatal** on the four
+  remaining commands. Measured on the shipped `medium_presets/gut_overlay_vmh_high_fiber_x100.csv`
+  against `iML1515 + iYO844 + iHN637`: `cmig solve --allow-unknown-medium` returns growth
+  `0.0847149208736683` while `cmig host-microbe-bigg --microbe-medium <the same file>` exited 2 with
+  `medium exchange has no counterpart in the target model … ['EX_n2_m']` — **one row of eighty**,
+  requesting `uptake_limit = 0.0` for a metabolite the pool has no exchange for at all. After the
+  fix the same run completes: `community_growth = 0.0847149208736683` (identical to the standalone
+  solve), `host_status = optimal`, `host_objective = 0.0`, `status: degraded`, `EX_n2_m` named in
+  `warnings` and in `summary.unapplied_medium_exchanges`. Strict remains the default; nothing is
+  filtered silently.
+- **A partially applied medium is answer-determining and now moves the `run_hash`.**
+  `_host_medium_component` built the `medium` component without `allow_unknown_medium`, so two host
+  runs applying *different* media — the whole file, or the file minus the rows the community cannot
+  honour — would have minted the same fingerprint. Round 5 had already put the flag inside that
+  component; this builder was the one that dropped it.
+- **`--host-medium` entries the host has no exchange for were dropped in silence.**
+  `solve_bigg_host`'s `add_availability` returned `(None, flux)` and nothing recorded it, so a
+  half-applied host background was published with every artifact reporting a complete run.
+  Unmatched *microbial* availability was already disclosed; the host's own medium was not. It is
+  now refused by default and named in `warnings` under `--allow-unknown-medium`.
+- **A failed community solve inside the host path named its status but not its cause.** Round 6's
+  scenario published `host_status=solver_failed` with two generic warnings while the engine's own
+  diagnostic ("pFBA flux stage failed: OptimizationError: could not get community growth rate.")
+  lived only on the inner `HostSolveResult`, which no host command writes out. The diagnostic now
+  travels into the run warnings and into the manifest's `diagnostic`, and the medium refusal names
+  the offending ids *and* `--allow-unknown-medium`. A reader can now tell an infeasible community
+  from a rejected medium without re-running anything — the round-6 open question
+  ("the host path is over-constrained relative to the standalone path") was two different pools
+  compared as if they were one, and the message was what made that invisible.
+- **`gene-ko-search` could not be given a medium at all.** It was listed as merely missing
+  `--allow-unknown-medium`, but `search_model_pool` has accepted `medium_spec`/`strict_medium`
+  since round 5 and this command passed neither, so a knockout screen silently ran on MICOM's
+  permissive default while its sibling `search` honoured `--medium` — and its manifest recorded
+  `medium_checksum: micom_default_medium` regardless. It now takes `--medium`, applies it
+  identically to the baseline and to every knockout arm, and records it.
+- **GUI parity**: the Host tab already offered both media, so it inherited the identical hard stop.
+  It now carries an "Allow unknown medium" control that both its runs append to their argv.
+
 ### Changed
 
 - **BREAKING (scientific): isolation is now computed against `model.boundary`, not
