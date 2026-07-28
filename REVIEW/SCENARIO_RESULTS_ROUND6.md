@@ -112,12 +112,45 @@ override offered explicitly. This is the round-5/6 honesty machinery doing preci
 its job — before those rounds this path published `host_objective = 368` with
 `status: ok` for a result the microbes provably did not affect.
 
-**An open question this raises, and it is a real one:** the *standalone* community
-solve on the same media succeeds (0.0847 h⁻¹ for `vmh_high_fiber_x100`), while the
-community solve *inside* the host-coupling path returns 0. So the host path is
-over-constrained relative to the standalone path on these closed-background overlays.
-That needs investigation before the host scenario can be run on these media. It is
-recorded here as a finding, not worked around.
+### CORRECTION (2026-07-28) — this section originally drew the wrong conclusion
+
+The paragraph that stood here said the host-coupling path was *over-constrained
+relative to the standalone path*, on the evidence that standalone `solve` reached
+0.0847 h⁻¹ on `vmh_high_fiber_x100` while the host run returned 0. **That comparison
+was invalid: the two runs used different pools.** Investigating the failure produced
+two separate findings, and the original wording conflated them.
+
+**Finding 1 — a real defect, now fixed.** `cmig/core/host_coupling.py` hard-coded
+`apply_medium_checked(..., strict=True)`, and `--allow-unknown-medium` was missing from
+`gene-ko-search`, `host-microbe-bigg`, `host-search-bigg` and `host-ko-impact` (it
+exists on `solve`, `search`, `strain-growth`, `abundance-impact` and `sweep`). So a
+medium containing **one** exchange absent from the pool was fatal on those four
+commands while every other surface ran it with a documented degradation. On the
+3-member pool the VMH overlay has exactly one such row, `EX_n2_m` — one of eighty.
+`iAF987` is the only bundled model carrying an `n2` exchange; the others have `n2o`,
+a different metabolite.
+
+With the medium made applicable, the host coupling behaves correctly and is **not**
+over-constrained:
+```
+community_growth = 0.0847149208736683   ← byte-identical to the standalone solve
+host_status      = optimal
+host_objective   = 0                    ← the expected honest null
+```
+
+**Finding 2 — a pool/medium limitation, not a path defect.** The `solver_failed` seen
+in the original scenario runs came from a pool containing `iAF987`, where the overlay
+has *zero* unmatched rows, so the medium applies strictly and the community solve then
+fails. The decisive control: **standalone `cmig solve` on that same 5-member pool and
+the same overlay fails identically**, with no host coupling involved —
+`pFBA flux stage failed: could not get community growth rate`. So the 5-member pool
+cannot grow on any shipped gut overlay on *either* path. That is a property of the pool
+and the media, and it is recorded as an open limitation rather than a bug.
+
+Also fixed while here: `gene-ko-search` had **no medium capability at all**,
+`--host-medium` misses were dropped **silently**, and the community diagnostic was held
+on an inner result no host command ever wrote out — which is why the user saw a bare
+`solver_failed` instead of the medium id. The message now names the id and the remedy.
 
 Independently, track H measured that with a properly closed background the bundled
 pool's effect on Recon3D growth is **−1.4e−13 — machine zero**, because the pool
