@@ -269,6 +269,57 @@ uv run cmig search \
   --out runs/search_butyrate
 ```
 
+For a generic “choose exactly `n` of `N`” problem, set
+`--min-size n --max-size n`. For a range such as “choose 2 through 4”, set
+`--min-size 2 --max-size 4`; the candidate space is the union of every allowed
+size. For example, an approximate search for the best 3-member butyrate producer
+in a pool of 200 models can be run as:
+
+```bash
+uv run cmig search \
+  --model-dir /path/to/200_microbial_models \
+  --target but \
+  --min-size 3 --max-size 3 \
+  --strategy ga \
+  --ga-pop-size 80 \
+  --ga-generations 50 \
+  --ga-max-evaluations 3000 \
+  --ga-patience 10 \
+  --seed 7 \
+  --medium /path/to/defined_medium.csv \
+  --top-k 20 \
+  --out runs/search_butyrate_3_of_200
+```
+
+`--strategy auto` is exhaustive only while the number of combinations is at
+most `--exhaustive-max` (default 100), then switches to GA for single-target
+search. GA is non-exhaustive: it does not certify a global optimum. Run several
+recorded seeds when the scientific conclusion depends on the winner, and inspect
+`ga_metadata` in `search_summary.json` for the effective configuration, stopping
+reason, evaluation count, and generation history. The `--ga-*` controls are
+single-target options; multi-target search remains exhaustive-only and treats
+`--exhaustive-max` as a hard guard rather than a GA switch.
+
+Each unique fitness evaluation builds and solves a MICOM community, so wall time
+is governed mainly by `--ga-max-evaluations`, not by the cheap genetic operators.
+Benchmark a modest budget first and then increase it if several seeds have not
+stabilized. The fitness cache is currently in-memory and execution is serial, so
+an interrupted run does not resume from a checkpoint.
+
+The medium is part of the scientific question. Omitting `--medium` uses MICOM's
+default medium, which can be permissive and produce a different winner. Prefer a
+defined medium and keep strict application enabled; use
+`--allow-unknown-medium` only when intentionally accepting the explicitly
+reported dropped exchanges.
+
+An exact size constrains membership count, not ecological participation. With
+`--model-dir`, CMIG creates equal nominal abundances for the selected models; a
+user taxonomy retains its supplied abundance values. The GA does not evolve
+abundance, and the target LP enforces a community-level growth floor rather than
+a minimum growth rate for every member. A reported 3-member winner can therefore
+contain a member with negligible growth or contribution; use a separate
+abundance/member-viability analysis if that distinction matters.
+
 Useful outputs:
 
 - `search_summary.json`
@@ -281,12 +332,13 @@ Useful outputs:
 Use `--recursive` if your model pool is organized as subfolders, for example
 `strainA/model.xml`, `strainB/model.xml`.
 
-Add `--robustness-fva` to get each candidate's target FVA range. Without it a
-ranking cannot be distinguished from a tie between alternate optima. **This works
-only in single-target mode** — in multi-target mode the flag is accepted and silently
-ignored (no columns, no warning, exit `0`), so a multi-target ranking currently
-cannot be bounded against alternate optima from within the run. Use
-`--multi-metric pareto` for trade-off structure there.
+Add `--robustness-fva` to get each reported candidate's target FVA range. In GA
+mode FVA is deliberately deferred until the final top-ranked rows and is not part
+of every expensive fitness evaluation. Without it a ranking cannot be
+distinguished from a tie between alternate optima. **This works
+only in single-target mode**; multi-target requests with this flag are rejected
+explicitly because that workflow cannot currently provide the requested bounds.
+Use `--multi-metric pareto` for multi-target trade-off structure.
 
 #### Several targets at once (e.g. "total SCFA")
 

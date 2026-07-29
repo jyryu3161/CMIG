@@ -428,12 +428,16 @@ def test_search_button_uses_model_dir_product_command(monkeypatch, tmp_path):
     w = build_main_window(runner=runner)
     w.search_view.model_dir_input.setText(str(tmp_path))
     w.search_view.targets_input.setText("but")
+    w.search_view.min_size_spin.setValue(200)
+    w.search_view.max_size_spin.setValue(200)
     w.search_view.robustness_check.setChecked(True)
     jid = w.run_search_fixture()
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
     assert seen["argv"][0] == "search"
     assert seen["argv"][seen["argv"].index("--model-dir") + 1] == str(tmp_path)
+    assert seen["argv"][seen["argv"].index("--min-size") + 1] == "200"
+    assert seen["argv"][seen["argv"].index("--max-size") + 1] == "200"
     assert "--robustness-fva" in seen["argv"]
     assert w.search_view.table.item(0, 1).text() == "but"
     assert w.current_search_dir is not None

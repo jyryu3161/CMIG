@@ -140,6 +140,10 @@ def test_search_view_loads_advanced_summary(tmp_path):
     assert view.model_dir_input.placeholderText() == "Folder of user-prepared microbial models"
     assert view.min_size_spin.value() == 2
     assert view.max_size_spin.value() == 2
+    view.min_size_spin.setValue(200)
+    view.max_size_spin.setValue(200)
+    assert view.min_size_spin.value() == 200
+    assert view.max_size_spin.value() == 200
     assert view.robustness_check.text() == "FVA"
     assert view.run_growth_btn.text() == "Strain Growth"
     assert view.run_abundance_btn.text() == "Ratio Impact"

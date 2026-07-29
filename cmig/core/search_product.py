@@ -10,10 +10,12 @@ from __future__ import annotations
 import itertools
 import math
 import random
-from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from collections.abc import Iterator
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
+from typing import Any, Literal, cast
 
 from cmig.core.search import Direction, TargetSpec, score_target_result, target_max_solve
+from cmig.core.search_ga import GAConfig
 
 SearchStrategy = Literal["auto", "exhaustive", "random", "ga"]
 
@@ -31,6 +33,8 @@ class SearchConfig:
     growth_fraction: float = 0.5
     solver: str = "gurobi"
     robustness_fva: bool = False
+    exhaustive_max: int = 100
+    ga_config: GAConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,7 @@ class PoolSearchResult:
     # P0-B: 평가 불가 후보는 rank 를 갖지 않고 여기에만 들어간다. --top-k 는 `ranks` 만 자르므로
     # 이 목록은 절단과 무관하게 항상 완전하다.
     unevaluated: list[PoolRank] = field(default_factory=list)
+    ga_metadata: dict[str, Any] | None = None
 
     @property
     def n_candidates_ranked(self) -> int:
@@ -75,6 +80,14 @@ class PoolSearchResult:
     @property
     def n_candidates_failed(self) -> int:
         return len(self.unevaluated)
+
+    @property
+    def n_robustness_failed(self) -> int:
+        """Number of ranked rows whose requested robustness analysis was unavailable."""
+        return sum(
+            row.robustness_status not in (None, "ok")
+            for row in self.ranks
+        )
 
 
 # B4: 동점/전부-0 랭킹 경고. rank 1 이 "최고"로 읽히므로, 실제로는 아무 후보도 target 을 만들지
@@ -169,23 +182,42 @@ def _validate_config(config: SearchConfig) -> None:
         raise ValueError("--min-size must be > 0")
     if config.max_size < config.min_size:
         raise ValueError("--max-size must be >= --min-size")
-    if config.n_samples <= 0:
+    if config.strategy == "random" and config.n_samples <= 0:
         raise ValueError("--n-samples must be > 0")
     if config.top_k <= 0:
         raise ValueError("--top-k must be > 0")
+    if config.exhaustive_max < 0:
+        raise ValueError("--exhaustive-max must be >= 0")
     if not (0.0 < config.growth_fraction <= 1.0):
         raise ValueError("--growth-fraction must satisfy 0<f<=1")
 
 
+def count_candidate_combinations(ids: list[str], min_size: int, max_size: int) -> int:
+    """Count allowed member sets without constructing them."""
+    n_ids = len(ids)
+    upper = min(max_size, n_ids)
+    if min_size > upper:
+        return 0
+    return sum(math.comb(n_ids, size) for size in range(min_size, upper + 1))
+
+
+def _iter_candidate_combinations(
+    ids: list[str], min_size: int, max_size: int
+) -> Iterator[tuple[str, ...]]:
+    """Yield sorted member combinations lazily in size/lexicographic order."""
+    ordered = sorted(ids)
+    upper = min(max_size, len(ordered))
+    for size in range(min_size, upper + 1):
+        yield from itertools.combinations(ordered, size)
+
+
 def candidate_combinations(ids: list[str], min_size: int, max_size: int) -> list[tuple[str, ...]]:
-    """Enumerate sorted member combinations deterministically."""
-    if max_size > len(ids):
-        max_size = len(ids)
-    return [
-        tuple(combo)
-        for size in range(min_size, max_size + 1)
-        for combo in itertools.combinations(sorted(ids), size)
-    ]
+    """Enumerate sorted member combinations deterministically.
+
+    Kept as the materialized compatibility API. Large single-target searches use
+    :func:`count_candidate_combinations` and the lazy/sampled helpers instead.
+    """
+    return list(_iter_candidate_combinations(ids, min_size, max_size))
 
 
 def choose_strategy(
@@ -194,16 +226,74 @@ def choose_strategy(
     """Resolve auto/random/GA strategy for product search."""
     if requested != "auto":
         return requested
-    return "exhaustive" if n_candidates <= exhaustive_max else "random"
+    return "exhaustive" if n_candidates <= exhaustive_max else "ga"
 
 
-def _sample_candidates(
-    candidates: list[tuple[str, ...]], *, n_samples: int, seed: int
+def _sample_integer_ranks(total: int, sample_size: int, rng: random.Random) -> list[int]:
+    """Uniformly sample unique integers from ``range(total)`` for arbitrary-size totals.
+
+    Floyd's algorithm avoids both a candidate list and ``range(total)``'s platform-sized
+    length limitation. The returned order is deterministic and independent of set iteration.
+    """
+    selected: set[int] = set()
+    for upper in range(total - sample_size, total):
+        picked = rng.randrange(upper + 1)
+        selected.add(upper if picked in selected else picked)
+    return sorted(selected)
+
+
+def _unrank_combination(ids: list[str], size: int, rank: int) -> tuple[str, ...]:
+    """Return the zero-based lexicographic ``rank`` among ``size``-member combinations."""
+    n_ids = len(ids)
+    n_combinations = math.comb(n_ids, size)
+    if rank < 0 or rank >= n_combinations:
+        raise ValueError("combination rank out of range")
+    members: list[str] = []
+    start = 0
+    for position in range(size):
+        remaining = size - position - 1
+        for index in range(start, n_ids):
+            suffixes = math.comb(n_ids - index - 1, remaining)
+            if rank < suffixes:
+                members.append(ids[index])
+                start = index + 1
+                break
+            rank -= suffixes
+    return tuple(members)
+
+
+def _candidate_from_global_rank(
+    ids: list[str], min_size: int, max_size: int, rank: int
+) -> tuple[str, ...]:
+    """Map a rank in the mixed-size candidate space to its member tuple."""
+    upper = min(max_size, len(ids))
+    for size in range(min_size, upper + 1):
+        block_size = math.comb(len(ids), size)
+        if rank < block_size:
+            return _unrank_combination(ids, size, rank)
+        rank -= block_size
+    raise ValueError("candidate rank out of range")
+
+
+def sample_candidate_combinations(
+    ids: list[str],
+    min_size: int,
+    max_size: int,
+    *,
+    n_samples: int,
+    seed: int,
 ) -> list[tuple[str, ...]]:
-    if len(candidates) <= n_samples:
-        return candidates
-    rng = random.Random(seed)
-    return sorted(rng.sample(candidates, n_samples))
+    """Sample uniformly from every allowed combination without enumerating the space."""
+    if n_samples <= 0:
+        raise ValueError("--n-samples must be > 0")
+    ordered = sorted(ids)
+    total = count_candidate_combinations(ordered, min_size, max_size)
+    sample_size = min(n_samples, total)
+    ranks = _sample_integer_ranks(total, sample_size, random.Random(seed))
+    return [
+        _candidate_from_global_rank(ordered, min_size, max_size, rank)
+        for rank in ranks
+    ]
 
 
 # Round 5 (codex F3, part 2): every search evaluator called `apply_medium_checked` and threw the
@@ -325,6 +415,85 @@ def _evaluate_members(
         )
 
 
+def _add_robustness_fva(
+    engine: Any,
+    taxonomy: Any,
+    row: PoolRank,
+    spec: TargetSpec,
+    *,
+    growth_fraction: float,
+    solver: str,
+    medium_spec: Any | None,
+    strict_medium: bool,
+    medium_notes: set[str] | None = None,
+) -> PoolRank:
+    """Attach FVA to one final ranked row without repeating the target-max solve."""
+    sub = taxonomy[taxonomy["id"].astype(str).isin(row.members)].copy()
+    try:
+        community = engine.build_community(sub, cmig_solver=solver)
+        _apply_search_medium(
+            community,
+            medium_spec,
+            strict_medium=strict_medium,
+            notes=medium_notes,
+        )
+        from cmig.core.search_advanced import robustness_fva as run_robustness_fva
+
+        fva = run_robustness_fva(
+            community,
+            spec,
+            growth_fraction=growth_fraction,
+            solver=solver,
+        )
+        robustness_note = None
+        if fva.status != "ok":
+            reason = fva.diagnostic or "no diagnostic was returned"
+            robustness_note = f"robustness FVA {fva.status}: {reason}"
+        return replace(
+            row,
+            robustness_fva_lo=fva.fva_lo if fva.status == "ok" else None,
+            robustness_fva_hi=fva.fva_hi if fva.status == "ok" else None,
+            robustness_status=fva.status,
+            diagnostic=_with_medium_note(row.diagnostic, robustness_note),
+        )
+    except Exception as error:  # noqa: BLE001 - robustness must not erase a valid ranking
+        return replace(
+            row,
+            diagnostic=_with_medium_note(
+                row.diagnostic,
+                f"robustness FVA failed: {error}",
+            ),
+            robustness_status="failed",
+        )
+
+
+def _json_safe(value: Any) -> Any:
+    """Replace non-finite numbers recursively so metadata is strict-JSON serializable."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _ga_metadata(config: GAConfig, result: Any) -> dict[str, Any]:
+    """Build JSON-ready provenance for an approximate search."""
+    history: list[Any] = []
+    for item in getattr(result, "history", []):
+        history.append(asdict(cast(Any, item)) if is_dataclass(item) else item)
+    metadata = {
+        "config": asdict(config),
+        "generations_run": result.generations_run,
+        "evaluations": result.evaluations,
+        "stop_reason": getattr(result, "stop_reason", "generations"),
+        "history": history,
+        "warning": result.warning,
+    }
+    return cast(dict[str, Any], _json_safe(metadata))
+
+
 def search_model_pool(
     engine: Any,
     taxonomy: Any,
@@ -338,14 +507,21 @@ def search_model_pool(
     ids = [str(x) for x in taxonomy["id"]]
     if len(set(ids)) != len(ids):
         raise ValueError("taxonomy id values must be unique")
-    candidates = candidate_combinations(ids, config.min_size, config.max_size)
-    if not candidates:
+    n_candidates_total = count_candidate_combinations(
+        ids, config.min_size, config.max_size
+    )
+    if n_candidates_total == 0:
         raise ValueError("no candidate combinations generated")
-    strategy = choose_strategy(len(candidates), config.strategy)
+    strategy = choose_strategy(
+        n_candidates_total,
+        config.strategy,
+        exhaustive_max=config.exhaustive_max,
+    )
     spec = TargetSpec(config.target, config.direction)
     warnings: list[str] = []
     medium_notes: set[str] = set()
     cache: dict[tuple[str, ...], PoolRank] = {}
+    ga_metadata: dict[str, Any] | None = None
 
     def evaluate(members: tuple[str, ...]) -> PoolRank:
         if members not in cache:
@@ -358,37 +534,55 @@ def search_model_pool(
                 solver=config.solver,
                 medium_spec=medium_spec,
                 strict_medium=strict_medium,
-                robustness_fva=config.robustness_fva,
+                # FVA is deliberately deferred until the final top-k is known.
+                robustness_fva=False,
                 medium_notes=medium_notes,
             )
         return cache[members]
 
     if strategy == "exhaustive":
-        selected = candidates
+        for members in _iter_candidate_combinations(
+            ids, config.min_size, config.max_size
+        ):
+            evaluate(members)
     elif strategy == "random":
-        selected = _sample_candidates(candidates, n_samples=config.n_samples, seed=config.seed)
-        if len(selected) < len(candidates):
+        selected = sample_candidate_combinations(
+            ids,
+            config.min_size,
+            config.max_size,
+            n_samples=config.n_samples,
+            seed=config.seed,
+        )
+        for members in selected:
+            evaluate(members)
+        if len(selected) < n_candidates_total:
             warnings.append("random sampling evaluated a subset; global optimum is not guaranteed")
     elif strategy == "ga":
-        from cmig.core.search_ga import GAConfig, genetic_search
+        from cmig.core.search_ga import genetic_search
 
         warnings.append("GA approximate search; global optimum is not guaranteed")
+        # SearchConfig.seed is the run-level reproducibility contract shared with random search;
+        # a nested GAConfig may tune the algorithm but cannot silently select a different run.
+        normalized_ga_config = replace(
+            config.ga_config if config.ga_config is not None else GAConfig(),
+            min_size=config.min_size,
+            max_size=config.max_size,
+            seed=config.seed,
+        )
         ga = genetic_search(
             ids,
             lambda genome: evaluate(tuple(genome)).score,
-            GAConfig(
-                min_size=config.min_size,
-                max_size=config.max_size,
-                seed=config.seed,
-            ),
-            top_k=max(config.top_k, config.n_samples),
+            normalized_ga_config,
+            top_k=config.top_k,
         )
-        selected = [tuple(members) for members, _score in ga.top_k]
         warnings.append(ga.warning)
+        ga_metadata = _ga_metadata(normalized_ga_config, ga)
     else:
         raise ValueError(f"unsupported search strategy: {strategy}")
 
-    evaluated = [evaluate(members) for members in selected]
+    # The GA may evaluate many candidates that never reach its final population/top-k. Its
+    # fitness callback populates this product cache, so use the cache itself as the audit trail.
+    evaluated = list(cache.values())
     # P0-B: 평가 가능한 후보만 랭킹에 들어간다. 실패 후보를 score=-inf 로 정렬 바닥에 두고
     # --top-k 로 자르면 실패가 산출물에서 완전히 사라진다(red-team F1).
     solved = sorted(
@@ -407,12 +601,39 @@ def search_model_pool(
     warnings.extend(unevaluable_warnings(
         [(row.members, row.status, row.diagnostic) for row in failed], len(evaluated)
     ))
-    warnings.extend(sorted(medium_notes))
 
     def _renumber(row: PoolRank, rank: int) -> PoolRank:
         return replace(row, rank=rank)
 
     ranked = [_renumber(row, i + 1) for i, row in enumerate(solved[: config.top_k])]
+    if config.robustness_fva:
+        ranked = [
+            _add_robustness_fva(
+                engine,
+                taxonomy,
+                row,
+                spec,
+                growth_fraction=config.growth_fraction,
+                solver=config.solver,
+                medium_spec=medium_spec,
+                strict_medium=strict_medium,
+                medium_notes=medium_notes,
+            )
+            for row in ranked
+        ]
+        robustness_failed = [
+            row for row in ranked if row.robustness_status not in (None, "ok")
+        ]
+        if robustness_failed:
+            details = ", ".join(
+                f"{'+'.join(row.members)} ({row.robustness_status})"
+                for row in robustness_failed
+            )
+            warnings.append(
+                f"robustness FVA was unavailable for {len(robustness_failed)} reported "
+                f"candidate(s); target-max rankings were retained: {details}"
+            )
+    warnings.extend(sorted(medium_notes))
     # 평가 불가 후보는 rank 0 (= "순위 없음")으로 남고, top_k 와 무관하게 전부 보고된다.
     unevaluated = [_renumber(row, 0) for row in failed]
     return PoolSearchResult(
@@ -421,11 +642,12 @@ def search_model_pool(
         direction=config.direction.value,
         strategy=strategy,
         n_pool_members=len(ids),
-        n_candidates_total=len(candidates),
+        n_candidates_total=n_candidates_total,
         n_candidates_evaluated=len(cache),
         ranks=ranked,
         warnings=warnings,
         unevaluated=unevaluated,
+        ga_metadata=ga_metadata,
     )
 
 
@@ -820,14 +1042,19 @@ def search_model_pool_multi(
     specs = [
         TargetSpec(t, config.directions[t], config.weights[t]) for t in config.targets
     ]
-    candidates = candidate_combinations(ids, config.min_size, config.max_size)
-    if not candidates:
+    n_candidates_total = count_candidate_combinations(
+        ids, config.min_size, config.max_size
+    )
+    if n_candidates_total == 0:
         raise ValueError("no candidate combinations generated")
-    if len(candidates) > config.exhaustive_max:
+    if n_candidates_total > config.exhaustive_max:
         raise ValueError(
-            f"{len(candidates)} candidates > exhaustive_max={config.exhaustive_max}; "
+            f"{n_candidates_total} candidates > exhaustive_max={config.exhaustive_max}; "
             "narrow --min-size/--max-size (multi-target search is exhaustive-only, no silent "
             "truncation)")
+    # Multi-target search is exhaustive-only, but the guard above guarantees this
+    # compatibility list is small before it is materialized.
+    candidates = candidate_combinations(ids, config.min_size, config.max_size)
 
     medium_notes: set[str] = set()
     capability_evals = [
@@ -882,7 +1109,7 @@ def search_model_pool_multi(
         normalizer=normalizer,
         solution_semantics="joint_weighted_lp_single_flux_vector",
         n_pool_members=len(ids),
-        n_candidates_total=len(candidates),
+        n_candidates_total=n_candidates_total,
         n_candidates_evaluated=len(evals),
         ranks=ranked[: config.top_k],
         warnings=warnings,
