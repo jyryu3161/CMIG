@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
 from cmig.core.engine import SolveResult
@@ -90,4 +91,63 @@ def compute_delta(baseline: SolveResult, modified: SolveResult) -> DeltaResult:
         growth_delta=modified.objective - baseline.objective,
         status=status,
         diagnostic=diagnostic,
+    )
+
+
+def load_solve_result_from_run(run_dir: str | Path) -> SolveResult:
+    """Reconstruct the solve fields needed by AN-DELTA from one tidy run directory.
+
+    Community growth is the abundance-weighted sum of member growth stored in ``nodes.parquet``,
+    matching MICOM's community objective. Missing member measurements or an empty member table
+    produce a failed solve record; they are never filled with zero and compared as a result.
+    """
+    from cmig.core.tidy import TidyBundle
+
+    source = Path(run_dir)
+    bundle = TidyBundle.read(source)
+    external_exchange = {
+        str(row["metabolite"]): float(row["net_flux"])
+        for row in bundle.profile.to_pylist()
+    }
+    members: list[str] = []
+    member_growth: dict[str, float | None] = {}
+    abundances: dict[str, float | None] = {}
+    objective = 0.0
+    status = "optimal"
+    diagnostic: str | None = None
+    for row in bundle.nodes.to_pylist():
+        if row.get("node_type") != "member":
+            continue
+        member = str(row["node_id"])
+        members.append(member)
+        growth_raw, abundance_raw = row.get("growth"), row.get("abundance")
+        growth = None if growth_raw is None else float(growth_raw)
+        abundance = None if abundance_raw is None else float(abundance_raw)
+        member_growth[member] = growth
+        abundances[member] = abundance
+        if (
+            growth is None or abundance is None
+            or not math.isfinite(growth) or not math.isfinite(abundance)
+        ):
+            status = "infeasible"
+            continue
+        objective += growth * abundance
+    if not members:
+        status = "solver_failed"
+        diagnostic = f"{source} contains no member nodes"
+    elif status != "optimal":
+        diagnostic = f"{source} contains missing or non-finite member growth/abundance"
+    return SolveResult(
+        objective=objective,
+        member_growth=member_growth,
+        abundances=abundances,
+        external_exchange=external_exchange,
+        member_exchange={member: {} for member in members},
+        status=status,  # type: ignore[arg-type]
+        flux_report_status="none",
+        growth_solver="reconstructed_from_nodes",
+        flux_solver=None,
+        diagnostic=diagnostic,
+        members=members,
+        flux_normalization_method="recorded_tidy_profile",
     )

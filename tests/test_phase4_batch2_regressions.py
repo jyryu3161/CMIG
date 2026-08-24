@@ -138,7 +138,7 @@ def _crossfeed_result() -> SolveResult:
 def test_edge_schema_carries_identifiability_and_interval_columns():
     names = set(EDGES_SCHEMA.names)
     assert {"allocation_method", "identifiable", "weight_lo", "weight_hi"} <= names
-    assert TIDY_SCHEMA_VERSION == "1.2"
+    assert TIDY_SCHEMA_VERSION == "1.3"
 
 
 def test_cross_feeding_edges_are_marked_unidentifiable():
@@ -167,7 +167,8 @@ def test_fva_interval_reaches_direct_edges_when_supplied():
         e for e in bundle.edges.to_pylist()
         if e["source_id"] == "A" and e["edge_type"] == "secretion"
     ]
-    assert direct and direct[0]["weight_lo"] == 1.0 and direct[0]["weight_hi"] == 9.0
+    # tidy 1.3: FVA bounds share the community basis — per-taxon (1.0, 9.0) × abundance 0.5.
+    assert direct and direct[0]["weight_lo"] == 0.5 and direct[0]["weight_hi"] == 4.5
 
 
 def test_an_allocated_weight_never_gets_a_determined_looking_interval():

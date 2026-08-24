@@ -788,6 +788,38 @@ uv run cmig dfba-fixture --out runs/dfba_fixture
 uv run cmig stats-demo --out runs/stats_demo
 ```
 
+### 9b. Baseline analyses: pair, delta, single, minimal-medium
+
+Round 8 surfaced the previously library-only baseline analyses as first-class
+workflows (run directory, workflow manifest, `inspect-run`, exit 0/2/3, and the
+shared `--medium`/`--exact-medium`/`--allow-unknown-medium` contract):
+
+```bash
+# Mono vs co-culture for exactly two members, optionally across several media.
+uv run cmig pair --taxonomy pair.csv --per-medium glucose.csv,acetate.csv \
+  --exact-medium --assume-bigg-namespace --out runs/pair
+
+# CLI counterpart of the GUI Compare tab over two completed run directories.
+uv run cmig delta --baseline runs/solve_base --variant runs/solve_variant \
+  --out runs/delta
+
+# Single-model FBA/pFBA, FVA, reaction KO, exchange summary.
+uv run cmig single --model producer.xml --method both --fva \
+  --reaction-ko GLC2AC --medium glucose.csv --exact-medium \
+  --assume-bigg-namespace --out runs/single
+
+# Cardinality-minimal medium + leave-one-out verified limiting nutrients.
+uv run cmig minimal-medium --model producer.xml --min-growth 1 \
+  --medium glucose.csv --exact-medium --assume-bigg-namespace \
+  --out runs/minimal
+```
+
+Interaction deltas from `cmig pair` are **medium-controlled**: the community's
+effective metabolite-level offer is projected exactly onto each monoculture leg,
+so a mono-vs-co difference can no longer be an artifact of each model's native
+SBML medium (the old mixed-media contract could, for example, report amensalism
+where the controlled comparison shows neutralism).
+
 ### 10. Publication preflight
 
 Audit model formulas, objective feasibility, gene/formula coverage, dead ends,
@@ -841,6 +873,14 @@ per-model exchange coverage and the fibre-coverage limitation are recorded in
 `medium_presets/PROVENANCE_gut_media.md`; each row's origin is in
 `medium_presets/provenance_rows.csv`. Regenerate with
 `python -m scripts.build_gut_media`.
+
+Since round 8, every generated gut-overlay row also carries a `row_role`
+annotation (`nutrient` or `pool_closure`; loaders ignore extra columns). The
+`pool_closure` rows are the bundled 5-model pool's background-closure block —
+required for safe **merge** semantics, mechanically strippable for
+`--exact-medium` or other-pool use (procedure in
+`PROVENANCE_gut_media.md`). Never strip them and then merge: that reintroduces
+the permissive-oxygen defaults.
 
 `western_diet.csv` and `high_fiber.csv` are single-row glucose files with no cited
 source, 134× and 76× the corresponding published AGORA bounds; they are retained only
@@ -906,32 +946,33 @@ selectability.
 
 ## Reading `edges.parquet`
 
-`edges.parquet.weight` is an unsigned **per-taxon** flux
-(`mmol gDW_taxon⁻¹ h⁻¹`). It is not abundance-weighted and **not comparable to
-`profile.parquet.net_flux`**, which is community-basis.
+Since tidy schema **1.3** (round 8), `edges.parquet.weight` is the unsigned
+**community-basis** magnitude: the per-taxon member exchange flux multiplied by
+that member's relative abundance (`mmol gDW_community⁻¹ h⁻¹`). Edge magnitudes
+now rank members by their actual community contribution. Measured on a
+two-member solve (iHN637 at abundance 0.1, iML1515 at 0.9), acetate secretion:
 
-Because per-taxon flux scales roughly as 1/abundance, comparing raw edge weights
-**inverts** member rankings. Measured on a two-member solve (iHN637 at abundance
-0.1, iML1515 at 0.9), acetate secretion:
+| member  | abundance | old per-taxon weight (≤1.2) | new community weight (≥1.3) |
+| ------- | --------- | --------------------------- | --------------------------- |
+| iHN637  | 0.1       | 3.876102                    | 0.387610                    |
+| iML1515 | 0.9       | 0.459437                    | **0.413494**                |
 
-| member  | abundance | `edges.weight` | × abundance |
-| ------- | --------- | -------------- | ----------- |
-| iHN637  | 0.1       | 3.876102       | 0.387610    |
-| iML1515 | 0.9       | 0.459437       | **0.413494**|
+The old per-taxon basis said iHN637 dominates by 8.4×; the community basis
+correctly ranks iML1515 first. **Do not multiply a ≥1.3 weight by abundance
+again** — that double-counts. To reconcile with `profile.parquet.net_flux`: keep
+only `edge_type in {secretion, uptake}` (exclude `cross_feeding`, which is a
+mass-conserving proportional allocation rather than a measurement) and sign each
+row by direction; the sum matches that metabolite's net flux (`0.801104` above)
+for metabolites well above the engine's 1e-6 noise floor. A missing member
+abundance now fails the tidy build (`MissingAbundanceError`) rather than
+fabricating a scale; legacy ≤1.2 bundles are semantically migrated on read, and
+a bare legacy edge table without node context yields nulls with
+`LegacyEdgeBasisWarning`.
 
-Edge weights say iHN637 dominates by 8.4×; community contribution says iML1515
-does. To compare members: keep only `edge_type in {secretion, uptake}` (exclude
-`cross_feeding`, which is a mass-conserving proportional allocation rather than a
-measurement), sign each row by direction, and multiply by the member's abundance.
-The sum then matches that metabolite's `profile.parquet.net_flux` (`0.801104`
-above) for metabolites well above the engine's 1e-6 noise floor. It is not a blanket
-invariant: in the same run 23 of 25 overlapping metabolites agreed to <1e-9 while
-`mobd` and `btn` were off by ~1e-8, and 19 of the 44 metabolites in `edges.parquet`
-had no `profile.parquet` row to reconcile against at all.
-
-`manifest.json → edge_attribution` states this, and
+`manifest.json → edge_attribution` states the basis (imported from
+`cmig.core.tidy` so it cannot drift), and
 `uv run cmig inspect-run --format text` prints it as the `edges.weight basis:`
-line. Edge width in the interaction figures is per-taxon flux for the same reason.
+line. Edge width in the interaction figures uses the same community basis.
 
 ## Development
 
@@ -992,16 +1033,21 @@ provenance tests, GUI offscreen smoke tests, and real workflow regressions.
   an industrial acetogen. Any result over this pool is a **methods
   demonstration, not gut biology** — say so wherever it appears, and do not let a
   figure imply otherwise.
-- `edges.parquet.weight` is a per-taxon flux and its magnitude can invert against
-  true community contribution. See *Reading `edges.parquet`*; the value itself is
-  a known-open item, only the unit disclosure has landed.
+- `edges.parquet.weight` became community-basis in tidy 1.3 (round 8), resolving
+  the long-standing per-taxon inversion item. Consumers of pre-1.3 artifacts must
+  not mix bases — see *Reading `edges.parquet`*.
 - The `pareto` **column** on a scalarised ranking is only computed for exactly two
   targets; with more, every cell stays `False`, meaning "not evaluated" rather
   than "dominated". The `--multi-metric pareto` **mode** is unaffected and works
   for any number of targets.
-- Atomic writes cover text artifacts and, since round 7, every Parquet writer in
-  `cmig/io` (staged tempfile + fsync + `os.replace`); figure writers are not yet
-  atomic.
+- Atomic writes (staged same-directory tempfile + fsync + `os.replace`, with
+  best-effort parent-directory sync on POSIX) cover text artifacts and, since
+  round 8, every Parquet writer and every matplotlib figure writer. Atomicity is
+  per file: a crash between the files of a multi-file set can still leave a
+  mixed set.
+- Well-mixed community dFBA (`cmig.core.dfba_community.run_community_dfba`) is a
+  library-level prototype: Gurobi-only (it needs full member-level pFBA fluxes),
+  death/washout not modeled, no CLI surface yet.
 
 ## Repository Layout
 

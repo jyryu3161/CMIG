@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from cmig.io.atomic import atomic_write_path
+
 # A font *stack*: the R/ggplot path aborted on ``unknown family 'Arial'`` and
 # matplotlib silently fell back to DejaVu, so the two backends disagreed.
 FONT_STACK: tuple[str, ...] = ("Arial", "Helvetica", "DejaVu Sans")
@@ -39,36 +41,61 @@ def load_matplotlib_pyplot() -> Any:
     return plt
 
 
+def save_figure_atomic(
+    fig: Any,
+    out_path: str | Path,
+    *,
+    format: str,
+    **savefig_kwargs: Any,
+) -> Path:
+    """Publish a matplotlib figure without exposing a partial destination file."""
+    return atomic_write_path(
+        out_path,
+        lambda temporary: fig.savefig(
+            temporary,
+            format=format,
+            **savefig_kwargs,
+        ),
+    )
+
+
 def save_publication_tiff(
     fig: Any,
     out_tiff: Path,
     *,
     dpi: int = FIGURE_TIFF_DPI,
 ) -> None:
-    """Write a submission-ready TIFF at the requested DPI in RGB with LZW."""
-    fig.savefig(
-        out_tiff,
-        format="tiff",
-        dpi=dpi,
-        facecolor="white",
-        pil_kwargs={"compression": "tiff_lzw"},
-    )
-    try:
-        from PIL import Image
-    except ImportError:  # pragma: no cover - PIL ships with matplotlib
-        return
-    with Image.open(out_tiff) as image:
-        if image.mode == "RGB":
+    """Atomically write a submission-ready TIFF at the requested DPI in RGB with LZW."""
+
+    def write(temporary: Path) -> None:
+        fig.savefig(
+            temporary,
+            format="tiff",
+            dpi=dpi,
+            facecolor="white",
+            pil_kwargs={"compression": "tiff_lzw"},
+        )
+        try:
+            from PIL import Image
+        except ImportError:  # pragma: no cover - PIL ships with matplotlib
             return
-        flattened = Image.new("RGB", image.size, (255, 255, 255))
-        flattened.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
-        info = dict(image.info)
-    flattened.save(
-        out_tiff,
-        format="tiff",
-        compression="tiff_lzw",
-        dpi=info.get("dpi", (dpi, dpi)),
-    )
+        with Image.open(temporary) as image:
+            if image.mode == "RGB":
+                return
+            flattened = Image.new("RGB", image.size, (255, 255, 255))
+            flattened.paste(
+                image,
+                mask=image.split()[-1] if image.mode == "RGBA" else None,
+            )
+            info = dict(image.info)
+        flattened.save(
+            temporary,
+            format="tiff",
+            compression="tiff_lzw",
+            dpi=info.get("dpi", (dpi, dpi)),
+        )
+
+    atomic_write_path(out_tiff, write)
 
 
 def polish_matplotlib_axes(

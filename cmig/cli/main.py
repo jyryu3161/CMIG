@@ -27,6 +27,7 @@ from cmig.io.atomic import atomic_write_text
 from cmig.io.gem_paths import default_human_gem_path
 from cmig.render.figure_style import (
     SVG_METADATA,
+    save_figure_atomic,
     save_publication_tiff,
 )
 from cmig.render.figure_style import (
@@ -140,6 +141,72 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "strain_growth_plot.svg",
         ],
         "example": "uv run cmig strain-growth --model-dir models --out runs/strain_growth",
+    },
+    {
+        "gui_surface": "Analysis / Pair",
+        "cli_command": "cmig pair",
+        "purpose": (
+            "Compare monoculture and co-culture growth for exactly two members, classify the "
+            "interaction, and summarize potential shared-pool cross-feeding."
+        ),
+        "required_args": ["--taxonomy or --model-dir", "--out"],
+        "common_options": [
+            "--medium", "--exact-medium", "--allow-unknown-medium", "--per-medium",
+            "--media", "--tradeoff-f", "--namespace-decisions", "--assume-bigg-namespace",
+            "--allow-failed-run",
+        ],
+        "key_outputs": [
+            "pair_summary.json", "pair_metrics.csv", "cross_feeding.csv", "matrix.parquet",
+        ],
+        "example": (
+            "uv run cmig pair --taxonomy pair.csv --medium diet.csv --exact-medium "
+            "--assume-bigg-namespace --out runs/pair"
+        ),
+    },
+    {
+        "gui_surface": "Compare / Baseline vs Variant",
+        "cli_command": "cmig delta",
+        "purpose": "Compare growth, members, and external profiles from two completed run dirs.",
+        "required_args": ["--baseline", "--variant", "--out"],
+        "common_options": ["--threshold", "--allow-failed-run"],
+        "key_outputs": ["delta_summary.json", "delta.csv"],
+        "example": (
+            "uv run cmig delta --baseline runs/base --variant runs/variant --out runs/delta"
+        ),
+    },
+    {
+        "gui_surface": "Models / Single Model Analysis",
+        "cli_command": "cmig single",
+        "purpose": "Run single-model FBA/pFBA, optional FVA and reaction KOs, plus exchanges.",
+        "required_args": ["--model", "--out"],
+        "common_options": [
+            "--method", "--fva", "--reaction-ko", "--medium", "--exact-medium",
+            "--allow-unknown-medium", "--namespace-decisions", "--assume-bigg-namespace",
+            "--allow-failed-run",
+        ],
+        "key_outputs": [
+            "single_summary.json", "single_fluxes.csv", "exchange_summary.csv",
+            "fva.csv (when requested)", "reaction_knockouts.csv (when requested)",
+        ],
+        "example": (
+            "uv run cmig single --model models/iML1515.xml --method both --fva "
+            "--assume-bigg-namespace --out runs/single"
+        ),
+    },
+    {
+        "gui_surface": "Models / Minimal Medium",
+        "cli_command": "cmig minimal-medium",
+        "purpose": "Find a cardinality-minimal candidate medium and verified limiting nutrients.",
+        "required_args": ["--model", "--min-growth", "--out"],
+        "common_options": [
+            "--oxygen-mode", "--medium", "--exact-medium", "--allow-unknown-medium",
+            "--namespace-decisions", "--assume-bigg-namespace", "--allow-failed-run",
+        ],
+        "key_outputs": ["minimal_medium_summary.json", "minimal_medium.csv"],
+        "example": (
+            "uv run cmig minimal-medium --model models/iML1515.xml --min-growth 0.1 "
+            "--assume-bigg-namespace --out runs/minimal_medium"
+        ),
     },
     {
         "gui_surface": "Search / Ratio Impact",
@@ -531,6 +598,10 @@ RUN_SUMMARY_FILES: list[tuple[str, str]] = [
     ("host_map_summary.json", "host_exchange_map"),
     ("dfba_sensitivity.json", "dfba_sensitivity"),
     ("publication_benchmark.json", "publication_benchmark"),
+    ("pair_summary.json", "pair"),
+    ("delta_summary.json", "delta"),
+    ("single_summary.json", "single"),
+    ("minimal_medium_summary.json", "minimal_medium"),
 ]
 
 
@@ -3022,6 +3093,767 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             "n_total": sum(member_totals.values()),
         },
     )
+    return 0
+
+
+def _namespace_gate_inputs(args: argparse.Namespace) -> tuple[list[Any], dict[str, Any]]:
+    """Load, validate, and fingerprint the reviewed namespace policy for model-id workflows."""
+    from cmig.core.namespace import (
+        evaluate_gate,
+        load_namespace_decisions,
+        namespace_decision_keys,
+    )
+
+    decisions = (
+        load_namespace_decisions(args.namespace_decisions)
+        if getattr(args, "namespace_decisions", None) else []
+    )
+    assume_bigg = bool(getattr(args, "assume_bigg_namespace", False))
+    if assume_bigg:
+        if decisions:
+            raise ValueError(
+                "--assume-bigg-namespace and --namespace-decisions are mutually exclusive"
+            )
+        policy = "assume_bigg"
+    else:
+        evaluate_gate(decisions).raise_if_blocked()
+        policy = "require_reviewed"
+    return decisions, {
+        "policy": policy,
+        "decisions": namespace_decision_keys(decisions),
+    }
+
+
+def _combined_identity(payload: Any) -> str:
+    """Stable SHA-256 identity for a JSON-ready collection of already canonical identities."""
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _write_csv_records(
+    path: Path, fieldnames: list[str], rows: list[dict[str, Any]]
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _pair_medium_paths(args: argparse.Namespace) -> tuple[bool, list[str | None]]:
+    """Resolve normal and per-medium pair modes while accepting repeat/comma list forms."""
+    per_value = getattr(args, "per_medium", None)
+    media_value = getattr(args, "media", None)
+    per_medium = per_value is not None or bool(media_value)
+    raw: list[str] = []
+    if args.medium:
+        raw.extend(
+            _parse_csv_strings(args.medium, flag="--medium")
+            if per_medium and "," in args.medium else [args.medium]
+        )
+    if isinstance(per_value, str) and per_value:
+        raw.extend(_parse_csv_strings(per_value, flag="--per-medium"))
+    if media_value:
+        raw.extend(_parse_csv_strings(media_value, flag="--media"))
+    if per_medium and not raw:
+        raise ValueError("--per-medium requires media via --per-medium PATHS, --media, or --medium")
+    if not per_medium:
+        return False, [args.medium]
+    paths = list(dict.fromkeys(raw))
+    missing = [path for path in paths if not Path(path).exists()]
+    if missing:
+        raise ValueError(f"pair medium files not found: {missing}")
+    resolved: list[str | None] = list(paths)
+    return True, resolved
+
+
+def _cmd_pair(args: argparse.Namespace) -> int:
+    """AN-PAIR: controlled mono-vs-co growth, interaction typing, and medium matrix."""
+    try:
+        import pandas as pd
+
+        from cmig.core.matrix import build_matrix, write_matrix
+        from cmig.core.medium_spec import (
+            load_medium,
+            medium_checksum,
+            requested_medium_application_mode,
+        )
+        from cmig.core.model_pool import taxonomy_from_model_dir
+        from cmig.core.namespace import mapped_taxonomy
+        from cmig.core.pair import analyze_pair, cross_feeding_rows, pair_matrix_rows
+        from cmig.core.workflow_manifest import (
+            base_components,
+            medium_component,
+            pool_model_checksum,
+        )
+
+        if not (0.0 < args.tradeoff_f <= 1.0):
+            raise ValueError(f"--tradeoff-f must satisfy 0 < f <= 1 (got {args.tradeoff_f})")
+        taxonomy = _load_pool_taxonomy(
+            taxonomy_path=args.taxonomy,
+            model_dir=args.model_dir,
+            recursive=args.recursive,
+            pd=pd,
+            taxonomy_from_model_dir=taxonomy_from_model_dir,
+        )
+        if args.taxonomy:
+            taxonomy = _resolve_taxonomy_model_paths(taxonomy, Path(args.taxonomy))
+        if len(taxonomy) != 2:
+            raise ValueError(f"pair requires exactly 2 members (got {len(taxonomy)})")
+        decisions, namespace_spec = _namespace_gate_inputs(args)
+        per_medium, medium_paths = _pair_medium_paths(args)
+        conditions: list[tuple[str, str | None, Any]] = []
+        seen_ids: set[str] = set()
+        for index, medium_path in enumerate(medium_paths):
+            medium_id = "default" if medium_path is None else Path(medium_path).stem
+            if medium_id in seen_ids:
+                medium_id = f"{medium_id}_{index + 1}"
+            seen_ids.add(medium_id)
+            conditions.append((
+                medium_id,
+                medium_path,
+                load_medium(medium_path) if medium_path is not None else None,
+            ))
+
+        results: list[tuple[str, str | None, Any, Any]] = []
+        with mapped_taxonomy(taxonomy, decisions) as (mapped, _applied):
+            for medium_id, medium_path, medium_spec in conditions:
+                result = analyze_pair(
+                    mapped,
+                    solver=args.solver,
+                    tradeoff_f=args.tradeoff_f,
+                    medium=medium_spec,
+                    strict_medium=not args.allow_unknown_medium,
+                    exact_medium=args.exact_medium,
+                )
+                results.append((medium_id, medium_path, medium_spec, result))
+
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        metric_rows: list[dict[str, Any]] = []
+        cross_rows: list[dict[str, Any]] = []
+        matrix_rows: list[dict[str, Any]] = []
+        condition_payloads: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        for medium_id, medium_path, medium_spec, result in results:
+            warnings.extend(str(warning) for warning in result.warnings)
+            condition_payload: dict[str, Any] = {
+                "medium_id": medium_id,
+                "medium_source": medium_path,
+                "medium_checksum": medium_checksum(medium_spec),
+                "medium_application_mode": result.medium_application_mode,
+                "status": result.status,
+                "diagnostic": result.diagnostic,
+                "interaction": result.interaction,
+                "mro": result.mro_score if result.status == "ok" else None,
+                "mip": result.mip if result.status == "ok" else None,
+                "comparison_is_controlled": result.status == "ok",
+                "monoculture_medium_basis": "community_effective_medium_projected_exactly",
+                "unavailable_per_member": result.unavailable_per_member,
+                "flux_normalization_method": result.flux_normalization_method,
+            }
+            if result.status == "ok":
+                condition_payload["growth"] = {
+                    member: {
+                        "mono": result.mono_growth[member],
+                        "co": result.co_growth[member],
+                        "delta": result.co_growth[member] - result.mono_growth[member],
+                    }
+                    for member in (result.member_a, result.member_b)
+                }
+                for member in (result.member_a, result.member_b):
+                    metric_rows.append({
+                        "medium_id": medium_id,
+                        "member": member,
+                        "mono_growth": _finite_csv(result.mono_growth[member]),
+                        "co_growth": _finite_csv(result.co_growth[member]),
+                        "growth_delta": _finite_csv(
+                            result.co_growth[member] - result.mono_growth[member]
+                        ),
+                        "interaction": result.interaction,
+                        "status": result.status,
+                        "diagnostic": "",
+                    })
+                for row in cross_feeding_rows(result):
+                    cross_rows.append({"medium_id": medium_id, **row})
+                matrix_rows.extend(pair_matrix_rows(result, medium_id=medium_id))
+            else:
+                metric_rows.append({
+                    "medium_id": medium_id,
+                    "member": "",
+                    "mono_growth": "",
+                    "co_growth": "",
+                    "growth_delta": "",
+                    "interaction": "failed",
+                    "status": "failed",
+                    "diagnostic": result.diagnostic or "pair analysis failed",
+                })
+                warnings.append(
+                    f"condition {medium_id} failed: {result.diagnostic or 'unknown diagnostic'}"
+                )
+            condition_payloads.append(condition_payload)
+
+        n_ok = sum(1 for *_unused, result in results if result.status == "ok")
+        status = "ok" if n_ok == len(results) else ("degraded" if n_ok else "failed")
+        artifacts = ["pair_summary.json", "pair_metrics.csv", "cross_feeding.csv", "matrix.parquet"]
+        summary = {
+            "status": status,
+            "solver": args.solver,
+            "tradeoff_f": args.tradeoff_f,
+            "per_medium": per_medium,
+            "n_conditions": len(results),
+            "n_successful_conditions": n_ok,
+            "cross_feeding_basis": (
+                "potential shared-pool secretion/uptake co-occurrence; donor-recipient transfer "
+                "is not directly identifiable"
+            ),
+            "conditions": condition_payloads,
+            "warnings": warnings,
+            "artifacts": artifacts,
+        }
+        atomic_write_text(
+            out / "pair_summary.json",
+            json.dumps(
+                summary, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False
+            ) + "\n",
+        )
+        _write_csv_records(
+            out / "pair_metrics.csv",
+            [
+                "medium_id", "member", "mono_growth", "co_growth", "growth_delta",
+                "interaction", "status", "diagnostic",
+            ],
+            metric_rows,
+        )
+        _write_csv_records(
+            out / "cross_feeding.csv",
+            [
+                "medium_id", "donor", "recipient", "metabolite", "donor_secretion",
+                "recipient_uptake", "identifiable", "basis",
+            ],
+            cross_rows,
+        )
+        write_matrix(build_matrix(matrix_rows), out / "matrix.parquet")
+
+        condition_identities = [
+            {
+                "medium_id": medium_id,
+                "source": None if path is None else Path(path).name,
+                "checksum": medium_checksum(spec),
+            }
+            for medium_id, path, spec, _result in results
+        ]
+        medium_manifest = medium_component(
+            (
+                None if all(path is None for _mid, path, _spec, _result in results)
+                else ";".join(
+                    Path(path).name for _mid, path, _spec, _result in results if path is not None
+                )
+            ),
+            _combined_identity(condition_identities),
+            application_mode=requested_medium_application_mode(
+                has_custom_medium=any(path is not None for _mid, path, _spec, _result in results)
+            ),
+            namespace_bridge={
+                "conditions": [
+                    {
+                        "medium_id": medium_id,
+                        "unavailable_per_member": result.unavailable_per_member,
+                    }
+                    for medium_id, _path, _spec, result in results
+                ]
+            },
+            allow_unknown=args.allow_unknown_medium,
+        )
+
+        def components() -> dict[str, Any]:
+            built = base_components(
+                "pair",
+                solver_setting=_pool_solver_setting(args),
+                model_checksum=pool_model_checksum(taxonomy),
+                medium=medium_manifest,
+            )
+            built["namespace_spec"] = namespace_spec
+            built["tradeoff_f"] = float(args.tradeoff_f)
+            built["pair_spec"] = {
+                "per_medium": per_medium,
+                "conditions": condition_identities,
+            }
+            built["flux_normalization_method"] = sorted({
+                result.flux_normalization_method for *_rest, result in results
+            })
+            return built
+
+        _emit_workflow_manifest(
+            out, "pair", components, status=status, artifacts=artifacts,
+            warnings=warnings, summary={
+                "n_conditions": len(results), "n_successful_conditions": n_ok,
+                "interactions": {
+                    medium_id: result.interaction for medium_id, *_rest, result in results
+                },
+            },
+        )
+    except ImportError:
+        print("pair requires the engine stack: uv sync --extra engine", file=sys.stderr)
+        return 2
+    except (ValueError, OSError, RuntimeError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    print(f"pair complete ({n_ok}/{len(results)} conditions) -> {out}")
+    return _exit_code_for_status(status, args)
+
+
+def _cmd_delta(args: argparse.Namespace) -> int:
+    """AN-DELTA CLI counterpart of the GUI baseline-vs-variant comparison."""
+    try:
+        from cmig.core.delta import compute_delta, load_solve_result_from_run
+        from cmig.core.workflow_manifest import base_components, medium_component
+        from cmig.io.solve_output import file_checksum
+
+        if not math.isfinite(args.threshold) or args.threshold < 0.0:
+            raise ValueError("--threshold must be finite and >= 0")
+        baseline_dir = Path(args.baseline).resolve()
+        variant_dir = Path(args.variant).resolve()
+        for label, run_dir in (("baseline", baseline_dir), ("variant", variant_dir)):
+            if not run_dir.is_dir():
+                raise ValueError(f"{label} run directory not found: {run_dir}")
+            for artifact in ("nodes.parquet", "profile.parquet"):
+                if not (run_dir / artifact).exists():
+                    raise ValueError(f"{label} run is missing {artifact}: {run_dir}")
+        baseline_inspection = _inspect_run_dir(baseline_dir)
+        variant_inspection = _inspect_run_dir(variant_dir)
+        for label, inspection in (
+            ("baseline", baseline_inspection), ("variant", variant_inspection)
+        ):
+            if inspection["artifact_integrity"] == "mismatch":
+                raise ValueError(
+                    f"{label} run has a result_digest mismatch; refusing to compare tampered "
+                    "or stale artifacts"
+                )
+        baseline = load_solve_result_from_run(baseline_dir)
+        variant = load_solve_result_from_run(variant_dir)
+        result = compute_delta(baseline, variant)
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        delta_rows = [
+            {
+                "metabolite": row.metabolite,
+                "baseline": _finite_csv(row.baseline),
+                "variant": _finite_csv(row.modified),
+                "delta": _finite_csv(row.delta),
+                "significant": (
+                    not math.isfinite(row.delta) or abs(row.delta) > args.threshold
+                ),
+            }
+            for row in result.profile
+        ]
+        artifacts = ["delta_summary.json", "delta.csv"]
+        summary = {
+            "status": result.status,
+            "diagnostic": result.diagnostic,
+            "baseline": {
+                "run_dir": str(baseline_dir),
+                "kind": baseline_inspection["kind"],
+                "run_hash": baseline_inspection["run_hash"],
+                "growth": _finite_or_none(baseline.objective),
+            },
+            "variant": {
+                "run_dir": str(variant_dir),
+                "kind": variant_inspection["kind"],
+                "run_hash": variant_inspection["run_hash"],
+                "growth": _finite_or_none(variant.objective),
+            },
+            "growth_delta": _finite_or_none(result.growth_delta),
+            "added_members": result.added_members,
+            "removed_members": result.removed_members,
+            "significance_threshold": args.threshold,
+            "n_profile_deltas": len(result.profile),
+            "n_significant": len(result.significant(args.threshold)),
+            "artifacts": artifacts,
+        }
+        atomic_write_text(
+            out / "delta_summary.json",
+            json.dumps(
+                summary, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False
+            ) + "\n",
+        )
+        _write_csv_records(
+            out / "delta.csv",
+            ["metabolite", "baseline", "variant", "delta", "significant"],
+            delta_rows,
+        )
+        input_files = {
+            "baseline": {
+                name: file_checksum(baseline_dir / name)
+                for name in ("nodes.parquet", "profile.parquet")
+            },
+            "variant": {
+                name: file_checksum(variant_dir / name)
+                for name in ("nodes.parquet", "profile.parquet")
+            },
+        }
+
+        def components() -> dict[str, Any]:
+            built = base_components(
+                "delta",
+                solver_setting={"solver": None},
+                model_checksum=_combined_identity(input_files),
+                medium=medium_component(None, "not_applicable", application_mode=None),
+            )
+            built["delta_spec"] = {
+                "baseline_run_hash": baseline_inspection["run_hash"],
+                "variant_run_hash": variant_inspection["run_hash"],
+                "baseline_result_digest": baseline_inspection["result_digest"],
+                "variant_result_digest": variant_inspection["result_digest"],
+                "significance_threshold": float(args.threshold),
+            }
+            return built
+
+        _emit_workflow_manifest(
+            out, "delta", components, status=result.status, artifacts=artifacts,
+            summary={
+                "growth_delta": _finite_or_none(result.growth_delta),
+                "n_significant": len(result.significant(args.threshold)),
+            }, diagnostic=result.diagnostic,
+        )
+    except (CorruptRunArtifactError, ValueError, OSError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    print(f"delta complete ({len(result.significant(args.threshold))} significant) -> {out}")
+    return _exit_code_for_status(result.status, args)
+
+
+def _cmd_single(args: argparse.Namespace) -> int:
+    """AN-SINGLE: FBA/pFBA/FVA, reaction KOs, and exchange summary."""
+    try:
+        from cmig.core.medium_spec import load_medium
+        from cmig.core.namespace import apply_namespace_decisions_to_model
+        from cmig.core.single_model import (
+            exchange_summary,
+            growth_feasible,
+            single_model_fva,
+            single_reaction_knockout,
+            solve_single_model,
+        )
+        from cmig.core.workflow_manifest import base_components, optional_file_checksum
+        from cmig.io.model_import import load_cobra_model
+
+        model_path = Path(args.model)
+        if not model_path.exists():
+            raise ValueError(f"model file not found: {model_path}")
+        decisions, namespace_spec = _namespace_gate_inputs(args)
+        model = load_cobra_model(model_path)
+        apply_namespace_decisions_to_model(model, decisions)
+        medium_spec = load_medium(args.medium) if args.medium else None
+        normalized_method = {"fba": "FBA", "pfba": "pFBA"}.get(
+            str(args.method).lower(), str(args.method)
+        )
+        methods = ["FBA", "pFBA"] if normalized_method == "both" else [normalized_method]
+        if any(method not in {"FBA", "pFBA"} for method in methods):
+            raise ValueError(f"unsupported --method: {args.method}")
+        reaction_ids = (
+            _parse_csv_strings(args.reaction_ko, flag="--reaction-ko")
+            if args.reaction_ko else []
+        )
+        missing_reactions = [rid for rid in reaction_ids if rid not in model.reactions]
+        if missing_reactions:
+            raise ValueError(f"reaction KO ids not found in model: {missing_reactions}")
+        common = {
+            "solver": args.solver,
+            "medium": medium_spec,
+            "strict_medium": not args.allow_unknown_medium,
+            "exact_medium": args.exact_medium,
+        }
+        solves = {
+            method: solve_single_model(model, method=method, **common)
+            for method in methods
+        }
+        exchange_rows = exchange_summary(model, **common)
+        fva_ranges = (
+            single_model_fva(
+                model, fraction_of_optimum=args.fva_fraction, **common
+            ) if args.fva else {}
+        )
+        ko_method = methods[0]
+        ko_rows: list[dict[str, Any]] = []
+        for reaction_id in reaction_ids:
+            ko = single_reaction_knockout(
+                model, reaction_id, method=ko_method, **common
+            )
+            baseline = solves[ko_method]
+            comparable = (
+                baseline.status == "optimal" and ko.status == "optimal"
+                and math.isfinite(baseline.objective) and math.isfinite(ko.objective)
+            )
+            ko_rows.append({
+                "reaction_id": reaction_id,
+                "method": ko_method,
+                "status": ko.status,
+                "objective": _finite_csv(ko.objective),
+                "objective_delta": (
+                    _finite_csv(ko.objective - baseline.objective) if comparable else ""
+                ),
+                "diagnostic": ko.diagnostic or "",
+            })
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        flux_rows = [
+            {"method": method, "reaction_id": reaction_id, "flux": _finite_csv(flux)}
+            for method, solve in solves.items()
+            for reaction_id, flux in sorted(solve.fluxes.items())
+        ]
+        _write_csv_records(
+            out / "single_fluxes.csv", ["method", "reaction_id", "flux"], flux_rows
+        )
+        _write_csv_records(
+            out / "exchange_summary.csv", ["reaction_id", "flux", "direction"],
+            [
+                {
+                    "reaction_id": row["reaction_id"],
+                    "flux": _finite_csv(float(row["flux"])),
+                    "direction": row["direction"],
+                }
+                for row in exchange_rows
+            ],
+        )
+        artifacts = ["single_summary.json", "single_fluxes.csv", "exchange_summary.csv"]
+        if args.fva:
+            _write_csv_records(
+                out / "fva.csv", ["reaction_id", "lo", "hi"],
+                [
+                    {
+                        "reaction_id": reaction_id,
+                        "lo": _finite_csv(interval.lo),
+                        "hi": _finite_csv(interval.hi),
+                    }
+                    for reaction_id, interval in sorted(fva_ranges.items())
+                ],
+            )
+            artifacts.append("fva.csv")
+        if reaction_ids:
+            _write_csv_records(
+                out / "reaction_knockouts.csv",
+                [
+                    "reaction_id", "method", "status", "objective", "objective_delta",
+                    "diagnostic",
+                ],
+                ko_rows,
+            )
+            artifacts.append("reaction_knockouts.csv")
+        status = (
+            "ok" if solves and all(solve.status == "optimal" for solve in solves.values())
+            else "failed"
+        )
+        warnings = [
+            f"{method} status={solve.status}: {solve.diagnostic or 'no diagnostic'}"
+            for method, solve in solves.items() if solve.status != "optimal"
+        ]
+        summary = {
+            "status": status,
+            "model": str(model_path),
+            "model_id": str(model.id),
+            "solver": args.solver,
+            "methods": {
+                method: {
+                    "status": solve.status,
+                    "objective": _finite_or_none(solve.objective),
+                    "diagnostic": solve.diagnostic,
+                }
+                for method, solve in solves.items()
+            },
+            "growth_feasible": growth_feasible(
+                model, threshold=args.growth_threshold, **common
+            ),
+            "growth_threshold": args.growth_threshold,
+            "fva": args.fva,
+            "fva_fraction": args.fva_fraction if args.fva else None,
+            "n_reaction_knockouts": len(reaction_ids),
+            "warnings": warnings,
+            "artifacts": artifacts,
+        }
+        atomic_write_text(
+            out / "single_summary.json",
+            json.dumps(
+                summary, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False
+            ) + "\n",
+        )
+
+        def components() -> dict[str, Any]:
+            built = base_components(
+                "single",
+                solver_setting=_pool_solver_setting(args),
+                model_checksum=optional_file_checksum(model_path) or "missing_model",
+                medium=_medium_component_for(args, medium_spec),
+            )
+            built["namespace_spec"] = namespace_spec
+            built["single_spec"] = {
+                "methods": methods,
+                "fva": bool(args.fva),
+                "fva_fraction": float(args.fva_fraction),
+                "exchange_summary": True,
+                "growth_threshold": float(args.growth_threshold),
+            }
+            built["knockout_spec"] = {
+                "level": "reaction", "reactions": reaction_ids, "method": ko_method,
+            }
+            return built
+
+        _emit_workflow_manifest(
+            out, "single", components, status=status, artifacts=artifacts,
+            warnings=warnings, summary={
+                "model_id": str(model.id),
+                "objectives": {
+                    method: _finite_or_none(solve.objective) for method, solve in solves.items()
+                },
+            },
+        )
+    except ImportError:
+        print("single requires the engine stack: uv sync --extra engine", file=sys.stderr)
+        return 2
+    except (ValueError, OSError, RuntimeError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    print(f"single complete ({', '.join(methods)}) -> {out}")
+    return _exit_code_for_status(status, args)
+
+
+def _cmd_minimal_medium(args: argparse.Namespace) -> int:
+    """Cardinality-minimal candidate medium plus leave-one-out limiting nutrients."""
+    try:
+        from cmig.core.medium import (
+            MILPInfeasibleError,
+            limiting_nutrients,
+            minimal_medium_cardinality,
+        )
+        from cmig.core.medium_spec import load_medium
+        from cmig.core.namespace import apply_namespace_decisions_to_model
+        from cmig.core.workflow_manifest import base_components, optional_file_checksum
+        from cmig.io.model_import import load_cobra_model
+
+        model_path = Path(args.model)
+        if not model_path.exists():
+            raise ValueError(f"model file not found: {model_path}")
+        decisions, namespace_spec = _namespace_gate_inputs(args)
+        model = load_cobra_model(model_path)
+        apply_namespace_decisions_to_model(model, decisions)
+        medium_spec = load_medium(args.medium) if args.medium else None
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+
+        def components() -> dict[str, Any]:
+            built = base_components(
+                "minimal_medium",
+                solver_setting=_pool_solver_setting(args),
+                model_checksum=optional_file_checksum(model_path) or "missing_model",
+                medium=_medium_component_for(args, medium_spec),
+            )
+            built["namespace_spec"] = namespace_spec
+            built["minimal_medium_spec"] = {
+                "min_growth": float(args.min_growth),
+                "oxygen_mode": args.oxygen_mode,
+                "exclude_blocked": True,
+            }
+            return built
+
+        try:
+            result = minimal_medium_cardinality(
+                model,
+                args.min_growth,
+                solver=args.solver,
+                oxygen_mode=args.oxygen_mode,
+                medium=medium_spec,
+                strict_medium=not args.allow_unknown_medium,
+                exact_medium=args.exact_medium,
+            )
+        except MILPInfeasibleError as error:
+            artifacts = ["minimal_medium_summary.json"]
+            summary = {
+                "status": "failed",
+                "diagnostic": str(error),
+                "model": str(model_path),
+                "min_growth": args.min_growth,
+                "oxygen_mode": args.oxygen_mode,
+                "artifacts": artifacts,
+            }
+            atomic_write_text(
+                out / "minimal_medium_summary.json",
+                json.dumps(
+                    summary, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False
+                ) + "\n",
+            )
+            _emit_workflow_manifest(
+                out, "minimal_medium", components, status="failed", artifacts=artifacts,
+                diagnostic=str(error), summary={"min_growth": args.min_growth},
+            )
+            print(f"minimal-medium failed -> {out}", file=sys.stderr)
+            return _exit_code_for_status("failed", args)
+
+        limiting = limiting_nutrients(result)
+        rows = [
+            {
+                "exchange_id": exchange_id,
+                "uptake_limit": _finite_csv(result.uptake_bounds[exchange_id]),
+                "limiting_nutrient": exchange_id in limiting,
+            }
+            for exchange_id in result.components
+        ]
+        _write_csv_records(
+            out / "minimal_medium.csv",
+            ["exchange_id", "uptake_limit", "limiting_nutrient"],
+            rows,
+        )
+        warnings = []
+        status = "ok"
+        if result.forced_supply:
+            status = "degraded"
+            warnings.append(
+                "forced boundary supplies remained open; the reported support is not the model's "
+                "only nutrient source"
+            )
+        artifacts = ["minimal_medium_summary.json", "minimal_medium.csv"]
+        summary = {
+            "status": status,
+            "model": str(model_path),
+            "model_id": str(model.id),
+            "solver": args.solver,
+            "min_growth": result.min_growth,
+            "achieved_growth": result.achieved_growth,
+            "oxygen_mode": result.oxygen_mode,
+            "n_components": result.n_components,
+            "components": result.components,
+            "uptake_bounds": result.uptake_bounds,
+            "limiting_nutrients": limiting,
+            "limiting_nutrient_basis": (
+                "leave-one-out from the full candidate medium; selected support alone is not "
+                "an essentiality claim"
+            ),
+            "forced_supply": result.forced_supply,
+            "warnings": warnings,
+            "artifacts": artifacts,
+        }
+        atomic_write_text(
+            out / "minimal_medium_summary.json",
+            json.dumps(
+                summary, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False
+            ) + "\n",
+        )
+        _emit_workflow_manifest(
+            out, "minimal_medium", components, status=status, artifacts=artifacts,
+            warnings=warnings, summary={
+                "n_components": result.n_components,
+                "achieved_growth": result.achieved_growth,
+                "n_limiting_nutrients": len(limiting),
+            },
+        )
+    except ImportError:
+        print("minimal-medium requires the engine stack: uv sync --extra engine", file=sys.stderr)
+        return 2
+    except (ValueError, OSError, RuntimeError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    print(f"minimal-medium complete ({result.n_components} components) -> {out}")
     return 0
 
 
@@ -5897,7 +6729,7 @@ def _add_panel_letters(axes: Any, *, start: int = 0) -> None:
 
 def _save_screening_figure(fig: Any, out_svg: Path, out_tiff: Path) -> None:
     fig.tight_layout()
-    fig.savefig(out_svg, format="svg", metadata=SVG_METADATA)
+    save_figure_atomic(fig, out_svg, format="svg", metadata=SVG_METADATA)
     save_publication_tiff(fig, out_tiff)
 
 
@@ -6343,7 +7175,7 @@ def _write_spatial_snapshots(
     if image is not None:
         cbar = fig.colorbar(image, ax=list(axes[:-1]), fraction=0.035, pad=0.02)
         cbar.set_label("Concentration (mmol L$^{-1}$)")
-    fig.savefig(out_svg, format="svg", bbox_inches="tight", metadata=SVG_METADATA)
+    save_figure_atomic(fig, out_svg, format="svg", bbox_inches="tight", metadata=SVG_METADATA)
     save_publication_tiff(fig, out_tiff)
     plt.close(fig)
 
@@ -7632,7 +8464,6 @@ def _sweep_warnings(rows: list[Any]) -> list[str]:
 def _write_sweep_profiles(rows: list[dict[str, Any]], path: Path) -> None:
     """Condition-level profile long table for medium/diet sweep and FVA review."""
     import pyarrow as pa
-    import pyarrow.parquet as pq
 
     schema = pa.schema([
         ("condition_id", pa.string()),
@@ -7649,7 +8480,9 @@ def _write_sweep_profiles(rows: list[dict[str, Any]], path: Path) -> None:
         ("fva_hi", pa.float64()),
     ])
     path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)  # type: ignore[no-untyped-call]
+    from cmig.io.atomic import atomic_write_parquet
+
+    atomic_write_parquet(path, pa.Table.from_pylist(rows, schema=schema))
 
 
 def _write_medium_summary(rows: list[Any], path: Path) -> None:
@@ -7730,6 +8563,21 @@ def _add_exact_medium(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_namespace_gate_options(parser: argparse.ArgumentParser) -> None:
+    """Add the reviewed-decisions vs explicit-BiGG namespace gate."""
+    namespace = parser.add_mutually_exclusive_group()
+    namespace.add_argument(
+        "--namespace-decisions",
+        default=None,
+        help="reviewed namespace decision JSON; unresolved high-confidence mappings block",
+    )
+    namespace.add_argument(
+        "--assume-bigg-namespace",
+        action="store_true",
+        help="explicitly confirm that model exchange ids already use the BiGG namespace",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cmig", description="CMIG headless community metabolic core")
     sub = p.add_subparsers(dest="command", required=True)
@@ -7790,6 +8638,104 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--bounds", default=None, help="reaction bounds JSON {reaction_id: [lo, hi]}")
     sv.add_argument("--out", required=True, help="산출 디렉터리")
     sv.set_defaults(func=_cmd_solve)
+    pair = sub.add_parser(
+        "pair",
+        help="controlled two-member monoculture vs co-culture analysis and medium matrix",
+    )
+    pair_source = pair.add_mutually_exclusive_group(required=True)
+    pair_source.add_argument("--taxonomy", default=None, help="two-member MICOM taxonomy csv")
+    pair_source.add_argument("--model-dir", default=None, help="directory containing two GEMs")
+    pair.add_argument("--recursive", action="store_true", help="scan --model-dir recursively")
+    pair.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP/QP solver")
+    pair.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f")
+    pair.add_argument("--medium", default=None, help="one medium csv/json")
+    pair.add_argument(
+        "--per-medium",
+        nargs="?",
+        const="",
+        default=None,
+        dest="per_medium",
+        metavar="PATHS",
+        help="matrix mode; optionally provide comma-separated medium paths",
+    )
+    pair.add_argument(
+        "--media", "--mediums", default=None, dest="media",
+        help="comma-separated medium paths for --per-medium matrix mode",
+    )
+    _add_exact_medium(pair)
+    _add_allow_unknown_medium(pair)
+    _add_namespace_gate_options(pair)
+    pair.add_argument("--allow-failed-run", action="store_true", dest="allow_failed_run")
+    pair.add_argument("--out", required=True, help="output run directory")
+    pair.set_defaults(func=_cmd_pair)
+
+    delta = sub.add_parser(
+        "delta", help="compare external profiles and growth from two completed run directories"
+    )
+    delta.add_argument(
+        "--baseline", "--baseline-run", required=True, dest="baseline",
+        help="baseline completed run directory",
+    )
+    delta.add_argument(
+        "--variant", "--variant-run", required=True, dest="variant",
+        help="variant completed run directory",
+    )
+    delta.add_argument("--threshold", type=float, default=1e-6)
+    delta.add_argument("--allow-failed-run", action="store_true", dest="allow_failed_run")
+    delta.add_argument("--out", required=True, help="output run directory")
+    delta.set_defaults(func=_cmd_delta)
+
+    single = sub.add_parser(
+        "single", help="single-model FBA/pFBA, optional FVA/reaction KO, and exchange summary"
+    )
+    single.add_argument("--model", required=True, help="SBML/JSON/MAT model path")
+    single.add_argument("--solver", default="gurobi", choices=["gurobi", "osqp"])
+    single.add_argument(
+        "--method", default="FBA", choices=["FBA", "pFBA", "fba", "pfba", "both"]
+    )
+    single.add_argument(
+        "--fba", action="store_const", const="FBA", dest="method",
+        help="shortcut for --method FBA",
+    )
+    single.add_argument(
+        "--pfba", action="store_const", const="pFBA", dest="method",
+        help="shortcut for --method pFBA",
+    )
+    single.add_argument("--fva", action="store_true", help="run reaction-level FVA")
+    single.add_argument(
+        "--fva-fraction", type=float, default=1.0, dest="fva_fraction",
+        help="fraction of optimum retained during FVA",
+    )
+    single.add_argument(
+        "--reaction-ko", "--reactions", default=None, dest="reaction_ko",
+        help="comma-separated reaction ids for single knockouts",
+    )
+    single.add_argument("--growth-threshold", type=float, default=1e-6, dest="growth_threshold")
+    single.add_argument("--medium", default=None, help="optional medium csv/json")
+    _add_exact_medium(single)
+    _add_allow_unknown_medium(single)
+    _add_namespace_gate_options(single)
+    single.add_argument("--allow-failed-run", action="store_true", dest="allow_failed_run")
+    single.add_argument("--out", required=True, help="output run directory")
+    single.set_defaults(func=_cmd_single)
+
+    minimal = sub.add_parser(
+        "minimal-medium", help="cardinality-minimal medium and limiting nutrients"
+    )
+    minimal.add_argument("--model", required=True, help="SBML/JSON/MAT model path")
+    minimal.add_argument("--solver", default="gurobi", choices=["gurobi"])
+    minimal.add_argument("--min-growth", required=True, type=float, dest="min_growth")
+    minimal.add_argument(
+        "--oxygen-mode", default="aerobic", choices=["aerobic", "anaerobic"],
+        dest="oxygen_mode",
+    )
+    minimal.add_argument("--medium", default=None, help="optional candidate medium csv/json")
+    _add_exact_medium(minimal)
+    _add_allow_unknown_medium(minimal)
+    _add_namespace_gate_options(minimal)
+    minimal.add_argument("--allow-failed-run", action="store_true", dest="allow_failed_run")
+    minimal.add_argument("--out", required=True, help="output run directory")
+    minimal.set_defaults(func=_cmd_minimal_medium)
     golden = sub.add_parser("golden", help="golden fixture 관리").add_subparsers(
         dest="golden_cmd", required=True
     )

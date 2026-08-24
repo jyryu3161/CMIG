@@ -36,7 +36,8 @@ def test_cross_feeding_edge_weight_is_min():
     assert len(cf) == 1
     e = cf[0]
     assert (e["source_id"], e["target_id"], e["metabolite"]) == ("A", "B", "ac")
-    assert e["weight"] == 5.0          # min(분비 8, 흡수 5)
+    # tidy 1.3: community basis — min(분비 8×0.5, 흡수 5×0.5) = min(4, 2.5)
+    assert e["weight"] == 2.5
     assert e["label"] == "secretion"
 
 
@@ -45,8 +46,9 @@ def test_member_pool_edges_present():
     edges = bundle.edges.to_pylist()
     sec = [e for e in edges if e["edge_type"] == "secretion"]
     upt = [e for e in edges if e["edge_type"] == "uptake"]
-    assert any(e["source_id"] == "A" and e["weight"] == 8.0 for e in sec)   # A→pool 분비 8
-    assert any(e["target_id"] == "B" and e["weight"] == 5.0 for e in upt)   # pool→B 흡수 5
+    # tidy 1.3: community basis — per-taxon flux × relative abundance (0.5 here)
+    assert any(e["source_id"] == "A" and e["weight"] == 4.0 for e in sec)   # A→pool 8×0.5
+    assert any(e["target_id"] == "B" and e["weight"] == 2.5 for e in upt)   # pool→B 5×0.5
 
 
 def test_no_cross_feeding_when_no_consumer():
@@ -80,11 +82,12 @@ def test_cross_feeding_many_to_many_conserves_mass():
         if row["edge_type"] == "cross_feeding"
     ]
     assert len(edges) == 4
-    assert sum(row["weight"] for row in edges) == pytest.approx(10.0)
+    # tidy 1.3: community supply is 2 donors × 5.0 × 0.25 = 2.5; allocation conserves it.
+    assert sum(row["weight"] for row in edges) == pytest.approx(2.5)
     for donor in ("S1", "S2"):
-        assert sum(row["weight"] for row in edges if row["source_id"] == donor) <= 5.0
+        assert sum(row["weight"] for row in edges if row["source_id"] == donor) <= 1.25
     for consumer in ("C1", "C2"):
-        assert sum(row["weight"] for row in edges if row["target_id"] == consumer) <= 5.0
+        assert sum(row["weight"] for row in edges if row["target_id"] == consumer) <= 1.25
 
 
 def test_cross_feeding_allocation_is_deterministic_and_handles_imbalance():

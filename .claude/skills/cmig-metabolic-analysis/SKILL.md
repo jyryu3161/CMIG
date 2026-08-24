@@ -135,6 +135,10 @@ in `references/workflows.md`; read it before assembling a non-trivial command.
 | Rank microbial combinations by host objective + target transfer | `cmig host-search-bigg` |
 | Build a candidate host↔microbe interface map for review         | `cmig host-map` |
 | Solve a MICOM taxonomy community directly                       | `cmig solve` |
+| Mono vs co-culture for exactly two members (medium-controlled)  | `cmig pair` (round 8; `--per-medium` for a media matrix) |
+| Compare two completed runs (baseline vs variant)                | `cmig delta` |
+| Single-model FBA/pFBA, FVA, reaction KO, exchange summary       | `cmig single` |
+| Find a cardinality-minimal medium + limiting nutrients          | `cmig minimal-medium` |
 | Run well-mixed single-model dynamic FBA                         | `uv run cmig dfba --close-untracked-uptake` |
 | Check a dFBA endpoint's numerical robustness                    | `uv run cmig dfba-sensitivity --close-untracked-uptake` |
 | Preview a 2D source/sink medium gradient (design only)          | `cmig spatial-preview` |
@@ -357,7 +361,7 @@ choice. Always decide them explicitly.
 | `abundance-impact` | `--fva` | separates a dose response from alternate-optima degeneracy |
 | `dfba`, `dfba-sensitivity` | `--close-untracked-uptake` | without it a substrate/Km experiment is not interpretable |
 | `solve`, `search`, `strain-growth`, `abundance-impact`, `gene-ko-search`, `sweep`, `host-microbe-bigg`, `host-search-bigg`, `host-ko-impact` | `--allow-unknown-medium` | drops unmatched nutrients with their ids recorded; the run continues as `degraded` |
-| same nine medium commands | `--exact-medium` | the file becomes the whole environment (boundary isolation first, then only named exchanges open); without it the file is a merge overlay. Hashed as `medium_application_mode` (schema 1.2) |
+| every medium-bearing command (the nine above plus round-8's `pair`, `single`, `minimal-medium`) | `--exact-medium` | the file becomes the whole environment (boundary isolation first, then only named exchanges open); without it the file is a merge overlay. Hashed as `medium_application_mode` (schema 1.2) |
 | `solve`, `sweep`, `publication-benchmark` | `--assume-bigg-namespace` | waives the namespace-decision review gate |
 | host commands | `--accept-unreviewed-map` | waives the D/L stereoisomer review gate |
 | host commands | `--keep-host-uptake` | leaves pre-existing host uptake open, so "host benefit" may be background medium |

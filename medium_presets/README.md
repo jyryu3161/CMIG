@@ -1,6 +1,9 @@
 # medium_presets
 
-형식: csv `exchange_id,uptake_limit` (`uptake_limit ≥ 0`, 단위 **mmol gDW⁻¹ h⁻¹**).
+CMIG medium CSV 의 필수 열은 `exchange_id,uptake_limit` (`uptake_limit ≥ 0`, 단위
+**mmol gDW⁻¹ h⁻¹**)이다. `gut_overlay_*.csv` 는 세 번째 열 `row_role` 을 추가한다.
+`row_role` 은 과학적 medium 성분인 `nutrient` 와 bundled-pool 전용 bookkeeping 행인
+`pool_closure` 를 구분한다. `MediumSpec` 은 앞의 두 필드만 읽으므로 세 번째 필드는 적용값을 바꾸지 않는다.
 `MediumSpec`(cmig.core.medium_spec)으로 로드해 `apply_medium(community, spec)` 로 적용한다.
 CMIG 는 medium 을 **대사체 기준**으로 매칭하므로 `EX_glc__D_m` 이 member model 의 `EX_glc__D_e` 에도
 적용된다 — 한 파일에 두 namespace 를 같이 넣으면 **exit 2 로 거부**된다.
@@ -26,8 +29,10 @@ gurobi):
 (1) `EX_o2_m = 0.001` 을 명시하고, (2) **background closure block**(pool 의 default medium 이 열어두는
 대사체를 `uptake_limit = 0` 으로 명시)을 포함한다. `0` 행은 merge 의미론에서 CSV 가 "환경이 이걸
 공급하지 않는다"를 표현하는 **유일한** 방법이다. 적용 후 "overlay 가 적지 않았는데 열려 있는 uptake"
-집합이 7개 overlay 모두 **빈 집합**임을 실측했다. 근본 해결(코드 쪽 `--exact-medium`)은
-[`PROVENANCE_gut_media.md`](PROVENANCE_gut_media.md) §9 에 남겼다.
+집합이 7개 overlay 모두 **빈 집합**임을 실측했다. 모든 closure 행은 세 번째 열에
+`row_role=pool_closure` 로 표시되고, 나머지는 `nutrient` 다. 기본 merge 경로에서는 파일을 그대로
+사용해야 한다. `--exact-medium` 또는 다른 model pool 용으로 closure 를 기계적으로 제거하는 방법은
+[`PROVENANCE_gut_media.md`](PROVENANCE_gut_media.md) §9 에 있다.
 
 ## Literature-grounded gut overlays (권장)
 
@@ -87,4 +92,5 @@ test(`tests/test_medium_spec.py`) 용도로만 유지한다. 감사 내역은 PR
 - 대응 exchange 반응이 아예 없는 대사체는 기본적으로 **오류**이고,
   `--allow-unknown-medium` 을 준 경우에만 무시되며 그 사실이 diagnostic/warnings 에 기록된다.
 - overlay 는 **이 5개 모델 pool 에 맞춰진 것**이다. 다른 pool 에서는 closure block 이 불완전할 수
-  있다 (PROVENANCE §9).
+  있다. 다른 pool 에서는 `row_role=pool_closure` 행을 제거한 파일을 `--exact-medium` 과 함께 쓰거나,
+  그 pool 자체의 default medium 에서 새 closure 를 생성해야 한다 (PROVENANCE §9).

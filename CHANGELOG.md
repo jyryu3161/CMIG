@@ -5,6 +5,55 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Changed (round 8) — BREAKING
+
+- **Tidy schema 1.3 / `edges.parquet.weight` basis.** `weight` is now the unsigned
+  relative-abundance-weighted **community** contribution (`mmol gDW_community^-1 h^-1`), not a
+  per-taxon rate; direct and allocated cross-feeding rows share the basis, and
+  `weight_lo`/`weight_hi` are direction-aware magnitude intervals in the same basis (cross-feeding
+  intervals stay null — pairwise transfers are not identifiable). This closes the long-standing
+  ranking-inversion known-open item (measured: an abundance-0.1 member out-ranked the true
+  supplier 8.44×; ranks now match community contribution and the signed direct-edge sum equals
+  `profile.net_flux`). **Do not multiply a ≥1.3 weight by abundance again.** A missing member
+  abundance now fails the tidy build (`MissingAbundanceError`) instead of assuming factor 1.0;
+  zero abundance stays a valid zero. Legacy ≤1.2 bundles are semantically migrated on read; a bare
+  legacy edge table yields nulls with `LegacyEdgeBasisWarning`. Solve goldens re-captured on
+  Gurobi and OSQP (answer digests moved; the frozen 11-component input `run_hash` did not). The
+  manifest's `edge_attribution` fields, figure captions, GUI contribution charts, and docs now
+  state the community basis, sourced from `cmig.core.tidy` constants.
+
+### Added (round 8)
+
+- **`cmig pair` / `cmig delta` / `cmig single` / `cmig minimal-medium`** — the previously
+  library-only baseline analyses as first-class workflows (run directories, additive workflow
+  kinds, `inspect-run`, exit 0/2/3, the shared `--medium`/`--exact-medium`/
+  `--allow-unknown-medium` contract, workflow-map entries). `growth_feasible`, single-model
+  KO/FVA/exchange, `minimal_medium_cardinality`, and `analyze_pair` now share one translated
+  medium pipeline; pair interaction deltas hold the effective metabolite-level offer fixed across
+  the community and each monoculture leg, so a mono-vs-co difference can no longer be a native-
+  medium artifact (the old mixed contract could report amensalism where the controlled comparison
+  shows neutralism). Missing co-culture growth is NaN, never a fabricated zero.
+- **Well-mixed community dFBA prototype** (`cmig.core.dfba_community.run_community_dfba`):
+  build-once MICOM community, per-member biomass + shared pools, MM uptake rebinding, adaptive
+  non-negative integration with structured events and `acceptance.interpretable` gating. A
+  1-member community reproduces the single-model integrator at machine precision (max
+  |Δbiomass| 2.2e-14 gDW/L through glucose depletion); producer/consumer cross-feeding dependence
+  validated against a stalled consumer-only control. Gurobi-only; death/washout explicitly not
+  modeled; new `community_dfba_timecourse` long-format kind with atomic Parquet publication.
+- **Real GUI sweep + profile overlays**: the Sweep tab drives the actual `cmig sweep` axes
+  (mediums, abundance variants, member sets, bounds variants, tradeoff-fs, solvers) with the
+  fixture sweep as an explicit smoke option; External Profile gains a Qt-native flux heatmap and
+  baseline/variant delta overlays fed by Compare/Sandbox results (missing values stay blank with a
+  note, never zero-filled).
+- **Gut-overlay `row_role` marker** (`nutrient`/`pool_closure`) on all seven generated overlays:
+  the bundled-pool closure block is now mechanically strippable for exact-medium/other-pool use
+  while all 717 exchange bounds and the safe default-merge behavior stay byte-identical
+  (`medium_checksum` unchanged for every file).
+- **Atomic publication everywhere**: matplotlib figure writers (shared TIFF path, interaction and
+  screening/spatial SVG/TIFF including failure banners), sweep/golden-fixture/tidy/matrix Parquet
+  writers, plus best-effort parent-directory fsync on POSIX after every atomic replace. Artifact
+  bytes unchanged (figure hashes equal the round-7 recorded values).
+
 ### Added (round 7)
 
 - **`--exact-medium` CLI mode** on all nine medium-bearing subcommands (`solve`, `search`,

@@ -150,6 +150,33 @@ _COMPONENT_FIXTURES: dict[str, Any] = {
         {"kind": "community_solve", "run_hash": "aaaa", "artifacts_dir": "community",
          "status": "ok"},
     ]),
+    "namespace_spec": {
+        "policy": "require_reviewed",
+        "decisions": ["golden:ac:model:ac->bigg:ac"],
+    },
+    "pair_spec": {
+        "per_medium": True,
+        "conditions": [
+            {"medium_id": "diet_a", "checksum": "sha256:aaaa"},
+            {"medium_id": "diet_b", "checksum": "sha256:bbbb"},
+        ],
+    },
+    "delta_spec": {
+        "baseline_run_hash": "sha256:aaaa",
+        "variant_run_hash": "sha256:bbbb",
+        "significance_threshold": 1e-6,
+    },
+    "single_spec": {
+        "methods": ["FBA", "pFBA"],
+        "fva": True,
+        "fva_fraction": 1.0,
+        "exchange_summary": True,
+    },
+    "minimal_medium_spec": {
+        "min_growth": 0.1,
+        "oxygen_mode": "aerobic",
+        "exclude_blocked": True,
+    },
 }
 
 #: Components whose fixture above is built by the shared builder that real runs use. Pinned as a

@@ -17,7 +17,25 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
-import pyarrow.parquet as pq
+
+from cmig.core.dfba_community import (
+    CommunityDfbaAcceptance as CommunityDfbaAcceptance,
+)
+from cmig.core.dfba_community import (
+    CommunityDfbaConfig as CommunityDfbaConfig,
+)
+from cmig.core.dfba_community import (
+    CommunityDfbaEvent as CommunityDfbaEvent,
+)
+from cmig.core.dfba_community import (
+    CommunityDfbaResult as CommunityDfbaResult,
+)
+from cmig.core.dfba_community import (
+    CommunityDfbaTimepoint as CommunityDfbaTimepoint,
+)
+from cmig.core.dfba_community import (
+    run_community_dfba as run_community_dfba,
+)
 
 TIMECOURSE_SCHEMA_VERSION = "1.0"
 
@@ -465,7 +483,7 @@ def build_timecourse(result: DfbaResult) -> pa.Table:
 
 
 def write_timecourse(table: pa.Table, path: str | Path) -> Path:
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(table, p)
-    return p
+    """Atomically publish a single-model timecourse Parquet file."""
+    from cmig.io.atomic import atomic_write_parquet
+
+    return atomic_write_parquet(path, table)

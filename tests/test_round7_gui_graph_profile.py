@@ -97,7 +97,8 @@ def test_open_run_feeds_first_class_graph_badge_and_both_profile_charts(tmp_path
         for item in window.profile_view.member_chart.rows[0]["contributions"]
     }
     assert contributions == {"A": 2.0, "B": -3.75}
-    assert "× recorded abundance" in window.profile_view.contribution_basis_label.text()
+    # Round 8 / tidy 1.3: the displayed basis is the community-weighted edge flux itself.
+    assert "community-weighted" in window.profile_view.contribution_basis_label.text()
 
 
 def test_member_contribution_bridge_excludes_allocated_cross_feeding():

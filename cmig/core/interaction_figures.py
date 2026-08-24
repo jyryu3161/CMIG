@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from cmig.core.sign import NOISE_FLOOR
+from cmig.io.atomic import atomic_write_path, atomic_write_text
 from cmig.render import figure_style as _figure_style
 
 FONT_STACK = _figure_style.FONT_STACK
@@ -18,6 +19,7 @@ SVG_HASHSALT = _figure_style.SVG_HASHSALT
 SVG_METADATA = _figure_style.SVG_METADATA
 _load_matplotlib = _figure_style.load_matplotlib_pyplot
 _polish_axes = _figure_style.polish_matplotlib_axes
+_save_figure_atomic = _figure_style.save_figure_atomic
 _save_publication_tiff = _figure_style.save_publication_tiff
 
 INTERACTION_EDGE_COLUMNS = (
@@ -261,7 +263,11 @@ def _stamp_failure_banner(svg_path: Path, banner: str) -> None:
             f'font-weight="700" fill="#ffffff">{_escape_svg_text(banner)}</text>'
             "</g>"
         )
-        svg_path.write_text(raw.replace("</svg>", overlay + "\n</svg>"), encoding="utf-8")
+        atomic_write_text(
+            svg_path,
+            raw.replace("</svg>", overlay + "\n</svg>"),
+            encoding="utf-8",
+        )
     if tiff_path.exists():
         _stamp_raster_banner(tiff_path, banner)
 
@@ -289,9 +295,14 @@ def _stamp_raster_banner(tiff_path: Path, banner: str) -> None:
     # font to the banner so the annotation is legible at the size the figure is actually viewed.
     font = _banner_font(int(height * 0.62))
     draw.text((height // 3, height // 5), banner, fill=(255, 255, 255), font=font)
-    frame.save(
-        tiff_path, format="tiff", compression="tiff_lzw",
-        dpi=info.get("dpi", (FIGURE_TIFF_DPI, FIGURE_TIFF_DPI)),
+    atomic_write_path(
+        tiff_path,
+        lambda temporary: frame.save(
+            temporary,
+            format="tiff",
+            compression="tiff_lzw",
+            dpi=info.get("dpi", (FIGURE_TIFF_DPI, FIGURE_TIFF_DPI)),
+        ),
     )
 
 
@@ -359,7 +370,7 @@ def _csv_cell(value: Any) -> Any:
 
 
 def _save_svg_and_tiff(fig: Any, path: Path) -> None:
-    fig.savefig(path, format="svg", metadata=SVG_METADATA)
+    _save_figure_atomic(fig, path, format="svg", metadata=SVG_METADATA)
     _save_publication_tiff(fig, path.with_suffix(".tiff"))
 
 
