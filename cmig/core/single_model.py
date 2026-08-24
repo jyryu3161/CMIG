@@ -61,11 +61,26 @@ def set_model_solver(model: Any, solver: str) -> None:
 
 
 def solve_single_model(
-    model: Any, *, method: str = "FBA", solver: str = "gurobi",
+    model: Any, *, method: str = "FBA", solver: str = "gurobi", medium: Any = None,
+    strict_medium: bool = True, exact_medium: bool = False,
 ) -> SingleModelResult:
-    """AN-SINGLE FBA/pFBA. method ∈ {FBA, pFBA}. LP 부재 → SingleModelUnavailableError."""
+    """AN-SINGLE FBA/pFBA, optionally under one translated medium contract.
+
+    A supplied medium is translated by metabolite onto this model's exchange namespace and
+    applied through :func:`cmig.core.medium_spec.apply_medium_translated`, exactly like the
+    product solve commands. The model context restores its bounds after the solve. ``exact_medium``
+    selects a defined medium; the default preserves the public merge semantics.
+    """
     if method not in ("FBA", "pFBA"):
         raise ValueError(f"미지원 method: {method} (FBA|pFBA)")
+    if medium is not None:
+        from cmig.core.medium_spec import apply_medium_translated
+
+        with model:
+            apply_medium_translated(
+                model, medium, strict=strict_medium, exact=exact_medium
+            )
+            return solve_single_model(model, method=method, solver=solver)
     _require_lp(solver)
     set_model_solver(model, solver)
     if method == "pFBA":
@@ -86,36 +101,61 @@ def solve_single_model(
 
 def single_reaction_knockout(
     model: Any, reaction_id: str, *, method: str = "FBA", solver: str = "gurobi",
+    medium: Any = None, strict_medium: bool = True, exact_medium: bool = False,
 ) -> SingleModelResult:
     """단일 반응 knockout 후 재solve (with model: 컨텍스트로 bound 자동 복원)."""
     with model:
         model.reactions.get_by_id(reaction_id).knock_out()
-        return solve_single_model(model, method=method, solver=solver)
+        return solve_single_model(
+            model, method=method, solver=solver, medium=medium,
+            strict_medium=strict_medium, exact_medium=exact_medium,
+        )
 
 
 def single_gene_knockout(
     model: Any, gene_id: str, *, method: str = "FBA", solver: str = "gurobi",
+    medium: Any = None, strict_medium: bool = True, exact_medium: bool = False,
 ) -> SingleModelResult:
     """단일 유전자 knockout 후 재solve (GPR 반영, bound 자동 복원)."""
     with model:
         model.genes.get_by_id(gene_id).knock_out()
-        return solve_single_model(model, method=method, solver=solver)
+        return solve_single_model(
+            model, method=method, solver=solver, medium=medium,
+            strict_medium=strict_medium, exact_medium=exact_medium,
+        )
 
 
 def single_model_fva(
     model: Any, *, fraction_of_optimum: float = 1.0, solver: str = "gurobi",
+    medium: Any = None, strict_medium: bool = True, exact_medium: bool = False,
 ) -> dict[str, Any]:
     """AN-SINGLE FVA — core.fva.flux_variability 위임(재구현 금지)."""
     from cmig.core.fva import flux_variability
+    if medium is not None:
+        from cmig.core.medium_spec import apply_medium_translated
+
+        with model:
+            apply_medium_translated(
+                model, medium, strict=strict_medium, exact=exact_medium
+            )
+            return flux_variability(
+                model, fraction_of_optimum=fraction_of_optimum, solver=solver
+            )
     return flux_variability(model, fraction_of_optimum=fraction_of_optimum, solver=solver)
 
 
-def exchange_summary(model: Any, *, solver: str = "gurobi") -> list[dict[str, Any]]:
+def exchange_summary(
+    model: Any, *, solver: str = "gurobi", medium: Any = None,
+    strict_medium: bool = True, exact_medium: bool = False,
+) -> list[dict[str, Any]]:
     """exchange reaction별 flux + 방향(sign 단일 진입점 classify). FBA 1회 후 추출.
 
     cobra exchange flux 부호 = CMIG 규약(+분비/−흡수). label=None(무흐름)은 inactive.
     """
-    res = solve_single_model(model, method="FBA", solver=solver)
+    res = solve_single_model(
+        model, method="FBA", solver=solver, medium=medium,
+        strict_medium=strict_medium, exact_medium=exact_medium,
+    )
     rows: list[dict[str, Any]] = []
     for rxn in model.exchanges:
         flux = res.fluxes.get(rxn.id, 0.0)
@@ -129,10 +169,14 @@ def exchange_summary(model: Any, *, solver: str = "gurobi") -> list[dict[str, An
 
 
 def growth_feasible(
-    model: Any, *, threshold: float = 1e-6, solver: str = "gurobi",
+    model: Any, *, threshold: float = 1e-6, solver: str = "gurobi", medium: Any = None,
+    strict_medium: bool = True, exact_medium: bool = False,
 ) -> bool:
-    """성장 가능 여부 — FBA status=optimal ∧ objective > threshold."""
-    res = solve_single_model(model, method="FBA", solver=solver)
+    """Growth feasibility under the same translated medium contract as every other entry point."""
+    res = solve_single_model(
+        model, method="FBA", solver=solver, medium=medium,
+        strict_medium=strict_medium, exact_medium=exact_medium,
+    )
     return res.status == "optimal" and res.objective > threshold
 
 

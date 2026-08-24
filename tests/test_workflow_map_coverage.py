@@ -50,3 +50,16 @@ def test_round7_user_facing_commands_are_mapped_exactly_once():
     ]
 
     assert all(mapped.count(command) == 1 for command in required)
+
+
+def test_round8_pair_delta_single_commands_are_mapped_with_medium_controls():
+    required = {"pair", "delta", "single", "minimal-medium"}
+    by_command = {
+        entry["cli_command"].removeprefix("cmig ").split()[0]: entry
+        for entry in GUI_CLI_WORKFLOWS
+    }
+
+    assert required <= set(by_command)
+    for command in ("pair", "single", "minimal-medium"):
+        options = set(by_command[command]["common_options"])
+        assert {"--medium", "--exact-medium", "--allow-unknown-medium"} <= options
