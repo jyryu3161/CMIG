@@ -95,6 +95,11 @@ def _specs() -> dict[str, dict[str, float]]:
     return {name: load_medium(PRESETS / name).uptake for name in GUT_OVERLAYS}
 
 
+def _overlay_rows(name: str) -> list[dict[str, str]]:
+    with open(PRESETS / name, newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
 # ── Structure ─────────────────────────────────────────────────────────────────────────────────
 
 def test_every_declared_overlay_is_shipped_and_parses():
@@ -210,6 +215,118 @@ def test_closure_rows_are_exactly_zero():
     offenders = [(r["preset"], r["exchange_id"], r["uptake_limit"]) for r in rows
                  if float(r["uptake_limit"]) != 0.0]
     assert not offenders, f"background_closure rows must be 0.0: {offenders}"
+
+
+def test_pool_closure_marker_completely_identifies_the_block(pool):
+    """``row_role=pool_closure`` must identify all and only bundled-pool bookkeeping rows."""
+    from scripts.build_gut_media import (
+        NUTRIENT_ROW_ROLE,
+        POOL_CLOSURE_ROW_ROLE,
+        ROW_ROLES,
+    )
+
+    with open(PRESETS / "provenance_rows.csv", newline="") as handle:
+        provenance = list(csv.DictReader(handle))
+
+    for name in GUT_OVERLAYS:
+        rows = _overlay_rows(name)
+        roles = {row["row_role"] for row in rows}
+        assert roles == ROW_ROLES, f"{name}: expected both row roles, found {sorted(roles)}"
+
+        nutrient_metabolites = {
+            exchange_metabolite(row["exchange_id"])
+            for row in rows
+            if row["row_role"] == NUTRIENT_ROW_ROLE
+        }
+        marked = {
+            exchange_metabolite(row["exchange_id"])
+            for row in rows
+            if row["row_role"] == POOL_CLOSURE_ROW_ROLE
+        }
+        expected = {
+            met
+            for met in pool.background
+            if met in pool.exchanges and met not in nutrient_metabolites
+        }
+        assert marked == expected, (
+            f"{name}: pool_closure marker mismatch "
+            f"(missing {sorted(expected - marked)}, extra {sorted(marked - expected)})"
+        )
+
+        origins = {
+            row["exchange_id"]: row["origin"]
+            for row in provenance
+            if row["preset"] == name
+        }
+        for row in rows:
+            expected_role = (
+                POOL_CLOSURE_ROW_ROLE
+                if origins[row["exchange_id"]] == "background_closure"
+                else NUTRIENT_ROW_ROLE
+            )
+            assert row["row_role"] == expected_role, (
+                f"{name}/{row['exchange_id']}: marker {row['row_role']!r} disagrees with "
+                f"origin {origins[row['exchange_id']]!r}"
+            )
+
+
+def test_stripping_pool_closure_yields_a_nutrient_only_medium(tmp_path):
+    """Filtering the marker produces a valid exact-mode CSV with every scientific row intact."""
+    from scripts.build_gut_media import NUTRIENT_ROW_ROLE, POOL_CLOSURE_ROW_ROLE
+
+    for name in GUT_OVERLAYS:
+        rows = _overlay_rows(name)
+        nutrient_rows = [row for row in rows if row["row_role"] == NUTRIENT_ROW_ROLE]
+        closure_ids = {
+            row["exchange_id"]
+            for row in rows
+            if row["row_role"] == POOL_CLOSURE_ROW_ROLE
+        }
+        stripped = tmp_path / name
+        with open(stripped, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["exchange_id", "uptake_limit"])
+            writer.writeheader()
+            writer.writerows(
+                {"exchange_id": row["exchange_id"], "uptake_limit": row["uptake_limit"]}
+                for row in nutrient_rows
+            )
+
+        uptake = load_medium(stripped).uptake
+        expected = {row["exchange_id"]: float(row["uptake_limit"]) for row in nutrient_rows}
+        assert uptake == expected, f"{name}: stripping closure changed a nutrient value"
+        assert set(uptake).isdisjoint(closure_ids), f"{name}: a pool_closure row survived filtering"
+
+
+def test_builder_check_catches_a_hand_edited_closure_row(
+    tmp_path, monkeypatch, capsys, pool
+):
+    """The staleness gate must reject edits inside the newly marked closure section."""
+    import scripts.build_gut_media as builder
+
+    monkeypatch.setattr(builder, "PRESETS", tmp_path)
+    monkeypatch.setattr(builder, "PROVENANCE_ROWS", tmp_path / "provenance_rows.csv")
+    monkeypatch.setattr(builder, "load_pool", lambda: pool)
+    overlays = builder.build_all(pool)
+    for overlay in overlays:
+        (tmp_path / overlay.filename).write_text(builder.render(overlay))
+    builder.PROVENANCE_ROWS.write_text(builder.render_provenance(overlays))
+
+    path = tmp_path / GUT_OVERLAYS[0]
+    with open(path, newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    assert fieldnames is not None
+    closure = next(row for row in rows if row["row_role"] == builder.POOL_CLOSURE_ROW_ROLE)
+    closure["uptake_limit"] = "1.0"
+    with open(path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    assert builder.main(["--check"]) == 1
+    captured = capsys.readouterr()
+    assert GUT_OVERLAYS[0] in captured.err
 
 
 # ── Units ─────────────────────────────────────────────────────────────────────────────────────

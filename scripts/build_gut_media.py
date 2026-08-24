@@ -26,6 +26,9 @@ Two consequences, both handled here:
   default medium leaves open, and that the diet does not name, is emitted with
   ``uptake_limit = 0.0``. A zero row is how a CSV expresses "the environment does not supply this"
   under merge semantics — verified: it drives the community exchange to ``lower_bound = -0.0``.
+  The CSV's ``row_role`` column marks these pool-specific rows as ``pool_closure``; all scientific
+  medium components are ``nutrient`` so exact-mode or different-pool users can strip the closure
+  rows mechanically without changing the merge-mode file.
 
 The word "overlay" is in every filename so the semantics cannot be mistaken for exact-medium
 semantics. See ``medium_presets/PROVENANCE_gut_media.md``.
@@ -292,6 +295,10 @@ ORIGINS = frozenset(
     }
 )
 
+NUTRIENT_ROW_ROLE = "nutrient"
+POOL_CLOSURE_ROW_ROLE = "pool_closure"
+ROW_ROLES = frozenset({NUTRIENT_ROW_ROLE, POOL_CLOSURE_ROW_ROLE})
+
 
 @dataclass(frozen=True)
 class Row:
@@ -302,6 +309,13 @@ class Row:
     origin: str
     raw: float | None = None       # pre-conversion / pre-dilution source value
     factor: float | None = None    # f_colon (VMH) or MICOM dilution (AGORA)
+
+    @property
+    def row_role(self) -> str:
+        """Portable medium component vs bundled-pool merge bookkeeping."""
+        if self.origin == "background_closure":
+            return POOL_CLOSURE_ROW_ROLE
+        return NUTRIENT_ROW_ROLE
 
 
 @dataclass(frozen=True)
@@ -472,9 +486,10 @@ def build_all(pool: Pool) -> list[Overlay]:
 
 
 def render(overlay: Overlay) -> str:
-    lines = ["exchange_id,uptake_limit"]
+    """Render a loader-compatible overlay with an explicit, removable closure marker."""
+    lines = ["exchange_id,uptake_limit,row_role"]
     for row in overlay.rows:
-        lines.append(f"EX_{row.bigg}_m,{row.limit!r}")
+        lines.append(f"EX_{row.bigg}_m,{row.limit!r},{row.row_role}")
     return "\n".join(lines) + "\n"
 
 
@@ -485,16 +500,16 @@ def render_provenance(overlays: Iterable[Overlay]) -> str:
     """Row-level provenance for every shipped overlay, as a tracked CSV.
 
     One row per (overlay, exchange): where the number came from, the pre-conversion source value and
-    the factor applied. This is the audit trail for the CSV overlays, which by format can only carry
-    ``exchange_id,uptake_limit``.
+    the factor applied. ``row_role`` is repeated here so the role/origin invariant can be audited
+    without joining against the overlay files.
     """
-    lines = ["preset,exchange_id,uptake_limit,origin,source_value,factor,scale"]
+    lines = ["preset,exchange_id,uptake_limit,row_role,origin,source_value,factor,scale"]
     for overlay in overlays:
         for row in overlay.rows:
             raw = "" if row.raw is None else repr(row.raw)
             factor = "" if row.factor is None else repr(row.factor)
             lines.append(
-                f"{overlay.filename},EX_{row.bigg}_m,{row.limit!r},{row.origin},"
+                f"{overlay.filename},EX_{row.bigg}_m,{row.limit!r},{row.row_role},{row.origin},"
                 f"{raw},{factor},{overlay.scale!r}"
             )
     return "\n".join(lines) + "\n"
