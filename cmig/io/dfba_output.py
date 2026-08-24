@@ -8,7 +8,24 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
+
 from cmig.core.dfba import DfbaSensitivityResult
+from cmig.core.dfba_community import CommunityDfbaResult
+from cmig.io.atomic import atomic_write_parquet
+
+COMMUNITY_DFBA_TIMECOURSE_KIND = "community_dfba_timecourse"
+COMMUNITY_DFBA_TIMECOURSE_SCHEMA_VERSION = "1.0"
+
+COMMUNITY_DFBA_TIMECOURSE_SCHEMA = pa.schema([
+    ("schema_version", pa.string()),
+    ("kind", pa.string()),
+    ("t", pa.float64()),
+    ("entity_type", pa.string()),
+    ("member", pa.string()),
+    ("series", pa.string()),
+    ("value", pa.float64()),
+])
 
 DFBA_SENSITIVITY_COLUMNS = (
     "dt",
@@ -25,6 +42,56 @@ DFBA_SENSITIVITY_COLUMNS = (
     "untracked_uptake",
     "warnings",
 )
+
+
+def community_timecourse_rows(result: CommunityDfbaResult) -> list[dict[str, Any]]:
+    """Return a long-format timecourse with explicit member and shared-pool entities."""
+    rows: list[dict[str, Any]] = []
+    for point in result.timecourse:
+        for member in result.members:
+            rows.append({
+                "t": point.t,
+                "entity_type": "member",
+                "member": member,
+                "series": "biomass",
+                "value": point.member_biomasses[member],
+            })
+            rows.append({
+                "t": point.t,
+                "entity_type": "member",
+                "member": member,
+                "series": "growth_rate",
+                "value": point.member_growth_rates[member],
+            })
+        for exchange_id in result.managed_exchanges:
+            rows.append({
+                "t": point.t,
+                "entity_type": "shared_pool",
+                "member": None,
+                "series": exchange_id,
+                "value": point.concentrations[exchange_id],
+            })
+    return rows
+
+
+def build_community_timecourse(result: CommunityDfbaResult) -> pa.Table:
+    """Build the distinct, self-identifying community dFBA timecourse table."""
+    return pa.Table.from_pylist(
+        [
+            {
+                "schema_version": COMMUNITY_DFBA_TIMECOURSE_SCHEMA_VERSION,
+                "kind": COMMUNITY_DFBA_TIMECOURSE_KIND,
+                **row,
+            }
+            for row in community_timecourse_rows(result)
+        ],
+        schema=COMMUNITY_DFBA_TIMECOURSE_SCHEMA,
+    )
+
+
+def write_community_timecourse(result: CommunityDfbaResult, path: str | Path) -> Path:
+    """Atomically publish a community dFBA timecourse as Parquet."""
+    return atomic_write_parquet(path, build_community_timecourse(result))
 
 
 def sensitivity_acceptance(result: DfbaSensitivityResult) -> dict[str, Any]:
