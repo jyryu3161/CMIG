@@ -26,8 +26,8 @@
   "golden_decimals": 6,
   "run_hash": "29844e29103603324d118cc9a8b9ae4fa2a79070418860cfc2ed70095cef29ab",
   "tidy_hashes": {
-    "edges": "c83d82b66ef042267eb2a423a11be4bf3687d9560fa652fe7150b8e7a9e44f8f",
-    "nodes": "e2bfbd7d0700e7dccd329a4e95ddf27841caa4a8c7578bbf8e340cbdbbfed21f",
-    "profile": "d1abfc4e0d7633daee7b6477603cc9ec0995c76be45e17dfb236d5f00f7f127b"
+    "edges": "c2f32999478b9e481a5277ec33224cc0d51fb562dbe612e6bed408f9007226b5",
+    "nodes": "84be46a82ce9504ad9990894d583855db8da40ea7fa1ec605993775c35453dd0",
+    "profile": "3862d140dba3630d3b35aa1019049ea5273148e95a4507d4a3ba39b1f8fa3a2a"
   }
 }
