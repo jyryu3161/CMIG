@@ -9,6 +9,17 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from cmig.core.sign import NOISE_FLOOR
+from cmig.render import figure_style as _figure_style
+
+FONT_STACK = _figure_style.FONT_STACK
+FIGURE_TIFF_DPI = _figure_style.FIGURE_TIFF_DPI
+SVG_HASHSALT = _figure_style.SVG_HASHSALT
+SVG_METADATA = _figure_style.SVG_METADATA
+_load_matplotlib = _figure_style.load_matplotlib_pyplot
+_polish_axes = _figure_style.polish_matplotlib_axes
+_save_publication_tiff = _figure_style.save_publication_tiff
+
 INTERACTION_EDGE_COLUMNS = (
     "source",
     "target",
@@ -44,22 +55,11 @@ EDGE_LABELS = {
     "cross_feeding": "microbiome -> host (inferred transfer)",
 }
 BAR_COLORS = ("#0072B2", "#009E73", "#CC79A7", "#D55E00", "#000000")
-FONT_STACK = ("Arial", "Helvetica", "DejaVu Sans")
-FIGURE_TIFF_DPI = 600
 
-# F13: `sign.NOISE_FLOOR` declares itself the single classification threshold ("no independent
-# hard-coding, no drift"). These figures had drifted to their own looser literal in six
-# places, so a flux the rest of the product calls numerical noise could still be drawn as an
-# edge. Import the constant instead of restating it.
-from cmig.core.sign import NOISE_FLOOR  # noqa: E402
+# F13: ``sign.NOISE_FLOOR`` is the single classification threshold ("no independent
+# hard-coding, no drift"). A flux the rest of the product calls numerical noise must not
+# still be drawn as an edge, so the constant is imported above rather than restated.
 
-# Byte-reproducibility of figure artifacts (round 5: codex F5 / opus F14). matplotlib stamps the
-# wall-clock time into <dc:date> and derives generated element ids (clip paths, glyph defs) from a
-# random salt, so two runs with an identical run_hash emitted different SVG bytes — a deliverable
-# advertised as reproducible that was not checksummable. A fixed salt makes the ids deterministic
-# and `metadata={"Date": None}` drops the timestamp. TIFF/PNG were already stable.
-SVG_HASHSALT = "cmig-svg-v1"
-SVG_METADATA: dict[str, None] = {"Date": None}
 UNIT_FLUX = "mmol gDW$^{-1}$ h$^{-1}$"
 
 
@@ -358,53 +358,9 @@ def _csv_cell(value: Any) -> Any:
     return "" if value is None else value
 
 
-def _load_matplotlib() -> Any:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    plt.rcParams.update({
-        "font.family": "sans-serif",
-        "font.sans-serif": list(FONT_STACK),
-        "axes.titlesize": 14,
-        "axes.labelsize": 11,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        "svg.fonttype": "none",
-        # Byte-reproducibility: matplotlib stamps <dc:date> and randomizes generated element ids
-        # (clip paths, glyph defs) into every SVG, so two runs with the same run_hash produced
-        # different artifact bytes. A fixed hash salt makes the generated ids deterministic; the
-        # date is suppressed per-savefig with metadata={"Date": None}.
-        "svg.hashsalt": SVG_HASHSALT,
-    })
-    return plt
-
-
 def _save_svg_and_tiff(fig: Any, path: Path) -> None:
     fig.savefig(path, format="svg", metadata=SVG_METADATA)
     _save_publication_tiff(fig, path.with_suffix(".tiff"))
-
-
-def _save_publication_tiff(fig: Any, path: Path, *, dpi: int = FIGURE_TIFF_DPI) -> None:
-    """600 dpi, RGB, LZW. matplotlib's default RGBA/raw TIFF is a submission-portal reject."""
-    fig.savefig(
-        path, format="tiff", dpi=dpi, facecolor="white",
-        pil_kwargs={"compression": "tiff_lzw"},
-    )
-    try:
-        from PIL import Image
-    except ImportError:  # pragma: no cover - PIL ships with matplotlib
-        return
-    with Image.open(path) as image:
-        if image.mode == "RGB":
-            return
-        flattened = Image.new("RGB", image.size, (255, 255, 255))
-        flattened.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
-        info = dict(image.info)
-    flattened.save(
-        path, format="tiff", compression="tiff_lzw", dpi=info.get("dpi", (dpi, dpi))
-    )
 
 
 def _edge_legend(ax: Any, rows: list[dict[str, str]], *, extra: list[Any] | None = None) -> None:
@@ -424,13 +380,6 @@ def _edge_legend(ax: Any, rows: list[dict[str, str]], *, extra: list[Any] | None
         handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1.0),
         frameon=False, fontsize=9, handlelength=1.8, borderaxespad=0.0,
     )
-
-
-def _polish_axes(ax: Any, *, grid_axis: str = "x") -> None:
-    ax.grid(True, axis=grid_axis, color="#d9dee3", linewidth=0.7, alpha=0.8)
-    ax.set_axisbelow(True)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
 
 
 def _filtered_edges(rows: list[dict[str, str]], *, top_n: int) -> list[dict[str, str]]:
@@ -607,7 +556,9 @@ def _render_contribution(rows: list[dict[str, str]], path: Path, *, top_n: int) 
     ax.barh(labels[::-1], values[::-1], color=colors, edgecolor="white", linewidth=0.8, height=0.55)
     ax.set_xlabel(f"Transfer flux ({UNIT_FLUX})")
     ax.set_title("Member contribution to host transfer")
-    _polish_axes(ax, grid_axis="x")
+    # Preserve the interaction figure's established opacity while sharing the
+    # rest of the axes policy with all matplotlib writers.
+    _polish_axes(ax, grid_axis="x", grid_alpha=0.8)
     fig.tight_layout()
     _save_svg_and_tiff(fig, path)
     plt.close(fig)
