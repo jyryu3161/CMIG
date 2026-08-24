@@ -18,9 +18,9 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from cmig.core.diagnostics import Diagnostic
+from cmig.io.atomic import atomic_write_parquet
 
 # AggregationStore sweep.parquet 스키마 버전 (schema §6.1 첫 컬럼·OD-46, tidy 와 독립).
 SWEEP_SCHEMA_VERSION = "1.0"
@@ -217,6 +217,4 @@ def write_sweep_parquet(rows: list[SweepRow], path: str | Path) -> None:
         },
         schema=SWEEP_SCHEMA,
     )
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(table, p)
+    atomic_write_parquet(path, table)
