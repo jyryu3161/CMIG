@@ -49,6 +49,10 @@ Coordinator cross-cutting commits (`24d2120` and the pair-fixture recapture):
 5. CHANGELOG round-8 entries (BREAKING tidy 1.3 + five Added); README baseline-
    analyses section, row_role/atomic/community-dFBA notes; SKILL.md routing
    rows and flag rosters.
+6. The full randomized suite then caught two further stale assertions: the
+   composer caption pin (still expecting "per-taxon") and the GUI argv census
+   (U5's real Sweep tab is a legitimate third `--allow-unknown-medium` site).
+   Both updated; suite re-run green on a fresh seed.
 
 ## Final gates on `round8/integration`
 
