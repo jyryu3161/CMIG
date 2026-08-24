@@ -10,8 +10,8 @@ python -m scripts.build_gut_media --check    # CI/test: fail if a shipped file i
 python -m scripts.build_gut_media --report   # per-model coverage + fibre coverage
 ```
 
-Row-level provenance for all 717 shipped rows — origin, pre-conversion value, factor, scale — is in
-`medium_presets/provenance_rows.csv`.
+Row-level provenance for all 717 shipped rows — role, origin, pre-conversion value, factor, scale —
+is in `medium_presets/provenance_rows.csv`.
 
 ---
 
@@ -57,6 +57,17 @@ So every shipped overlay carries:
 1. an explicit **`EX_o2_m` row at MICOM's published 0.001** (§6), and
 2. a **background closure block**: every metabolite in the union of the five bundled models' default
    media (37 metabolites) that the diet does not name, emitted at `0.0`.
+
+The block is explicit in the third CSV column, `row_role`:
+
+* `nutrient` marks every scientific medium component — source-derived dietary and inorganic rows,
+  the explicit anaerobic O₂ term, and the separately disclosed `ni2` assumption;
+* `pool_closure` marks only the zero-valued bookkeeping rows generated from the default media of
+  the bundled pool `iAF987 + iHN637 + iML1515 + iSFV_1184 + iYO844`.
+
+`cmig.core.medium_spec.load_medium` requires `exchange_id` and `uptake_limit` and ignores additional
+CSV columns, so the marker does not change application semantics. The complete shipped file remains
+the safe input for the default merge path. Exact-mode and different-pool handling is in §9.
 
 Measured result — for all seven overlays, the set of uptakes still open after applying the overlay
 that the overlay does **not** name is **empty**:
@@ -317,15 +328,16 @@ fixable from a medium file.
 
 | overlay | rows | source of the numbers |
 |---|---|---|
-| `gut_overlay_agora_western.csv` | 133 | S-AGORA Table 12 Western × S4 dilution, + O₂ + `ni2` + closure |
-| `gut_overlay_agora_high_fiber.csv` | 133 | S-AGORA Table 12 high fibre × S4 dilution, + O₂ + `ni2` + closure |
-| `gut_overlay_vmh_high_fat_low_carb.csv` (+ `_x100`) | 80 | VMH "High fat, low carb" via §3.2, + inorganic block + O₂ + `ni2` + closure |
-| `gut_overlay_vmh_high_fiber.csv` (+ `_x100`) | 80 | VMH "High fiber" via §3.2, same |
-| `gut_overlay_micom_western.csv` | 131 | **S5 verbatim** (122 of its 126 rows reach the pool) + O₂ + closure. Keeps S5's `EX_no2_m,0.1`. |
+| `gut_overlay_agora_western.csv` | 133 (124 nutrient + 9 closure) | S-AGORA Table 12 Western × S4 dilution, + O₂ + `ni2` + closure |
+| `gut_overlay_agora_high_fiber.csv` | 133 (124 nutrient + 9 closure) | S-AGORA Table 12 high fibre × S4 dilution, + O₂ + `ni2` + closure |
+| `gut_overlay_vmh_high_fat_low_carb.csv` (+ `_x100`) | 80 (68 nutrient + 12 closure) | VMH "High fat, low carb" via §3.2, + inorganic block + O₂ + `ni2` + closure |
+| `gut_overlay_vmh_high_fiber.csv` (+ `_x100`) | 80 (68 nutrient + 12 closure) | VMH "High fiber" via §3.2, same |
+| `gut_overlay_micom_western.csv` | 131 (118 nutrient + 13 closure) | **S5 verbatim** (122 of its 126 rows reach the pool) + O₂ + closure. Keeps S5's `EX_no2_m,0.1`. |
 
-Origins are machine-readable in `provenance_rows.csv`: `agora_table12`, `vmh_diet`, `micom_western`,
-`micom_western_inorganic`, `micom_anaerobic_o2`, `assumption_trace_micronutrient`,
-`background_closure`.
+Roles and origins are machine-readable in both the overlays and `provenance_rows.csv`. Origins are
+`agora_table12`, `vmh_diet`, `micom_western`, `micom_western_inorganic`,
+`micom_anaerobic_o2`, `assumption_trace_micronutrient`, `background_closure`; the last origin is the
+only one whose `row_role` is `pool_closure`.
 
 ### The oxygen term
 
@@ -472,21 +484,22 @@ also why `f_colon` (§3.2) exists at all; it is applied here, from S3.
 
 ---
 
-## 9. Exact-medium status (implemented in round 7; closure rows retained)
+## 9. Exact-medium status and mechanically removing the pool closure
 
 **A CSV cannot express exact-medium semantics in general — only for a known model pool.**
 
-`apply_medium_checked` → `apply_medium_translated(..., exact=False)` merges. The closure block above
-works, but it can only zero metabolites that *these five* models leave open. Consequences:
+`apply_medium_checked` → `apply_medium_translated(..., exact=False)` merges by default. The closure
+block above works, but it can only zero metabolites that *these five* models leave open.
+Consequences:
 
 1. **Pool-dependence.** With a different model pool, any metabolite that pool leaves open and this
    pool does not will silently re-open — including oxygen, if a model exposes `EX_o2_e` with a
    different default. The overlay's guarantee is not portable.
-2. **Bookkeeping rows.** 9–14 rows of every shipped overlay exist only to close a default.
+2. **Bookkeeping rows.** 9–13 rows of every shipped overlay exist only to close a default.
 3. **`medium_checksum` hashes them**, so two runs that differ only in which pool-specific zeros were
    needed get different `run_hash` values for the same scientific medium.
 
-Round-7 implementation:
+Round-7 added:
 
 * an `--exact-medium` flag on the subcommands that accept `--medium`, routing to
   `apply_medium_translated(..., exact=True)` — which **already exists** and is already used by
@@ -501,11 +514,30 @@ Round-7 implementation:
 * without `--exact-medium`, **CMIG still applies `--medium` as an overlay**. The filenames and the
   default-path documentation therefore remain accurate; exact replacement is opt-in.
 
-The seven pool-specific closure blocks were **not removed**. The deterministic builder currently
-emits them in `_append_environment`, not from a data table, and its regression tests require them to
-keep the default merge path safe. Deleting only the CSV rows makes `scripts/build_gut_media.py
---check` fail; suppressing them would require a generator-logic change beyond round 7 T1's permitted
-"data tables only" edit. Exact-mode users do not need the zeros, but merge-mode users still do.
+Round-8 makes the distinction mechanical without weakening the default path. Every shipped overlay
+has the schema `exchange_id,uptake_limit,row_role`; `row_role=pool_closure` identifies all and only
+the bundled-pool zero rows. To make a two-column exact-mode file from an overlay:
+
+```bash
+awk -F, 'BEGIN { OFS="," } NR == 1 { print $1, $2; next } $3 == "nutrient" { print $1, $2 }' \
+  medium_presets/gut_overlay_agora_western.csv > /tmp/gut_exact.csv
+```
+
+The result contains the 124 `nutrient` rows from the 133-row AGORA Western overlay and no closure
+row. It retains O₂, sourced inorganic rows, and the disclosed nickel assumption; here `nutrient`
+means “a scientific medium component rather than pool bookkeeping,” while `origin` in
+`provenance_rows.csv` gives the finer source classification. The same filter yields 124, 68, or 118
+rows for the AGORA, VMH, or MICOM families respectively.
+
+Use the filtered file with `--exact-medium`: exact replacement already closes every unspecified
+exchange, so the bundled-pool zeros are redundant. The same advice applies to a different model
+pool **only with exact mode**. Do not strip `pool_closure` and then use the default merge path; that
+would restore the inherited-medium leak. A merge-mode user with a different pool must generate a
+new closure block from that pool's own default media.
+
+The unfiltered shipped files remain canonical and `scripts/build_gut_media.py --check` verifies the
+marker as well as every value. `MediumSpec` ignores `row_role`, so adding the annotation leaves the
+default merge mapping and its medium checksum unchanged.
 
 ---
 
@@ -527,8 +559,8 @@ keep the default merge path safe. Deleting only the CSV rows makes `scripts/buil
 8. **`_x100`** is an engineering factor, not physiology.
 9. **The dropped fibre** makes "high fibre" a misleading label for what this pool can metabolise
    (§6) — 1/24 fibre entries reachable, and the fibre that does reach it is raffinose alone.
-10. **The background closure is pool-specific** (§9) and is a workaround for missing exact-medium
-    semantics, not a substitute for them.
+10. **The background closure is pool-specific** (§9) and remains necessary for the default merge
+    semantics; exact-mode users should strip its marked rows.
 11. **The model pool is not a gut community** (§6).
 12. **Uptake bounds are upper limits, not supplies.** FBA says "no more than this"; it does not force
     consumption, and every overlay is a well-mixed steady-state abstraction with no proximal/distal
