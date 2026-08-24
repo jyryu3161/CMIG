@@ -348,7 +348,7 @@ choice. Always decide them explicitly.
 | `strain-growth` | `--single-medium` | `model_default` reports native capability, **not** an interaction effect |
 | `abundance-impact` | `--fva` | separates a dose response from alternate-optima degeneracy |
 | `dfba`, `dfba-sensitivity` | `--close-untracked-uptake` | without it a substrate/Km experiment is not interpretable |
-| `solve`, `search`, `strain-growth`, `abundance-impact`, `sweep` | `--allow-unknown-medium` | silently drops nutrients; run exits 0 as `degraded` |
+| `solve`, `search`, `strain-growth`, `abundance-impact`, `gene-ko-search`, `sweep`, `host-microbe-bigg`, `host-search-bigg`, `host-ko-impact` | `--allow-unknown-medium` | drops unmatched nutrients with their ids recorded; the run continues as `degraded` |
 | `solve`, `sweep`, `publication-benchmark` | `--assume-bigg-namespace` | waives the namespace-decision review gate |
 | host commands | `--accept-unreviewed-map` | waives the D/L stereoisomer review gate |
 | host commands | `--keep-host-uptake` | leaves pre-existing host uptake open, so "host benefit" may be background medium |
@@ -367,8 +367,12 @@ Round-5 hardening made this a contract. Do not read artifacts without checking
 | `3` | artifacts were written but **the scientific solve did not succeed**, or `inspect-run` found `artifact_integrity: mismatch` |
 
 `--allow-failed-run` exists for pipelines that want the artifacts anyway; it
-turns a 3 into a 0 and **does not make the run a result**. Every analysis command
-has it, including `sweep`. If you pass it, say so and quote the failure.
+turns a 3 into a 0 and **does not make the run a result**. It exists on `solve`,
+`search`, `strain-growth`, `abundance-impact`, `gene-ko-search`, `sweep`,
+`dfba-sensitivity`, `host-microbe-bigg`, `host-search-bigg`, and
+`host-ko-impact`; it is rejected by `dfba`, `model-quality`,
+`publication-benchmark`, `spatial-preview`, and `model-review`. If you pass it,
+say so and quote the failure.
 
 ## Verifying a result: two fingerprints, not one
 

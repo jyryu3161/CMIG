@@ -490,7 +490,7 @@ Smallest sufficient change:
 
 * an `--exact-medium` flag on the subcommands that accept `--medium`, routing to
   `apply_medium_translated(..., exact=True)` — which **already exists** and is already used by
-  `strain-growth`'s community-offer path (`cmig/cli/main.py:2587`). No new semantics to design.
+  `strain-growth`'s community-offer path (`_cmd_strain_growth`). No new semantics to design.
 * the manifest must record which mode was used, because the two give different answers on identical
   input — exactly the class of defect round 5 closed for `MEDIUM_POLICY`. A
   `medium_application_mode` field alongside `medium_checksum` would do it.
