@@ -9,6 +9,7 @@ exchange/biomass 탐지 + reaction/metabolite/gene 카운트 → Model Manager �
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -169,7 +170,7 @@ def _looks_like_boundary(reaction: object) -> bool:
 
 
 def objective_structure_warning(
-    n_objective_terms: int, objective_reactions: object = None
+    n_objective_terms: int, objective_reactions: Iterable[object] | None = None
 ) -> str | None:
     """Warn when an objective is not a single biomass-like reaction (A-B9).
 
@@ -199,7 +200,7 @@ def objective_structure_warning(
             f"objective has {n_objective_terms} terms; not a single biomass reaction — "
             "reported growth is an objective value, not a growth rate"
         )
-    reactions = list(objective_reactions or [])
+    reactions = list(objective_reactions or ())
     if len(reactions) != 1:
         return None
     reaction = reactions[0]
