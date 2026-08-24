@@ -104,6 +104,11 @@ WORKFLOW_COMPONENT_VOCABULARY: frozenset[str] = frozenset({
     "quality_spec",
     "map_spec",                   # host-map matching policy + id-normalization rules
     "bundle_spec",                # the sub-runs a bundling command certifies (kinds + hashes)
+    "namespace_spec",             # reviewed mapping decisions or explicit BiGG assertion
+    "pair_spec",                  # pair/matrix mode and condition identities
+    "delta_spec",                 # ordered baseline/variant run identities + threshold
+    "single_spec",                # selected FBA/pFBA/FVA/exchange analyses
+    "minimal_medium_spec",        # growth floor, oxygen policy and candidate-space policy
 })
 
 # Shared prefix. Spelled out here once; each kind still declares its full tuple below and asserts
@@ -119,6 +124,12 @@ _BASE: tuple[str, ...] = (
 
 # ── per-kind ordered component tuples ──────────────────────────────────────────
 WORKFLOW_HASH_COMPONENTS: dict[str, tuple[str, ...]] = {
+    "pair": _BASE + (
+        "namespace_spec", "tradeoff_f", "pair_spec", "flux_normalization_method",
+    ),
+    "delta": _BASE + ("delta_spec",),
+    "single": _BASE + ("namespace_spec", "single_spec", "knockout_spec"),
+    "minimal_medium": _BASE + ("namespace_spec", "minimal_medium_spec"),
     "model_pool_search": _BASE + ("target_spec", "search_spec", "growth_fraction"),
     "multi_target_model_pool_search": _BASE + ("target_spec", "search_spec", "growth_fraction"),
     "strain_growth": _BASE + (
@@ -159,6 +170,10 @@ WORKFLOW_HASH_COMPONENTS: dict[str, tuple[str, ...]] = {
 # Per-kind arity assertions. Each number is the deliberate size of that kind's contract; changing a
 # tuple without changing its number fails at import, which is the point.
 _EXPECTED_ARITY: dict[str, int] = {
+    "pair": 10,
+    "delta": 7,
+    "single": 9,
+    "minimal_medium": 8,
     "model_pool_search": 9,
     "multi_target_model_pool_search": 9,
     "strain_growth": 10,

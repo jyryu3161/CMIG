@@ -121,7 +121,8 @@ def _apply_min_medium_invariants(
 def minimal_medium_cardinality(
     model: Any, min_objective_value: float, *, solver: str = "gurobi",
     oxygen_mode: str = "aerobic", u_base: tuple[str, ...] = DEFAULT_U_BASE,
-    exclude_blocked: bool = True,
+    exclude_blocked: bool = True, medium: Any = None, strict_medium: bool = True,
+    exact_medium: bool = False,
 ) -> MinimalMediumResult:
     """cardinality MILP 최소 배지 (§4.5) + [MIN-MEDIUM-U] invariant (TC-10).
 
@@ -161,6 +162,16 @@ def minimal_medium_cardinality(
 
     with model as working:
         working.solver = solver           # context가 solver/bounds/medium을 원본에 남기지 않음
+        if medium is not None:
+            # Round 8: candidate-media selection uses the same namespace translation and
+            # merge/exact semantics as every product command. Previously a caller had to mutate
+            # ``model.medium`` itself, bypassing strict unmatched handling and exact-boundary
+            # isolation.
+            from cmig.core.medium_spec import apply_medium_translated
+
+            apply_medium_translated(
+                working, medium, strict=strict_medium, exact=exact_medium
+            )
         candidate_medium = dict(working.medium)
         if oxygen_mode == "anaerobic":
             # Oxygen is a solve constraint, not a label applied after an aerobic MILP.
