@@ -124,8 +124,7 @@ class InteractionGraphView(QWidget):
                 for node_id in (edge["data"]["source"], edge["data"]["target"])
             }
             elements = [
-                e for e in elements
-                if "source" in e["data"] or e["data"]["id"] in connected
+                e for e in elements if "source" in e["data"] or e["data"]["id"] in connected
             ]
         return elements
 
@@ -167,7 +166,8 @@ class InteractionGraphView(QWidget):
                 n = counts[key]
                 if n == 1:
                     matching = next(
-                        e for e in elements
+                        e
+                        for e in elements
                         if "source" in e["data"]
                         and e["data"]["source"] == key[0]
                         and e["data"]["target"] == key[1]
@@ -179,11 +179,7 @@ class InteractionGraphView(QWidget):
                 edges.append(edge)
         edges.sort(key=self._edge_sort_key)
         edges = edges[: self.top_edges_spin.value()]
-        connected = {
-            node_id
-            for edge in edges
-            for node_id in (edge["source"], edge["target"])
-        }
+        connected = {node_id for edge in edges for node_id in (edge["source"], edge["target"])}
         graph_nodes = [node for node in nodes if node["data"]["id"] in connected]
         return graph_nodes + [{"data": edge} for edge in edges]
 
@@ -223,9 +219,7 @@ class InteractionGraphView(QWidget):
         else:
             self._pending = payload
 
-    def set_edge_filters(
-        self, *, cross_feeding: bool, secretion: bool, uptake: bool
-    ) -> None:
+    def set_edge_filters(self, *, cross_feeding: bool, secretion: bool, uptake: bool) -> None:
         """Set visible edge families. Used by UI controls and deterministic tests."""
         for check, value in (
             (self.cross_feeding_check, cross_feeding),
@@ -237,9 +231,7 @@ class InteractionGraphView(QWidget):
             check.blockSignals(False)
         self._apply_filters()
 
-    def set_bundle(
-        self, bundle: TidyBundle, gate: NamespaceGateResult | None = None
-    ) -> None:
+    def set_bundle(self, bundle: TidyBundle, gate: NamespaceGateResult | None = None) -> None:
         """그래프 데이터 주입. 페이지 로드 전이면 큐잉 후 loadFinished 시 주입."""
         payload = graph_payload(bundle, gate)
         self._base_payload = payload
@@ -261,8 +253,7 @@ class InteractionGraphView(QWidget):
             for element in payload.get("elements", [])
         )
         has_secretion_or_uptake = any(
-            "source" in element["data"]
-            and element["data"].get("etype") in {"secretion", "uptake"}
+            "source" in element["data"] and element["data"].get("etype") in {"secretion", "uptake"}
             for element in payload.get("elements", [])
         )
         self.set_edge_filters(
@@ -271,6 +262,20 @@ class InteractionGraphView(QWidget):
             uptake=has_secretion_or_uptake,
         )
 
+    def clear(self) -> None:
+        """Clear a previously loaded graph after an invalid/failed run load."""
+        self._base_payload = {
+            "elements": [],
+            "style": [],
+            "layout": {"name": "grid", "animate": False},
+            "legend": [],
+        }
+        self.edge_table.setRowCount(0)
+        if self._ready:
+            self._inject(self._base_payload)
+        else:
+            self._pending = self._base_payload
+
     def highlight(self, node_id: str) -> None:
         """linked selection — 노드 인접 강조 (FR-1b.2)."""
         self._web.page().runJavaScript(f"window.highlightNeighborhood({json.dumps(node_id)});")
@@ -278,6 +283,41 @@ class InteractionGraphView(QWidget):
 
 class GateBadge(QLabel):
     """namespace gate 상태 배지 (FR-1b.3) — coverage%·차단 상태."""
+
+    def __init__(self, parent: QWidget | None = None, *, lang: str = "en") -> None:
+        super().__init__(parent)
+        self._lang = "ko" if lang == "ko" else "en"
+        self.set_unavailable()
+
+    def set_unavailable(self) -> None:
+        """Show that a run does not carry enough gate provenance to reconstruct a verdict."""
+        text = (
+            "Namespace 게이트: 기록 없음 — 상태를 확인할 수 없음"
+            if self._lang == "ko"
+            else "Namespace gate: NOT RECORDED — status unavailable"
+        )
+        self.setText(text)
+        self.setStyleSheet("color: #8a6d3b; padding: 4px 8px;")
+
+    def set_recorded_policy(self, policy: str | None) -> None:
+        """Show the namespace policy recorded by a successfully loaded solve manifest."""
+        if policy == "assume_bigg":
+            self.setText(
+                "확인됨 — BiGG namespace 가정 기록됨"
+                if self._lang == "ko"
+                else "CONFIRMED — BiGG namespace assumption recorded"
+            )
+            self.setStyleSheet("color: #137; padding: 4px 8px;")
+            return
+        if policy == "require_reviewed":
+            self.setText(
+                "통과 — 검토된 namespace 게이트 통과"
+                if self._lang == "ko"
+                else "OK — reviewed namespace gate passed"
+            )
+            self.setStyleSheet("color: #137; padding: 4px 8px;")
+            return
+        self.set_unavailable()
 
     def set_gate(self, gate: NamespaceGateResult) -> None:
         data = gate_ui_data(gate)
