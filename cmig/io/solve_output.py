@@ -13,7 +13,7 @@ import hashlib
 import importlib.metadata
 import json
 import math
-import os
+import os as _stdlib_os
 import platform as platform_lib
 import tempfile
 from collections.abc import Iterable, Sequence
@@ -24,6 +24,18 @@ from cmig import CMIG_CORE_VERSION
 from cmig.core.golden import DEFAULT_DECIMALS
 from cmig.core.interactions import CROSS_FEEDING_ALLOCATION_METHOD
 from cmig.core.manifest import RunHashComponents, RunManifest, canonical_json
+from cmig.io.atomic import atomic_write_parquet
+
+
+class _RunPublishOS:
+    """Keep run-level replacement injection separate from atomic-file staging."""
+
+    @staticmethod
+    def replace(src: str | Path, dst: str | Path) -> None:
+        _stdlib_os.replace(src, dst)
+
+
+os = _RunPublishOS()
 
 KNOWN_SOLVE_ARTIFACTS = frozenset({
     "nodes.parquet",
@@ -206,8 +218,14 @@ def write_solve_output(
 
     with tempfile.TemporaryDirectory(prefix=tmp_prefix, dir=tmp_parent) as td:
         tmp = Path(td)
-        # parquet — TidyBundle.write (pickle 금지, schema §8.6)
-        bundle.write(tmp)  # type: ignore[attr-defined]
+        # parquet — atomic single-file publication (pickle 금지, schema §8.6). The surrounding
+        # directory stage keeps manifest.json as the run-level commit marker as before.
+        bundle.validate()  # type: ignore[attr-defined]
+        atomic_write_parquet(tmp / "nodes.parquet", bundle.nodes)  # type: ignore[attr-defined]
+        atomic_write_parquet(tmp / "edges.parquet", bundle.edges)  # type: ignore[attr-defined]
+        atomic_write_parquet(tmp / "profile.parquet", bundle.profile)  # type: ignore[attr-defined]
+        if getattr(bundle, "matrix", None) is not None:
+            atomic_write_parquet(tmp / "matrix.parquet", bundle.matrix)  # type: ignore[attr-defined]
 
         # AF-1: artifacts 를 실제 산출 파일에서 파생(하드코딩 X) — matrix 등 누락 방지.
         artifacts = ["nodes.parquet", "edges.parquet", "profile.parquet"]
