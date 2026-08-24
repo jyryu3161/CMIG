@@ -22,6 +22,34 @@ from pathlib import Path
 from typing import BinaryIO
 
 
+def _sync_directory_best_effort(directory: Path) -> None:
+    """Ask POSIX filesystems to persist a completed directory-entry update.
+
+    A synced temporary file makes its contents durable, but the subsequent rename is a
+    directory metadata change. Linux and macOS can normally sync that change through a directory
+    file descriptor. Windows does not expose the same operation through ``os.open``/``os.fsync``,
+    and some POSIX filesystems reject it, so unsupported directory syncs deliberately leave the
+    successful atomic replacement unchanged.
+    """
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(directory, flags)
+    except OSError:
+        return
+    try:
+        try:
+            os.fsync(fd)
+        except OSError:
+            pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 def atomic_write_binary(
     path: str | Path, writer: Callable[[BinaryIO], object]
 ) -> Path:
@@ -43,6 +71,7 @@ def atomic_write_binary(
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, target)
+        _sync_directory_best_effort(target.parent)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -67,6 +96,34 @@ def atomic_write_parquet(path: str | Path, table: object) -> Path:
     )
 
 
+def atomic_write_path(
+    path: str | Path, writer: Callable[[Path], object]
+) -> Path:
+    """Atomically publish output from a library that requires a filesystem path.
+
+    ``writer`` receives a temporary path in the destination directory. The format must be passed
+    explicitly to writers such as matplotlib because the temporary name ends in ``.tmp`` rather
+    than the destination's format suffix.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        os.close(fd)
+        writer(tmp)
+        with open(tmp, "rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
+        _sync_directory_best_effort(target.parent)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return target
+
+
 def atomic_write_text(path: str | Path, text: str, *, encoding: str = "utf-8") -> Path:
     """Write ``text`` to ``path`` so the previous contents survive any failure.
 
@@ -85,6 +142,7 @@ def atomic_write_text(path: str | Path, text: str, *, encoding: str = "utf-8") -
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, target)
+        _sync_directory_best_effort(target.parent)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

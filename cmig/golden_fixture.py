@@ -13,14 +13,13 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-import pyarrow.parquet as pq
-
 from cmig import CMIG_CORE_VERSION
 from cmig.core.engine import MicomEngine, SolveResult
 from cmig.core.golden import DEFAULT_DECIMALS, bundle_hashes
 from cmig.core.interactions import build_tidy
 from cmig.core.manifest import RunHashComponents, compute_run_hash
 from cmig.core.tidy import TidyBundle
+from cmig.io.atomic import atomic_write_parquet
 
 SOLVER_VARIANTS = ("gurobi", "osqp")
 TRADEOFF_F = 0.5
@@ -101,9 +100,9 @@ def capture(base_dir: Path = FIXTURE_DIR) -> dict[str, dict[str, str]]:
         dec = VARIANT_DECIMALS[solver]
         out = base_dir / "expected" / solver
         out.mkdir(parents=True, exist_ok=True)
-        pq.write_table(bundle.nodes, out / "nodes.parquet")
-        pq.write_table(bundle.edges, out / "edges.parquet")
-        pq.write_table(bundle.profile, out / "profile.parquet")
+        atomic_write_parquet(out / "nodes.parquet", bundle.nodes)
+        atomic_write_parquet(out / "edges.parquet", bundle.edges)
+        atomic_write_parquet(out / "profile.parquet", bundle.profile)
         # growth_expected.tsv (멤버 + community). None(누락) → 'nan'.
         lines = ["member\tgrowth_rate"]
         for m in sorted(result.member_growth):
