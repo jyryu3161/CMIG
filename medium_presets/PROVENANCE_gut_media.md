@@ -472,7 +472,7 @@ also why `f_colon` (§3.2) exists at all; it is applied here, from S3.
 
 ---
 
-## 9. Code finding handed back (this track may not change `cmig/core/medium*.py`)
+## 9. Exact-medium status (implemented in round 7; closure rows retained)
 
 **A CSV cannot express exact-medium semantics in general — only for a known model pool.**
 
@@ -486,19 +486,26 @@ works, but it can only zero metabolites that *these five* models leave open. Con
 3. **`medium_checksum` hashes them**, so two runs that differ only in which pool-specific zeros were
    needed get different `run_hash` values for the same scientific medium.
 
-Smallest sufficient change:
+Round-7 implementation:
 
 * an `--exact-medium` flag on the subcommands that accept `--medium`, routing to
   `apply_medium_translated(..., exact=True)` — which **already exists** and is already used by
-  `strain-growth`'s community-offer path (`_cmd_strain_growth`). No new semantics to design.
+  `strain-growth`'s community-offer path (`_cmd_strain_growth`). The flag is now available on all
+  nine microbial/community medium workflows, including the host commands' `--microbe-medium` and
+  sweep's `--mediums`.
 * the manifest must record which mode was used, because the two give different answers on identical
   input — exactly the class of defect round 5 closed for `MEDIUM_POLICY`. A
-  `medium_application_mode` field alongside `medium_checksum` would do it.
-* until that exists, **CMIG's docs must state that `--medium` is an overlay**, because a user reading
-  "medium" reasonably expects replacement. `README.md` and `medium_presets/README.md` now say so.
+  `medium_application_mode` field now sits beside the checksum in the hashed workflow-medium
+  component. Workflow manifest schema 1.2 announces that intentional round-7 hash drift, while
+  `inspect-run` continues to read 1.1 manifests.
+* without `--exact-medium`, **CMIG still applies `--medium` as an overlay**. The filenames and the
+  default-path documentation therefore remain accurate; exact replacement is opt-in.
 
-Not implemented here: the brief forbids changes to `cmig/core/medium*.py`, and adding a CLI flag
-without the manifest field would create precisely the untracked-semantics problem round 5 was about.
+The seven pool-specific closure blocks were **not removed**. The deterministic builder currently
+emits them in `_append_environment`, not from a data table, and its regression tests require them to
+keep the default merge path safe. Deleting only the CSV rows makes `scripts/build_gut_media.py
+--check` fail; suppressing them would require a generator-logic change beyond round 7 T1's permitted
+"data tables only" edit. Exact-mode users do not need the zeros, but merge-mode users still do.
 
 ---
 

@@ -35,7 +35,7 @@ from cmig import CMIG_CORE_VERSION
 from cmig.core.boundary import BOUNDARY_ISOLATION_POLICY
 from cmig.core.host_coupling import HOST_ISOLATION_POLICY
 from cmig.core.manifest import DEFAULT_FLOAT_DECIMALS, canonicalize_floats
-from cmig.core.medium_spec import MEDIUM_POLICY
+from cmig.core.medium_spec import MEDIUM_APPLICATION_MERGE, MEDIUM_POLICY
 
 #: **Non-hashed** provenance markers, stamped into every manifest by the writer.
 #:
@@ -64,6 +64,12 @@ NON_HASHED_PROVENANCE_MARKERS: dict[str, str] = {
     "host_isolation_policy": HOST_ISOLATION_POLICY,
 }
 
+# 1.2 (round 7 T1): ``medium.medium_application_mode`` became a required serialized field.  Merge
+# and exact application produce different answers for identical medium bytes, so the mode belongs
+# beside the medium checksum in the hashed workflow component.  Every envelope hash moves once;
+# the schema bump tells readers why, while ``inspect-run`` remains tolerant of 1.1 manifests whose
+# medium component predates the field.
+#
 # 1.1 (R5-P3 CC-4): the float canonicalization changed from "always round to six decimals" to
 # "round only when rounding is lossless, otherwise keep the exact value". Under 1.0 a
 # growth_fraction of 0.5000001 and one of 0.5000004, a target weight of 1e-7 and one of 4e-7, and
@@ -71,7 +77,7 @@ NON_HASHED_PROVENANCE_MARKERS: dict[str, str] = {
 # defeats the manifest's central claim. Envelope hashes computed under 1.0 are therefore NOT
 # comparable to hashes computed under 1.1; the version is what makes that visible rather than
 # silent. The frozen 11-component solve hash is unaffected — see cmig.core.manifest._round_floats.
-WORKFLOW_MANIFEST_SCHEMA_VERSION = "1.1"
+WORKFLOW_MANIFEST_SCHEMA_VERSION = "1.2"
 
 # ── component vocabulary ───────────────────────────────────────────────────────
 # Every name a per-kind tuple may use. Declared once so a typo in a kind tuple fails at import
@@ -483,6 +489,7 @@ def medium_component(
     medium_path: str | None,
     medium_checksum: str,
     *,
+    application_mode: str | None = None,
     namespace_bridge: dict[str, Any] | None = None,
     allow_unknown: bool = False,
 ) -> dict[str, Any]:
@@ -492,9 +499,15 @@ def medium_component(
     metabolites were bridged, and which a member could not be offered at all, changes the numbers,
     so it belongs in the hash rather than only in the summary.
     """
+    resolved_application_mode = (
+        MEDIUM_APPLICATION_MERGE
+        if application_mode is None and medium_path
+        else application_mode
+    )
     return {
         "source": str(medium_path) if medium_path else None,
         "checksum": medium_checksum,
+        "medium_application_mode": resolved_application_mode,
         "allow_unknown_medium": bool(allow_unknown),
         "namespace_bridge": namespace_bridge or {},
     }
