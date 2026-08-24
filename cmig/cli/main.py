@@ -83,9 +83,18 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "--min-size",
             "--max-size",
             "--strategy",
+            "--exhaustive-max",
             "--n-samples",
             "--seed",
             "--top-k",
+            "--ga-pop-size",
+            "--ga-generations",
+            "--ga-mutation-rate",
+            "--ga-immigrant-fraction",
+            "--ga-tournament-k",
+            "--ga-elitism",
+            "--ga-max-evaluations",
+            "--ga-patience",
             "--robustness-fva",
             "--medium",
             "--allow-unknown-medium",
@@ -4451,6 +4460,68 @@ def _cmd_search_advanced_fixture(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ga_config_from_search_args(args: argparse.Namespace) -> Any:
+    """Build the GA contract once so search, provenance, and tests see identical values."""
+    from cmig.core.search_ga import GAConfig
+
+    return GAConfig(
+        pop_size=args.ga_pop_size,
+        generations=args.ga_generations,
+        min_size=args.min_size,
+        max_size=args.max_size,
+        mutation_rate=args.ga_mutation_rate,
+        immigrant_fraction=args.ga_immigrant_fraction,
+        tournament_k=args.ga_tournament_k,
+        elitism=args.ga_elitism,
+        seed=args.seed,
+        max_evaluations=args.ga_max_evaluations,
+        patience=args.ga_patience,
+    )
+
+
+def _ga_config_payload(config: Any) -> dict[str, Any]:
+    """JSON-safe, explicit GA settings that determine an approximate search."""
+    return {
+        "pop_size": config.pop_size,
+        "generations": config.generations,
+        "min_size": config.min_size,
+        "max_size": config.max_size,
+        "mutation_rate": config.mutation_rate,
+        "immigrant_fraction": config.immigrant_fraction,
+        "tournament_k": config.tournament_k,
+        "elitism": config.elitism,
+        "seed": config.seed,
+        "max_evaluations": config.max_evaluations,
+        "patience": config.patience,
+    }
+
+
+def _single_target_search_spec(
+    args: argparse.Namespace, result: Any, config: Any
+) -> dict[str, Any]:
+    """Answer-determining search policy recorded in the workflow manifest."""
+    payload = {
+        "min_size": args.min_size,
+        "max_size": args.max_size,
+        "strategy_requested": args.strategy,
+        "strategy_resolved": result.strategy,
+        "exhaustive_max": config.exhaustive_max,
+        "top_k": args.top_k,
+        "robustness_fva": bool(args.robustness_fva),
+    }
+    if result.strategy == "random":
+        payload.update({
+            "n_samples": args.n_samples,
+            "seed": args.seed,
+        })
+    elif result.strategy == "ga":
+        payload.update({
+            "seed": args.seed,
+            "ga_config": _ga_config_payload(config.ga_config),
+        })
+    return payload
+
+
 def _cmd_search(args: argparse.Namespace) -> int:
     """User model-pool search for target metabolite production."""
     try:
@@ -4482,6 +4553,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
         if args.targets or args.target_preset:
             return _run_multi_target_search(args, taxonomy, medium_spec)
         diagnostics = diagnose_model_pool(taxonomy, args.target)
+        ga_config = _ga_config_from_search_args(args)
         config = SearchConfig(
             target=args.target,
             direction=Direction(args.direction),
@@ -4494,6 +4566,8 @@ def _cmd_search(args: argparse.Namespace) -> int:
             growth_fraction=args.growth_fraction,
             solver=args.solver,
             robustness_fva=args.robustness_fva,
+            exhaustive_max=args.exhaustive_max,
+            ga_config=ga_config,
         )
         result = search_model_pool(
             MicomEngine(),
@@ -4554,20 +4628,13 @@ def _cmd_search(args: argparse.Namespace) -> int:
                 "direction": result.direction,
                 "mode": "single_target",
             },
-            search_spec={
-                "min_size": args.min_size,
-                "max_size": args.max_size,
-                "strategy_requested": args.strategy,
-                "strategy_resolved": result.strategy,
-                "n_samples": args.n_samples,
-                "seed": args.seed,
-                "top_k": args.top_k,
-                "robustness_fva": bool(args.robustness_fva),
-            },
+            search_spec=_single_target_search_spec(args, result, config),
         ),
         status=_worst_status(
             "ok" if result.ranks else "failed",
-            "degraded" if result.unevaluated else "ok",
+            "degraded"
+            if result.unevaluated or result.n_robustness_failed
+            else "ok",
         ),
         artifacts=run_artifacts,
         warnings=list(result.warnings),
@@ -4575,6 +4642,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
             "n_candidates_total": result.n_candidates_total,
             "n_candidates_ranked": len(result.ranks),
             "n_candidates_failed": len(result.unevaluated),
+            "n_robustness_failed": result.n_robustness_failed,
             "best_members": list(result.ranks[0].members) if result.ranks else None,
             "best_target_flux": (
                 _finite_or_none(result.ranks[0].target_flux) if result.ranks else None
@@ -4584,7 +4652,9 @@ def _cmd_search(args: argparse.Namespace) -> int:
     return _exit_code_for_status(
         _worst_status(
             "ok" if result.ranks else "failed",
-            "degraded" if result.unevaluated else "ok",
+            "degraded"
+            if result.unevaluated or result.n_robustness_failed
+            else "ok",
         ),
         args,
     )
@@ -4642,6 +4712,14 @@ def _resolve_target_carbon_numbers(
 
 def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spec: Any) -> int:
     """Multi-target model-pool search (§14). Raises ValueError on bad args (caught by caller)."""
+    if args.strategy not in {"auto", "exhaustive"}:
+        raise ValueError(
+            "multi-target search is exhaustive-only; --strategy must be auto or exhaustive"
+        )
+    if args.robustness_fva:
+        raise ValueError(
+            "--robustness-fva is currently available only for single-target search"
+        )
     from cmig.core.engine import MicomEngine
     from cmig.core.model_pool import diagnose_model_pool
     from cmig.core.search import Direction
@@ -4701,6 +4779,7 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
         solver=args.solver,
         top_k=args.top_k,
         metric=args.multi_metric,
+        exhaustive_max=args.exhaustive_max,
     )
     result = search_model_pool_multi(
         MicomEngine(), taxonomy, config,
@@ -5316,6 +5395,23 @@ def _finite_or_none(value: float) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def _finite_json_tree(value: Any) -> Any:
+    """Recursively replace non-finite floats with JSON ``null``.
+
+    GA history can legitimately begin with an all-failed generation whose best/mean
+    fitness is ``-inf`` or ``NaN``. CMIG emits strict JSON, so preserve that state as
+    a missing numeric value instead of either crashing the artifact writer or writing
+    non-standard JavaScript tokens.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _finite_json_tree(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite_json_tree(item) for item in value]
+    return value
+
+
 def _finite_csv(value: float) -> str:
     return "" if not math.isfinite(value) else f"{value:.12g}"
 
@@ -5489,7 +5585,9 @@ def _write_search_outputs(
         # P0-B: "ok" 리터럴 금지 — 평가 불가 후보가 있으면 degraded, 하나도 없으면 failed.
         "status": _worst_status(
             "ok" if result.ranks else "failed",
-            "degraded" if result.unevaluated else "ok",
+            "degraded"
+            if result.unevaluated or getattr(result, "n_robustness_failed", 0)
+            else "ok",
         ),
         "target": result.target,
         "target_exchange": result.target_exchange,
@@ -5500,6 +5598,8 @@ def _write_search_outputs(
         "n_candidates_evaluated": result.n_candidates_evaluated,
         "n_candidates_ranked": len(result.ranks),
         "n_candidates_failed": len(result.unevaluated),
+        "n_robustness_failed": getattr(result, "n_robustness_failed", 0),
+        "ga_metadata": _finite_json_tree(getattr(result, "ga_metadata", None)),
         "unevaluated": [
             {
                 "members": list(row.members),
@@ -8098,6 +8198,9 @@ def build_parser() -> argparse.ArgumentParser:
     spatial.add_argument("--store-every", type=int, default=10, dest="store_every")
     spatial.add_argument("--out", required=True, help="output directory")
     spatial.set_defaults(func=_cmd_spatial_preview)
+    from cmig.core.search_ga import GAConfig
+
+    ga_defaults = GAConfig()
     sp = sub.add_parser(
         "search",
         help="user model-pool target production search -> rankings/plot/summary",
@@ -8160,13 +8263,85 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--min-size", type=int, default=2, dest="min_size")
     sp.add_argument("--max-size", type=int, default=2, dest="max_size")
     sp.add_argument("--strategy", default="auto", choices=["auto", "exhaustive", "random", "ga"])
-    sp.add_argument("--n-samples", type=int, default=100, dest="n_samples")
+    sp.add_argument(
+        "--exhaustive-max",
+        type=int,
+        default=100,
+        dest="exhaustive_max",
+        help="maximum combination count evaluated exhaustively by --strategy auto; above this "
+        "threshold single-target search uses GA",
+    )
+    sp.add_argument(
+        "--n-samples",
+        type=int,
+        default=100,
+        dest="n_samples",
+        help="number of combinations evaluated by --strategy random (ignored by other strategies)",
+    )
     sp.add_argument("--seed", type=int, default=0)
     sp.add_argument("--top-k", type=int, default=10, dest="top_k")
+    ga_options = sp.add_argument_group("single-target GA options")
+    ga_options.add_argument(
+        "--ga-pop-size",
+        type=int,
+        default=ga_defaults.pop_size,
+        dest="ga_pop_size",
+        help=f"GA population size (default: {ga_defaults.pop_size})",
+    )
+    ga_options.add_argument(
+        "--ga-generations",
+        type=int,
+        default=ga_defaults.generations,
+        dest="ga_generations",
+        help=f"maximum GA generations (default: {ga_defaults.generations})",
+    )
+    ga_options.add_argument(
+        "--ga-mutation-rate",
+        type=float,
+        default=ga_defaults.mutation_rate,
+        dest="ga_mutation_rate",
+        help=f"per-child mutation probability (default: {ga_defaults.mutation_rate})",
+    )
+    ga_options.add_argument(
+        "--ga-immigrant-fraction",
+        type=float,
+        default=ga_defaults.immigrant_fraction,
+        dest="ga_immigrant_fraction",
+        help="fraction of each new generation replaced by random genomes "
+        f"(default: {ga_defaults.immigrant_fraction})",
+    )
+    ga_options.add_argument(
+        "--ga-tournament-k",
+        type=int,
+        default=ga_defaults.tournament_k,
+        dest="ga_tournament_k",
+        help=f"tournament selection size (default: {ga_defaults.tournament_k})",
+    )
+    ga_options.add_argument(
+        "--ga-elitism",
+        type=int,
+        default=ga_defaults.elitism,
+        dest="ga_elitism",
+        help=f"best genomes copied to the next generation (default: {ga_defaults.elitism})",
+    )
+    ga_options.add_argument(
+        "--ga-max-evaluations",
+        type=int,
+        default=ga_defaults.max_evaluations,
+        dest="ga_max_evaluations",
+        help="optional cap on unique fitness evaluations",
+    )
+    ga_options.add_argument(
+        "--ga-patience",
+        type=int,
+        default=ga_defaults.patience,
+        dest="ga_patience",
+        help="optional early stop after this many generations without improvement",
+    )
     sp.add_argument(
         "--robustness-fva",
         action="store_true",
-        help="add target FVA range for each evaluated candidate",
+        help="single-target only: add target FVA ranges to final top-k rows after ranking",
     )
     sp.add_argument("--medium", default=None, help="optional medium csv/json")
     sp.add_argument("--allow-unknown-medium", action="store_true")

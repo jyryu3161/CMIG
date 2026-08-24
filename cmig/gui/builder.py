@@ -425,10 +425,14 @@ class SearchView(QWidget):
         self.strategy_combo = QComboBox()
         self.strategy_combo.addItems(["auto", "exhaustive", "random", "ga"])
         self.min_size_spin = QSpinBox()
-        self.min_size_spin.setRange(1, 20)
+        # The model pool, not the widget, is the authoritative upper bound.  A hard
+        # limit of 20 made the otherwise generic choose-k search impossible to
+        # configure for larger consortia (for example choose 30 from a 200-model
+        # pool).  Validation against the actual pool happens in the search core.
+        self.min_size_spin.setRange(1, 10_000)
         self.min_size_spin.setValue(2)
         self.max_size_spin = QSpinBox()
-        self.max_size_spin.setRange(1, 20)
+        self.max_size_spin.setRange(1, 10_000)
         self.max_size_spin.setValue(2)
         self.top_k_spin = QSpinBox()
         self.top_k_spin.setRange(1, 100)
