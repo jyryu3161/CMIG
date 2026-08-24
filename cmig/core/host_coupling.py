@@ -15,8 +15,10 @@ from cmig.core.boundary import (
     mass_supplying_boundary,
     set_supply_limit,
 )
-from cmig.core.host import (
+from cmig.core.host_types import (
     BiggHostMicrobeResult,
+    HostInterface,
+    HostInterfaceMap,
     HostSolveResult,
     InterfaceFlux,
     _availability_flux,
@@ -25,6 +27,8 @@ from cmig.core.host import (
     _identified_points,
     _met_from_bigg_exchange,
     _uptake_fva_ranges,
+    classify_host_interfaces,
+    reviewed_interface_entries,
 )
 from cmig.core.sign import Scope, convert
 
@@ -124,7 +128,7 @@ def solve_bigg_host(
     microbial_availability: dict[str, float],
     *,
     host_medium: dict[str, float] | None = None,
-    interface_map: dict[str, str] | None = None,
+    interface_map: HostInterfaceMap | None = None,
     exchange_suffix: str = "_e",
     exclude_metabolites: set[str] | frozenset[str] | None = DEFAULT_BIGG_COUPLING_EXCLUDE,
     close_unlisted_uptake: bool = True,
@@ -148,12 +152,18 @@ def solve_bigg_host(
     host_medium = host_medium or {}
     with host:
         set_model_solver(host, solver)
-        exchange_reactions = list(host.exchanges)
-        exchange_ids = {str(reaction.id) for reaction in exchange_reactions}
+        reviewed_entries = reviewed_interface_entries(interface_map)
+        interface_classification = classify_host_interfaces(host, interface_map=interface_map)
+        exchange_ids = {
+            assignment.exchange_id for assignment in interface_classification.assignments
+        } | set(interface_classification.unclassified_exchange_ids) | set(
+            interface_classification.conflicted_exchange_ids
+        )
+        normalized_reviewed: dict[str, Any] = {}
         normalized_interface: dict[str, str] = {}
-        for raw_metabolite, raw_exchange in (interface_map or {}).items():
+        for raw_metabolite, reviewed_entry in reviewed_entries.items():
             key = _normalize_metabolite_id(str(raw_metabolite))
-            exchange_id = str(raw_exchange)
+            exchange_id = reviewed_entry.exchange_id
             if exchange_id not in exchange_ids:
                 raise ValueError(
                     f"interface map host exchange not found: {raw_metabolite} -> {exchange_id}"
@@ -163,10 +173,52 @@ def solve_bigg_host(
                 raise ValueError(
                     f"conflicting interface map for {raw_metabolite}: {prior}, {exchange_id}"
                 )
+            prior_entry = normalized_reviewed.setdefault(key, reviewed_entry)
+            if (
+                prior_entry.exchange_id != reviewed_entry.exchange_id
+                or prior_entry.interface != reviewed_entry.interface
+            ):
+                raise ValueError(
+                    f"conflicting interface map for {raw_metabolite}: "
+                    f"{prior_entry}, {reviewed_entry}"
+                )
 
         exchange_for = host_exchange_resolver(
             exchange_ids, normalized_interface, exchange_suffix=exchange_suffix
         )
+
+        inferred_by_exchange = interface_classification.by_exchange()
+        reviewed_by_exchange: dict[str, Any] = {}
+        for entry in reviewed_entries.values():
+            prior = reviewed_by_exchange.setdefault(entry.exchange_id, entry)
+            if prior.interface != entry.interface:
+                raise ValueError(
+                    "conflicting reviewed interface sides for host exchange "
+                    f"{entry.exchange_id}: {prior.interface!r}, {entry.interface!r}"
+                )
+
+        def interface_for(
+            key: str, reaction_id: str
+        ) -> tuple[str | None, tuple[dict[str, str], ...]]:
+            reviewed = normalized_reviewed.get(_normalize_metabolite_id(str(key)))
+            if reviewed is not None:
+                # A plain string is the legacy map form.  It deliberately suppresses inference
+                # for this route so old files keep their pre-round-7 meaning.
+                if reviewed.interface is None:
+                    return None, ()
+                return reviewed.interface, ({
+                    "rule": "reviewed_interface_map",
+                    "source": f"interface_map[{reviewed.map_key!r}]",
+                    "value": reviewed.exchange_id,
+                    "interface": reviewed.interface,
+                },)
+            assignment = inferred_by_exchange.get(reaction_id)
+            if assignment is None:
+                return None, ()
+            return (
+                assignment.interface,
+                tuple(item.as_dict() for item in assignment.evidence),
+            )
 
         host_exchange_to_metabolite = {
             exchange_id: metabolite
@@ -236,27 +288,50 @@ def solve_bigg_host(
         exchange_availability: dict[str, float] = {}
         microbial_caps: dict[str, float] = {}
         background_caps: dict[str, float] = {}
+        applied_interface: dict[str, tuple[str, tuple[dict[str, str], ...]]] = {}
 
-        def add_availability(key: str, value: float, *, label: str) -> tuple[str | None, float]:
+        def add_availability(
+            key: str,
+            value: float,
+            *,
+            label: str,
+            required_interface: HostInterface | None = None,
+        ) -> tuple[str | None, float, str | None]:
             reaction_id = exchange_for(key)
             flux = _availability_flux(value, label=label)
             if reaction_id in exchange_ids:
+                interface, evidence = interface_for(key, reaction_id)
+                if required_interface is not None and interface not in {
+                    None, required_interface.value,
+                }:
+                    return None, flux, interface
                 exchange_availability[reaction_id] = (
                     exchange_availability.get(reaction_id, 0.0) + flux
                 )
-                return reaction_id, flux
-            return None, flux
+                if interface is not None:
+                    applied_interface[reaction_id] = (interface, evidence)
+                return reaction_id, flux, None
+            return None, flux, None
 
         unapplied_host_medium: list[str] = []
+        wrong_side_host_medium: dict[str, str] = {}
         for key, value in host_medium.items():
-            reaction_id, flux = add_availability(
-                str(key), value, label=f"host_medium[{key!r}]"
+            reaction_id, flux, wrong_side = add_availability(
+                str(key), value, label=f"host_medium[{key!r}]",
+                required_interface=HostInterface.BLOOD,
             )
             if reaction_id is not None:
                 metabolite = _normalize_metabolite_id(str(key))
                 background_caps[metabolite] = background_caps.get(metabolite, 0.0) + flux
+            elif wrong_side is not None:
+                wrong_side_host_medium[str(key)] = wrong_side
             else:
                 unapplied_host_medium.append(str(key))
+        if wrong_side_host_medium:
+            raise ValueError(
+                "host medium entries resolve to the lumen interface, but host_medium is the "
+                f"blood/basolateral supply: {sorted(wrong_side_host_medium)}"
+            )
         if unapplied_host_medium:
             if strict_medium:
                 raise ValueError(
@@ -275,18 +350,27 @@ def solve_bigg_host(
         # in, `arab__l` -> `EX_arab__l_e` on the way out), so the resolved id is remembered
         # instead of being computed twice.
         matched: dict[str, str] = {}
+        wrong_side_microbial: dict[str, str] = {}
         for raw_metabolite, value in microbial_availability.items():
             metabolite = _normalize_metabolite_id(str(raw_metabolite))
             if metabolite in excluded:
                 continue
-            reaction_id, flux = add_availability(
+            reaction_id, flux, wrong_side = add_availability(
                 raw_metabolite,
                 value,
                 label=f"microbial_availability[{raw_metabolite!r}]",
+                required_interface=HostInterface.LUMEN,
             )
             if reaction_id is not None:
                 microbial_caps[metabolite] = microbial_caps.get(metabolite, 0.0) + flux
                 matched[metabolite] = reaction_id
+            elif wrong_side is not None:
+                wrong_side_microbial[str(raw_metabolite)] = wrong_side
+        if wrong_side_microbial:
+            isolation_warnings.append(
+                "microbial secretions resolved to blood/basolateral host exchanges and were NOT "
+                f"coupled to the lumen: {sorted(wrong_side_microbial)}"
+            )
         for reaction_id, availability in exchange_availability.items():
             # Same arithmetic as before for a `met -->` exchange; correct (upper_bound) for a
             # boundary reaction written the other way round, which the old line inverted.
@@ -339,13 +423,27 @@ def solve_bigg_host(
                 reaction_id,
                 _met_from_bigg_exchange(reaction_id, suffix=exchange_suffix),
             )
+            reviewed_for_exchange = reviewed_by_exchange.get(reaction_id)
+            assignment = inferred_by_exchange.get(reaction_id)
+            if reviewed_for_exchange is not None and reviewed_for_exchange.interface is None:
+                interface = "bigg_external"
+                evidence: tuple[dict[str, str], ...] = ()
+            elif reaction_id in applied_interface:
+                interface, evidence = applied_interface[reaction_id]
+            elif assignment is not None:
+                interface = assignment.interface
+                evidence = tuple(item.as_dict() for item in assignment.evidence)
+            else:
+                interface = "bigg_external"
+                evidence = ()
             interface_fluxes.append(
                 InterfaceFlux(
                     exchange_id=reaction_id,
-                    interface="bigg_external",
+                    interface=interface,
                     metabolite=metabolite,
                     flux=flux,
                     label=signed.label.value,
+                    evidence=evidence,
                 )
             )
         return HostSolveResult(
@@ -379,7 +477,7 @@ def run_bigg_host_microbe(
     tradeoff_f: float = 0.5,
     microbe_medium: Any | None = None,
     host_medium: dict[str, float] | None = None,
-    interface_map: dict[str, str] | None = None,
+    interface_map: HostInterfaceMap | None = None,
     exchange_suffix: str = "_e",
     exclude_metabolites: set[str] | frozenset[str] | None = DEFAULT_BIGG_COUPLING_EXCLUDE,
     close_unlisted_host_uptake: bool = True,
@@ -507,10 +605,20 @@ def run_bigg_host_microbe(
         for member, exchange in community_result.member_exchange.items()
     }
     excluded = set(exclude_metabolites or set())
-    exchange_ids = {str(reaction.id) for reaction in host.exchanges}
+    reviewed_entries = reviewed_interface_entries(interface_map)
+    interface_classification = classify_host_interfaces(host, interface_map=interface_map)
+    exchange_ids = {
+        assignment.exchange_id for assignment in interface_classification.assignments
+    } | set(interface_classification.unclassified_exchange_ids) | set(
+        interface_classification.conflicted_exchange_ids
+    )
     normalized_interface = {
-        _normalize_metabolite_id(metabolite): str(exchange)
-        for metabolite, exchange in (interface_map or {}).items()
+        _normalize_metabolite_id(metabolite): entry.exchange_id
+        for metabolite, entry in reviewed_entries.items()
+    }
+    normalized_reviewed = {
+        _normalize_metabolite_id(metabolite): entry
+        for metabolite, entry in reviewed_entries.items()
     }
     # Round 6 [P0, pre-existing]: this block had its OWN id resolver, built from the raw
     # metabolite id, while `solve_bigg_host` built one from the lowercased id. The two disagreed
@@ -521,13 +629,30 @@ def run_bigg_host_microbe(
     host_exchange_for = host_exchange_resolver(
         exchange_ids, normalized_interface, exchange_suffix=exchange_suffix
     )
+    classified_by_exchange = interface_classification.by_exchange()
+
+    def resolved_side(metabolite: str, exchange_id: str) -> str | None:
+        reviewed = normalized_reviewed.get(_normalize_metabolite_id(metabolite))
+        if reviewed is not None:
+            return reviewed.interface
+        assignment = classified_by_exchange.get(exchange_id)
+        return assignment.interface if assignment is not None else None
 
     matched = {
         metabolite: host_exchange_for(metabolite)
         for metabolite in secretion
         if _normalize_metabolite_id(metabolite) not in excluded
         and host_exchange_for(metabolite) in exchange_ids
+        and resolved_side(metabolite, host_exchange_for(metabolite))
+        != HostInterface.BLOOD.value
     }
+    blood_side_unmatched = sorted(
+        metabolite for metabolite in secretion
+        if _normalize_metabolite_id(metabolite) not in excluded
+        and host_exchange_for(metabolite) in exchange_ids
+        and resolved_side(metabolite, host_exchange_for(metabolite))
+        == HostInterface.BLOOD.value
+    )
     unmatched = sorted(
         metabolite for metabolite in secretion
         if metabolite not in matched and _normalize_metabolite_id(metabolite) not in excluded
@@ -596,6 +721,11 @@ def run_bigg_host_microbe(
         warnings.append(f"excluded currency microbial secretions: {excluded_present}")
     if unmatched:
         warnings.append(f"unmatched microbial secretions: {unmatched}")
+    if blood_side_unmatched:
+        warnings.append(
+            "microbial secretions mapped to blood/basolateral exchanges and were not coupled to "
+            f"the lumen: {blood_side_unmatched}"
+        )
     if not matched:
         warnings.append("no microbial secretions matched host exchange ids")
     impact = host_impact(secretion, host_result)

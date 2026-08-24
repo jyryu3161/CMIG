@@ -25,6 +25,16 @@ from cmig.core.solver import capability_matrix
 from cmig.core.targets import TARGET_PRESETS
 from cmig.io.atomic import atomic_write_text
 from cmig.io.gem_paths import default_human_gem_path
+from cmig.render.figure_style import (
+    SVG_METADATA,
+    save_publication_tiff,
+)
+from cmig.render.figure_style import (
+    load_matplotlib_pyplot as _load_matplotlib_pyplot,
+)
+from cmig.render.figure_style import (
+    polish_matplotlib_axes as _polish_matplotlib_axes,
+)
 
 DEFAULT_DFBA_INITIAL_CONCENTRATIONS = {
     "EX_glc__D_e": 10.0,
@@ -59,6 +69,7 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         "required_args": ["--taxonomy", "--out"],
         "common_options": [
             "--medium",
+            "--exact-medium",
             "--namespace-decisions",
             "--allow-unknown-medium",
             "--solver",
@@ -97,6 +108,7 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "--ga-patience",
             "--robustness-fva",
             "--medium",
+            "--exact-medium",
             "--allow-unknown-medium",
             "--recursive",
         ],
@@ -119,7 +131,8 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         "purpose": "Compare each strain's single-model growth with its community growth.",
         "required_args": ["--model-dir or --taxonomy", "--out"],
         "common_options": [
-            "--medium", "--allow-unknown-medium", "--tradeoff-f", "--recursive",
+            "--medium", "--exact-medium", "--allow-unknown-medium", "--tradeoff-f",
+            "--recursive",
         ],
         "key_outputs": [
             "strain_growth_summary.json",
@@ -134,8 +147,8 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         "purpose": "Sweep one member abundance and quantify growth and target flux changes.",
         "required_args": ["--model-dir or --taxonomy", "--member", "--out"],
         "common_options": [
-            "--fractions", "--target", "--medium", "--allow-unknown-medium",
-            "--tradeoff-f", "--recursive",
+            "--fractions", "--target", "--medium", "--exact-medium",
+            "--allow-unknown-medium", "--tradeoff-f", "--recursive",
         ],
         "key_outputs": [
             "abundance_impact_summary.json",
@@ -166,6 +179,7 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "--growth-fraction",
             "--top-k",
             "--medium",
+            "--exact-medium",
             "--allow-unknown-medium",
             "--recursive",
         ],
@@ -191,6 +205,7 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         "common_options": [
             "--host-objective",
             "--microbe-medium",
+            "--exact-medium",
             "--host-medium",
             "--allow-unknown-medium",
             "--exclude-metabolites",
@@ -227,7 +242,8 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         ],
         "common_options": [
             "--ko-level", "--target", "--interface-map", "--host-medium", "--microbe-medium",
-            "--allow-unknown-medium", "--host-objective", "--keep-host-uptake",
+            "--exact-medium", "--allow-unknown-medium", "--host-objective",
+            "--keep-host-uptake",
         ],
         "key_outputs": ["host_ko_impact_summary.json", "host_ko_impact.csv"],
         "example": (
@@ -261,6 +277,7 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "--target-reference",
             "--host-objective",
             "--microbe-medium",
+            "--exact-medium",
             "--host-medium",
             "--allow-unknown-medium",
             "--recursive",
@@ -329,6 +346,7 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "--tradeoff-fs",
             "--solvers",
             "--mediums",
+            "--exact-medium",
             "--allow-unknown-medium",
             "--member-sets",
             "--abundance-variants",
@@ -341,6 +359,137 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "uv run cmig sweep --taxonomy taxonomy.csv --tradeoff-fs 0.3,0.5 "
             "--mediums medium_presets/western_diet.csv --out runs/sweep"
         ),
+    },
+    {
+        "gui_surface": "Host / Review Exchange Map",
+        "cli_command": "cmig host-map",
+        "purpose": "Generate an auditable microbial-to-host exchange mapping for review.",
+        "required_args": ["--host", "--model-dir or --taxonomy", "--out"],
+        "common_options": ["--recursive"],
+        "key_outputs": [
+            "host_exchange_map.csv", "host_interface_map.json", "host_map_summary.json",
+        ],
+        "example": (
+            "uv run cmig host-map --host models_human/Recon3D.xml --model-dir models "
+            "--out runs/host_map"
+        ),
+    },
+    {
+        "gui_surface": "Host / Generic Smoke Solve",
+        "cli_command": "cmig host-generic",
+        "purpose": "Run a generic host GEM smoke solve and report viability diagnostics.",
+        "required_args": [],
+        "common_options": ["--model", "--solver", "--out"],
+        "key_outputs": ["host_generic_summary.json"],
+        "example": "uv run cmig host-generic --model Recon3D.xml --out runs/host_generic",
+    },
+    {
+        "gui_surface": "Host / Benchmark",
+        "cli_command": "cmig host-benchmark",
+        "purpose": "Measure load, solve, and memory behavior for a Human-GEM or Recon3D model.",
+        "required_args": [],
+        "common_options": ["--model", "--solver", "--out"],
+        "key_outputs": ["host_benchmark.json"],
+        "example": "uv run cmig host-benchmark --model Recon3D.xml --out runs/host_benchmark",
+    },
+    {
+        "gui_surface": "Dynamics / Numerical Sensitivity",
+        "cli_command": "cmig dfba-sensitivity",
+        "purpose": "Audit a dFBA endpoint over a grid of integration steps and Km values.",
+        "required_args": ["--model", "--out"],
+        "common_options": [
+            "--dts", "--kms", "--initial", "--vmax", "--close-untracked-uptake",
+            "--allow-failed-run",
+        ],
+        "key_outputs": ["dfba_sensitivity.json", "dfba_sensitivity.csv"],
+        "example": (
+            "uv run cmig dfba-sensitivity --model models/iML1515.xml --dts 0.2,0.1 "
+            "--kms 0.005,0.01 --out runs/dfba_sensitivity"
+        ),
+    },
+    {
+        "gui_surface": "Publication / Model Quality",
+        "cli_command": "cmig model-quality",
+        "purpose": "Audit one model or a model directory for publication preflight.",
+        "required_args": ["--model or --model-dir", "--out"],
+        "common_options": ["--recursive", "--solver", "--check-blocked-reactions"],
+        "key_outputs": ["model_quality.json", "model_quality.csv"],
+        "example": "uv run cmig model-quality --model models/iML1515.xml --out runs/quality",
+    },
+    {
+        "gui_surface": "Publication / Integrated Benchmark",
+        "cli_command": "cmig publication-benchmark",
+        "purpose": "Run the integrated model, community, search, dFBA, and host preflight bundle.",
+        "required_args": ["--taxonomy or --model-dir", "--out"],
+        "common_options": [
+            "--solver", "--tradeoff-f", "--search-target", "--dfba-model", "--host",
+            "--namespace-decisions", "--assume-bigg-namespace",
+        ],
+        "key_outputs": ["publication_benchmark.json", "manifest.json"],
+        "example": (
+            "uv run cmig publication-benchmark --model-dir models "
+            "--assume-bigg-namespace --out runs/publication_benchmark"
+        ),
+    },
+    {
+        "gui_surface": "Profile / Render Figure",
+        "cli_command": "cmig render-figure",
+        "purpose": "Render a run's tidy profile as a publication-format figure.",
+        "required_args": ["--run-dir", "--out"],
+        "common_options": [
+            "--renderer", "--format", "--journal-preset", "--title", "--width", "--height",
+            "--dpi", "--seed",
+        ],
+        "key_outputs": ["requested figure", "figure provenance sidecar"],
+        "example": (
+            "uv run cmig render-figure --run-dir runs/solve --out runs/solve/profile.svg"
+        ),
+    },
+    {
+        "gui_surface": "Statistics / Analyze Sweep",
+        "cli_command": "cmig stats-sweep",
+        "purpose": "Summarize a sweep and gate inferential statistics on real replicates.",
+        "required_args": ["--sweep"],
+        "common_options": [
+            "--metric", "--group-axis", "--replicate-column",
+            "--confirm-independent-replicates", "--replicate-aggregate", "--out",
+        ],
+        "key_outputs": ["stats_sweep_summary.json"],
+        "example": (
+            "uv run cmig stats-sweep --sweep runs/sweep/sweep.parquet --out runs/sweep_stats"
+        ),
+    },
+    {
+        "gui_surface": "Statistics / Demo",
+        "cli_command": "cmig stats-demo",
+        "purpose": "Run the deterministic statistics demonstration dataset.",
+        "required_args": [],
+        "common_options": ["--fdr-method", "--out"],
+        "key_outputs": ["stats_summary.json"],
+        "example": "uv run cmig stats-demo --out runs/stats_demo",
+    },
+    {
+        "gui_surface": "Models / Suggest Namespace",
+        "cli_command": "cmig namespace-suggest",
+        "purpose": "Generate a reviewable exchange-namespace decision draft for a model.",
+        "required_args": ["--model"],
+        "common_options": [
+            "--known-targets", "--source-namespace", "--target-namespace", "--out",
+        ],
+        "key_outputs": ["namespace_decisions.json"],
+        "example": (
+            "uv run cmig namespace-suggest --model models/iML1515.xml "
+            "--out runs/namespace_suggest"
+        ),
+    },
+    {
+        "gui_surface": "Reproducibility / Golden Gates",
+        "cli_command": "cmig golden",
+        "purpose": "Verify solver and workflow-envelope reproducibility goldens.",
+        "required_args": ["verify or verify-envelope"],
+        "common_options": [],
+        "key_outputs": ["stdout verification report"],
+        "example": "uv run cmig golden verify-envelope",
     },
     {
         "gui_surface": "Advanced / Sandbox Fixture",
@@ -1244,6 +1393,9 @@ def _cmd_host_generic(args: argparse.Namespace) -> int:
             "n_nonexchange_boundary_uptake": summary.n_nonexchange_boundary_uptake,
             "exchange_examples": summary.exchange_examples,
             "has_lumen_blood_interfaces": summary.has_lumen_blood_interfaces,
+            # Round 7: the evidence-backed side audit host-benchmark already exposes via
+            # summary.__dict__; host-generic now reports the same thing explicitly.
+            "interface_classification": summary.interface_classification,
         },
         "solve": {
             "status": result.status,
@@ -1307,7 +1459,7 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
         import pandas as pd
         from cobra.io import read_sbml_model
 
-        from cmig.core.host import run_bigg_host_microbe
+        from cmig.core.host_coupling import run_bigg_host_microbe
         from cmig.core.medium_spec import load_medium
         from cmig.core.model_pool import taxonomy_from_model_dir
     except ImportError:
@@ -1566,6 +1718,7 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
             fieldnames=[
                 "metabolite", "microbial_exchange", "secreting_members",
                 "host_exchange", "match_type", "host_can_uptake", "suggestion",
+                "interface", "interface_evidence",
             ],
         )
         writer.writeheader()
@@ -1578,14 +1731,24 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
                 "match_type": e.match_type,
                 "host_can_uptake": e.host_can_uptake,
                 "suggestion": e.suggestion,
+                # Round 7: evidence-backed side, blank (not guessed) when unclassified.
+                "interface": e.interface or "",
+                "interface_evidence": json.dumps(list(e.interface_evidence))
+                if e.interface_evidence else "",
             })
     # A-B8: only EXACT id matches go into interface_map. Annotation/normalized matches are
     # computational guesses — round-2 found three D<->L stereoisomer swaps among them
     # (arab__D_e -> EX_arab__L_e, glu__D_e -> EX_glu__L_e, pser__D_e -> EX_pser__L_e), which are
     # chemically distinct metabolites. Putting them in the same flat dict as the 170 exact matches
     # meant passing the file through unedited silently coupled the wrong molecules.
+    # Round 7: entries whose side has evidence are emitted in the structured
+    # {host_exchange, interface} form; everything else stays the legacy string so
+    # existing reviewed maps and tooling keep their exact meaning.
     interface_map = {
-        e.metabolite: e.host_exchange
+        e.metabolite: (
+            {"host_exchange": e.host_exchange, "interface": e.interface}
+            if e.interface else e.host_exchange
+        )
         for e in result.entries if e.match_type in HOST_MAP_INTERFACE_MAP_ADMITS
     }
     needs_review = {
@@ -1593,6 +1756,7 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
             "host_exchange": e.host_exchange,
             "match_type": e.match_type,
             "reason": e.suggestion,
+            **({"interface": e.interface} if e.interface else {}),
         }
         for e in result.entries if e.match_type in HOST_MAP_NEEDS_REVIEW_TYPES
     }
@@ -1618,6 +1782,9 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
         "n_normalized": result.n_normalized,
         "n_unmatched": result.n_unmatched,
         "n_host_uptake_capable": result.n_host_uptake_capable,
+        "n_lumen": result.n_lumen,
+        "n_blood": result.n_blood,
+        "n_interface_unclassified": result.n_interface_unclassified,
         "entries": [
             {
                 "metabolite": e.metabolite,
@@ -1627,6 +1794,8 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
                 "match_type": e.match_type,
                 "host_can_uptake": e.host_can_uptake,
                 "suggestion": e.suggestion,
+                "interface": e.interface,
+                "interface_evidence": list(e.interface_evidence),
             }
             for e in result.entries
         ],
@@ -1766,7 +1935,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         import pandas as pd
         from cobra.io import read_sbml_model
 
-        from cmig.core.host import run_bigg_host_microbe
+        from cmig.core.host_coupling import run_bigg_host_microbe
         from cmig.core.medium_spec import load_medium
         from cmig.core.model_pool import taxonomy_from_model_dir
         from cmig.core.search_product import candidate_combinations
@@ -2048,7 +2217,7 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
         import pandas as pd
         from cobra.io import read_sbml_model, write_sbml_model
 
-        from cmig.core.host import run_bigg_host_microbe
+        from cmig.core.host_coupling import run_bigg_host_microbe
         from cmig.core.host_ko_impact import arm_from_coupling, assemble_result
         from cmig.core.medium_spec import load_medium, medium_checksum
         from cmig.core.model_pool import taxonomy_from_model_dir
@@ -2226,7 +2395,7 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
     )
     ranked = sorted(
         (d for d in result.deltas if d.delta_host_objective is not None),
-        key=lambda d: d.delta_host_objective,
+        key=lambda d: d.delta_host_objective if d.delta_host_objective is not None else math.inf,
     )
     for delta in ranked[:5]:
         relative = (
@@ -2535,9 +2704,19 @@ def _map_ko_evaluations(
     if jobs <= 1:
         return [evaluate(item) for item in items]
     from concurrent.futures import ThreadPoolExecutor
+    from contextvars import copy_context
+
+    # ContextVar state is thread-local.  Capture one independent context per task so CLI-scoped
+    # choices such as ``--exact-medium`` reach every knockout arm, including ``--jobs > 1``.
+    contexts = [copy_context() for _ in items]
+
+    def evaluate_in_context(pair: tuple[Any, Any]) -> dict[str, Any]:
+        context, item = pair
+        result: dict[str, Any] = context.run(evaluate, item)
+        return result
 
     with ThreadPoolExecutor(max_workers=jobs) as executor:
-        return list(executor.map(evaluate, items))
+        return list(executor.map(evaluate_in_context, zip(contexts, items, strict=True)))
 
 
 def _ko_sort_key(
@@ -3404,12 +3583,12 @@ def _write_gene_ko_search_outputs(
             for row in rows
             if row["evaluation_status"] != "ok"
         ],
-        "artifacts": [
+        "artifacts": (artifacts := [
             "gene_ko_rankings.csv",
             "gene_ko_summary.json",
             "gene_ko_plot.svg",
             "gene_ko_plot.tiff",
-        ],
+        ]),
     }
     atomic_write_text(
         out / "gene_ko_summary.json",
@@ -3426,7 +3605,7 @@ def _write_gene_ko_search_outputs(
         n_total=n_genes_total,
         selection=gene_selection,
     )
-    return list(payload["artifacts"])
+    return list(artifacts)
 
 
 def _optional_float(value: Any) -> float | None:
@@ -3553,19 +3732,19 @@ def _write_strain_growth_outputs(
             }
             for row in rows
         ],
-        "artifacts": [
+        "artifacts": (artifacts := [
             "strain_growth.csv",
             "strain_growth_summary.json",
             "strain_growth_plot.svg",
             "strain_growth_plot.tiff",
-        ],
+        ]),
     }
     atomic_write_text(
         out / "strain_growth_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_strain_growth_figures(rows, out)
-    return list(payload["artifacts"])
+    return list(artifacts)
 
 
 def _write_abundance_impact_outputs(
@@ -3695,20 +3874,20 @@ def _write_abundance_impact_outputs(
             }
             for row in member_growth_rows
         ],
-        "artifacts": [
+        "artifacts": (artifacts := [
             "abundance_impact.csv",
             "member_growth_by_abundance.csv",
             "abundance_impact_summary.json",
             "abundance_impact_plot.svg",
             "abundance_impact_plot.tiff",
-        ],
+        ]),
     }
     atomic_write_text(
         out / "abundance_impact_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_abundance_impact_figures(rows, out, target_member=target_member, target=target)
-    return list(payload["artifacts"])
+    return list(artifacts)
 
 
 def _write_host_search_bigg_outputs(
@@ -3816,12 +3995,12 @@ def _write_host_search_bigg_outputs(
             }
             for rank, row in enumerate(rows, start=1)
         ],
-        "artifacts": [
+        "artifacts": (artifacts := [
             "host_search_rankings.csv",
             "host_search_summary.json",
             "host_search_plot.svg",
             "host_search_plot.tiff",
-        ] + (["host_search_unevaluated.csv"] if unevaluated else []),
+        ] + (["host_search_unevaluated.csv"] if unevaluated else [])),
     }
     atomic_write_text(
         out / "host_search_summary.json",
@@ -3831,8 +4010,8 @@ def _write_host_search_bigg_outputs(
         rows, out, target=target, metric=metric,
         n_unevaluated=n_candidates_failed, n_total=n_candidates_total,
     )
-    _prune_stale_workflow_artifacts(out, KNOWN_HOST_SEARCH_ARTIFACTS, payload["artifacts"])
-    return list(payload["artifacts"])
+    _prune_stale_workflow_artifacts(out, KNOWN_HOST_SEARCH_ARTIFACTS, artifacts)
+    return list(artifacts)
 
 
 def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> list[str]:
@@ -5105,11 +5284,17 @@ def _host_medium_component(args: argparse.Namespace) -> dict[str, Any]:
     minted the same ``run_hash``. Round 5 put the flag inside the `medium` component precisely
     because it is answer-determining; this builder was the one that dropped it.
     """
+    from cmig.core.medium_spec import requested_medium_application_mode
     from cmig.core.workflow_manifest import medium_component, optional_file_checksum
 
+    microbe_medium = getattr(args, "microbe_medium", None)
+
     return medium_component(
-        getattr(args, "microbe_medium", None),
-        optional_file_checksum(getattr(args, "microbe_medium", None)) or "no_microbe_medium",
+        microbe_medium,
+        optional_file_checksum(microbe_medium) or "no_microbe_medium",
+        application_mode=requested_medium_application_mode(
+            has_custom_medium=bool(microbe_medium)
+        ),
         allow_unknown=bool(getattr(args, "allow_unknown_medium", False)),
     )
 
@@ -5243,12 +5428,20 @@ def _medium_component_for(
     args: argparse.Namespace, medium_spec: Any, **bridge: Any
 ) -> dict[str, Any]:
     """Medium identity + namespace-bridge decisions for the workflow hash."""
-    from cmig.core.medium_spec import medium_checksum
+    from cmig.core.medium_spec import medium_checksum, requested_medium_application_mode
     from cmig.core.workflow_manifest import medium_component
 
+    medium_path = getattr(args, "medium", None)
+    has_custom_medium = bool(
+        medium_spec is not None or medium_path or getattr(args, "mediums", None)
+    )
+
     return medium_component(
-        getattr(args, "medium", None),
+        medium_path,
         medium_checksum(medium_spec),
+        application_mode=requested_medium_application_mode(
+            has_custom_medium=has_custom_medium
+        ),
         namespace_bridge=bridge or None,
         allow_unknown=bool(getattr(args, "allow_unknown_medium", False)),
     )
@@ -5677,19 +5870,8 @@ OKABE_ITO: tuple[str, ...] = (
     "#F0E442",   # yellow
     "#000000",   # black
 )
-# A font *stack*: the R/ggplot path aborted on `unknown family 'Arial'` and matplotlib silently
-# fell back to DejaVu, so the two backends disagreed. Naming the fallbacks makes them agree.
-FONT_STACK: tuple[str, ...] = ("Arial", "Helvetica", "DejaVu Sans")
-# Journals reject uncompressed RGBA TIFFs; 600 dpi is the line-art expectation.
-FIGURE_TIFF_DPI = 600
-
-# Byte-reproducibility of figure artifacts (round 5: codex F5 / opus F14). matplotlib stamps the
-# wall-clock time into <dc:date> and derives generated element ids (clip paths, glyph defs) from a
-# random salt, so two runs with an identical run_hash emitted different SVG bytes — a deliverable
-# advertised as reproducible that was not checksummable. A fixed salt makes the ids deterministic
-# and `metadata={"Date": None}` drops the timestamp. TIFF/PNG were already stable.
-SVG_HASHSALT = "cmig-svg-v1"
-SVG_METADATA: dict[str, None] = {"Date": None}
+# The matplotlib publication policy (font stack, TIFF DPI, SVG hashsalt/metadata, axes polish)
+# lives in cmig.render.figure_style since round 7 — one definition for every figure writer.
 
 # Units live in the JSON summaries already — these are the axis strings that carry them.
 UNIT_GROWTH = "h$^{-1}$"
@@ -5698,41 +5880,9 @@ UNIT_HOST_FLUX = "mmol gDW$_{host}^{-1}$ h$^{-1}$"
 UNIT_CARBON = "mmol C gDW$^{-1}$ h$^{-1}$"
 
 
-def _load_matplotlib_pyplot() -> Any:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    plt.rcParams.update({
-        "font.family": "sans-serif",
-        "font.sans-serif": list(FONT_STACK),
-        "axes.titlesize": 14,
-        "axes.labelsize": 11,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        # Keep SVG text as text so a figure can still be re-typeset; the previous default
-        # outlined every glyph to a <path>, making half the figure set uneditable.
-        "svg.fonttype": "none",
-        # Byte-reproducibility: matplotlib stamps <dc:date> and randomizes generated element ids
-        # (clip paths, glyph defs) into every SVG, so two runs with the same run_hash produced
-        # different artifact bytes. A fixed hash salt makes the generated ids deterministic; the
-        # date is suppressed per-savefig with metadata={"Date": None}.
-        "svg.hashsalt": SVG_HASHSALT,
-    })
-    return plt
-
-
 def _direction_phrase(direction: str) -> str:
     """`max_uptake` -> "uptake" so an uptake search is not titled a "production" search."""
     return "uptake" if "uptake" in str(direction) else "production"
-
-
-def _polish_matplotlib_axes(ax: Any, *, grid_axis: str = "x") -> None:
-    ax.grid(True, axis=grid_axis, color="#d9dee3", linewidth=0.7, alpha=0.85)
-    ax.set_axisbelow(True)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
 
 
 def _add_panel_letters(axes: Any, *, start: int = 0) -> None:
@@ -5743,36 +5893,6 @@ def _add_panel_letters(axes: Any, *, start: int = 0) -> None:
             transform=ax.transAxes, fontsize=13, fontweight="bold",
             va="bottom", ha="right",
         )
-
-
-def save_publication_tiff(fig: Any, out_tiff: Path, *, dpi: int = FIGURE_TIFF_DPI) -> None:
-    """TIFF at 600 dpi, RGB, LZW — the three things submission portals check.
-
-    matplotlib writes RGBA with ``compression=raw`` by default, which produced 8.8-21.3 MB files
-    with an alpha channel. Flattening onto white and LZW-compressing cuts that by ~10x and removes
-    the alpha, without touching the rendered content.
-    """
-    fig.savefig(
-        out_tiff,
-        format="tiff",
-        dpi=dpi,
-        facecolor="white",
-        pil_kwargs={"compression": "tiff_lzw"},
-    )
-    try:
-        from PIL import Image
-    except ImportError:  # pragma: no cover - PIL ships with matplotlib
-        return
-    with Image.open(out_tiff) as image:
-        if image.mode == "RGB":
-            return
-        flattened = Image.new("RGB", image.size, (255, 255, 255))
-        flattened.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
-        info = dict(image.info)
-    flattened.save(
-        out_tiff, format="tiff", compression="tiff_lzw",
-        dpi=info.get("dpi", (dpi, dpi)),
-    )
 
 
 def _save_screening_figure(fig: Any, out_svg: Path, out_tiff: Path) -> None:
@@ -6966,7 +7086,7 @@ def _load_bounds_json(path: str) -> dict[str, list[float]]:
 
 def _load_host_interface_map(
     path: str | None, *, accept_unreviewed: bool = False
-) -> dict[str, str] | None:
+) -> dict[str, str | dict[str, str]] | None:
     """Load a reviewed metabolite -> host exchange map.
 
     A-B8: a map that still carries `needs_review` entries has unconfirmed annotation matches in
@@ -6999,23 +7119,42 @@ def _load_host_interface_map(
             )
             merged = dict(raw["interface_map"])
             for met, info in pending.items():
-                target = info.get("host_exchange") if isinstance(info, dict) else info
-                if target:
-                    merged[met] = target
+                if isinstance(info, dict):
+                    target = info.get("host_exchange")
+                    if target and info.get("interface") is not None:
+                        # Round 7: a reviewer may pre-assign the side while confirming the match.
+                        merged[met] = {
+                            "host_exchange": target,
+                            "interface": info["interface"],
+                        }
+                    elif target:
+                        merged[met] = target
+                elif info:
+                    merged[met] = info
             raw = merged
         else:
             raw = raw["interface_map"]
     if not isinstance(raw, dict):
         raise ValueError("host interface map must be a JSON object")
-    mapping: dict[str, str] = {}
+    # Round 7: values are either the legacy exchange-id string or the side-aware
+    # {"host_exchange", "interface"} object. reviewed_interface_entry is the single
+    # validator for both forms, so a bad side/exchange fails here, loudly, not mid-solve.
+    from cmig.core.host_types import reviewed_interface_entry
+
+    mapping: dict[str, str | dict[str, str]] = {}
     for metabolite, exchange in raw.items():
         if not isinstance(metabolite, str) or not metabolite.strip():
             raise ValueError("host interface map metabolite keys must be non-empty strings")
         if exchange is None:
             continue
-        if not isinstance(exchange, str) or not exchange.strip():
-            raise ValueError(f"invalid host exchange mapping: {metabolite} -> {exchange}")
-        mapping[metabolite] = exchange
+        entry = reviewed_interface_entry(metabolite, exchange)
+        if entry.interface is None:
+            mapping[metabolite] = entry.exchange_id
+        else:
+            mapping[metabolite] = {
+                "host_exchange": entry.exchange_id,
+                "interface": entry.interface,
+            }
     return mapping
 
 
@@ -7580,6 +7719,17 @@ def _add_allow_unknown_medium(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_exact_medium(parser: argparse.ArgumentParser) -> None:
+    """Add the replacement-vs-overlay choice consistently to every medium command."""
+    parser.add_argument(
+        "--exact-medium",
+        action="store_true",
+        dest="exact_medium",
+        help="apply the requested microbial/community medium as the complete set of mass sources, "
+        "closing every undeclared boundary supplier (default: merge onto the model medium)",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cmig", description="CMIG headless community metabolic core")
     sub = p.add_subparsers(dest="command", required=True)
@@ -7604,6 +7754,7 @@ def build_parser() -> argparse.ArgumentParser:
     sv = sub.add_parser("solve", help="community solve --taxonomy [--medium] (C6/C7, P1)")
     sv.add_argument("--taxonomy", required=True, help="taxonomy csv (micom Community 입력)")
     sv.add_argument("--medium", default=None, help="medium spec csv/json (생략 시 default medium)")
+    _add_exact_medium(sv)
     sv_namespace = sv.add_mutually_exclusive_group()
     sv_namespace.add_argument(
         "--namespace-decisions",
@@ -7713,6 +7864,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="measurement method, sample record, or literature citation for both gDW bases",
     )
     hmb.add_argument("--microbe-medium", default=None, help="optional microbial medium csv/json")
+    _add_exact_medium(hmb)
     hmb.add_argument(
         "--host-medium",
         default=None,
@@ -7806,6 +7958,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="measurement method, sample record, or literature citation for both gDW bases",
     )
     hki.add_argument("--microbe-medium", default=None, help="optional microbial medium csv/json")
+    _add_exact_medium(hki)
     hki.add_argument("--host-medium", default=None, help="optional host background medium csv/json")
     hki.add_argument("--exchange-suffix", default="_e", help="host BiGG exchange suffix")
     hki.add_argument(
@@ -7920,6 +8073,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="measurement method, sample record, or literature citation for both gDW bases",
     )
     hs.add_argument("--microbe-medium", default=None, help="optional microbial medium csv/json")
+    _add_exact_medium(hs)
     hs.add_argument("--host-medium", default=None, help="optional host background medium csv/json")
     hs.add_argument("--exchange-suffix", default="_e", help="host BiGG exchange suffix")
     hs.add_argument(
@@ -7959,6 +8113,7 @@ def build_parser() -> argparse.ArgumentParser:
     sg.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     sg.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f")
     sg.add_argument("--medium", default=None, help="optional community medium csv/json")
+    _add_exact_medium(sg)
     sg.add_argument(
         "--single-medium",
         default="community",
@@ -7998,6 +8153,7 @@ def build_parser() -> argparse.ArgumentParser:
     ai.add_argument("--solver", default="gurobi", choices=["gurobi"], help="LP solver")
     ai.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f")
     ai.add_argument("--medium", default=None, help="optional community medium csv/json")
+    _add_exact_medium(ai)
     ai.add_argument(
         "--allow-unknown-medium",
         action="store_true",
@@ -8094,6 +8250,7 @@ def build_parser() -> argparse.ArgumentParser:
     # `search` honoured `--medium`. Shipping only the relaxation flag would have wired a switch
     # to nothing, which is the fabricated-capability failure in miniature.
     gk.add_argument("--medium", default=None, help="optional community medium csv/json")
+    _add_exact_medium(gk)
     _add_allow_unknown_medium(gk)
     gk.add_argument(
         "--allow-failed-run", action="store_true", dest="allow_failed_run",
@@ -8344,6 +8501,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="single-target only: add target FVA ranges to final top-k rows after ranking",
     )
     sp.add_argument("--medium", default=None, help="optional medium csv/json")
+    _add_exact_medium(sp)
     sp.add_argument("--allow-unknown-medium", action="store_true")
     sp.add_argument(
         "--allow-failed-run", action="store_true", dest="allow_failed_run",
@@ -8426,6 +8584,7 @@ def build_parser() -> argparse.ArgumentParser:
     us.add_argument("--tradeoff-fs", default="0.3,0.5", dest="tradeoff_fs")
     us.add_argument("--solvers", default="gurobi")
     us.add_argument("--mediums", default=None, help="comma-separated medium csv/json paths")
+    _add_exact_medium(us)
     us.add_argument(
         "--member-sets",
         default=None,
@@ -8491,7 +8650,10 @@ def _cmd_gui(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return int(args.func(args))
+    from cmig.core.medium_spec import cli_exact_medium
+
+    with cli_exact_medium(bool(getattr(args, "exact_medium", False))):
+        return int(args.func(args))
 
 
 if __name__ == "__main__":

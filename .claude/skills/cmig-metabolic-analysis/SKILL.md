@@ -234,6 +234,14 @@ host-microbe or publication run.
     `provenance.medium_policy: "exchange_reactions_by_metabolite_v2"`. Check it
     with `uv run cmig inspect-run --run-dir <dir> --format json`. Absent or
     `open_uptakes_exact_key_v1` ⇒ re-run.
+  - **`--medium` merges; `--exact-medium` replaces.** By default the file is an
+    overlay onto the model's existing environment — anything it does not name
+    stays at the inherited bound. `--exact-medium` (round 7, on all nine
+    medium-bearing subcommands) isolates the whole model boundary first and
+    opens only the named exchanges. The manifest hashes which mode ran as
+    `medium_application_mode` (`merge_onto_model_default` /
+    `exact_boundary_isolation`, workflow-manifest schema 1.2) — check it with
+    `inspect-run` before comparing two medium runs.
   - **Do not hedge namespaces.** Listing the same metabolite under two
     namespaces (e.g. both `EX_glc__D_m` and `EX_glc__D_e`) is now rejected as a
     spec-level input error (exit 2) in both `solve` and `search`. Pick one.
@@ -344,11 +352,12 @@ choice. Always decide them explicitly.
 | `search` | `--targets` / `--target-preset scfa` | multi-target mode; without it only one metabolite is ranked |
 | `search` | `--multi-metric` | `normalized_weighted` (default) collapses onto a single-metabolite specialist; use `pareto` or `carbon_equivalent` |
 | `search` | `--target-directions` | per-target produce/consume; otherwise all targets share `--direction` |
-| `search` (**single-target only**) | `--robustness-fva` | without it a ranking cannot be told from alternate optima. **Silently inert in multi-target mode** — accepted, no columns, no warning, exit 0 |
+| `search` (**single-target only**) | `--robustness-fva` | without it a ranking cannot be told from alternate optima. In GA mode FVA is deferred to the final top-k rows. **Rejected explicitly in multi-target mode** (round 7 — previously silently inert) |
 | `strain-growth` | `--single-medium` | `model_default` reports native capability, **not** an interaction effect |
 | `abundance-impact` | `--fva` | separates a dose response from alternate-optima degeneracy |
 | `dfba`, `dfba-sensitivity` | `--close-untracked-uptake` | without it a substrate/Km experiment is not interpretable |
-| `solve`, `search`, `strain-growth`, `abundance-impact`, `sweep` | `--allow-unknown-medium` | silently drops nutrients; run exits 0 as `degraded` |
+| `solve`, `search`, `strain-growth`, `abundance-impact`, `gene-ko-search`, `sweep`, `host-microbe-bigg`, `host-search-bigg`, `host-ko-impact` | `--allow-unknown-medium` | drops unmatched nutrients with their ids recorded; the run continues as `degraded` |
+| same nine medium commands | `--exact-medium` | the file becomes the whole environment (boundary isolation first, then only named exchanges open); without it the file is a merge overlay. Hashed as `medium_application_mode` (schema 1.2) |
 | `solve`, `sweep`, `publication-benchmark` | `--assume-bigg-namespace` | waives the namespace-decision review gate |
 | host commands | `--accept-unreviewed-map` | waives the D/L stereoisomer review gate |
 | host commands | `--keep-host-uptake` | leaves pre-existing host uptake open, so "host benefit" may be background medium |
@@ -367,8 +376,12 @@ Round-5 hardening made this a contract. Do not read artifacts without checking
 | `3` | artifacts were written but **the scientific solve did not succeed**, or `inspect-run` found `artifact_integrity: mismatch` |
 
 `--allow-failed-run` exists for pipelines that want the artifacts anyway; it
-turns a 3 into a 0 and **does not make the run a result**. Every analysis command
-has it, including `sweep`. If you pass it, say so and quote the failure.
+turns a 3 into a 0 and **does not make the run a result**. It exists on `solve`,
+`search`, `strain-growth`, `abundance-impact`, `gene-ko-search`, `sweep`,
+`dfba-sensitivity`, `host-microbe-bigg`, `host-search-bigg`, and
+`host-ko-impact`; it is rejected by `dfba`, `model-quality`,
+`publication-benchmark`, `spatial-preview`, and `model-review`. If you pass it,
+say so and quote the failure.
 
 ## Verifying a result: two fingerprints, not one
 

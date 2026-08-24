@@ -2,13 +2,13 @@
   "envelope_golden_schema_version": "1.0",
   "float_decimals": 6,
   "float_normalization_probe": {
-    "canonical_json": "[[\"workflow_kind\",\"dfba\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"dfba_spec\",{\"at_rounding_floor\":\"f64:0.1234565\",\"below_rounding_floor\":\"f64:0.10000000000100001\",\"nan\":\"NaN\",\"neg_inf\":\"-Infinity\",\"negative_zero\":0.0,\"pos_inf\":\"Infinity\"}]]",
-    "hash": "55609758c01f8c41b129d64c5785548462ce12acf8499bdc64be368ca0ebb8df",
+    "canonical_json": "[[\"workflow_kind\",\"dfba\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"dfba_spec\",{\"at_rounding_floor\":\"f64:0.1234565\",\"below_rounding_floor\":\"f64:0.10000000000100001\",\"nan\":\"NaN\",\"neg_inf\":\"-Infinity\",\"negative_zero\":0.0,\"pos_inf\":\"Infinity\"}]]",
+    "hash": "c9340e795933df013e5a5c30190cb137a4a1bed7604df0d126d0f42c29bc2c3a",
     "kind": "dfba"
   },
   "kinds": {
     "abundance_impact": {
-      "canonical_json": "[[\"workflow_kind\",\"abundance_impact\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"abundances\",{\"m_a\":\"f64:0.3333335\",\"m_b\":\"f64:0.6666665\"}],[\"tradeoff_f\",0.5],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"sweep_spec\",{\"grid\":[0.25,0.5,0.75],\"kind\":\"member_abundance\",\"n_points\":3}],[\"flux_normalization_method\",\"pfba\"]]",
+      "canonical_json": "[[\"workflow_kind\",\"abundance_impact\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"abundances\",{\"m_a\":\"f64:0.3333335\",\"m_b\":\"f64:0.6666665\"}],[\"tradeoff_f\",0.5],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"sweep_spec\",{\"grid\":[0.25,0.5,0.75],\"kind\":\"member_abundance\",\"n_points\":3}],[\"flux_normalization_method\",\"pfba\"]]",
       "components": [
         "workflow_kind",
         "cmig_core_version",
@@ -22,7 +22,7 @@
         "sweep_spec",
         "flux_normalization_method"
       ],
-      "hash": "bded1760b780bd9812a0ff9fb9ba5012d5fa80eec9e36e5dd669f31ab7e88807",
+      "hash": "3e195dff7a45acfc085b910b19efda65e5ad1e02b5de8c2d29e9783f1f8c9651",
       "input": {
         "abundances": {
           "m_a": 0.3333335,
@@ -38,6 +38,7 @@
         "medium": {
           "allow_unknown_medium": false,
           "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
           "namespace_bridge": {
             "unavailable_per_member": {
               "m_a": [],
@@ -73,7 +74,7 @@
       }
     },
     "dfba": {
-      "canonical_json": "[[\"workflow_kind\",\"dfba\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"dfba_spec\",{\"dt\":0.1,\"dts\":[0.2,0.1],\"initial_concentrations\":{\"EX_glc__D_e\":10.0},\"km\":0.01,\"kms\":[0.01],\"mode\":\"sensitivity\",\"t_end\":10.0}]]",
+      "canonical_json": "[[\"workflow_kind\",\"dfba\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"dfba_spec\",{\"dt\":0.1,\"dts\":[0.2,0.1],\"initial_concentrations\":{\"EX_glc__D_e\":10.0},\"km\":0.01,\"kms\":[0.01],\"mode\":\"sensitivity\",\"t_end\":10.0}]]",
       "components": [
         "workflow_kind",
         "cmig_core_version",
@@ -83,7 +84,7 @@
         "medium",
         "dfba_spec"
       ],
-      "hash": "2fe9781a51668478ab911264f963153ef2119a7d4aeb687bb4cd0c711d4d4a46",
+      "hash": "f8fb5a52731e3718f7121a57264c78984d20707e0f0c8d0206abba2c9056b2a5",
       "input": {
         "cmig_core_version": "0.0.0-envelope-golden",
         "dependency_versions": {
@@ -110,6 +111,7 @@
         "medium": {
           "allow_unknown_medium": false,
           "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
           "namespace_bridge": {
             "unavailable_per_member": {
               "m_a": [],
@@ -130,7 +132,7 @@
       }
     },
     "gene_ko_search": {
-      "canonical_json": "[[\"workflow_kind\",\"gene_ko_search\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"search_spec\",{\"max_size\":3,\"min_size\":2,\"n_samples\":100,\"robustness_fva\":false,\"seed\":0,\"strategy\":\"exhaustive\",\"top_k\":10}],[\"growth_fraction\",\"f64:0.1234565\"],[\"knockout_spec\",{\"cap\":25,\"genes\":[\"b0001\",\"b0002\"],\"level\":\"gene\",\"member\":\"m_a\",\"seed\":7,\"selection\":\"all\"}]]",
+      "canonical_json": "[[\"workflow_kind\",\"gene_ko_search\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"search_spec\",{\"max_size\":3,\"min_size\":2,\"n_samples\":100,\"robustness_fva\":false,\"seed\":0,\"strategy\":\"exhaustive\",\"top_k\":10}],[\"growth_fraction\",\"f64:0.1234565\"],[\"knockout_spec\",{\"cap\":25,\"genes\":[\"b0001\",\"b0002\"],\"level\":\"gene\",\"member\":\"m_a\",\"seed\":7,\"selection\":\"all\"}]]",
       "components": [
         "workflow_kind",
         "cmig_core_version",
@@ -143,7 +145,7 @@
         "growth_fraction",
         "knockout_spec"
       ],
-      "hash": "a57b747e4865728de5b3e14cc0b89ed42f7989ec2da5f4ec6111c1ea8e36de4a",
+      "hash": "fd940c041c6021b266964a65f2eb53cc49271b13e322bc2fa351a1e8d9cc7648",
       "input": {
         "cmig_core_version": "0.0.0-envelope-golden",
         "dependency_versions": {
@@ -166,6 +168,7 @@
         "medium": {
           "allow_unknown_medium": false,
           "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
           "namespace_bridge": {
             "unavailable_per_member": {
               "m_a": [],
@@ -200,7 +203,7 @@
       }
     },
     "host_ko_impact": {
-      "canonical_json": "[[\"workflow_kind\",\"host_ko_impact\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"abundances\",{\"m_a\":\"f64:0.3333335\",\"m_b\":\"f64:0.6666665\"}],[\"tradeoff_f\",0.5],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"knockout_spec\",{\"cap\":25,\"genes\":[\"b0001\",\"b0002\"],\"level\":\"gene\",\"member\":\"m_a\",\"seed\":7,\"selection\":\"all\"}],[\"host_spec\",{\"exchange_suffix\":\"_e\",\"exclude_metabolites\":[\"co2\",\"h\",\"h2o\"],\"host_medium\":null,\"host_medium_checksum\":null,\"host_model\":\"host.xml\",\"host_model_checksum\":\"sha256:2222\",\"host_objective\":\"biomass_host\",\"include_currency_metabolites\":false,\"interface_map\":\"interface.json\",\"interface_map_checksum\":\"sha256:3333\",\"keep_host_uptake\":true,\"microbe_medium\":null,\"microbe_medium_checksum\":null}],[\"biomass_basis\",{\"host_biomass_gdw\":1.5,\"kind\":\"measured\",\"microbial_biomass_gdw\":0.25,\"source\":\"golden dry-mass record\"}]]",
+      "canonical_json": "[[\"workflow_kind\",\"host_ko_impact\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"abundances\",{\"m_a\":\"f64:0.3333335\",\"m_b\":\"f64:0.6666665\"}],[\"tradeoff_f\",0.5],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"knockout_spec\",{\"cap\":25,\"genes\":[\"b0001\",\"b0002\"],\"level\":\"gene\",\"member\":\"m_a\",\"seed\":7,\"selection\":\"all\"}],[\"host_spec\",{\"exchange_suffix\":\"_e\",\"exclude_metabolites\":[\"co2\",\"h\",\"h2o\"],\"host_medium\":null,\"host_medium_checksum\":null,\"host_model\":\"host.xml\",\"host_model_checksum\":\"sha256:2222\",\"host_objective\":\"biomass_host\",\"include_currency_metabolites\":false,\"interface_map\":\"interface.json\",\"interface_map_checksum\":\"sha256:3333\",\"keep_host_uptake\":true,\"microbe_medium\":null,\"microbe_medium_checksum\":null}],[\"biomass_basis\",{\"host_biomass_gdw\":1.5,\"kind\":\"measured\",\"microbial_biomass_gdw\":0.25,\"source\":\"golden dry-mass record\"}]]",
       "components": [
         "workflow_kind",
         "cmig_core_version",
@@ -215,7 +218,7 @@
         "host_spec",
         "biomass_basis"
       ],
-      "hash": "5a255ba74f449c16346c32348d5a1652b6aff0f89f11883a6c9ccfbdf2565c70",
+      "hash": "2b216cc57d1e5f31576f352f7ab29473cc35994c44d42ddde016386c3f795470",
       "input": {
         "abundances": {
           "m_a": 0.3333335,
@@ -266,6 +269,7 @@
         "medium": {
           "allow_unknown_medium": false,
           "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
           "namespace_bridge": {
             "unavailable_per_member": {
               "m_a": [],
@@ -292,7 +296,7 @@
       }
     },
     "host_map": {
-      "canonical_json": "[[\"workflow_kind\",\"host_map\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"host_spec\",{\"exchange_suffix\":\"_e\",\"exclude_metabolites\":[\"co2\",\"h\",\"h2o\"],\"host_medium\":null,\"host_medium_checksum\":null,\"host_model\":\"host.xml\",\"host_model_checksum\":\"sha256:2222\",\"host_objective\":\"biomass_host\",\"include_currency_metabolites\":false,\"interface_map\":\"interface.json\",\"interface_map_checksum\":\"sha256:3333\",\"keep_host_uptake\":true,\"microbe_medium\":null,\"microbe_medium_checksum\":null}],[\"map_spec\",{\"annotation_requires_unique_target\":true,\"annotation_sources\":[\"metabolite.annotation['bigg.metabolite']\",\"reaction.annotation['bigg.reaction']\"],\"id_normalization\":{\"case_folded\":true,\"compartment_suffixes_stripped\":[\"_e\",\"_m\",\"_c\",\"_p\",\"_lumen\",\"_blood\"],\"exchange_prefix_stripped\":\"EX_\",\"uppercase_stereoisomer_suffix_folded\":false},\"interface_map_admits\":[\"exact\"],\"match_behavior\":{\"digest\":\"sha256:4444\",\"probe_version\":\"golden\"},\"match_order\":[\"exact\",\"annotation\",\"normalized\"],\"match_policy_version\":\"golden\",\"needs_review_match_types\":[\"annotation\",\"normalized\"],\"secretion_criterion\":\"exchange_upper_bound_gt_0\"}]]",
+      "canonical_json": "[[\"workflow_kind\",\"host_map\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"host_spec\",{\"exchange_suffix\":\"_e\",\"exclude_metabolites\":[\"co2\",\"h\",\"h2o\"],\"host_medium\":null,\"host_medium_checksum\":null,\"host_model\":\"host.xml\",\"host_model_checksum\":\"sha256:2222\",\"host_objective\":\"biomass_host\",\"include_currency_metabolites\":false,\"interface_map\":\"interface.json\",\"interface_map_checksum\":\"sha256:3333\",\"keep_host_uptake\":true,\"microbe_medium\":null,\"microbe_medium_checksum\":null}],[\"map_spec\",{\"annotation_requires_unique_target\":true,\"annotation_sources\":[\"metabolite.annotation['bigg.metabolite']\",\"reaction.annotation['bigg.reaction']\"],\"id_normalization\":{\"case_folded\":true,\"compartment_suffixes_stripped\":[\"_e\",\"_m\",\"_c\",\"_p\",\"_lumen\",\"_blood\"],\"exchange_prefix_stripped\":\"EX_\",\"uppercase_stereoisomer_suffix_folded\":false},\"interface_map_admits\":[\"exact\"],\"match_behavior\":{\"digest\":\"sha256:4444\",\"probe_version\":\"golden\"},\"match_order\":[\"exact\",\"annotation\",\"normalized\"],\"match_policy_version\":\"golden\",\"needs_review_match_types\":[\"annotation\",\"normalized\"],\"secretion_criterion\":\"exchange_upper_bound_gt_0\"}]]",
       "components": [
         "workflow_kind",
         "cmig_core_version",
@@ -303,7 +307,7 @@
         "host_spec",
         "map_spec"
       ],
-      "hash": "ebc7396d6b1066567eb5efa19c56dd239a35752161b0bb50e68224b6d747b589",
+      "hash": "f4b0b28c092ee9feb2bb56a09a63afbbc91e3bc133990fa1f56334dfdf8c5942",
       "input": {
         "cmig_core_version": "0.0.0-envelope-golden",
         "dependency_versions": {
@@ -371,6 +375,7 @@
         "medium": {
           "allow_unknown_medium": false,
           "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
           "namespace_bridge": {
             "unavailable_per_member": {
               "m_a": [],
@@ -391,7 +396,7 @@
       }
     },
     "host_microbe_bigg": {
-      "canonical_json": "[[\"workflow_kind\",\"host_microbe_bigg\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"abundances\",{\"m_a\":\"f64:0.3333335\",\"m_b\":\"f64:0.6666665\"}],[\"tradeoff_f\",0.5],[\"host_spec\",{\"exchange_suffix\":\"_e\",\"exclude_metabolites\":[\"co2\",\"h\",\"h2o\"],\"host_medium\":null,\"host_medium_checksum\":null,\"host_model\":\"host.xml\",\"host_model_checksum\":\"sha256:2222\",\"host_objective\":\"biomass_host\",\"include_currency_metabolites\":false,\"interface_map\":\"interface.json\",\"interface_map_checksum\":\"sha256:3333\",\"keep_host_uptake\":true,\"microbe_medium\":null,\"microbe_medium_checksum\":null}],[\"biomass_basis\",{\"host_biomass_gdw\":1.5,\"kind\":\"measured\",\"microbial_biomass_gdw\":0.25,\"source\":\"golden dry-mass record\"}],[\"flux_normalization_method\",\"pfba\"],[\"solve_run_hash\",\"cf3c73d97be5c3555d5d9e228c08e5088661cc6f1ba36fc7a333d2a9b2aaa633\"]]",
+      "canonical_json": "[[\"workflow_kind\",\"host_microbe_bigg\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"abundances\",{\"m_a\":\"f64:0.3333335\",\"m_b\":\"f64:0.6666665\"}],[\"tradeoff_f\",0.5],[\"host_spec\",{\"exchange_suffix\":\"_e\",\"exclude_metabolites\":[\"co2\",\"h\",\"h2o\"],\"host_medium\":null,\"host_medium_checksum\":null,\"host_model\":\"host.xml\",\"host_model_checksum\":\"sha256:2222\",\"host_objective\":\"biomass_host\",\"include_currency_metabolites\":false,\"interface_map\":\"interface.json\",\"interface_map_checksum\":\"sha256:3333\",\"keep_host_uptake\":true,\"microbe_medium\":null,\"microbe_medium_checksum\":null}],[\"biomass_basis\",{\"host_biomass_gdw\":1.5,\"kind\":\"measured\",\"microbial_biomass_gdw\":0.25,\"source\":\"golden dry-mass record\"}],[\"flux_normalization_method\",\"pfba\"],[\"solve_run_hash\",\"cf3c73d97be5c3555d5d9e228c08e5088661cc6f1ba36fc7a333d2a9b2aaa633\"]]",
       "components": [
         "workflow_kind",
         "cmig_core_version",
@@ -406,7 +411,7 @@
         "flux_normalization_method",
         "solve_run_hash"
       ],
-      "hash": "e5acd04e72e8ba1f9e3b94f8b04b28e71972fd346b06d5101fd88c3faa210777",
+      "hash": "328463a97c9912dc94be5b6aece439f628e8293eddf11e65ec617bf0ca575154",
       "input": {
         "abundances": {
           "m_a": 0.3333335,
@@ -447,6 +452,7 @@
         "medium": {
           "allow_unknown_medium": false,
           "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
           "namespace_bridge": {
             "unavailable_per_member": {
               "m_a": [],
@@ -469,7 +475,7 @@
       }
     },
     "host_search_bigg": {
-      "canonical_json": "[[\"workflow_kind\",\"host_search_bigg\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"tradeoff_f\",0.5],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"search_spec\",{\"max_size\":3,\"min_size\":2,\"n_samples\":100,\"robustness_fva\":false,\"seed\":0,\"strategy\":\"exhaustive\",\"top_k\":10}],[\"host_spec\",{\"exchange_suffix\":\"_e\",\"exclude_metabolites\":[\"co2\",\"h\",\"h2o\"],\"host_medium\":null,\"host_medium_checksum\":null,\"host_model\":\"host.xml\",\"host_model_checksum\":\"sha256:2222\",\"host_objective\":\"biomass_host\",\"include_currency_metabolites\":false,\"interface_map\":\"interface.json\",\"interface_map_checksum\":\"sha256:3333\",\"keep_host_uptake\":true,\"microbe_medium\":null,\"microbe_medium_checksum\":null}],[\"biomass_basis\",{\"host_biomass_gdw\":1.5,\"kind\":\"measured\",\"microbial_biomass_gdw\":0.25,\"source\":\"golden dry-mass record\"}]]",
+      "canonical_json": "[[\"workflow_kind\",\"host_search_bigg\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"tradeoff_f\",0.5],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"search_spec\",{\"max_size\":3,\"min_size\":2,\"n_samples\":100,\"robustness_fva\":false,\"seed\":0,\"strategy\":\"exhaustive\",\"top_k\":10}],[\"host_spec\",{\"exchange_suffix\":\"_e\",\"exclude_metabolites\":[\"co2\",\"h\",\"h2o\"],\"host_medium\":null,\"host_medium_checksum\":null,\"host_model\":\"host.xml\",\"host_model_checksum\":\"sha256:2222\",\"host_objective\":\"biomass_host\",\"include_currency_metabolites\":false,\"interface_map\":\"interface.json\",\"interface_map_checksum\":\"sha256:3333\",\"keep_host_uptake\":true,\"microbe_medium\":null,\"microbe_medium_checksum\":null}],[\"biomass_basis\",{\"host_biomass_gdw\":1.5,\"kind\":\"measured\",\"microbial_biomass_gdw\":0.25,\"source\":\"golden dry-mass record\"}]]",
       "components": [
         "workflow_kind",
         "cmig_core_version",
@@ -483,7 +489,7 @@
         "host_spec",
         "biomass_basis"
       ],
-      "hash": "270e3ce2df4d16f883a44b4cf16c67be025be449e764a3c464cd8f4f307adb47",
+      "hash": "433621da78df60f4e10ed9f7465fc00a996fafa2603a4ac5a2614ec6a9f2b1e0",
       "input": {
         "biomass_basis": {
           "host_biomass_gdw": 1.5,
@@ -519,6 +525,7 @@
         "medium": {
           "allow_unknown_medium": false,
           "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
           "namespace_bridge": {
             "unavailable_per_member": {
               "m_a": [],
@@ -554,7 +561,7 @@
       }
     },
     "model_pool_search": {
-      "canonical_json": "[[\"workflow_kind\",\"model_pool_search\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"search_spec\",{\"max_size\":3,\"min_size\":2,\"n_samples\":100,\"robustness_fva\":false,\"seed\":0,\"strategy\":\"exhaustive\",\"top_k\":10}],[\"growth_fraction\",\"f64:0.1234565\"]]",
+      "canonical_json": "[[\"workflow_kind\",\"model_pool_search\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"search_spec\",{\"max_size\":3,\"min_size\":2,\"n_samples\":100,\"robustness_fva\":false,\"seed\":0,\"strategy\":\"exhaustive\",\"top_k\":10}],[\"growth_fraction\",\"f64:0.1234565\"]]",
       "components": [
         "workflow_kind",
         "cmig_core_version",
@@ -566,7 +573,7 @@
         "search_spec",
         "growth_fraction"
       ],
-      "hash": "d31f43940d4d0e5a70d9472cf3b4853be093eec69fb794802c574fe86eb34724",
+      "hash": "0411d5c29ad3dcc7b75d7f2a1005be48751b7a3e9a2e50b6f6d851a881e69991",
       "input": {
         "cmig_core_version": "0.0.0-envelope-golden",
         "dependency_versions": {
@@ -578,6 +585,7 @@
         "medium": {
           "allow_unknown_medium": false,
           "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
           "namespace_bridge": {
             "unavailable_per_member": {
               "m_a": [],
@@ -612,7 +620,7 @@
       }
     },
     "model_quality": {
-      "canonical_json": "[[\"workflow_kind\",\"model_quality\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"quality_spec\",{\"check_blocked_reactions\":true,\"n_models\":2,\"scope\":\"microbial_pool\",\"sources\":[\"golden/a.xml\",\"golden/b.xml\"]}]]",
+      "canonical_json": "[[\"workflow_kind\",\"model_quality\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"quality_spec\",{\"check_blocked_reactions\":true,\"n_models\":2,\"scope\":\"microbial_pool\",\"sources\":[\"golden/a.xml\",\"golden/b.xml\"]}]]",
       "components": [
         "workflow_kind",
         "cmig_core_version",
@@ -622,7 +630,7 @@
         "medium",
         "quality_spec"
       ],
-      "hash": "aeb00e8c3b165f3a4bcc17745134d6b86dca6f80e7910b901eb44bf883ca35b9",
+      "hash": "07705d7f3e2bc4b5929ce00a0f7d5847b2a411dbb8a4e0be36262ac8b0323f47",
       "input": {
         "cmig_core_version": "0.0.0-envelope-golden",
         "dependency_versions": {
@@ -633,6 +641,7 @@
         "medium": {
           "allow_unknown_medium": false,
           "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
           "namespace_bridge": {
             "unavailable_per_member": {
               "m_a": [],
@@ -662,7 +671,7 @@
       }
     },
     "multi_target_model_pool_search": {
-      "canonical_json": "[[\"workflow_kind\",\"multi_target_model_pool_search\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"search_spec\",{\"max_size\":3,\"min_size\":2,\"n_samples\":100,\"robustness_fva\":false,\"seed\":0,\"strategy\":\"exhaustive\",\"top_k\":10}],[\"growth_fraction\",\"f64:0.1234565\"]]",
+      "canonical_json": "[[\"workflow_kind\",\"multi_target_model_pool_search\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"search_spec\",{\"max_size\":3,\"min_size\":2,\"n_samples\":100,\"robustness_fva\":false,\"seed\":0,\"strategy\":\"exhaustive\",\"top_k\":10}],[\"growth_fraction\",\"f64:0.1234565\"]]",
       "components": [
         "workflow_kind",
         "cmig_core_version",
@@ -674,7 +683,7 @@
         "search_spec",
         "growth_fraction"
       ],
-      "hash": "ae7edefc9014caf35cc6bbc8493a544d6727c8b9fbf6ea863b5380ea842ecc05",
+      "hash": "1f78463ec9c459d7ee21ae5477984bf44aafc4885c7baf6415a65ef0691c37c9",
       "input": {
         "cmig_core_version": "0.0.0-envelope-golden",
         "dependency_versions": {
@@ -686,6 +695,7 @@
         "medium": {
           "allow_unknown_medium": false,
           "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
           "namespace_bridge": {
             "unavailable_per_member": {
               "m_a": [],
@@ -720,7 +730,7 @@
       }
     },
     "publication_benchmark": {
-      "canonical_json": "[[\"workflow_kind\",\"publication_benchmark\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"tradeoff_f\",0.5],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"search_spec\",{\"max_size\":3,\"min_size\":2,\"n_samples\":100,\"robustness_fva\":false,\"seed\":0,\"strategy\":\"exhaustive\",\"top_k\":10}],[\"quality_spec\",{\"check_blocked_reactions\":true,\"n_models\":2,\"scope\":\"microbial_pool\",\"sources\":[\"golden/a.xml\",\"golden/b.xml\"]}],[\"dfba_spec\",{\"dt\":0.1,\"dts\":[0.2,0.1],\"initial_concentrations\":{\"EX_glc__D_e\":10.0},\"km\":0.01,\"kms\":[0.01],\"mode\":\"sensitivity\",\"t_end\":10.0}],[\"host_spec\",{\"exchange_suffix\":\"_e\",\"exclude_metabolites\":[\"co2\",\"h\",\"h2o\"],\"host_medium\":null,\"host_medium_checksum\":null,\"host_model\":\"host.xml\",\"host_model_checksum\":\"sha256:2222\",\"host_objective\":\"biomass_host\",\"include_currency_metabolites\":false,\"interface_map\":\"interface.json\",\"interface_map_checksum\":\"sha256:3333\",\"keep_host_uptake\":true,\"microbe_medium\":null,\"microbe_medium_checksum\":null}],[\"biomass_basis\",{\"host_biomass_gdw\":1.5,\"kind\":\"measured\",\"microbial_biomass_gdw\":0.25,\"source\":\"golden dry-mass record\"}],[\"bundle_spec\",{\"bundle_hash_includes_child_hashes\":true,\"child_kinds\":[\"community_solve\",\"model_quality\"],\"children\":[{\"artifacts_dir\":\"community\",\"kind\":\"community_solve\",\"run_hash\":\"aaaa\",\"status\":\"ok\"},{\"artifacts_dir\":\"model_quality\",\"kind\":\"model_quality\",\"run_hash\":null,\"status\":\"degraded\"}],\"n_children\":2}]]",
+      "canonical_json": "[[\"workflow_kind\",\"publication_benchmark\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"tradeoff_f\",0.5],[\"target_spec\",{\"direction\":\"max_secretion\",\"mode\":\"single_target\",\"target\":\"but\"}],[\"search_spec\",{\"max_size\":3,\"min_size\":2,\"n_samples\":100,\"robustness_fva\":false,\"seed\":0,\"strategy\":\"exhaustive\",\"top_k\":10}],[\"quality_spec\",{\"check_blocked_reactions\":true,\"n_models\":2,\"scope\":\"microbial_pool\",\"sources\":[\"golden/a.xml\",\"golden/b.xml\"]}],[\"dfba_spec\",{\"dt\":0.1,\"dts\":[0.2,0.1],\"initial_concentrations\":{\"EX_glc__D_e\":10.0},\"km\":0.01,\"kms\":[0.01],\"mode\":\"sensitivity\",\"t_end\":10.0}],[\"host_spec\",{\"exchange_suffix\":\"_e\",\"exclude_metabolites\":[\"co2\",\"h\",\"h2o\"],\"host_medium\":null,\"host_medium_checksum\":null,\"host_model\":\"host.xml\",\"host_model_checksum\":\"sha256:2222\",\"host_objective\":\"biomass_host\",\"include_currency_metabolites\":false,\"interface_map\":\"interface.json\",\"interface_map_checksum\":\"sha256:3333\",\"keep_host_uptake\":true,\"microbe_medium\":null,\"microbe_medium_checksum\":null}],[\"biomass_basis\",{\"host_biomass_gdw\":1.5,\"kind\":\"measured\",\"microbial_biomass_gdw\":0.25,\"source\":\"golden dry-mass record\"}],[\"bundle_spec\",{\"bundle_hash_includes_child_hashes\":true,\"child_kinds\":[\"community_solve\",\"model_quality\"],\"children\":[{\"artifacts_dir\":\"community\",\"kind\":\"community_solve\",\"run_hash\":\"aaaa\",\"status\":\"ok\"},{\"artifacts_dir\":\"model_quality\",\"kind\":\"model_quality\",\"run_hash\":null,\"status\":\"degraded\"}],\"n_children\":2}]]",
       "components": [
         "workflow_kind",
         "cmig_core_version",
@@ -737,7 +747,7 @@
         "biomass_basis",
         "bundle_spec"
       ],
-      "hash": "b706be59f2ae109ff3e537aafe5df53494f6199e8fbc5197dcb1930f25696afb",
+      "hash": "0d33ca3d499a71b18e3793c314e1158f0e13799e67638a5a7c7bad5d9ec19842",
       "input": {
         "biomass_basis": {
           "host_biomass_gdw": 1.5,
@@ -811,6 +821,7 @@
         "medium": {
           "allow_unknown_medium": false,
           "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
           "namespace_bridge": {
             "unavailable_per_member": {
               "m_a": [],
@@ -855,7 +866,7 @@
       }
     },
     "strain_growth": {
-      "canonical_json": "[[\"workflow_kind\",\"strain_growth\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"abundances\",{\"m_a\":\"f64:0.3333335\",\"m_b\":\"f64:0.6666665\"}],[\"tradeoff_f\",0.5],[\"flux_normalization_method\",\"pfba\"],[\"solve_run_hash\",\"cf3c73d97be5c3555d5d9e228c08e5088661cc6f1ba36fc7a333d2a9b2aaa633\"]]",
+      "canonical_json": "[[\"workflow_kind\",\"strain_growth\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"abundances\",{\"m_a\":\"f64:0.3333335\",\"m_b\":\"f64:0.6666665\"}],[\"tradeoff_f\",0.5],[\"flux_normalization_method\",\"pfba\"],[\"solve_run_hash\",\"cf3c73d97be5c3555d5d9e228c08e5088661cc6f1ba36fc7a333d2a9b2aaa633\"]]",
       "components": [
         "workflow_kind",
         "cmig_core_version",
@@ -868,7 +879,7 @@
         "flux_normalization_method",
         "solve_run_hash"
       ],
-      "hash": "4cd3fbcb77fe4afebbf7b4e59ed5fbc6659db819daf89c830b9192804a40fd95",
+      "hash": "6d3040b4ca0d88b11257c623304db9ce1e5899adf89e1b553d0b31931f2aa1ae",
       "input": {
         "abundances": {
           "m_a": 0.3333335,
@@ -884,6 +895,7 @@
         "medium": {
           "allow_unknown_medium": false,
           "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
           "namespace_bridge": {
             "unavailable_per_member": {
               "m_a": [],
@@ -906,7 +918,7 @@
       }
     },
     "sweep": {
-      "canonical_json": "[[\"workflow_kind\",\"sweep\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"tradeoff_f\",0.5],[\"sweep_spec\",{\"grid\":[0.25,0.5,0.75],\"kind\":\"member_abundance\",\"n_points\":3}]]",
+      "canonical_json": "[[\"workflow_kind\",\"sweep\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"tradeoff_f\",0.5],[\"sweep_spec\",{\"grid\":[0.25,0.5,0.75],\"kind\":\"member_abundance\",\"n_points\":3}]]",
       "components": [
         "workflow_kind",
         "cmig_core_version",
@@ -917,7 +929,7 @@
         "tradeoff_f",
         "sweep_spec"
       ],
-      "hash": "10ee92804bb1aa4d60ed7bb618bada3a81df129b65ab2a3a402ae7d7dad0676e",
+      "hash": "e47a9d8b112059fbdef7e5056a9b9c817a4f772f29477cf6112273c74b8d7e9b",
       "input": {
         "cmig_core_version": "0.0.0-envelope-golden",
         "dependency_versions": {
@@ -928,6 +940,7 @@
         "medium": {
           "allow_unknown_medium": false,
           "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
           "namespace_bridge": {
             "unavailable_per_member": {
               "m_a": [],
@@ -958,5 +971,5 @@
       }
     }
   },
-  "workflow_manifest_schema_version": "1.1"
+  "workflow_manifest_schema_version": "1.2"
 }

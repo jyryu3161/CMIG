@@ -59,7 +59,7 @@ Rank microbial model combinations by target exchange production or uptake
 - `--robustness-fva` adds the target's FVA range per candidate. Without it you
   cannot tell a real ranking from a tie between alternate optima. **It works only in
   single-target mode**: in multi-target mode it is accepted and silently ignored —
-  no FVA columns, no warning, exit 0 (`cli/main.py:4151` returns to the multi-target
+  no FVA columns, no warning, exit 0 (`_cmd_search` returns to the multi-target
   path before the flag is read). Known limitation; use `--multi-metric pareto` for
   multi-target trade-off structure instead.
 ```bash
@@ -194,7 +194,8 @@ rank them by effect on target production relative to the un-knocked baseline.
 - Common: `--member` (restrict to one member; omit to screen all →
   `screening_scope: all_members`), `--ko-level gene|reaction`, `--genes`,
   `--reactions`, `--gene-selection id|random`, `--seed`, `--max-genes`,
-  `--jobs`, `--direction`, `--growth-fraction`, `--top-k`, `--recursive`.
+  `--jobs`, `--direction`, `--growth-fraction`, `--top-k`, `--medium`,
+  `--allow-unknown-medium`, `--allow-failed-run`, `--recursive`.
 - Outputs: `gene_ko_summary.json` (baseline, `warnings`, `ko_level`,
   `gene_selection`, `seed`, `n_genes_total`, ranked knockouts),
   `gene_ko_rankings.csv`, `gene_ko_plot.svg`, `gene_ko_plot.tiff`.
@@ -242,7 +243,8 @@ host models plus a microbial model folder.
 - Common: `--host-objective`, `--microbe-medium`, `--host-medium`,
   `--interface-map` (reviewed map), `--exchange-suffix`,
   `--exclude-metabolites`, `--include-currency-metabolites`,
-  `--keep-host-uptake`, `--accept-unreviewed-map`, `--allow-failed-run`,
+  `--keep-host-uptake`, `--accept-unreviewed-map`, `--allow-unknown-medium`,
+  `--allow-failed-run`,
   `--tradeoff-f`, `--recursive`.
 - **`--keep-host-uptake` changes what "host benefit" means.** By default CMIG
   closes pre-existing host exchange uptake before coupling, so the host's gain is
@@ -277,7 +279,8 @@ Rank microbial combinations by host objective and/or target transfer.
   `--target-weight`, `--host-reference`, `--target-reference`,
   `--host-objective`, `--interface-map`, `--keep-host-uptake`,
   `--include-currency-metabolites`, `--exclude-metabolites`,
-  `--accept-unreviewed-map`, `--allow-failed-run`, `--recursive`.
+  `--accept-unreviewed-map`, `--allow-unknown-medium`, `--allow-failed-run`,
+  `--recursive`.
 - `--include-currency-metabolites` and `--keep-host-uptake` carry the **same
   caveats as for `host-microbe-bigg`** above: the former makes nearly any pair look
   interacting, the latter lets the host's background medium masquerade as microbial
@@ -313,7 +316,8 @@ change the host" — do not assemble it out of `gene-ko-search` plus
   `--reactions`, `--target`, `--tradeoff-f`, `--microbe-medium`, `--host-medium`,
   `--interface-map`, `--host-objective`, `--exchange-suffix`,
   `--exclude-metabolites`, `--include-currency-metabolites`,
-  `--keep-host-uptake`, `--accept-unreviewed-map`, `--allow-failed-run`.
+  `--keep-host-uptake`, `--accept-unreviewed-map`, `--allow-unknown-medium`,
+  `--allow-failed-run`.
 - Outputs: `host_ko_impact_summary.json` **and `host_ko_impact.csv`** (the per-arm
   tidy table — read this for the actual deltas), kind `host_ko_impact`.
 - GUI surface: `Host / Knockout Impact`.

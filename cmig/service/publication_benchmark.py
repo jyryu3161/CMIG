@@ -15,7 +15,8 @@ from typing import Any, Literal
 
 from cmig.core.dfba import DfbaConfig, run_dfba_sensitivity
 from cmig.core.engine import MicomEngine
-from cmig.core.host import benchmark_generic_host, run_bigg_host_microbe
+from cmig.core.host import benchmark_generic_host
+from cmig.core.host_coupling import run_bigg_host_microbe
 from cmig.core.host_map import build_host_map, host_map_policy
 from cmig.core.model_quality import ModelQualityReport, audit_model_quality
 from cmig.core.namespace import (
@@ -66,7 +67,9 @@ class PublicationBenchmarkConfig:
     dfba_kms: list[float] = field(default_factory=lambda: [0.005, 0.01, 0.02])
     host_model: Path | None = None
     host_source: dict[str, str] = field(default_factory=dict)
-    host_interface_map: dict[str, str] | None = None
+    # Round 7: values are the legacy exchange-id string or the side-aware
+    # {"host_exchange", "interface"} object (see cmig.core.host_types.HostInterfaceMap).
+    host_interface_map: dict[str, str | dict[str, str]] | None = None
     microbial_biomass_gdw: float | None = None
     host_biomass_gdw: float | None = None
     biomass_basis_kind: str | None = None

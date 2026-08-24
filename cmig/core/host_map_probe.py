@@ -67,12 +67,19 @@ from typing import Any
 #: so a digest move caused by *widening the guard* is distinguishable from one caused by a change
 #: in the science.
 HOST_MAP_BEHAVIOR_PROBE_VERSION = "1.0"
+# Side classification is deliberately fingerprinted separately from the existing
+# ``map_spec.match_behavior`` digest. Adding side provenance must not move the published host-map
+# input hash; the host-map artifact/result digest is the answer-side fingerprint once T1 wires the
+# optional columns into the CLI writer.
+HOST_INTERFACE_BEHAVIOR_PROBE_VERSION = "1.0"
 
 
 @dataclass(frozen=True)
 class _ProbeMetabolite:
     id: str
     annotation: dict[str, Any] = field(default_factory=dict)
+    name: str = ""
+    compartment: str = ""
 
 
 @dataclass(frozen=True)
@@ -82,6 +89,8 @@ class _ProbeReaction:
     upper_bound: float
     metabolites: tuple[_ProbeMetabolite, ...]
     annotation: dict[str, Any] = field(default_factory=dict)
+    name: str = ""
+    subsystem: str = ""
 
 
 class _ProbeModel:
@@ -90,10 +99,15 @@ class _ProbeModel:
     def __init__(self, reactions: tuple[_ProbeReaction, ...], exchange_ids: tuple[str, ...]):
         self.reactions = list(reactions)
         self._exchange_ids = set(exchange_ids)
+        self.compartments = {"e": "extracellular space", "lumen": "intestinal lumen"}
 
     @property
     def exchanges(self) -> list[_ProbeReaction]:
         return [rxn for rxn in self.reactions if rxn.id in self._exchange_ids]
+
+    @property
+    def boundary(self) -> list[_ProbeReaction]:
+        return self.exchanges
 
 
 class _ProbeModelWithoutExchanges:
@@ -108,7 +122,12 @@ class _ProbeModelWithoutExchanges:
 
 
 def _met(met_id: str, annotation: dict[str, Any] | None = None) -> _ProbeMetabolite:
-    return _ProbeMetabolite(id=met_id, annotation=dict(annotation or {}))
+    compartment = met_id.rsplit("_", 1)[-1] if "_" in met_id else ""
+    return _ProbeMetabolite(
+        id=met_id,
+        annotation=dict(annotation or {}),
+        compartment=compartment,
+    )
 
 
 def _rxn(
@@ -117,6 +136,8 @@ def _rxn(
     ub: float,
     metabolites: tuple[_ProbeMetabolite, ...],
     annotation: dict[str, Any] | None = None,
+    *,
+    name: str = "",
 ) -> _ProbeReaction:
     return _ProbeReaction(
         id=rxn_id,
@@ -124,6 +145,7 @@ def _rxn(
         upper_bound=ub,
         metabolites=metabolites,
         annotation=dict(annotation or {}),
+        name=name,
     )
 
 
@@ -163,7 +185,10 @@ _HOST_REACTIONS: tuple[_ProbeReaction, ...] = (
     # stereo-descriptor preservation: the host offers the *bare* metabolite. A normalizer that
     # folds `ste__D` onto `ste` matches here; the correct one leaves both member entries
     # unmatched. So this one host reaction is what makes the round-5 P0 observable at entry level.
-    _rxn("EX_ste_e", -1000.0, 1000.0, (_met("ste_e"),)),
+    _rxn(
+        "EX_ste_e", -1000.0, 1000.0, (_met("ste_e"),),
+        name="Exchange reaction for probe metabolite in portal blood",
+    ),
     # compartment-suffix stripping beyond `_e`.
     _rxn("EX_sfx_lumen", -1000.0, 1000.0, (_met("sfx_lumen"),)),
     # exchange discovery: in `exchanges` but not `EX_`-prefixed …
@@ -317,6 +342,17 @@ def match_behavior_component() -> dict[str, Any]:
     return {
         "probe_version": HOST_MAP_BEHAVIOR_PROBE_VERSION,
         "digest": matching_behavior_digest(),
+    }
+
+
+def interface_classification_probe_observations() -> dict[str, Any]:
+    """Reviewable side/evidence observations without changing the legacy map hash."""
+    from cmig.core.host_types import classify_host_interfaces
+
+    classification = classify_host_interfaces(probe_host())
+    return {
+        "probe_version": HOST_INTERFACE_BEHAVIOR_PROBE_VERSION,
+        "classification": classification.as_dict(),
     }
 
 

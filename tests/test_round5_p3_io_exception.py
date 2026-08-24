@@ -336,7 +336,7 @@ def test_workflow_envelope_separates_sub_micro_growth_fraction_and_weights():
 def test_workflow_envelope_schema_version_records_the_canonicalization_change():
     from cmig.core.workflow_manifest import WORKFLOW_MANIFEST_SCHEMA_VERSION
 
-    assert WORKFLOW_MANIFEST_SCHEMA_VERSION == "1.1", (
+    assert WORKFLOW_MANIFEST_SCHEMA_VERSION == "1.2", (
         "changing the hash serialization must bump the schema version so a stored hash is "
         "never silently compared across two different rules"
     )

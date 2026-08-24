@@ -1,50 +1,96 @@
 # CMIG Publication Validation
 
-This document records the publication-preflight benchmark added on 2026-07-10. Runtime outputs
-are intentionally written under `.run/` and are not distributed in the source package. Re-run the
-commands below on the target analysis machine and archive the resulting directory with a paper.
+This is the release-time publication-preflight procedure. Runtime outputs belong under `.run/`,
+must not enter a source distribution, and should be archived with the release or paper.
 
-## Validation inputs
+The prior version of this document predated boundary isolation and is not valid evidence.
+**VERIFIED AGAINST CODE**, the old host-objective expectation near `368.01` came from undeclared
+Recon3D sink/demand uptake. **VERIFIED AGAINST `REVIEW/SCENARIO_RESULTS_ROUND6.md`**, the
+corresponding post-policy host objective is `0.0`, an honest null. Do not compare a new run to
+`368.01` as though it were a regression target.
 
-- Microbial pool: the five bundled GEM files `iAF987`, `iHN637`, `iML1515`, `iSFV_1184`, and
-  `iYO844`. Their joint semantic/file fingerprint in this run was
-  `sha256:4cee02be171dcd7cf85b578638522ce4d308277cad4ccbe5eed110636d6d2aaa`.
-- Host scale model: Human-GEM v1.19.0, downloaded from the versioned
-  [Human-GEM repository](https://github.com/SysBioChalmers/Human-GEM/tree/v1.19.0). The local SBML
-  checksum was `sha256:5aa161fbd52e79051dc445d87965db0716219d95ef1a6f0a8c5bd51fd60e075c`.
-  Cite the archived release [doi:10.5281/zenodo.12523225](https://doi.org/10.5281/zenodo.12523225)
-  and the Human-GEM publication appropriate to the model version.
-- Runtime: CMIG 0.1.0, MICOM 0.39.0, COBRApy 0.31.1, Gurobi 12.0.3, optlang 1.9.0,
-  pandas 2.3.3, and PyArrow 24.0.0.
+## Evidence labels
 
-External host models are not redistributed by CMIG. The benchmark manifest records their path,
-version metadata, URL, DOI, and SHA-256 checksum.
+Every claim below has one of these labels:
 
-## Integrated benchmark
+- **VERIFIED AGAINST CODE** — checked against the current command help, workflow map, manifest
+  contract, or tracked provenance code. This establishes behavior or structure, not a new solver
+  result.
+- **VERIFIED AGAINST `REVIEW/SCENARIO_RESULTS_ROUND6.md`** — copied from the licensed Gurobi
+  scenario record at commit `ac1adf3`. These values are historical controls, not release results.
+- **TO RE-RUN AT RELEASE** — requires the release candidate, licensed solver, external model, or
+  study-specific input. The exact command is supplied; replace only the declared placeholders.
 
-Generate and review the host interface suggestions first:
+## Release inputs and preflight
+
+Use the tracked Recon3D acquisition path rather than the unregistered
+`fixtures/Human-GEM-v1.19.0.xml` file previously named here. CMIG does not redistribute the model.
 
 ```bash
-uv run cmig host-map \
-  --host fixtures/Human-GEM-v1.19.0.xml \
-  --model-dir models \
-  --out .run/publication-validation/human-gem-map
+uv sync --all-extras --group dev
+uv lock --check
+uv run cmig version
+uv run cmig solvers
+uv run cmig --help
+uv run cmig publication-benchmark --help
+uv run cmig host-map --help
+uv run cmig host-microbe-bigg --help
+uv run cmig dfba-sensitivity --help
+uv run cmig workflows --format json
+uv run cmig golden verify-envelope
+uv run cmig golden verify
+uv run python scripts/download_human_gems.py
+uv run python scripts/download_human_gems.py --verify --counts
 ```
 
-Human-GEM uses `MAR...` reaction IDs. CMIG therefore indexes extracellular metabolite
-`bigg.metabolite` annotations, while using reaction-level BiGG annotations only when metabolite
-annotations are absent. The measured map contained 204 annotation matches among 520 secretable
-microbial exchange candidates. The generated map is a review draft, not an automatic authorization.
+**TO RE-RUN AT RELEASE.** Record the complete stdout, command exit codes, release commit, operating
+system, Python version, CMIG version, solver capability matrix, solver/license version, MICOM and
+COBRApy versions, and the two golden-gate results. `data/gems/GEM_SOURCES.json` is the tracked
+checksum/count record for Recon3D; the last command must reproduce it before continuing.
 
-After reviewing `host_interface_map.json`, run the integrated package:
+Set release-specific paths and scientific bases:
 
 ```bash
+export HOST_MODEL="data/gems/Recon3D.xml"
+export MICROBIAL_MODEL_DIR="<directory containing the intended microbial GEM pool>"
 export MICROBIAL_BIOMASS_GDW="<study microbial dry mass in gDW>"
 export HOST_BIOMASS_GDW="<host dry-mass basis represented by the host model in gDW>"
 export BIOMASS_BASIS_SOURCE="<measurement record, Methods section, or literature citation>"
+export DFBA_INITIAL="<complete comma-separated exchange=concentration list>"
+```
 
+**VERIFIED AGAINST CODE.** `measured` or `literature` biomass bases need positive numeric values and
+a traceable source. `validation` is for engineering checks and forces the result to remain
+non-publication-ready. Recon3D's shipped objective is `BIOMASS_maintenance`, which is maintenance,
+not growth; any growth claim must explicitly select `BIOMASS_reaction` on a command that exposes
+`--host-objective`.
+
+## Review the host interface
+
+```bash
+uv run cmig host-map \
+  --host "$HOST_MODEL" \
+  --model-dir "$MICROBIAL_MODEL_DIR" \
+  --out .run/publication-validation/host-map
+```
+
+**TO RE-RUN AT RELEASE.** Review
+`.run/publication-validation/host-map/host_interface_map.json` entry by entry. Resolve every
+`needs_review` entry, especially D/L stereoisomers, and record the reviewer and date. The old
+expectation of 204 matches among 520 candidates is retired; map counts depend on the exact host and
+microbial pool and must be reported from this release run.
+
+**VERIFIED AGAINST CODE.** `host-map` emits a review draft. An annotation match is a computational
+candidate, not authorization to couple that metabolite. `--accept-unreviewed-map` is a recorded
+waiver and is not used in this procedure.
+
+## Integrated benchmark
+
+Run the integrated bundle with the reviewed map and without `--keep-host-uptake`:
+
+```bash
 uv run cmig publication-benchmark \
-  --model-dir models \
+  --model-dir "$MICROBIAL_MODEL_DIR" \
   --assume-bigg-namespace \
   --search-target ac \
   --search-min-size 2 \
@@ -53,72 +99,146 @@ uv run cmig publication-benchmark \
   --dfba-t-end 2 \
   --dfba-dts 0.2,0.1,0.05 \
   --dfba-kms 0.005,0.01,0.02 \
-  --host fixtures/Human-GEM-v1.19.0.xml \
-  --host-name Human-GEM \
-  --host-version v1.19.0 \
-  --host-source-url https://github.com/SysBioChalmers/Human-GEM/tree/v1.19.0 \
-  --host-doi 10.5281/zenodo.12523225 \
-  --host-interface-map .run/publication-validation/human-gem-map/host_interface_map.json \
+  --host "$HOST_MODEL" \
+  --host-name Recon3D \
+  --host-version BiGG-Recon3D-retrieved-2026-07-26 \
+  --host-source-url http://bigg.ucsd.edu/static/models/Recon3D.xml.gz \
+  --host-doi 10.1038/nbt.4072 \
+  --host-interface-map .run/publication-validation/host-map/host_interface_map.json \
   --microbial-biomass-gdw "$MICROBIAL_BIOMASS_GDW" \
   --host-biomass-gdw "$HOST_BIOMASS_GDW" \
   --biomass-basis-kind measured \
   --biomass-basis-source "$BIOMASS_BASIS_SOURCE" \
-  --keep-host-uptake \
   --out .run/publication-validation/integrated
 ```
 
-The command refuses reviewed host coupling when either biomass value, its basis kind, or its source
-is absent. Use `literature` instead of `measured` only with a traceable citation. The `validation`
-kind is reserved for engineering tests and forces `publication_ready: false`.
+**TO RE-RUN AT RELEASE.** Archive the entire output directory and record the analysis command's
+exit code before inspecting the output. Then run:
 
-## Engineering acceptance results
+```bash
+uv run cmig inspect-run \
+  --run-dir .run/publication-validation/integrated \
+  --format json
+```
 
-The previously recorded unit-basis host coupling run was an engineering validation, not a
-study-specific quantitative result. Its hash is intentionally no longer presented as a
-publication-ready benchmark. A paper must archive the new manifest generated with the study values
-and provenance above; any input, configuration, solver, dependency, or biomass-source change
-produces a different hash.
+Record `status`, `status_source`, `run_hash`, `result_digest`, `artifact_integrity`, warnings,
+limitations, checksums, solver/dependency versions, timings, each component status, and every
+reported numeric result. There is deliberately no frozen expected model objective, community
+growth, search flux, map count, solve time, or dFBA endpoint in this document.
 
-| Check | Result |
-|---|---|
-| Five microbial GEM objective solves | all optimal; objectives 0.0473–0.894 |
-| Five-member MICOM community | optimal; equal-abundance growth 0.908268 |
-| Pairwise acetate search | 9 optimal pairs; one physically infeasible pair under growth/sign constraints |
-| Best acetate pair | `iHN637+iSFV_1184`, target flux 27.7485 |
-| iML1515 dFBA `dt×Km` grid | 9/9 completed; concentration and biomass update residuals 0 |
-| dFBA time-step sensitivity | `dt=0.2` was about 9.5% below the `dt=0.05` final-biomass reference |
-| Human-GEM scale | 12,971 reactions, 8,455 metabolites, 2,887 genes; optimal objective 124.868 |
-| Human-GEM solve time | 1.3 s for the generic host LP in the measured environment |
-| Real host interface map | 204 annotation matches of 520 candidates |
-| Structural 5-GEM→Human-GEM validation | community and host both optimal; acetate, ethanol, and Fe²⁺ mapped; `4hbald` unmatched; not a study-scaled transfer estimate |
+**VERIFIED AGAINST CODE.** `publication-benchmark` does not expose
+`--close-untracked-uptake`. Therefore its bundled dFBA leg cannot establish that a substrate/Km
+experiment is isolated from untracked nutrient supply. `overall_passed` or `publication_ready`
+does not waive that limitation.
 
-The structural host validation did **not** report a point microbial transfer. Acetate, ethanol, and
-Fe²⁺ objective-fixed FVA ranges included zero. Thus it establishes feasible coupling capacity, not
-uniquely identifiable or study-scaled uptake. CMIG stores intervals and leaves `microbe_to_host`
-empty in this case.
+**VERIFIED AGAINST CODE.** The integrated command also does not expose `--host-objective`.
+Recon3D's integrated host leg therefore uses its shipped `BIOMASS_maintenance` objective and must
+be labelled as maintenance, never growth. The separate host-isolation control below is the command
+that explicitly tests `BIOMASS_reaction`.
 
-## Output contract
+## Separate load-bearing dFBA audit
 
-`publication_benchmark.json` is the final commit marker. It contains:
+When the dFBA endpoint will be quoted, run the numerical audit separately with a complete tracked
+medium:
 
-- checks and `overall_passed`;
-- separate `computational_checks_passed` and `publication_ready` flags;
-- a benchmark hash over scientific inputs and dependency versions;
-- individual model, host, and dFBA source checksums;
-- wall-clock timings;
-- SHA-256 checksums for every generated artifact;
-- explicit limitations;
-- the numeric biomass bases, `basis_kind`, and their measurement/citation source.
+```bash
+uv run cmig dfba-sensitivity \
+  --model models/iML1515.xml \
+  --initial "$DFBA_INITIAL" \
+  --close-untracked-uptake \
+  --t-end 2 \
+  --dts 0.2,0.1,0.05 \
+  --kms 0.005,0.01,0.02 \
+  --out .run/publication-validation/dfba-sensitivity
+```
 
-Subdirectories contain lossless JSON and flat CSV outputs for model quality, community solve,
-consortium search, dFBA sensitivity, host quality/mapping, and optional reviewed host coupling.
+**TO RE-RUN AT RELEASE.** Report every grid-row status and endpoint together with
+`acceptance.interpretable` and `acceptance.not_interpretable_because`. Do not reuse the old claims
+that 9/9 rows completed, residuals were zero, or one time step was about 9.5% below another; all
+must be recomputed with the complete `DFBA_INITIAL` and current boundary isolation.
 
-## Interpretation limits
+**VERIFIED AGAINST CODE.** With `--close-untracked-uptake`, any intended nutrient omitted from
+`--initial` is closed. A stalled or infeasible grid remains an invalid endpoint even though
+diagnostic artifacts were written.
 
-- These are constraint-based predictions, conditional on model reconstruction, objective, medium,
-  abundance, and solver configuration.
+## Post-round-6 host-isolation control
+
+The release candidate must also reproduce the host null with an explicit growth objective. Use a
+three-member directory containing only `iHN637`, `iML1515`, and `iYO844` for this engineering
+control:
+
+```bash
+export ROUND6_THREE_MEMBER_DIR="<directory containing only iHN637, iML1515, and iYO844>"
+
+uv run cmig host-microbe-bigg \
+  --host "$HOST_MODEL" \
+  --model-dir "$ROUND6_THREE_MEMBER_DIR" \
+  --solver gurobi \
+  --tradeoff-f 0.5 \
+  --host-objective BIOMASS_reaction \
+  --microbe-medium medium_presets/gut_overlay_vmh_high_fiber_x100.csv \
+  --allow-unknown-medium \
+  --microbial-biomass-gdw 1.0 \
+  --host-biomass-gdw 1.0 \
+  --biomass-basis-kind validation \
+  --biomass-basis-source "round-6 engineering control; unit gDW bases" \
+  --out .run/publication-validation/round6-host-isolation-control
+```
+
+**VERIFIED AGAINST `REVIEW/SCENARIO_RESULTS_ROUND6.md`.** On the round-6 environment this control
+gave microbial community growth `0.0847149208736683`, `host_status: optimal`, and
+`host_objective: 0.0`; the medium investigation identified `EX_n2_m` as the unmatched row. The host
+value is the expected honest null. **VERIFIED AGAINST CODE**, using
+`--allow-unknown-medium` records that dropped id and makes the run degraded. The obsolete
+pre-isolation value near `368.01` was independent of the microbiome and must never be restored as a
+target.
+
+**TO RE-RUN AT RELEASE.** The release result must preserve the qualitative contract above. Record
+the fresh numeric community growth rather than assuming bit identity across a changed solver or
+dependency environment. Confirm both provenance markers through `inspect-run`:
+
+```bash
+uv run cmig inspect-run \
+  --run-dir .run/publication-validation/round6-host-isolation-control \
+  --format json
+```
+
+Expected current marker values, **VERIFIED AGAINST CODE**, are
+`boundary_isolation_policy: boundary_reactions_v1` and
+`host_isolation_policy: all_boundary_uptake_v2`. Their absence identifies a pre-fix run.
+
+**VERIFIED AGAINST `REVIEW/SCENARIO_RESULTS_ROUND6.md`.** The five-member bundled pool fails on the
+shipped gut overlays both in standalone solve and host coupling. That is a pool/medium limitation,
+not evidence that the host path is over-constrained. Exit 3 and `status: failed` are the honest
+outcome; do not publish a fabricated zero for a failed solve.
+
+## Claim-by-claim acceptance ledger
+
+| Claim | Evidence basis | Release action |
+|---|---|---|
+| Undeclared host sinks/demands are closed, not just `EX_*` uptake | **VERIFIED AGAINST CODE** | Inspect both isolation markers and warnings. |
+| The old host objective near `368.01` is invalid; the controlled host growth objective is `0.0` | **VERIFIED AGAINST `REVIEW/SCENARIO_RESULTS_ROUND6.md`** | Re-run the explicit host-isolation control. |
+| Three-member VMH control can continue after explicitly dropping `EX_n2_m` | **VERIFIED AGAINST `REVIEW/SCENARIO_RESULTS_ROUND6.md`** | Confirm degraded status and named dropped id. |
+| Five-member gut-overlay failure is a pool/medium limitation | **VERIFIED AGAINST `REVIEW/SCENARIO_RESULTS_ROUND6.md`** | If re-tested, preserve exit 3 and diagnostic; do not coerce a number. |
+| Interface-map counts and matched metabolites | **TO RE-RUN AT RELEASE** | Review and archive the fresh map; no frozen count. |
+| Model objectives, community growth, search ranking/fluxes, host objective, timings | **TO RE-RUN AT RELEASE** | Report directly from the release artifacts with basis and solver. |
+| dFBA endpoint and `dt×Km` sensitivity | **TO RE-RUN AT RELEASE** | Use the separate closed-uptake audit and report interpretability. |
+| CLI flags and required biomass provenance | **VERIFIED AGAINST CODE** | Keep the captured `--help` outputs with the archive. |
+| Workflow input and artifact fingerprints are different guarantees | **VERIFIED AGAINST CODE** | Report both `run_hash` and `result_digest`; require verified artifact integrity. |
+
+## Output contract and interpretation limits
+
+**VERIFIED AGAINST CODE.** `publication_benchmark.json` is the bundle's final commit marker. It
+contains the computational/publication acceptance fields, scientific-input and dependency
+provenance, checksums, timings, limitations, and component summaries. Subdirectories contain the
+lossless JSON and flat outputs for the component workflows.
+
+- Constraint-based predictions are conditional on reconstruction, objective, medium, abundance,
+  biomass basis, boundary policy, and solver configuration.
 - A deterministic parameter grid is not a biological replicate. CMIG blocks sweep p-values unless
-  an independent replicate column is supplied and explicitly confirmed.
-- Member transfer contributions use an abundance-weighted proportional allocation and are not
-  causal or uniquely identifiable.
-- An annotation match is a mapping candidate. It must be reviewed before quantitative coupling.
+  independent replicate ids are supplied and explicitly confirmed.
+- Member transfer allocations are not causal or uniquely identifiable.
+- A generic Recon3D cell is not a gut epithelium. A validation-basis run is an engineering result,
+  not a publication-ready biological estimate.
+- Any pre-round-6 host-objective, defined-medium, minimal-medium, or closed-uptake dFBA run on a
+  model with sinks/demands must be re-run; its old numeric result is not release evidence.

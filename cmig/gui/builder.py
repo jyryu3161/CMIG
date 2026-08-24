@@ -10,8 +10,9 @@ DeltaTable=core.delta.DeltaResult 표시(significant 강조·실패 명시), Sce
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import QModelIndex, QPersistentModelIndex, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStackedWidget,
     QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -52,8 +54,16 @@ class _NoEditorDelegate(QStyledItemDelegate):
     without touching the ~15 population loops that create the items.
     """
 
-    def createEditor(self, parent: QWidget, option: object, index: object) -> QWidget | None:
-        return None
+    def createEditor(
+        self,
+        parent: QWidget,
+        option: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> QWidget:
+        # Qt accepts a null QWidget pointer to refuse editing, while PySide6's stub declares
+        # a non-optional QWidget return. The cast keeps the exact override signature without
+        # changing the runtime null-pointer contract.
+        return cast(QWidget, None)
 
 
 def make_read_only(table: QTableWidget) -> QTableWidget:
@@ -71,7 +81,7 @@ def make_read_only(table: QTableWidget) -> QTableWidget:
     profile against a 3 ms baseline.
     """
     table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    table.setItemDelegate(_NoEditorDelegate(table))   # parented, so it outlives this call
+    table.setItemDelegate(_NoEditorDelegate(table))  # parented, so it outlives this call
     return table
 
 
@@ -233,7 +243,7 @@ class DeltaTable(QTableWidget):
             for c, text in enumerate(cells):
                 item = read_only_item(text)
                 if d.metabolite in sig:
-                    item.setForeground(QColor("#d62728"))    # 변화 있는 대사체 강조
+                    item.setForeground(QColor("#d62728"))  # 변화 있는 대사체 강조
                 self.setItem(i, c, item)
 
 
@@ -331,10 +341,14 @@ class ConstraintSandboxView(QWidget):
             return ""
         suffix = f" · bound: {self.describe_bound(constraint)}"
         current = self.constraints()
-        if self.invalid_rows or len(current) != 1 or (
-            current[0].reaction_id != constraint.reaction_id
-            or current[0].lower != constraint.lower
-            or current[0].upper != constraint.upper
+        if (
+            self.invalid_rows
+            or len(current) != 1
+            or (
+                current[0].reaction_id != constraint.reaction_id
+                or current[0].lower != constraint.lower
+                or current[0].upper != constraint.upper
+            )
         ):
             suffix += " ⚠ the bound table has changed since this preview started"
         return suffix
@@ -347,9 +361,7 @@ class ConstraintSandboxView(QWidget):
             self.status.setText(f"preview failed: {delta.diagnostic}{suffix}")
         else:
             n = len(delta.significant())
-            self.status.setText(
-                f"preview (not recorded) — changed metabolites: {n}{suffix}"
-            )
+            self.status.setText(f"preview (not recorded) — changed metabolites: {n}{suffix}")
 
     def show_commit(
         self, delta: DeltaResult, run_hash: str, constraint: BoundConstraint | None = None
@@ -368,9 +380,7 @@ class ScenarioCompareView(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         self.title = QLabel("Scenario Compare (A → B)")
-        self.status = QLabel(
-            "Advanced preview: pick two completed run folders, then Compare."
-        )
+        self.status = QLabel("Advanced preview: pick two completed run folders, then Compare.")
         run_a_row = QHBoxLayout()
         self.run_a_input = QLineEdit("")
         self.run_a_input.setPlaceholderText("Run A directory (baseline)")
@@ -401,8 +411,7 @@ class ScenarioCompareView(QWidget):
         self.delta_view.load_delta(delta)
         added = ", ".join(delta.added_members) or "—"
         status = "" if delta.status == "ok" else f" [failed: {delta.diagnostic}]"
-        self.growth_label.setText(
-            f"growth Δ: {delta.growth_delta:+.4g} · added: {added}{status}")
+        self.growth_label.setText(f"growth Δ: {delta.growth_delta:+.4g} · added: {added}{status}")
 
 
 class SearchView(QWidget):
@@ -535,7 +544,10 @@ class SearchView(QWidget):
         ):
             line_edit.textChanged.connect(self.invalidate_results)
         for spin in (
-            self.min_size_spin, self.max_size_spin, self.top_k_spin, self.ko_max_genes_spin
+            self.min_size_spin,
+            self.max_size_spin,
+            self.top_k_spin,
+            self.ko_max_genes_spin,
         ):
             spin.valueChanged.connect(self.invalidate_results)
         self.strategy_combo.currentTextChanged.connect(self.invalidate_results)
@@ -546,11 +558,10 @@ class SearchView(QWidget):
     #: scoped per workflow so an irrelevant edit never raises a false alarm.
     REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
         "search": ("pool", "target", "min_size", "max_size", "strategy", "top_k", "fva"),
-        "gene_ko": ("pool", "target", "ko_members", "ko_member", "ko_genes", "max_genes",
-                    "top_k"),
+        "gene_ko": ("pool", "target", "ko_members", "ko_member", "ko_genes", "max_genes", "top_k"),
         "strain_growth": ("pool",),
         "abundance_impact": ("pool", "target", "growth_member", "fractions"),
-        "host_search": (),      # driven by the Host tab's own controls, not these
+        "host_search": (),  # driven by the Host tab's own controls, not these
     }
 
     def request_fields(self, kind: str) -> dict[str, str]:
@@ -684,9 +695,7 @@ class SearchView(QWidget):
         diagnostics: list[object] = []
         if isinstance(ranked, dict):
             groups = [
-                (str(target), items)
-                for target, items in ranked.items()
-                if isinstance(items, list)
+                (str(target), items) for target, items in ranked.items() if isinstance(items, list)
             ]
         elif isinstance(ranked, list):
             groups = [(str(summary.get("target", "")), ranked)]
@@ -709,17 +718,19 @@ class SearchView(QWidget):
                     # The CSV/JSON carry the diagnostic; the table used to print a bare
                     # "optimal" for a row whose flux stage had actually failed.
                     status = f"{status} ⚠ diagnostic"
-                rows.append((
-                    "+".join(str(x) for x in members) if isinstance(members, list) else "",
-                    target,
-                    score,
-                    # No fallback to `score`: a missing target_flux renders as "—" like every
-                    # other missing value, never as a different quantity wearing its label.
-                    target_flux,
-                    growth,
-                    aux_text,
-                    status,
-                ))
+                rows.append(
+                    (
+                        "+".join(str(x) for x in members) if isinstance(members, list) else "",
+                        target,
+                        score,
+                        # No fallback to `score`: a missing target_flux renders as "—" like every
+                        # other missing value, never as a different quantity wearing its label.
+                        target_flux,
+                        growth,
+                        aux_text,
+                        status,
+                    )
+                )
         n_flagged = sum(1 for d in diagnostics if d)
         if n_flagged:
             status_text += f" · {n_flagged} row(s) carry a solver diagnostic"
@@ -730,8 +741,10 @@ class SearchView(QWidget):
             tooltip = "" if not diagnostic else _diagnostic_text(diagnostic)
             for c, value in enumerate(row):
                 text = (
-                    "—" if value is None
-                    else f"{value:.4g}" if isinstance(value, float)
+                    "—"
+                    if value is None
+                    else f"{value:.4g}"
+                    if isinstance(value, float)
                     else str(value)
                 )
                 item_widget = read_only_item(text)

@@ -370,7 +370,7 @@ produce them.
 
 > **`--robustness-fva` does not help you here — it is silently inert in
 > multi-target mode.** `_cmd_search` returns to the multi-target path
-> (`cli/main.py:4151`) *before* `args.robustness_fva` is ever read, and the
+> *before* `args.robustness_fva` is ever read, and the
 > multi-target body never reads it. The flag is accepted, no FVA columns are
 > written, **no warning is emitted, and the run exits 0.** So there is currently
 > **no** way to separate a multi-target ranking from a tie between alternate optima
@@ -434,6 +434,10 @@ requested `medium_checksum` and minted a `run_hash` certifying it.
   still computed over the **full requested** medium. So `$?` says success and the
   hash certifies a medium only partly applied. Use it to *diagnose* a medium
   file, never for a reported result, and always quote the dropped ids.
+  The flag is available on `solve`, `search`, `strain-growth`,
+  `abundance-impact`, `gene-ko-search`, `sweep`, `host-microbe-bigg`,
+  `host-search-bigg`, and `host-ko-impact`; strict application remains the
+  default on all nine commands.
 
 Units, while you are here: `MediumSpec` is `exchange_id,uptake_limit` with
 `uptake_limit >= 0` — an unsigned magnitude in **mmol gDW⁻¹ h⁻¹**, which CMIG maps

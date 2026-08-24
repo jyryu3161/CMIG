@@ -28,10 +28,15 @@ def test_shell_constructs_offscreen():
     _app()
     w = build_main_window(lang="ko")
     assert isinstance(w, CmigMainWindow)
-    assert w.explorer.topLevelItemCount() == 3        # 모델·시나리오·실행
+    assert w.explorer.topLevelItemCount() == 3  # 모델·시나리오·실행
     assert w.jobs_panel.columnCount() == 4
     assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == [
-        "Models", "Search", "Host", "Dynamics", "Profile"
+        "모델",
+        "탐색",
+        "숙주",
+        "동역학",
+        "그래프",
+        "외부 프로필",
     ]
     assert w.tabs.currentWidget() is w.search_view
     assert w.sweep_view.runner is w.runner
@@ -40,11 +45,17 @@ def test_shell_constructs_offscreen():
 
 
 def test_i18n_ko_en():
-    """SC-AP2: GUI surface defaults to English labels."""
+    """SC-AP2: Korean is real translation; the no-argument factory defaults to English."""
     _app()
-    ko = build_main_window(lang="ko").tr_map["explorer"]
-    en = build_main_window(lang="en").tr_map["explorer"]
-    assert ko == "Project Explorer" and en == "Project Explorer"
+    ko = build_main_window(lang="ko")
+    en = build_main_window(lang="en")
+    default = build_main_window()
+    assert ko.tr_map["explorer"] == "프로젝트 탐색기"
+    assert en.tr_map["explorer"] == "Project Explorer"
+    assert ko.open_run_action.text() == "실행 열기"
+    assert default.open_run_action.text() == "Open Run"
+    assert ko.statusBar().currentMessage() == "준비됨"
+    assert default.statusBar().currentMessage() == "Ready"
 
 
 def test_project_explorer_add_model():
@@ -87,7 +98,12 @@ def test_advanced_tabs_are_hidden_until_requested():
     assert "Advanced preview" in w.scenario_compare.status.text()
     w.advanced_tools_action.setChecked(False)
     assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == [
-        "Models", "Search", "Host", "Dynamics", "Profile"
+        "Models",
+        "Search",
+        "Host",
+        "Dynamics",
+        "Graph",
+        "Profile",
     ]
     assert w.advanced_tools_action.text() == "Show Advanced Tools"
 
@@ -131,16 +147,20 @@ def test_load_host_microbe_bigg_dir_updates_host_tab(tmp_path):
     import json
 
     _app()
-    (tmp_path / "host_microbe_bigg_summary.json").write_text(json.dumps({
-        "host": {
-            "status": "optimal",
-            "viable": True,
-            "objective_value": 12.5,
-            "lumen_uptake": {"ac": 1.25},
-        },
-        "microbe_to_host": {"ac": 1.25},
-        "unused_secretion": {},
-    }))
+    (tmp_path / "host_microbe_bigg_summary.json").write_text(
+        json.dumps(
+            {
+                "host": {
+                    "status": "optimal",
+                    "viable": True,
+                    "objective_value": 12.5,
+                    "lumen_uptake": {"ac": 1.25},
+                },
+                "microbe_to_host": {"ac": 1.25},
+                "unused_secretion": {},
+            }
+        )
+    )
     (tmp_path / "host_uptake.csv").write_text("metabolite,uptake_flux\nac,1.25\n")
     w = build_main_window()
     assert w.load_host_microbe_bigg_dir(tmp_path) is True
@@ -155,12 +175,16 @@ def test_load_dfba_dir_updates_dynamics_tab(tmp_path):
     import json
 
     _app()
-    (tmp_path / "dfba_summary.json").write_text(json.dumps({
-        "status": "completed",
-        "final_t": 1.0,
-        "final_biomass": 0.02,
-        "final_concentrations": {"EX_glc__D_e": 9.5},
-    }))
+    (tmp_path / "dfba_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "final_t": 1.0,
+                "final_biomass": 0.02,
+                "final_concentrations": {"EX_glc__D_e": 9.5},
+            }
+        )
+    )
     w = build_main_window()
     assert w.load_dfba_dir(tmp_path) is True
     assert w.tabs.currentWidget() is w.dynamics_view
@@ -172,12 +196,16 @@ def test_load_spatial_dir_updates_dynamics_tab(tmp_path):
     import json
 
     _app()
-    (tmp_path / "spatial_summary.json").write_text(json.dumps({
-        "status": "completed",
-        "final_t": 8.0,
-        "final_min": 0.0,
-        "final_max": 10.0,
-    }))
+    (tmp_path / "spatial_summary.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "final_t": 8.0,
+                "final_min": 0.0,
+                "final_max": 10.0,
+            }
+        )
+    )
     w = build_main_window()
     assert w.load_spatial_dir(tmp_path) is True
     assert w.tabs.currentWidget() is w.dynamics_view
@@ -196,12 +224,16 @@ def test_run_spatial_preview_passes_dt_to_cli(monkeypatch, tmp_path):
         seen["argv"] = list(argv)
         out = Path(argv[argv.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
-        (out / "spatial_summary.json").write_text(json.dumps({
-            "status": "completed",
-            "final_t": 1.0,
-            "final_min": 0.0,
-            "final_max": 10.0,
-        }))
+        (out / "spatial_summary.json").write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "final_t": 1.0,
+                    "final_min": 0.0,
+                    "final_max": 10.0,
+                }
+            )
+        )
         (out / "spatial_snapshots.svg").write_text("<svg/>")
         return 0
 
@@ -226,8 +258,7 @@ def test_import_model_file_updates_model_manager(monkeypatch):
     w = build_main_window()
 
     def fake_import_model(path):
-        return ModelSummary(
-            "toy", "sbml", str(path), 2, 2, 0, ["EX_ac_e"], ["BIOMASS"])
+        return ModelSummary("toy", "sbml", str(path), 2, 2, 0, ["EX_ac_e"], ["BIOMASS"])
 
     monkeypatch.setattr("cmig.io.model_import.import_model", fake_import_model)
     assert w.import_model_file("/tmp/toy.xml") is True
@@ -416,6 +447,7 @@ def test_search_button_uses_model_dir_product_command(monkeypatch, tmp_path):
             "warnings": [],
         }
         from pathlib import Path
+
         Path(out).mkdir(parents=True, exist_ok=True)
         (Path(out) / "search_summary.json").write_text(json.dumps(payload))
         (Path(out) / "search_plot.svg").write_text("<svg>ranking</svg>")
@@ -577,18 +609,22 @@ def test_host_microbe_run_button_uses_product_command(monkeypatch, tmp_path):
         seen["argv"] = list(argv)
         out = Path(argv[argv.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
-        (out / "host_microbe_bigg_summary.json").write_text(json.dumps({
-            "host": {
-                "status": "optimal",
-                "viable": True,
-                "objective_value": 3.0,
-                "lumen_uptake": {"ac": 1.0},
-            },
-            "microbial_secretion": {"ac": 1.0},
-            "microbe_to_host": {"ac": 1.0},
-            "unused_secretion": {},
-            "warnings": [],
-        }))
+        (out / "host_microbe_bigg_summary.json").write_text(
+            json.dumps(
+                {
+                    "host": {
+                        "status": "optimal",
+                        "viable": True,
+                        "objective_value": 3.0,
+                        "lumen_uptake": {"ac": 1.0},
+                    },
+                    "microbial_secretion": {"ac": 1.0},
+                    "microbe_to_host": {"ac": 1.0},
+                    "unused_secretion": {},
+                    "warnings": [],
+                }
+            )
+        )
         (out / "host_uptake.csv").write_text("metabolite,uptake_flux\nac,1.0\n")
         return 0
 
@@ -614,9 +650,7 @@ def test_host_microbe_run_button_uses_product_command(monkeypatch, tmp_path):
     assert "--recursive" in seen["argv"]
     assert "--include-currency-metabolites" in seen["argv"]
     assert seen["argv"][seen["argv"].index("--biomass-basis-kind") + 1] == "measured"
-    assert "Methods section" in seen["argv"][
-        seen["argv"].index("--biomass-basis-source") + 1
-    ]
+    assert "Methods section" in seen["argv"][seen["argv"].index("--biomass-basis-source") + 1]
     assert w.tabs.currentWidget() is w.host_view
     assert w.host_view.cross_table.rowCount() == 1
     assert w.host_view.network_payload is not None
@@ -708,8 +742,8 @@ def test_community_solve_button_writes_taxonomy_and_overrides_abundance(monkeypa
     tax_path = Path(seen["argv"][seen["argv"].index("--taxonomy") + 1])
     assert tax_path.exists()
     rows = {r["id"]: r for r in csv.DictReader(tax_path.open())}
-    assert rows["iML1515"]["abundance"] == "0.75"    # overridden from the member table
-    assert rows["iHN637"]["abundance"] == "1.0"       # untouched discovered default
+    assert rows["iML1515"]["abundance"] == "0.75"  # overridden from the member table
+    assert rows["iHN637"]["abundance"] == "1.0"  # untouched discovered default
     assert "run_hash" in w.community_builder.status.text()
     assert w.community_builder.run_btn.isEnabled()
     runner.shutdown()
@@ -729,22 +763,24 @@ def test_sweep_fixture_button_launches_and_loads_result_matrix(monkeypatch, tmp_
         seen["argv"] = list(argv)
         out = Path(argv[argv.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
-        table = pa.table({
-            "schema_version": ["1.0", "1.0"],
-            "condition_id": ["cond-0", "cond-1"],
-            "axis_medium_variant": [None, None],
-            "axis_abundance": [None, None],
-            "axis_member_set": [None, None],
-            "axis_bounds": [None, None],
-            "axis_tradeoff_f": [0.3, 0.5],
-            "axis_solver": ["gurobi", "gurobi"],
-            "metric": ["growth", "growth"],
-            "value": [0.41, 0.52],
-            "run_hash": ["h0", "h1"],
-            "status": ["ok", "ok"],
-            "diagnostic": [None, None],
-            "cache_hit": [False, True],
-        })
+        table = pa.table(
+            {
+                "schema_version": ["1.0", "1.0"],
+                "condition_id": ["cond-0", "cond-1"],
+                "axis_medium_variant": [None, None],
+                "axis_abundance": [None, None],
+                "axis_member_set": [None, None],
+                "axis_bounds": [None, None],
+                "axis_tradeoff_f": [0.3, 0.5],
+                "axis_solver": ["gurobi", "gurobi"],
+                "metric": ["growth", "growth"],
+                "value": [0.41, 0.52],
+                "run_hash": ["h0", "h1"],
+                "status": ["ok", "ok"],
+                "diagnostic": [None, None],
+                "cache_hit": [False, True],
+            }
+        )
         pq.write_table(table, out / "sweep.parquet")
         (out / "sweep_summary.json").write_text(json.dumps({"status": "ok", "n_runs": 2}))
         return 0
@@ -761,7 +797,7 @@ def test_sweep_fixture_button_launches_and_loads_result_matrix(monkeypatch, tmp_
     assert seen["argv"][seen["argv"].index("--tradeoff-fs") + 1] == "0.3,0.5"
     assert w.sweep_view.table.rowCount() == 2
     assert w.sweep_view.table.item(0, 3).text() == "miss"
-    assert w.sweep_view.table.item(1, 3).text() == "hit"      # cache_hit column surfaced
+    assert w.sweep_view.table.item(1, 3).text() == "hit"  # cache_hit column surfaced
     assert w.sweep_view.run_btn.isEnabled()
     runner.shutdown()
 
@@ -806,14 +842,16 @@ def test_medium_growth_check_button_uses_strain_growth_command(monkeypatch, tmp_
         out.mkdir(parents=True, exist_ok=True)
         payload = {
             "status": "optimal",
-            "members": [{
-                "member": "model",
-                "single_growth": 0.87,
-                "single_status": "optimal",
-                "community_member_growth": 0.87,
-                "community_growth": 0.87,
-                "community_status": "optimal",
-            }],
+            "members": [
+                {
+                    "member": "model",
+                    "single_growth": 0.87,
+                    "single_status": "optimal",
+                    "community_member_growth": 0.87,
+                    "community_growth": 0.87,
+                    "community_status": "optimal",
+                }
+            ],
         }
         (out / "strain_growth_summary.json").write_text(json.dumps(payload))
         return 0
@@ -847,16 +885,28 @@ def test_scenario_compare_button_computes_real_delta(tmp_path):
     from cmig.core.interactions import build_tidy
 
     baseline = SolveResult(
-        objective=0.5, member_growth={"A": 0.5}, abundances={"A": 1.0},
-        external_exchange={"ac": 5.0}, member_exchange={"A": {"ac": 5.0}},
-        status="optimal", flux_report_status="full", growth_solver="gurobi",
-        flux_solver="gurobi", members=["A"],
+        objective=0.5,
+        member_growth={"A": 0.5},
+        abundances={"A": 1.0},
+        external_exchange={"ac": 5.0},
+        member_exchange={"A": {"ac": 5.0}},
+        status="optimal",
+        flux_report_status="full",
+        growth_solver="gurobi",
+        flux_solver="gurobi",
+        members=["A"],
     )
     modified = SolveResult(
-        objective=0.8, member_growth={"A": 0.8}, abundances={"A": 1.0},
-        external_exchange={"ac": 2.0}, member_exchange={"A": {"ac": 2.0}},
-        status="optimal", flux_report_status="full", growth_solver="gurobi",
-        flux_solver="gurobi", members=["A"],
+        objective=0.8,
+        member_growth={"A": 0.8},
+        abundances={"A": 1.0},
+        external_exchange={"ac": 2.0},
+        member_exchange={"A": {"ac": 2.0}},
+        status="optimal",
+        flux_report_status="full",
+        growth_solver="gurobi",
+        flux_solver="gurobi",
+        members=["A"],
     )
     dir_a, dir_b = tmp_path / "run_a", tmp_path / "run_b"
     build_tidy(baseline).write(dir_a)
@@ -877,7 +927,7 @@ def test_jobrunner_qt_bridge_reflects_job():
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
     jid = w.submit_job("calc", lambda ctx: 21 * 2)
-    runner.result(jid, timeout=5)                     # 완료 대기
+    runner.result(jid, timeout=5)  # 완료 대기
     w.bridge.refresh()
     assert w.jobs_panel.rowCount() == 1
     assert w.jobs_panel.item(0, 0).text() == jid
@@ -914,6 +964,7 @@ def test_cancel_selected_job_requests_jobrunner_cancel():
 def test_set_central_widget():
     """SC-AP5: 중앙 위젯 교체(그래프 뷰 도킹 지점)."""
     from PySide6.QtWidgets import QLabel
+
     _app()
     w = build_main_window()
     label = QLabel("graph")

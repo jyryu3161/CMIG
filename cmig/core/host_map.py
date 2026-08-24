@@ -13,6 +13,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from cmig.core.host_types import (
+    HostInterface,
+    HostInterfaceMap,
+    classify_host_interfaces,
+)
 from cmig.core.namespace import (
     NORMALIZE_COMPARTMENT_SUFFIXES,
     NORMALIZE_EXCHANGE_PREFIX,
@@ -130,6 +135,10 @@ class ExchangeMapEntry:
     match_type: str                     # exact | normalized | unmatched
     host_can_uptake: bool               # host exchange currently allows uptake (lower_bound < 0)
     suggestion: str
+    # Optional round-7 side review. Existing interface-map files remain plain
+    # metabolite->exchange mappings and therefore retain their old meaning.
+    interface: str | None = None
+    interface_evidence: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -142,6 +151,9 @@ class HostMapResult:
     n_host_uptake_capable: int
     entries: list[ExchangeMapEntry]
     warnings: list[str] = field(default_factory=list)
+    n_lumen: int = 0
+    n_blood: int = 0
+    n_interface_unclassified: int = 0
 
 
 def _sole_metabolite_id(rxn: Any) -> str | None:
@@ -151,10 +163,18 @@ def _sole_metabolite_id(rxn: Any) -> str | None:
 
 
 def _iter_exchanges(model: Any) -> list[Any]:
-    try:
-        return list(model.exchanges)
-    except Exception:  # noqa: BLE001 - models without a cobra exchanges accessor
-        return [r for r in model.reactions if str(r.id).startswith("EX_")]
+    # cobra chooses one external compartment for ``model.exchanges``. In a genuine apical/blood
+    # model that can omit the entire second interface, so use the evidence-backed boundary view
+    # that preserves the accessor's legacy members and adds explicit side boundaries.
+    classification = classify_host_interfaces(model)
+    exchange_ids = {
+        assignment.exchange_id for assignment in classification.assignments
+    } | set(classification.unclassified_exchange_ids) | set(
+        classification.conflicted_exchange_ids
+    )
+    # Preserve model order: the existing matcher uses first-wins tie breaks, and reordering the
+    # candidate view would change published maps even when the candidate set is identical.
+    return [reaction for reaction in model.reactions if str(reaction.id) in exchange_ids]
 
 
 # metabolite/normalized id → (host exchange id, host currently allows uptake)
@@ -249,9 +269,22 @@ _MATCH_SUGGESTIONS: dict[str, Callable[[str, bool], str]] = {
 }
 
 
-def build_host_map(host: Any, member_models: dict[str, Any]) -> HostMapResult:
-    """Match each secretable microbial metabolite to a host exchange (exact/normalized/none)."""
+def build_host_map(
+    host: Any,
+    member_models: dict[str, Any],
+    *,
+    interface_map: HostInterfaceMap | None = None,
+) -> HostMapResult:
+    """Match microbial secretions and carry evidence-backed host-side assignments.
+
+    ``interface_map`` is optional so a reviewed structured entry can override a
+    model-derived side in the same core flow. The CLI hook is intentionally
+    separate because ``cmig/cli/main.py`` is owned by round-7 track T1.
+    """
     exact_idx, norm_idx, annotation_idx = _host_exchange_index(host)
+    interface_by_exchange = classify_host_interfaces(
+        host, interface_map=interface_map
+    ).by_exchange()
     secretes = _SECRETION_CRITERIA[HOST_MAP_SECRETION_CRITERION]
 
     # microbial secretable metabolites: metabolite → (exchange_id, [members])
@@ -297,6 +330,7 @@ def build_host_map(host: Any, member_models: dict[str, Any]) -> HostMapResult:
         counts[match_type] = counts.get(match_type, 0) + 1
         if can_uptake:
             n_uptake += 1
+        assignment = interface_by_exchange.get(host_ex or "")
         entries.append(ExchangeMapEntry(
             metabolite=met,
             microbial_exchange=ex_id,
@@ -305,6 +339,11 @@ def build_host_map(host: Any, member_models: dict[str, Any]) -> HostMapResult:
             match_type=match_type,
             host_can_uptake=can_uptake,
             suggestion=suggestion,
+            interface=assignment.interface if assignment is not None else None,
+            interface_evidence=(
+                tuple(item.as_dict() for item in assignment.evidence)
+                if assignment is not None else ()
+            ),
         ))
 
     n_exact, n_annotation = counts["exact"], counts["annotation"]
@@ -328,4 +367,9 @@ def build_host_map(host: Any, member_models: dict[str, Any]) -> HostMapResult:
         n_host_uptake_capable=n_uptake,
         entries=entries,
         warnings=warnings,
+        n_lumen=sum(entry.interface == HostInterface.LUMEN.value for entry in entries),
+        n_blood=sum(entry.interface == HostInterface.BLOOD.value for entry in entries),
+        n_interface_unclassified=sum(
+            entry.host_exchange is not None and entry.interface is None for entry in entries
+        ),
     )
