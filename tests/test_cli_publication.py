@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -28,7 +29,13 @@ def _install_publication_benchmark_imports(monkeypatch: pytest.MonkeyPatch) -> N
 
     _module(monkeypatch, "pandas")
     _module(monkeypatch, "cmig.core.dfba", DfbaConfig=object)
-    _module(monkeypatch, "cmig.core.medium_spec", load_medium=lambda _path: None)
+    _module(
+        monkeypatch,
+        "cmig.core.medium_spec",
+        load_medium=lambda _path: None,
+        # main() enters the round-7 exact-medium scope around every dispatch.
+        cli_exact_medium=lambda _enabled: contextlib.nullcontext(),
+    )
     _module(
         monkeypatch,
         "cmig.core.model_pool",

@@ -821,6 +821,15 @@ community growth 1.2678 h⁻¹ with that inherited oxygen and 0.6990 h⁻¹ once
 named at 0.001: an 81 % overestimate from one missing row. A `uptake_limit` of `0` is
 legal and is how a CSV closes an exchange under merge semantics.
 
+**`--exact-medium` makes the file the whole environment.** Every medium-bearing
+subcommand also accepts `--exact-medium`, which isolates the complete model boundary
+first and then opens only the exchanges the file names — nothing inherited, nothing
+permissive left open. The manifest records which mode produced the numbers as
+`medium_application_mode` (`merge_onto_model_default` or `exact_boundary_isolation`,
+hashed beside the medium checksum under workflow-manifest schema 1.2), so a merge run
+and an exact run of the same file can never be confused. The default without the flag
+remains the overlay described above.
+
 Presets live in `medium_presets/`. Prefer the literature-grounded gut overlays, which
 all name oxygen explicitly and carry a background-closure block:
 `gut_overlay_agora_western.csv` and `gut_overlay_agora_high_fiber.csv` (AGORA
@@ -990,7 +999,8 @@ provenance tests, GUI offscreen smoke tests, and real workflow regressions.
   targets; with more, every cell stays `False`, meaning "not evaluated" rather
   than "dominated". The `--multi-metric pareto` **mode** is unaffected and works
   for any number of targets.
-- Atomic writes cover text artifacts; parquet and figure writers are not yet
+- Atomic writes cover text artifacts and, since round 7, every Parquet writer in
+  `cmig/io` (staged tempfile + fsync + `os.replace`); figure writers are not yet
   atomic.
 
 ## Repository Layout

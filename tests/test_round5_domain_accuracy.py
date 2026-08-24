@@ -454,10 +454,17 @@ def test_failed_knockout_evaluation_does_not_fabricate_a_delta():
 def test_matplotlib_svg_writers_are_configured_for_byte_reproducibility():
     from cmig.cli import main as cli_main
     from cmig.core import interaction_figures
+    from cmig.render import figure_style
 
+    # Round 7: the policy has one home; both writer modules must consume that one object,
+    # so the salt/metadata cannot drift apart again per-module.
+    assert figure_style.SVG_METADATA == {"Date": None}
+    assert figure_style.SVG_HASHSALT == "cmig-svg-v1"
     for module in (cli_main, interaction_figures):
-        assert module.SVG_METADATA == {"Date": None}
-        assert module.SVG_HASHSALT == "cmig-svg-v1"
+        assert module.SVG_METADATA is figure_style.SVG_METADATA
+    assert cli_main._load_matplotlib_pyplot is figure_style.load_matplotlib_pyplot
+    assert interaction_figures._load_matplotlib is figure_style.load_matplotlib_pyplot
+    assert interaction_figures.SVG_HASHSALT == figure_style.SVG_HASHSALT
     plt = cli_main._load_matplotlib_pyplot()
     assert plt.rcParams["svg.hashsalt"] == "cmig-svg-v1"
 

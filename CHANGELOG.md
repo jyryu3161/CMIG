@@ -5,6 +5,53 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Added (round 7)
+
+- **`--exact-medium` CLI mode** on all nine medium-bearing subcommands (`solve`, `search`,
+  `strain-growth`, `abundance-impact`, `gene-ko-search`, `host-microbe-bigg`, `host-ko-impact`,
+  `host-search-bigg`, `sweep`), routing to the existing
+  `apply_medium_translated(..., exact=True)` boundary-isolation path. The default without the flag
+  remains the documented merge-onto-model-default overlay, byte-identically. Workflow manifests now
+  hash `medium_application_mode` beside the medium checksum under **manifest schema 1.2** — the
+  single intended round-7 run-hash drift, re-blessed via the documented envelope procedure;
+  `inspect-run` still reads 1.1 manifests. `cmig workflows` now covers every non-fixture analysis
+  command, enforced by a parser-derived coverage test.
+- **Evidence-backed host interface classification** (`cmig/core/host_types.py`): lumen/blood sides
+  are now classified from reviewed-map overrides, id suffixes, annotations, side-bearing
+  reaction/metabolite names, explicit compartments, and boundary topology — each with a recorded
+  evidence trail. Real GEMs get honest partial results (Recon3D: 25 lumen + 31 blood classified,
+  1,504 explicitly unclassified, `quantitative_coupling_ready` stays `False`; RECON1: honest zero).
+  Reviewed interface maps optionally carry `{"host_exchange", "interface"}` values — legacy string
+  maps keep their exact meaning — and side-aware coupling opens microbial availability only on
+  lumen entries and `host_medium` only on blood entries. `host-map` artifacts record
+  `interface`/`interface_evidence` and side counts; `host-generic` reports the
+  `interface_classification` audit. The `host.py`↔`host_coupling.py` `__getattr__` cycle is gone.
+- **First-class GUI Graph tab and Profile charts**: the tested `InteractionGraphView` + namespace
+  `GateBadge` are mounted as a Graph tab fed by Open Run; the External Profile view adds a signed
+  diverging net-exchange chart with FVA whiskers and an abundance-weighted stacked member
+  contribution chart (Qt-native, no new dependency; the known-open `edges.weight` artifact value is
+  untouched and the display basis is stated on the chart). Real Korean GUI localization replaces
+  the previous identical-strings catalogue; English is the single default and `--lang ko` opts in.
+- **Atomic Parquet publication** (`cmig/io/atomic.py`): binary/Parquet writes now stage in the
+  destination directory, fsync, and `os.replace`, so a crash cannot leave a partial artifact;
+  adopted by every `cmig/io` Parquet writer with byte-identical output.
+- **Randomized test order**: `pytest-randomly` is installed and the full suite passes under
+  shuffled order (verified with multiple recorded seeds); mypy is pinned (`mypy==2.1.0`) and the
+  whole package is now mypy-clean under strict settings.
+- **One matplotlib publication policy** (`cmig/render/figure_style.py`): the duplicated figure
+  constants/helpers in `cmig/cli/main.py` and `cmig/core/interaction_figures.py` were consolidated
+  with byte-identical figure output, proven by SHA-256 on all eight representative artifacts.
+
+### Documentation (round 7)
+
+- `docs/PUBLICATION_VALIDATION.md` rebuilt for the post-round-6 boundary-isolation contract with
+  every claim labelled (`VERIFIED AGAINST CODE` / `VERIFIED AGAINST
+  REVIEW/SCENARIO_RESULTS_ROUND6.md` / `TO RE-RUN AT RELEASE`); the workflow tutorial now covers
+  the live 35-command surface including the GA controls; `RELEASE_CHECKLIST.md` gained the missing
+  `cmig golden verify-envelope` gate; skill docs replaced rotting line-number citations with symbol
+  references; `docs/release-drafts/` holds the 0.2.0 changelog draft, version-alignment plan, and
+  the Human-GEM fixture decision memo.
+
 ### Added
 
 - **Literature-grounded gut medium overlays** (`medium_presets/gut_overlay_*.csv`, 7 files) with a
@@ -22,8 +69,8 @@ semantic versioning for public releases.
   overestimate**. Every shipped overlay now names oxygen at MICOM's published 0.001 and carries a
   background-closure block (`uptake_limit = 0`) for every metabolite the model pool would otherwise
   leave open; measured, nothing remains open that the overlay does not name. `--medium` is documented
-  as an overlay in `README.md`. A general fix needs `--exact-medium` in the CLI plus a
-  `medium_application_mode` manifest field — recorded in `PROVENANCE_gut_media.md` §9, not implemented.
+  as an overlay in `README.md`. The general fix landed in round 7: `--exact-medium` in the CLI plus
+  the `medium_application_mode` manifest field (see the round-7 entries below).
 - **Fibre coverage of the bundled model pool measured and documented**: only 1 of AGORA's 24 fibre
   entries (raffinose) has an exchange in any bundled model, so a "high fibre" run on this pool is not
   a fibre-degradation experiment. `tests/test_medium_presets_gut.py` (18 tests, each mutation-verified)

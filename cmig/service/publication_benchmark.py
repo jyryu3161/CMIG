@@ -66,7 +66,9 @@ class PublicationBenchmarkConfig:
     dfba_kms: list[float] = field(default_factory=lambda: [0.005, 0.01, 0.02])
     host_model: Path | None = None
     host_source: dict[str, str] = field(default_factory=dict)
-    host_interface_map: dict[str, str] | None = None
+    # Round 7: values are the legacy exchange-id string or the side-aware
+    # {"host_exchange", "interface"} object (see cmig.core.host_types.HostInterfaceMap).
+    host_interface_map: dict[str, str | dict[str, str]] | None = None
     microbial_biomass_gdw: float | None = None
     host_biomass_gdw: float | None = None
     biomass_basis_kind: str | None = None

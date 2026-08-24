@@ -25,6 +25,16 @@ from cmig.core.solver import capability_matrix
 from cmig.core.targets import TARGET_PRESETS
 from cmig.io.atomic import atomic_write_text
 from cmig.io.gem_paths import default_human_gem_path
+from cmig.render.figure_style import (
+    SVG_METADATA,
+    save_publication_tiff,
+)
+from cmig.render.figure_style import (
+    load_matplotlib_pyplot as _load_matplotlib_pyplot,
+)
+from cmig.render.figure_style import (
+    polish_matplotlib_axes as _polish_matplotlib_axes,
+)
 
 DEFAULT_DFBA_INITIAL_CONCENTRATIONS = {
     "EX_glc__D_e": 10.0,
@@ -1383,6 +1393,9 @@ def _cmd_host_generic(args: argparse.Namespace) -> int:
             "n_nonexchange_boundary_uptake": summary.n_nonexchange_boundary_uptake,
             "exchange_examples": summary.exchange_examples,
             "has_lumen_blood_interfaces": summary.has_lumen_blood_interfaces,
+            # Round 7: the evidence-backed side audit host-benchmark already exposes via
+            # summary.__dict__; host-generic now reports the same thing explicitly.
+            "interface_classification": summary.interface_classification,
         },
         "solve": {
             "status": result.status,
@@ -1705,6 +1718,7 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
             fieldnames=[
                 "metabolite", "microbial_exchange", "secreting_members",
                 "host_exchange", "match_type", "host_can_uptake", "suggestion",
+                "interface", "interface_evidence",
             ],
         )
         writer.writeheader()
@@ -1717,14 +1731,24 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
                 "match_type": e.match_type,
                 "host_can_uptake": e.host_can_uptake,
                 "suggestion": e.suggestion,
+                # Round 7: evidence-backed side, blank (not guessed) when unclassified.
+                "interface": e.interface or "",
+                "interface_evidence": json.dumps(list(e.interface_evidence))
+                if e.interface_evidence else "",
             })
     # A-B8: only EXACT id matches go into interface_map. Annotation/normalized matches are
     # computational guesses — round-2 found three D<->L stereoisomer swaps among them
     # (arab__D_e -> EX_arab__L_e, glu__D_e -> EX_glu__L_e, pser__D_e -> EX_pser__L_e), which are
     # chemically distinct metabolites. Putting them in the same flat dict as the 170 exact matches
     # meant passing the file through unedited silently coupled the wrong molecules.
+    # Round 7: entries whose side has evidence are emitted in the structured
+    # {host_exchange, interface} form; everything else stays the legacy string so
+    # existing reviewed maps and tooling keep their exact meaning.
     interface_map = {
-        e.metabolite: e.host_exchange
+        e.metabolite: (
+            {"host_exchange": e.host_exchange, "interface": e.interface}
+            if e.interface else e.host_exchange
+        )
         for e in result.entries if e.match_type in HOST_MAP_INTERFACE_MAP_ADMITS
     }
     needs_review = {
@@ -1732,6 +1756,7 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
             "host_exchange": e.host_exchange,
             "match_type": e.match_type,
             "reason": e.suggestion,
+            **({"interface": e.interface} if e.interface else {}),
         }
         for e in result.entries if e.match_type in HOST_MAP_NEEDS_REVIEW_TYPES
     }
@@ -1757,6 +1782,9 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
         "n_normalized": result.n_normalized,
         "n_unmatched": result.n_unmatched,
         "n_host_uptake_capable": result.n_host_uptake_capable,
+        "n_lumen": result.n_lumen,
+        "n_blood": result.n_blood,
+        "n_interface_unclassified": result.n_interface_unclassified,
         "entries": [
             {
                 "metabolite": e.metabolite,
@@ -1766,6 +1794,8 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
                 "match_type": e.match_type,
                 "host_can_uptake": e.host_can_uptake,
                 "suggestion": e.suggestion,
+                "interface": e.interface,
+                "interface_evidence": list(e.interface_evidence),
             }
             for e in result.entries
         ],
@@ -2365,7 +2395,7 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
     )
     ranked = sorted(
         (d for d in result.deltas if d.delta_host_objective is not None),
-        key=lambda d: d.delta_host_objective,
+        key=lambda d: d.delta_host_objective if d.delta_host_objective is not None else math.inf,
     )
     for delta in ranked[:5]:
         relative = (
@@ -3553,12 +3583,12 @@ def _write_gene_ko_search_outputs(
             for row in rows
             if row["evaluation_status"] != "ok"
         ],
-        "artifacts": [
+        "artifacts": (artifacts := [
             "gene_ko_rankings.csv",
             "gene_ko_summary.json",
             "gene_ko_plot.svg",
             "gene_ko_plot.tiff",
-        ],
+        ]),
     }
     atomic_write_text(
         out / "gene_ko_summary.json",
@@ -3575,7 +3605,7 @@ def _write_gene_ko_search_outputs(
         n_total=n_genes_total,
         selection=gene_selection,
     )
-    return list(payload["artifacts"])
+    return list(artifacts)
 
 
 def _optional_float(value: Any) -> float | None:
@@ -3702,19 +3732,19 @@ def _write_strain_growth_outputs(
             }
             for row in rows
         ],
-        "artifacts": [
+        "artifacts": (artifacts := [
             "strain_growth.csv",
             "strain_growth_summary.json",
             "strain_growth_plot.svg",
             "strain_growth_plot.tiff",
-        ],
+        ]),
     }
     atomic_write_text(
         out / "strain_growth_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_strain_growth_figures(rows, out)
-    return list(payload["artifacts"])
+    return list(artifacts)
 
 
 def _write_abundance_impact_outputs(
@@ -3844,20 +3874,20 @@ def _write_abundance_impact_outputs(
             }
             for row in member_growth_rows
         ],
-        "artifacts": [
+        "artifacts": (artifacts := [
             "abundance_impact.csv",
             "member_growth_by_abundance.csv",
             "abundance_impact_summary.json",
             "abundance_impact_plot.svg",
             "abundance_impact_plot.tiff",
-        ],
+        ]),
     }
     atomic_write_text(
         out / "abundance_impact_summary.json",
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
     )
     _write_abundance_impact_figures(rows, out, target_member=target_member, target=target)
-    return list(payload["artifacts"])
+    return list(artifacts)
 
 
 def _write_host_search_bigg_outputs(
@@ -3965,12 +3995,12 @@ def _write_host_search_bigg_outputs(
             }
             for rank, row in enumerate(rows, start=1)
         ],
-        "artifacts": [
+        "artifacts": (artifacts := [
             "host_search_rankings.csv",
             "host_search_summary.json",
             "host_search_plot.svg",
             "host_search_plot.tiff",
-        ] + (["host_search_unevaluated.csv"] if unevaluated else []),
+        ] + (["host_search_unevaluated.csv"] if unevaluated else [])),
     }
     atomic_write_text(
         out / "host_search_summary.json",
@@ -3980,8 +4010,8 @@ def _write_host_search_bigg_outputs(
         rows, out, target=target, metric=metric,
         n_unevaluated=n_candidates_failed, n_total=n_candidates_total,
     )
-    _prune_stale_workflow_artifacts(out, KNOWN_HOST_SEARCH_ARTIFACTS, payload["artifacts"])
-    return list(payload["artifacts"])
+    _prune_stale_workflow_artifacts(out, KNOWN_HOST_SEARCH_ARTIFACTS, artifacts)
+    return list(artifacts)
 
 
 def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> list[str]:
@@ -5840,19 +5870,8 @@ OKABE_ITO: tuple[str, ...] = (
     "#F0E442",   # yellow
     "#000000",   # black
 )
-# A font *stack*: the R/ggplot path aborted on `unknown family 'Arial'` and matplotlib silently
-# fell back to DejaVu, so the two backends disagreed. Naming the fallbacks makes them agree.
-FONT_STACK: tuple[str, ...] = ("Arial", "Helvetica", "DejaVu Sans")
-# Journals reject uncompressed RGBA TIFFs; 600 dpi is the line-art expectation.
-FIGURE_TIFF_DPI = 600
-
-# Byte-reproducibility of figure artifacts (round 5: codex F5 / opus F14). matplotlib stamps the
-# wall-clock time into <dc:date> and derives generated element ids (clip paths, glyph defs) from a
-# random salt, so two runs with an identical run_hash emitted different SVG bytes — a deliverable
-# advertised as reproducible that was not checksummable. A fixed salt makes the ids deterministic
-# and `metadata={"Date": None}` drops the timestamp. TIFF/PNG were already stable.
-SVG_HASHSALT = "cmig-svg-v1"
-SVG_METADATA: dict[str, None] = {"Date": None}
+# The matplotlib publication policy (font stack, TIFF DPI, SVG hashsalt/metadata, axes polish)
+# lives in cmig.render.figure_style since round 7 — one definition for every figure writer.
 
 # Units live in the JSON summaries already — these are the axis strings that carry them.
 UNIT_GROWTH = "h$^{-1}$"
@@ -5861,41 +5880,9 @@ UNIT_HOST_FLUX = "mmol gDW$_{host}^{-1}$ h$^{-1}$"
 UNIT_CARBON = "mmol C gDW$^{-1}$ h$^{-1}$"
 
 
-def _load_matplotlib_pyplot() -> Any:
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    plt.rcParams.update({
-        "font.family": "sans-serif",
-        "font.sans-serif": list(FONT_STACK),
-        "axes.titlesize": 14,
-        "axes.labelsize": 11,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        # Keep SVG text as text so a figure can still be re-typeset; the previous default
-        # outlined every glyph to a <path>, making half the figure set uneditable.
-        "svg.fonttype": "none",
-        # Byte-reproducibility: matplotlib stamps <dc:date> and randomizes generated element ids
-        # (clip paths, glyph defs) into every SVG, so two runs with the same run_hash produced
-        # different artifact bytes. A fixed hash salt makes the generated ids deterministic; the
-        # date is suppressed per-savefig with metadata={"Date": None}.
-        "svg.hashsalt": SVG_HASHSALT,
-    })
-    return plt
-
-
 def _direction_phrase(direction: str) -> str:
     """`max_uptake` -> "uptake" so an uptake search is not titled a "production" search."""
     return "uptake" if "uptake" in str(direction) else "production"
-
-
-def _polish_matplotlib_axes(ax: Any, *, grid_axis: str = "x") -> None:
-    ax.grid(True, axis=grid_axis, color="#d9dee3", linewidth=0.7, alpha=0.85)
-    ax.set_axisbelow(True)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
 
 
 def _add_panel_letters(axes: Any, *, start: int = 0) -> None:
@@ -5906,36 +5893,6 @@ def _add_panel_letters(axes: Any, *, start: int = 0) -> None:
             transform=ax.transAxes, fontsize=13, fontweight="bold",
             va="bottom", ha="right",
         )
-
-
-def save_publication_tiff(fig: Any, out_tiff: Path, *, dpi: int = FIGURE_TIFF_DPI) -> None:
-    """TIFF at 600 dpi, RGB, LZW — the three things submission portals check.
-
-    matplotlib writes RGBA with ``compression=raw`` by default, which produced 8.8-21.3 MB files
-    with an alpha channel. Flattening onto white and LZW-compressing cuts that by ~10x and removes
-    the alpha, without touching the rendered content.
-    """
-    fig.savefig(
-        out_tiff,
-        format="tiff",
-        dpi=dpi,
-        facecolor="white",
-        pil_kwargs={"compression": "tiff_lzw"},
-    )
-    try:
-        from PIL import Image
-    except ImportError:  # pragma: no cover - PIL ships with matplotlib
-        return
-    with Image.open(out_tiff) as image:
-        if image.mode == "RGB":
-            return
-        flattened = Image.new("RGB", image.size, (255, 255, 255))
-        flattened.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
-        info = dict(image.info)
-    flattened.save(
-        out_tiff, format="tiff", compression="tiff_lzw",
-        dpi=info.get("dpi", (dpi, dpi)),
-    )
 
 
 def _save_screening_figure(fig: Any, out_svg: Path, out_tiff: Path) -> None:
@@ -7129,7 +7086,7 @@ def _load_bounds_json(path: str) -> dict[str, list[float]]:
 
 def _load_host_interface_map(
     path: str | None, *, accept_unreviewed: bool = False
-) -> dict[str, str] | None:
+) -> dict[str, str | dict[str, str]] | None:
     """Load a reviewed metabolite -> host exchange map.
 
     A-B8: a map that still carries `needs_review` entries has unconfirmed annotation matches in
@@ -7162,23 +7119,42 @@ def _load_host_interface_map(
             )
             merged = dict(raw["interface_map"])
             for met, info in pending.items():
-                target = info.get("host_exchange") if isinstance(info, dict) else info
-                if target:
-                    merged[met] = target
+                if isinstance(info, dict):
+                    target = info.get("host_exchange")
+                    if target and info.get("interface") is not None:
+                        # Round 7: a reviewer may pre-assign the side while confirming the match.
+                        merged[met] = {
+                            "host_exchange": target,
+                            "interface": info["interface"],
+                        }
+                    elif target:
+                        merged[met] = target
+                elif info:
+                    merged[met] = info
             raw = merged
         else:
             raw = raw["interface_map"]
     if not isinstance(raw, dict):
         raise ValueError("host interface map must be a JSON object")
-    mapping: dict[str, str] = {}
+    # Round 7: values are either the legacy exchange-id string or the side-aware
+    # {"host_exchange", "interface"} object. reviewed_interface_entry is the single
+    # validator for both forms, so a bad side/exchange fails here, loudly, not mid-solve.
+    from cmig.core.host_types import reviewed_interface_entry
+
+    mapping: dict[str, str | dict[str, str]] = {}
     for metabolite, exchange in raw.items():
         if not isinstance(metabolite, str) or not metabolite.strip():
             raise ValueError("host interface map metabolite keys must be non-empty strings")
         if exchange is None:
             continue
-        if not isinstance(exchange, str) or not exchange.strip():
-            raise ValueError(f"invalid host exchange mapping: {metabolite} -> {exchange}")
-        mapping[metabolite] = exchange
+        entry = reviewed_interface_entry(metabolite, exchange)
+        if entry.interface is None:
+            mapping[metabolite] = entry.exchange_id
+        else:
+            mapping[metabolite] = {
+                "host_exchange": entry.exchange_id,
+                "interface": entry.interface,
+            }
     return mapping
 
 

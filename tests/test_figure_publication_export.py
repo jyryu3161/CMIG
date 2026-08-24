@@ -23,8 +23,6 @@ matplotlib = pytest.importorskip("matplotlib")
 matplotlib.use("Agg")
 
 from cmig.cli.main import (  # noqa: E402
-    FIGURE_TIFF_DPI,
-    FONT_STACK,
     OKABE_ITO,
     UNIT_CARBON,
     UNIT_FLUX,
@@ -37,6 +35,7 @@ from cmig.cli.main import (  # noqa: E402
 from cmig.core.interaction_figures import EDGE_COLORS, EDGE_LABELS  # noqa: E402
 from cmig.render.client import FigureSpec, RenderError  # noqa: E402
 from cmig.render.composer import JOURNAL_PRESETS  # noqa: E402
+from cmig.render.figure_style import FIGURE_TIFF_DPI, FONT_STACK  # noqa: E402
 
 # ── journal presets: applied, and validated ──────────────────────────────────────
 
