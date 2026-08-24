@@ -15,7 +15,8 @@ from typing import Any, Literal
 
 from cmig.core.dfba import DfbaConfig, run_dfba_sensitivity
 from cmig.core.engine import MicomEngine
-from cmig.core.host import benchmark_generic_host, run_bigg_host_microbe
+from cmig.core.host import benchmark_generic_host
+from cmig.core.host_coupling import run_bigg_host_microbe
 from cmig.core.host_map import build_host_map, host_map_policy
 from cmig.core.model_quality import ModelQualityReport, audit_model_quality
 from cmig.core.namespace import (

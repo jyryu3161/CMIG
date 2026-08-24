@@ -1459,7 +1459,7 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
         import pandas as pd
         from cobra.io import read_sbml_model
 
-        from cmig.core.host import run_bigg_host_microbe
+        from cmig.core.host_coupling import run_bigg_host_microbe
         from cmig.core.medium_spec import load_medium
         from cmig.core.model_pool import taxonomy_from_model_dir
     except ImportError:
@@ -1935,7 +1935,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         import pandas as pd
         from cobra.io import read_sbml_model
 
-        from cmig.core.host import run_bigg_host_microbe
+        from cmig.core.host_coupling import run_bigg_host_microbe
         from cmig.core.medium_spec import load_medium
         from cmig.core.model_pool import taxonomy_from_model_dir
         from cmig.core.search_product import candidate_combinations
@@ -2217,7 +2217,7 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
         import pandas as pd
         from cobra.io import read_sbml_model, write_sbml_model
 
-        from cmig.core.host import run_bigg_host_microbe
+        from cmig.core.host_coupling import run_bigg_host_microbe
         from cmig.core.host_ko_impact import arm_from_coupling, assemble_result
         from cmig.core.medium_spec import load_medium, medium_checksum
         from cmig.core.model_pool import taxonomy_from_model_dir
