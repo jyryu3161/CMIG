@@ -24,6 +24,7 @@ from cmig import CMIG_CORE_VERSION
 from cmig.core.golden import DEFAULT_DECIMALS
 from cmig.core.interactions import CROSS_FEEDING_ALLOCATION_METHOD
 from cmig.core.manifest import RunHashComponents, RunManifest, canonical_json
+from cmig.core.tidy import EDGE_WEIGHT_BASIS, EDGE_WEIGHT_UNIT
 from cmig.io.atomic import atomic_write_parquet
 
 
@@ -298,32 +299,28 @@ def write_solve_output(
                     "transfer; cross_feeding weights are a mass-conserving proportional "
                     "allocation, not a measurement"
                 ),
-                # Round-5 opus F3 / codex F2: `edges.weight` is the raw micom member exchange,
-                # which is a PER-TAXON rate, while `profile.net_flux` in the same run directory is
-                # a COMMUNITY-level rate. Two units lived in one run with nothing distinguishing
-                # them, so a rare member's edge looks larger than an abundant member's (measured:
-                # 84.57 at abundance 0.1 vs 12.29 at abundance 0.9 for the same CO2 edge). The
-                # value is not changed here — that requires re-blessing the frozen golden
-                # edges.parquet — but the basis is now stated so it cannot be misread.
+                # Round-5 opus F3 / codex F2 disclosed that `edges.weight` was a PER-TAXON rate
+                # inverting against true community contribution; round 8 (tidy >= 1.3) fixed the
+                # VALUE: weight is now the abundance-weighted community-basis magnitude, in the
+                # same unit family as `profile.net_flux`. The basis is imported from
+                # cmig.core.tidy so this manifest field can never drift from the artifact again.
                 #
-                # The identity below is stated in full because a shorter phrasing was read two
-                # different ways by two reviewers. `weight` is a MAGNITUDE (>= 0): its direction
-                # lives in `edge_type` and in the source/target ordering, so a naive
-                # sum(abundance * weight) does NOT reconstruct the net exchange (measured on a
-                # 0.25/0.75 pair: naive 1.25 vs true 0.75). Restoring the sign from `edge_type`
-                # and excluding the allocated cross_feeding rows does (0.75 == 0.75).
-                "weight_unit": "mmol gDW_taxon^-1 h^-1 (PER-TAXON; multiply by the member's "
-                               "abundance for a community-basis rate)",
-                "weight_basis": "per_taxon_unweighted",
+                # `weight` remains a MAGNITUDE (>= 0): its direction lives in `edge_type` and the
+                # source/target ordering, so reconstruction of the net exchange still requires
+                # restoring the sign — but NO abundance multiplication (that would double-count
+                # since 1.3).
+                "weight_unit": EDGE_WEIGHT_UNIT,
+                "weight_basis": EDGE_WEIGHT_BASIS,
                 "weight_is_magnitude": True,
                 "weight_basis_note": (
-                    "edges.weight is NOT comparable to profile.net_flux, which is community-basis "
-                    "(mmol gDW_community^-1 h^-1). Reconstruction, per metabolite: take only "
-                    "edge_type in {secretion, uptake} (cross_feeding rows are an allocation, not "
-                    "a measured exchange, and must be excluded); give each row the sign of its "
-                    "direction (+ for secretion, - for uptake); multiply each by the abundance of "
-                    "the member endpoint; the sum equals that metabolite's profile.net_flux. "
-                    "Summing the unsigned weights, or including cross_feeding, does NOT."
+                    "Since tidy 1.3, edges.weight is community-basis "
+                    "(abundance-weighted; do NOT multiply by abundance again). "
+                    "Reconstruction, per metabolite: take only edge_type in {secretion, uptake} "
+                    "(cross_feeding rows are an allocation, not a measured exchange, and must be "
+                    "excluded); give each row the sign of its direction (+ for secretion, - for "
+                    "uptake); the sum equals that metabolite's profile.net_flux. Tidy <= 1.2 "
+                    "artifacts carried the old per-taxon basis "
+                    "(weight_basis: per_taxon_unweighted)."
                 ),
             },
             # NOT hashed (round 5, blocker 5): marks which medium semantics produced this run.

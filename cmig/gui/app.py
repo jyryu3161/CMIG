@@ -217,7 +217,7 @@ I18N: dict[str, dict[str, str]] = {
             "FVA whisker는 두 경계가 모두 기록된 경우에만 표시됩니다."
         ),
         "profile_contribution_basis": (
-            "멤버 기준: 직접 멤버↔풀 edge 플럭스 × 기록된 abundance; "
+            "멤버 기준: 군집 가중 직접 멤버↔풀 edge 플럭스 (tidy ≥1.3); "
             "할당된 cross-feeding edge 제외."
         ),
         "profile_clear_delta": "비교 오버레이 지우기",

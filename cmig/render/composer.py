@@ -37,13 +37,12 @@ JOURNAL_PRESETS: dict[str, tuple[float, float, int]] = {
 
 PANEL_KINDS = ("network", "heatmap", "chord")
 
-# Round 5: the network/chord panels render `edges.parquet.weight`, which is a PER-TAXON magnitude
-# (mmol gDW_taxon^-1 h^-1), NOT the community-basis rate that `profile.net_flux` and every other
-# figure in the run directory use. A reader compares figures, not manifests, so the basis has to
-# be on the figure itself — otherwise a rare member's edge simply looks bigger than an abundant
-# member's (measured: 84.57 at abundance 0.1 vs 12.29 at abundance 0.9 for the same CO2 edge).
+# Round 5 disclosed the basis on-figure; round 8 (tidy 1.3) fixed the value itself:
+# `edges.parquet.weight` is now the abundance-weighted COMMUNITY-basis magnitude, the same
+# unit family as `profile.net_flux`. A reader compares figures, not manifests, so the basis
+# still has to be on the figure itself. Tidy <= 1.2 artifacts carried the old per-taxon basis.
 EDGE_WEIGHT_BASIS_CAPTION = (
-    "edge width = per-taxon flux (mmol gDW_taxon^-1 h^-1), not abundance-weighted"
+    "edge width = community-weighted flux (mmol gDW_community^-1 h^-1, tidy >= 1.3)"
 )
 EDGE_WEIGHT_PANEL_KINDS = frozenset({"network", "chord"})
 

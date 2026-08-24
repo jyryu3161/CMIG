@@ -206,15 +206,16 @@ your summary; don't present a capped screen as exhaustive.
   quantifies how outputs respond to that ratio — it is not evidence of ecological
   causation. Pass `--fva`: without the target's FVA interval at each point, a jump
   between neighbouring abundances cannot be told from alternate-optima degeneracy.
-- **`edges.parquet.weight` is not a community contribution.** It is an unsigned
-  **per-taxon** flux (`mmol gDW_taxon⁻¹ h⁻¹`), so comparing raw edge magnitudes
-  ranks members wrongly — per-taxon flux scales roughly as 1/abundance, and the
-  inversion is real, not marginal (measured: 3.876 at abundance 0.1 vs 0.459 at
-  0.9, where the community contributions are 0.388 vs 0.413 — the ranking flips).
-  Multiply by abundance, exclude `cross_feeding` rows (a proportional allocation,
-  not a measurement), and sign by direction; the sum then equals
-  `profile.parquet.net_flux`. `uv run cmig inspect-run --format text` prints the whole
-  recipe as the `edges.weight basis:` line. Full detail in
+- **`edges.parquet.weight` basis depends on the tidy schema version.** Since
+  tidy 1.3 (round 8) it IS the community contribution (abundance-weighted,
+  `mmol gDW_community⁻¹ h⁻¹`) — do **not** multiply by abundance again. Tidy
+  ≤1.2 artifacts carried the old unsigned per-taxon flux whose magnitude inverts
+  against community contribution (measured: 3.876 at abundance 0.1 vs 0.459 at
+  0.9, where the community contributions are 0.388 vs 0.413 — the ranking
+  flips). Either way exclude `cross_feeding` rows (a proportional allocation,
+  not a measurement) and sign by direction; the signed direct-edge sum equals
+  `profile.parquet.net_flux`. `uv run cmig inspect-run --format text` prints the
+  basis as the `edges.weight basis:` line. Full detail in
   `references/outputs.md`.
 - **`strain-growth --single-medium model_default` is not an interaction
   measurement.** It reports each member's native capability under its own SBML

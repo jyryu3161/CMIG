@@ -35,10 +35,12 @@ def build_matrix(rows: list[dict[str, Any]]) -> pa.Table:
 
 
 def write_matrix(table: pa.Table, path: str | Path) -> Path:
-    """matrix.parquet 저장."""
+    """matrix.parquet 저장 (atomic publication, round 8)."""
+    from cmig.io.atomic import atomic_write_parquet
+
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(table, p)
+    atomic_write_parquet(p, table)
     return p
 
 

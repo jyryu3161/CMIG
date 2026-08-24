@@ -504,7 +504,7 @@ Round-7 added:
 * an `--exact-medium` flag on the subcommands that accept `--medium`, routing to
   `apply_medium_translated(..., exact=True)` — which **already exists** and is already used by
   `strain-growth`'s community-offer path (`_cmd_strain_growth`). The flag is now available on all
-  nine microbial/community medium workflows, including the host commands' `--microbe-medium` and
+  microbial/community medium workflows (twelve since round 8), including the host commands' `--microbe-medium` and
   sweep's `--mediums`.
 * the manifest must record which mode was used, because the two give different answers on identical
   input — exactly the class of defect round 5 closed for `MEDIUM_POLICY`. A

@@ -322,15 +322,17 @@ class TidyBundle:
             raise TidyContractError(f"edges.edge_type 미허용 값: {bad_e}")
 
     def write(self, out_dir: str | Path) -> None:
-        """parquet 저장 (pickle 금지, schema §8.6)."""
+        """parquet 저장 (pickle 금지, schema §8.6; atomic publication, round 8)."""
+        from cmig.io.atomic import atomic_write_parquet
+
         self.validate()
         d = Path(out_dir)
         d.mkdir(parents=True, exist_ok=True)
-        pq.write_table(self.nodes, d / "nodes.parquet")
-        pq.write_table(self.edges, d / "edges.parquet")
-        pq.write_table(self.profile, d / "profile.parquet")
+        atomic_write_parquet(d / "nodes.parquet", self.nodes)
+        atomic_write_parquet(d / "edges.parquet", self.edges)
+        atomic_write_parquet(d / "profile.parquet", self.profile)
         if self.matrix is not None:
-            pq.write_table(self.matrix, d / "matrix.parquet")
+            atomic_write_parquet(d / "matrix.parquet", self.matrix)
 
     @classmethod
     def read(cls, in_dir: str | Path) -> TidyBundle:

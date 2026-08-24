@@ -62,6 +62,10 @@ def test_every_medium_bearing_command_accepts_exact_medium():
         "host-ko-impact",
         "host-search-bigg",
         "sweep",
+        # Round 8: the surfaced baseline analyses share the same medium contract.
+        "pair",
+        "single",
+        "minimal-medium",
     }
     assert exact_commands == medium_commands
 

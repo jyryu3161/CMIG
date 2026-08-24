@@ -623,13 +623,17 @@ def test_manifest_states_the_edge_weight_basis(tmp_path):
     manifest_path = write_solve_output(bundle, _run_hash_components(result), tmp_path)
     attribution = json.loads(manifest_path.read_text())["edge_attribution"]
 
-    assert attribution["weight_basis"] == "per_taxon_unweighted"
+    # tidy 1.3 (round 8): the artifact value became community-basis; the manifest
+    # imports the basis constant from cmig.core.tidy so it cannot drift again.
+    from cmig.core.tidy import EDGE_WEIGHT_BASIS
+
+    assert attribution["weight_basis"] == EDGE_WEIGHT_BASIS
     assert attribution["weight_is_magnitude"] is True
-    assert "gDW_taxon" in attribution["weight_unit"]
+    assert "gDW_community" in attribution["weight_unit"]
     note = attribution["weight_basis_note"]
-    assert "NOT comparable to profile.net_flux" in note
-    # The note must rule OUT the naive reading, which is what made a reviewer call it false.
-    assert "Summing the unsigned weights" in note
+    # The note must rule OUT the round-8 naive misreadings: re-multiplying by abundance
+    # (double-counting) and including allocated cross_feeding rows.
+    assert "do NOT multiply by abundance again" in note
     assert "cross_feeding" in note
 
 
@@ -939,7 +943,9 @@ def test_inspect_run_reports_the_edge_weight_basis(tmp_path):
     write_solve_output(bundle, _run_hash_components(result), tmp_path)
     basis = _inspect_run_dir(tmp_path)["edge_weight_basis"]
     assert basis is not None, "inspect-run dropped the unit basis consumers need"
-    assert basis["weight_basis"] == "per_taxon_unweighted"
+    from cmig.core.tidy import EDGE_WEIGHT_BASIS
+
+    assert basis["weight_basis"] == EDGE_WEIGHT_BASIS
     assert basis["weight_is_magnitude"] is True
 
 

@@ -27,6 +27,7 @@ from cmig.io.atomic import atomic_write_text
 from cmig.io.gem_paths import default_human_gem_path
 from cmig.render.figure_style import (
     SVG_METADATA,
+    save_figure_atomic,
     save_publication_tiff,
 )
 from cmig.render.figure_style import (
@@ -6728,7 +6729,7 @@ def _add_panel_letters(axes: Any, *, start: int = 0) -> None:
 
 def _save_screening_figure(fig: Any, out_svg: Path, out_tiff: Path) -> None:
     fig.tight_layout()
-    fig.savefig(out_svg, format="svg", metadata=SVG_METADATA)
+    save_figure_atomic(fig, out_svg, format="svg", metadata=SVG_METADATA)
     save_publication_tiff(fig, out_tiff)
 
 
@@ -7174,7 +7175,7 @@ def _write_spatial_snapshots(
     if image is not None:
         cbar = fig.colorbar(image, ax=list(axes[:-1]), fraction=0.035, pad=0.02)
         cbar.set_label("Concentration (mmol L$^{-1}$)")
-    fig.savefig(out_svg, format="svg", bbox_inches="tight", metadata=SVG_METADATA)
+    save_figure_atomic(fig, out_svg, format="svg", bbox_inches="tight", metadata=SVG_METADATA)
     save_publication_tiff(fig, out_tiff)
     plt.close(fig)
 
@@ -8463,7 +8464,6 @@ def _sweep_warnings(rows: list[Any]) -> list[str]:
 def _write_sweep_profiles(rows: list[dict[str, Any]], path: Path) -> None:
     """Condition-level profile long table for medium/diet sweep and FVA review."""
     import pyarrow as pa
-    import pyarrow.parquet as pq
 
     schema = pa.schema([
         ("condition_id", pa.string()),
@@ -8480,7 +8480,9 @@ def _write_sweep_profiles(rows: list[dict[str, Any]], path: Path) -> None:
         ("fva_hi", pa.float64()),
     ])
     path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)  # type: ignore[no-untyped-call]
+    from cmig.io.atomic import atomic_write_parquet
+
+    atomic_write_parquet(path, pa.Table.from_pylist(rows, schema=schema))
 
 
 def _write_medium_summary(rows: list[Any], path: Path) -> None:

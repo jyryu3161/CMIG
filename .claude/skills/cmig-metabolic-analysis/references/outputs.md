@@ -124,33 +124,34 @@ its declared outputs does not digest the same as one that wrote them all.
 
 ### Reading `edges.parquet` — the single most misread artifact
 
-`edges.parquet.weight` is an **unsigned, PER-TAXON** flux in
-`mmol gDW_taxon⁻¹ h⁻¹`. It is **not** abundance-weighted and **not** comparable
-to `profile.parquet.net_flux`, which is community-basis
-(`mmol gDW_community⁻¹ h⁻¹`).
+Since tidy schema **1.3** (round 8), `edges.parquet.weight` is the unsigned
+**community-basis** magnitude — per-taxon member exchange flux × relative
+abundance, in `mmol gDW_community⁻¹ h⁻¹`. Magnitudes now rank members by actual
+community contribution. Check the artifact's `schema_version` column (or the
+manifest's `edge_attribution.weight_basis`): tidy **≤1.2** carried the old
+unsigned **per-taxon** basis, which scales roughly as 1/abundance and **inverts
+the ranking**. Measured on a 2-member solve (iHN637 abundance 0.1, iML1515
+abundance 0.9), acetate secretion:
 
-Because per-taxon flux scales roughly as 1/abundance, **comparing raw edge
-weights inverts the ranking.** Measured on a 2-member solve (iHN637 abundance
-0.1, iML1515 abundance 0.9), acetate secretion:
+| member  | abundance | old per-taxon weight (≤1.2) | community weight (≥1.3) |
+| ------- | --------- | --------------------------- | ----------------------- |
+| iHN637  | 0.1       | 3.876102                    | 0.387610                |
+| iML1515 | 0.9       | 0.459437                    | **0.413494**            |
 
-| member  | abundance | `edges.weight` | × abundance |
-| ------- | --------- | -------------- | ----------- |
-| iHN637  | 0.1       | 3.876102       | 0.387610    |
-| iML1515 | 0.9       | 0.459437       | **0.413494**|
-
-Edge weights say iHN637 dominates by 8.4×; community contribution says iML1515
-does. To compare members correctly:
+**Never multiply a ≥1.3 weight by abundance again** — that double-counts. To
+reconcile with `profile.parquet.net_flux`:
 
 1. keep only `edge_type in {secretion, uptake}` — **exclude `cross_feeding`**,
    which is a mass-conserving *proportional allocation*, not a measured pairwise
    transfer (`identifiable: false`, `allocation_method:
    proportional_shared_pool`);
-2. sign each row by direction (`+` secretion, `−` uptake);
-3. multiply by the abundance of the member endpoint.
+2. sign each row by direction (`+` secretion, `−` uptake).
 
 The sum then matches that metabolite's `profile.parquet.net_flux` — 0.801104 for
 acetate in the run above. Summing unsigned weights, or including `cross_feeding`,
-does not.
+does not. Legacy ≤1.2 bundles are semantically migrated by `TidyBundle.read`;
+a missing member abundance fails a new build (`MissingAbundanceError`) instead of
+fabricating a scale.
 
 **Two honest limits on that identity**, both measured on the same run:
 

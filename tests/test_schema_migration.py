@@ -21,7 +21,7 @@ from cmig.core.tidy import (
 
 
 def test_schema_version_is_current():
-    assert TIDY_SCHEMA_VERSION == "1.2"
+    assert TIDY_SCHEMA_VERSION == "1.3"
     # v1.1 = v1.0 + host-microbe 확장 3컬럼 (nodes)
     assert set(NODES_SCHEMA.names) - set(NODES_SCHEMA_V10.names) == {
         "organism_type", "interface", "compartment",

@@ -31,6 +31,24 @@ def _app() -> QApplication:
     return _QT_APP
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_qt_teardown():
+    """Destroy every window inside the test, not at interpreter exit.
+
+    This module builds several CmigMainWindow instances; leaving their C++ side
+    to be reaped during Python shutdown segfaults the otherwise-green run
+    (exit 139) on macOS. Closing and draining deleteLater inside the session
+    keeps teardown deterministic.
+    """
+    yield
+    app = QApplication.instance()
+    if app is not None:
+        for widget in app.topLevelWidgets():
+            widget.close()
+            widget.deleteLater()
+        app.processEvents()
+
+
 def _stub_graph(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep these QWidget contracts independent of QtWebEngine/Chromium."""
 

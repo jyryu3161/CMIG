@@ -43,7 +43,7 @@ _LABEL_COLOR = {"secretion": "#31a354", "uptake": "#756bb1"}
 # semantics independently; the coordinator can reconcile this one constant after both tracks
 # merge without hunting through paint code and layout construction.
 CONTRIBUTION_BASIS_NOTE = (
-    "Member basis: direct member↔pool edge flux × recorded abundance; "
+    "Member basis: community-weighted direct member↔pool edge flux (tidy ≥1.3); "
     "allocated cross-feeding edges excluded."
 )
 
@@ -69,6 +69,21 @@ def _finite_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return converted if math.isfinite(converted) else None
+
+
+def _tidy_version_tuple(value: Any) -> tuple[int, int]:
+    """Parse a tidy ``schema_version`` cell; unparseable/absent counts as current.
+
+    ``TidyBundle.read`` migrates every legacy bundle to the current schema, so an
+    edge row without a readable version here is treated as current rather than
+    legacy — assuming legacy would silently re-scale an already community-basis
+    weight by abundance.
+    """
+    try:
+        major, minor = str(value).split(".")[:2]
+        return (int(major), int(minor))
+    except (AttributeError, TypeError, ValueError):
+        return (1, 3)
 
 
 def _view_text(strings: Mapping[str, str], key: str, fallback: str) -> str:
@@ -614,10 +629,13 @@ class FluxHeatmap(QWidget):
 def member_contribution_rows(bundle: Any) -> tuple[list[dict[str, Any]], list[str]]:
     """Build signed community-basis member contributions from a tidy bundle.
 
-    ``edges.weight`` is per-taxon flux, so the GUI must multiply each direct member↔pool
-    edge by that member's recorded abundance. Cross-feeding rows are proportional shared-pool
-    allocations and are intentionally excluded. Missing/non-finite values are omitted and
-    returned as warnings; they are never replaced with measured-looking zeros.
+    Since tidy 1.3 (round 8), ``edges.weight`` is already the community-basis
+    abundance-weighted magnitude, so the GUI uses it directly — multiplying by abundance
+    again would double-count. A raw legacy (<1.3) edge table that bypassed
+    ``TidyBundle.read``'s semantic migration keeps the old per-taxon basis, so only there
+    the recorded abundance is still applied. Cross-feeding rows are proportional
+    shared-pool allocations and are intentionally excluded. Missing/non-finite values are
+    omitted and returned as warnings; they are never replaced with measured-looking zeros.
     """
     abundances: dict[str, float] = {}
     warnings: set[str] = set()
@@ -648,13 +666,21 @@ def member_contribution_rows(bundle: Any) -> tuple[list[dict[str, Any]], list[st
         if weight is None:
             warnings.add(f"edge {index}: flux not recorded")
             continue
+        legacy_per_taxon = _tidy_version_tuple(edge.get("schema_version")) < (1, 3)
         abundance = abundances.get(member)
-        if abundance is None:
+        if legacy_per_taxon and abundance is None:
             warnings.add(f"{member}: direct edge omitted because abundance is unavailable")
             continue
         metabolite = str(edge.get("metabolite", ""))
         by_member = values.setdefault(metabolite, {})
-        by_member[member] = by_member.get(member, 0.0) + sign * weight * abundance
+        if legacy_per_taxon:
+            # Raw pre-1.3 table: weight is per-taxon; scale by abundance as before.
+            assert abundance is not None
+            contribution = sign * weight * abundance
+        else:
+            # tidy >= 1.3: weight is already community-basis.
+            contribution = sign * weight
+        by_member[member] = by_member.get(member, 0.0) + contribution
 
     rows = [
         {

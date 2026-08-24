@@ -1,11 +1,11 @@
 {
   "golden_decimals": 6,
-  "note": "synthetic acetate-producer/butyrate-consumer (no species names); \uc815\uc131 cross-feeding \uac80\uc99d (schema v1.2)",
+  "note": "synthetic acetate-producer/butyrate-consumer (no species names); \uc815\uc131 cross-feeding \uac80\uc99d (schema v1.3)",
   "solver": "gurobi",
   "tidy_hashes": {
-    "edges": "dce4b8078dc3fdb1ecc55e6d6d25a67c5bb915e001160392a7d693a9ed5ed542",
-    "nodes": "deb42143d4301c550d2060e12f9496c2cc0bf4918aad73f6a85d94cb067637b9",
-    "profile": "21b730f81d9fd8e1be6ee726e2cb669ad1fe64449d7e435b424f00934bc272af"
+    "edges": "04a7c1b9412b5e5536d392dfc4ba2bf22559d2b1dab99a9341ccb5d8677b039b",
+    "nodes": "f4b21c8605bbfd9d9e3af8049756c1eaf8b126d0bfd02684d43e3548ae7010cc",
+    "profile": "498bdc9c2f3188a1e68bd9c3f22db451ba14a76716d131a061fdc69a6752194a"
   },
   "tradeoff_f": 0.5
 }
