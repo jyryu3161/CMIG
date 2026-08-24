@@ -47,7 +47,12 @@ from cmig.gui.builder import (
 from cmig.gui.editors import MediumEditor, ModelManagerPanel
 from cmig.gui.graph_view import GateBadge, InteractionGraphView
 from cmig.gui.host_view import HostImpactView
-from cmig.gui.views import DfbaSpatialView, ExternalProfileView, SweepView
+from cmig.gui.views import (
+    CONTRIBUTION_BASIS_NOTE,
+    DfbaSpatialView,
+    ExternalProfileView,
+    SweepView,
+)
 from cmig.service import JobRunner, JobStatus
 
 I18N: dict[str, dict[str, str]] = {
@@ -120,6 +125,115 @@ I18N: dict[str, dict[str, str]] = {
         "status_fixture_failed": "예제 실행 실패: {diagnostic}",
         "status_fixture_job": "예제 작업 {status}: {job_id}",
         "status_compare_complete": "시나리오 비교 완료",
+        "sweep_title": "매개변수 스윕",
+        "sweep_status_ready": (
+            "고급 결과 보기: taxonomy 또는 모델 폴더를 선택하고 축을 설정한 다음 "
+            "실행하세요."
+        ),
+        "sweep_taxonomy_placeholder": "Taxonomy CSV",
+        "sweep_browse_taxonomy": "Taxonomy…",
+        "sweep_model_dir_placeholder": "또는 사용자가 준비한 미생물 모델 폴더",
+        "sweep_browse_models": "모델 폴더…",
+        "sweep_taxonomy_label": "Taxonomy",
+        "sweep_model_dir_label": "모델 소스",
+        "sweep_mediums_placeholder": (
+            "쉼표로 구분한 배지 CSV/JSON 파일(비우면 모델 기본값)"
+        ),
+        "sweep_abundance_placeholder": "쉼표로 구분한 abundance CSV/JSON 파일",
+        "sweep_member_sets_placeholder": "세미콜론 구분 집합, 예: A+B;A+C",
+        "sweep_bounds_placeholder": "쉼표로 구분한 bounds JSON 파일",
+        "sweep_tradeoffs_placeholder": "쉼표로 구분한 tradeoff f 값",
+        "sweep_solvers_placeholder": "쉼표로 구분한 solver",
+        "sweep_browse_files": "파일…",
+        "sweep_mediums_label": "배지",
+        "sweep_abundance_label": "Abundance 변형",
+        "sweep_member_sets_label": "멤버 집합",
+        "sweep_bounds_label": "Bounds 변형",
+        "sweep_tradeoffs_label": "Tradeoff f",
+        "sweep_solvers_label": "Solver",
+        "sweep_assume_bigg": "모델을 검토했고 BiGG namespace임을 확인합니다",
+        "sweep_namespace_placeholder": "또는 검토된 namespace-decisions JSON 파일",
+        "sweep_namespace_button": "판정 파일…",
+        "sweep_fva": "FVA",
+        "sweep_fva_metabolites_placeholder": "선택: 쉼표로 구분한 FVA 대사체",
+        "sweep_exact_medium": "엄밀한 배지",
+        "sweep_allow_unknown_medium": "알 수 없는 배지 ID 허용",
+        "sweep_fixture_smoke": "내장 fixture 스모크 스윕 사용",
+        "sweep_run": "스윕 실행",
+        "sweep_col_condition": "조건",
+        "sweep_col_value": "값",
+        "sweep_col_status": "상태",
+        "sweep_col_cache": "캐시",
+        "sweep_col_medium": "배지",
+        "sweep_col_abundance": "Abundance",
+        "sweep_col_members": "멤버",
+        "sweep_col_bounds": "Bounds",
+        "sweep_col_tradeoff": "Tradeoff f",
+        "sweep_col_solver": "Solver",
+        "sweep_col_diagnostic": "진단",
+        "sweep_select_source": (
+            "실제 스윕을 실행하려면 taxonomy CSV 또는 모델 폴더를 선택하세요."
+        ),
+        "sweep_one_source": "Taxonomy CSV와 모델 폴더 중 하나만 선택하세요.",
+        "sweep_namespace_choice": (
+            "Namespace 정책은 검토 파일과 BiGG 확인 중 하나만 선택하세요."
+        ),
+        "sweep_namespace_required": (
+            "Namespace 검토가 필요합니다. 검토된 판정 파일을 선택하거나 BiGG 확인을 체크하세요."
+        ),
+        "sweep_started_real": "실제 스윕 시작: {job_id}",
+        "sweep_started_fixture": "Fixture 스모크 스윕 시작: {job_id}",
+        "sweep_complete_detail": "{mode} 스윕 완료: {count}개 실행 → {out_dir}{warnings}",
+        "sweep_failed_detail": "{mode} 스윕 {status}: {error}{artifact_note}",
+        "sweep_failed_artifacts": " 산출물의 {count}개 조건을 표시합니다.",
+        "sweep_mode_real": "실제",
+        "sweep_mode_fixture": "fixture",
+        "sweep_dialog_taxonomy": "Sweep taxonomy CSV 선택",
+        "sweep_dialog_models": "Sweep 모델 폴더 선택",
+        "sweep_dialog_mediums": "배지 변형 선택",
+        "sweep_dialog_abundances": "Abundance 변형 선택",
+        "sweep_dialog_bounds": "Bounds 변형 선택",
+        "sweep_dialog_namespace": "Namespace 판정 파일 선택",
+        "sweep_filter_csv": "CSV (*.csv);;모든 파일 (*)",
+        "sweep_filter_medium": "배지 파일 (*.csv *.json);;모든 파일 (*)",
+        "sweep_filter_abundance": "Abundance 파일 (*.csv *.json);;모든 파일 (*)",
+        "sweep_filter_bounds": "Bounds 파일 (*.json);;모든 파일 (*)",
+        "sweep_filter_json": "JSON (*.json);;모든 파일 (*)",
+        "sweep_cli_failed": "sweep 명령 실패(rc={rc})",
+        "profile_net_chart_title": "외부 순 플럭스(+ 분비 / − 흡수)",
+        "profile_delta_overlay_title": "기준 / 변형 오버레이",
+        "profile_no_fluxes": "측정된 프로필 플럭스 없음",
+        "profile_delta_legend": "연한 색 = {baseline}; 진한 색 = {variant}",
+        "profile_member_chart_title": "멤버별 기여(직접 플럭스 × abundance)",
+        "profile_no_member_contributions": "Abundance 기준 멤버 기여 없음",
+        "profile_heatmap_title": "플럭스 히트맵(+ 분비 / − 흡수)",
+        "profile_heatmap_blank_note": "빈 칸 = 플럭스 미기록(0으로 채우지 않음).",
+        "profile_heatmap_empty": "플럭스 행렬 없음",
+        "profile_current_scenario": "현재",
+        "profile_charts_tab": "플럭스 차트",
+        "profile_heatmap_tab": "히트맵",
+        "profile_chart_note": (
+            "크기가 큰 대사체를 최대 {count}개까지 표시합니다. "
+            "FVA whisker는 두 경계가 모두 기록된 경우에만 표시됩니다."
+        ),
+        "profile_contribution_basis": (
+            "멤버 기준: 직접 멤버↔풀 edge 플럭스 × 기록된 abundance; "
+            "할당된 cross-feeding edge 제외."
+        ),
+        "profile_clear_delta": "비교 오버레이 지우기",
+        "profile_load_complete_run": "완전한 tidy 실행을 불러오면 이 차트가 채워집니다.",
+        "profile_omitted_prefix": "제외됨: {warnings}",
+        "profile_delta_member_unavailable": (
+            "DeltaResult는 외부 플럭스만 기록하므로 멤버 기여는 빈 상태입니다."
+        ),
+        "profile_delta_active": "비교 오버레이 활성: {baseline}(연함) vs {variant}(진함).",
+        "profile_delta_failed": "비교 상태 실패: {diagnostic}",
+        "profile_overlay_available": "외부 프로필 탭에 비교 오버레이가 활성화됨",
+        "profile_scenario_baseline": "기준: {name}",
+        "profile_scenario_variant": "변형: {name}",
+        "profile_sandbox_baseline": "Fixture 기준",
+        "profile_sandbox_preview": "샌드박스 미리보기",
+        "profile_sandbox_commit": "샌드박스 적용",
     },
     "en": {
         "title": "CMIG — Community Metabolic Interaction",
@@ -193,6 +307,115 @@ I18N: dict[str, dict[str, str]] = {
         "status_fixture_failed": "Fixture failed: {diagnostic}",
         "status_fixture_job": "Fixture job {status}: {job_id}",
         "status_compare_complete": "Scenario compare complete",
+        "sweep_title": "Parameter Sweep",
+        "sweep_status_ready": (
+            "Advanced result view: choose a taxonomy or model folder, configure axes, then run."
+        ),
+        "sweep_taxonomy_placeholder": "Taxonomy CSV",
+        "sweep_browse_taxonomy": "Taxonomy…",
+        "sweep_model_dir_placeholder": "Or a folder of user-prepared microbial models",
+        "sweep_browse_models": "Model folder…",
+        "sweep_taxonomy_label": "Taxonomy",
+        "sweep_model_dir_label": "Model source",
+        "sweep_mediums_placeholder": (
+            "Comma-separated medium CSV/JSON files (blank = model defaults)"
+        ),
+        "sweep_abundance_placeholder": "Comma-separated abundance CSV/JSON files",
+        "sweep_member_sets_placeholder": "Semicolon-separated sets, e.g. A+B;A+C",
+        "sweep_bounds_placeholder": "Comma-separated bounds JSON files",
+        "sweep_tradeoffs_placeholder": "Comma-separated tradeoff f values",
+        "sweep_solvers_placeholder": "Comma-separated solvers",
+        "sweep_browse_files": "Files…",
+        "sweep_mediums_label": "Mediums",
+        "sweep_abundance_label": "Abundance variants",
+        "sweep_member_sets_label": "Member sets",
+        "sweep_bounds_label": "Bounds variants",
+        "sweep_tradeoffs_label": "Tradeoff f",
+        "sweep_solvers_label": "Solvers",
+        "sweep_assume_bigg": "I reviewed the models and confirm BiGG namespace",
+        "sweep_namespace_placeholder": "Or a reviewed namespace-decisions JSON file",
+        "sweep_namespace_button": "Decisions…",
+        "sweep_fva": "FVA",
+        "sweep_fva_metabolites_placeholder": "Optional comma-separated FVA metabolites",
+        "sweep_exact_medium": "Exact medium",
+        "sweep_allow_unknown_medium": "Allow unknown medium IDs",
+        "sweep_fixture_smoke": "Use built-in fixture smoke sweep",
+        "sweep_run": "Run Sweep",
+        "sweep_col_condition": "Condition",
+        "sweep_col_value": "Value",
+        "sweep_col_status": "Status",
+        "sweep_col_cache": "Cache",
+        "sweep_col_medium": "Medium",
+        "sweep_col_abundance": "Abundance",
+        "sweep_col_members": "Members",
+        "sweep_col_bounds": "Bounds",
+        "sweep_col_tradeoff": "Tradeoff f",
+        "sweep_col_solver": "Solver",
+        "sweep_col_diagnostic": "Diagnostic",
+        "sweep_select_source": (
+            "Select a taxonomy CSV or model folder before running a real sweep."
+        ),
+        "sweep_one_source": "Choose only one model source: taxonomy CSV or model folder.",
+        "sweep_namespace_choice": (
+            "Choose one namespace policy: reviewed decisions file or BiGG confirmation."
+        ),
+        "sweep_namespace_required": (
+            "Namespace review required: choose a reviewed decisions file or confirm BiGG."
+        ),
+        "sweep_started_real": "real sweep started: {job_id}",
+        "sweep_started_fixture": "fixture smoke sweep started: {job_id}",
+        "sweep_complete_detail": (
+            "{mode} sweep complete: {count} runs → {out_dir}{warnings}"
+        ),
+        "sweep_failed_detail": "{mode} sweep {status}: {error}{artifact_note}",
+        "sweep_failed_artifacts": " Displaying {count} recorded conditions from its artifacts.",
+        "sweep_mode_real": "real",
+        "sweep_mode_fixture": "fixture",
+        "sweep_dialog_taxonomy": "Select Sweep Taxonomy CSV",
+        "sweep_dialog_models": "Select Sweep Model Folder",
+        "sweep_dialog_mediums": "Select Medium Variants",
+        "sweep_dialog_abundances": "Select Abundance Variants",
+        "sweep_dialog_bounds": "Select Bounds Variants",
+        "sweep_dialog_namespace": "Select Namespace Decisions",
+        "sweep_filter_csv": "CSV (*.csv);;All files (*)",
+        "sweep_filter_medium": "Medium files (*.csv *.json);;All files (*)",
+        "sweep_filter_abundance": "Abundance files (*.csv *.json);;All files (*)",
+        "sweep_filter_bounds": "Bounds files (*.json);;All files (*)",
+        "sweep_filter_json": "JSON (*.json);;All files (*)",
+        "sweep_cli_failed": "sweep command failed with rc={rc}",
+        "profile_net_chart_title": "Net exchange flux (+ secretion / − uptake)",
+        "profile_delta_overlay_title": "baseline / variant overlay",
+        "profile_no_fluxes": "No measured profile fluxes",
+        "profile_delta_legend": "light = {baseline}; solid = {variant}",
+        "profile_member_chart_title": "Per-member contribution (direct flux × abundance)",
+        "profile_no_member_contributions": "No abundance-weighted member contributions",
+        "profile_heatmap_title": "Flux heatmap (+ secretion / − uptake)",
+        "profile_heatmap_blank_note": "Blank = flux not recorded (never zero-filled).",
+        "profile_heatmap_empty": "No flux matrix available",
+        "profile_current_scenario": "Current",
+        "profile_charts_tab": "Flux charts",
+        "profile_heatmap_tab": "Heatmap",
+        "profile_chart_note": (
+            "Charts show up to {count} metabolites by magnitude. "
+            "FVA whiskers appear only when both bounds are recorded."
+        ),
+        "profile_contribution_basis": CONTRIBUTION_BASIS_NOTE,
+        "profile_clear_delta": "Clear comparison overlay",
+        "profile_load_complete_run": "Load a complete tidy run to populate this chart.",
+        "profile_omitted_prefix": "Omitted: {warnings}",
+        "profile_delta_member_unavailable": (
+            "Member contributions are blank because DeltaResult records external flux only."
+        ),
+        "profile_delta_active": (
+            "Comparison overlay active: {baseline} (light) vs {variant} (solid)."
+        ),
+        "profile_delta_failed": "Comparison status is failed: {diagnostic}",
+        "profile_overlay_available": "comparison overlay active in External Profile",
+        "profile_scenario_baseline": "Baseline: {name}",
+        "profile_scenario_variant": "Variant: {name}",
+        "profile_sandbox_baseline": "Fixture baseline",
+        "profile_sandbox_preview": "Sandbox preview",
+        "profile_sandbox_commit": "Sandbox commit",
     },
 }
 
@@ -385,7 +608,8 @@ class CmigMainWindow(QMainWindow):
         self._dfba_jobs: dict[str, Path] = {}
         self._spatial_jobs: dict[str, Path] = {}
         self._community_jobs: dict[str, Path] = {}
-        self._sweep_fixture_jobs: dict[str, Path] = {}
+        #: sweep job id -> (artifact directory, "real" | "fixture")
+        self._sweep_jobs: dict[str, tuple[Path, str]] = {}
         self._medium_growth_jobs: dict[str, Path] = {}
         #: sandbox job id -> (commit?, the bound constraint the result will belong to)
         self._sandbox_jobs: dict[str, tuple[bool, Any]] = {}
@@ -402,7 +626,7 @@ class CmigMainWindow(QMainWindow):
         self.model_manager = ModelManagerPanel()
         self.community_builder = CommunityBuilderView()
         self.medium_editor = MediumEditor()
-        self.profile_view = ExternalProfileView()
+        self.profile_view = ExternalProfileView(strings=self.tr_map)
         self.graph_view = InteractionGraphView()
         self.graph_gate_badge = GateBadge(lang=self.lang)
         self.graph_tab = QWidget()
@@ -410,7 +634,7 @@ class CmigMainWindow(QMainWindow):
         graph_layout.setContentsMargins(0, 0, 0, 0)
         graph_layout.addWidget(self.graph_gate_badge)
         graph_layout.addWidget(self.graph_view)
-        self.sweep_view = SweepView(runner=self.runner)
+        self.sweep_view = SweepView(runner=self.runner, strings=self.tr_map)
         self.sandbox_view = ConstraintSandboxView()
         self.scenario_compare = ScenarioCompareView()
         self.search_view = SearchView()
@@ -550,7 +774,13 @@ class CmigMainWindow(QMainWindow):
             self._browse_community_model_dir
         )
         self.community_builder.run_btn.clicked.connect(self.run_community_solve)
-        self.sweep_view.run_btn.clicked.connect(self.run_sweep_fixture)
+        self.sweep_view.browse_taxonomy_btn.clicked.connect(self._browse_sweep_taxonomy)
+        self.sweep_view.browse_model_dir_btn.clicked.connect(self._browse_sweep_model_dir)
+        self.sweep_view.browse_mediums_btn.clicked.connect(self._browse_sweep_mediums)
+        self.sweep_view.browse_abundance_btn.clicked.connect(self._browse_sweep_abundances)
+        self.sweep_view.browse_bounds_btn.clicked.connect(self._browse_sweep_bounds)
+        self.sweep_view.browse_namespace_btn.clicked.connect(self._browse_sweep_namespace)
+        self.sweep_view.run_btn.clicked.connect(self.run_sweep_from_view)
         self.medium_editor.browse_model_btn.clicked.connect(self._browse_medium_model)
         self.medium_editor.check_growth_btn.clicked.connect(self.run_medium_growth_check)
         self.scenario_compare.browse_a_btn.clicked.connect(self._browse_scenario_run_a)
@@ -583,6 +813,62 @@ class CmigMainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Select Model Pool Folder")
         if path:
             self.search_view.model_dir_input.setText(path)
+
+    def _browse_sweep_taxonomy(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr_map["sweep_dialog_taxonomy"],
+            "",
+            self.tr_map["sweep_filter_csv"],
+        )
+        if path:
+            self.sweep_view.taxonomy_input.setText(path)
+
+    def _browse_sweep_model_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, self.tr_map["sweep_dialog_models"])
+        if path:
+            self.sweep_view.model_dir_input.setText(path)
+
+    def _browse_sweep_files(self, editor: Any, title_key: str, file_filter: str) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            self.tr_map[title_key],
+            "",
+            file_filter,
+        )
+        if paths:
+            editor.setText(",".join(paths))
+
+    def _browse_sweep_mediums(self) -> None:
+        self._browse_sweep_files(
+            self.sweep_view.mediums_input,
+            "sweep_dialog_mediums",
+            self.tr_map["sweep_filter_medium"],
+        )
+
+    def _browse_sweep_abundances(self) -> None:
+        self._browse_sweep_files(
+            self.sweep_view.abundance_variants_input,
+            "sweep_dialog_abundances",
+            self.tr_map["sweep_filter_abundance"],
+        )
+
+    def _browse_sweep_bounds(self) -> None:
+        self._browse_sweep_files(
+            self.sweep_view.bounds_variants_input,
+            "sweep_dialog_bounds",
+            self.tr_map["sweep_filter_bounds"],
+        )
+
+    def _browse_sweep_namespace(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr_map["sweep_dialog_namespace"],
+            "",
+            self.tr_map["sweep_filter_json"],
+        )
+        if path:
+            self.sweep_view.namespace_decisions_input.setText(path)
 
     def _browse_host_model(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1586,8 +1872,98 @@ class CmigMainWindow(QMainWindow):
         self._show_status("status_started", kind=self.tr_map["kind_community_solve"], job_id=jid)
         return jid
 
+    def run_sweep_from_view(self) -> str:
+        """Dispatch the default real workflow or the explicitly selected fixture smoke path."""
+        if self.sweep_view.fixture_check.isChecked():
+            return self.run_sweep_fixture()
+        return self.run_sweep()
+
+    def run_sweep(self) -> str:
+        """Run the user ``cmig sweep`` workflow through the in-process CLI job pattern."""
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        request = self.sweep_view.request()
+        taxonomy = str(request["taxonomy"])
+        model_dir = str(request["model_dir"])
+        if not taxonomy and not model_dir:
+            self.sweep_view.status.setText(self.tr_map["sweep_select_source"])
+            return ""
+        if taxonomy and model_dir:
+            self.sweep_view.status.setText(self.tr_map["sweep_one_source"])
+            return ""
+        decisions = str(request["namespace_decisions"])
+        assumed = bool(request["assume_bigg"])
+        if decisions and assumed:
+            self.sweep_view.status.setText(self.tr_map["sweep_namespace_choice"])
+            return ""
+        if not decisions and not assumed:
+            self.sweep_view.status.setText(self.tr_map["sweep_namespace_required"])
+            return ""
+
+        out_dir = Path(tempfile.mkdtemp(prefix="cmig-sweep-", dir=_search_temp_root())).resolve()
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            taxonomy_path = Path(taxonomy) if taxonomy else out_dir / "taxonomy.csv"
+            if model_dir:
+                from cmig.core.model_pool import taxonomy_from_model_dir
+
+                discovered = taxonomy_from_model_dir(model_dir, recursive=False)
+                discovered.to_csv(taxonomy_path, index=False)
+            argv = [
+                "sweep",
+                "--taxonomy",
+                str(taxonomy_path),
+                "--tradeoff-fs",
+                str(request["tradeoff_fs"] or "0.3,0.5"),
+                "--solvers",
+                str(request["solvers"] or "gurobi"),
+                "--metric",
+                "growth",
+                "--out",
+                str(out_dir),
+            ]
+            for key, flag in (
+                ("mediums", "--mediums"),
+                ("abundance_variants", "--abundance-variants"),
+                ("member_sets", "--member-sets"),
+                ("bounds_variants", "--bounds-variants"),
+                ("fva_metabolites", "--fva-metabolites"),
+            ):
+                if request[key]:
+                    argv.extend([flag, str(request[key])])
+            if assumed:
+                argv.append("--assume-bigg-namespace")
+            else:
+                argv.extend(["--namespace-decisions", decisions])
+            if request["fva"]:
+                argv.append("--fva")
+            if request["exact_medium"]:
+                argv.append("--exact-medium")
+            if request["allow_unknown_medium"]:
+                argv.append("--allow-unknown-medium")
+            rc = main(argv)
+            if rc != 0:
+                # A scientific failure deliberately exits 3 after writing diagnostic-bearing
+                # sweep artifacts. The Job remains failed, while the poller still loads those
+                # rows so the GUI is not quieter than the CLI.
+                raise RuntimeError(self._message("sweep_cli_failed", rc=rc))
+            _finish_after_artifacts(ctx)
+            summary_path = out_dir / "sweep_summary.json"
+            summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
+            return {"out_dir": str(out_dir), "summary": summary}
+
+        jid = self.submit_job("sweep", _job)
+        self._sweep_jobs[jid] = (out_dir, "real")
+        self.sweep_view.run_btn.setEnabled(False)
+        self.sweep_view.status.setText(self._message("sweep_started_real", job_id=jid))
+        self._show_status("status_started", kind=self.tr_map["kind_sweep"], job_id=jid)
+        return jid
+
     def run_sweep_fixture(self) -> str:
-        """Run a fixture tradeoff/solver sweep from the Sweep tab (`cmig sweep-fixture`)."""
+        """Preserved fixture-only tradeoff/solver smoke path (`cmig sweep-fixture`)."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
@@ -1616,9 +1992,9 @@ class CmigMainWindow(QMainWindow):
             return {"out_dir": str(out_dir)}
 
         jid = self.submit_job("sweep_fixture", _job)
-        self._sweep_fixture_jobs[jid] = out_dir
+        self._sweep_jobs[jid] = (out_dir, "fixture")
         self.sweep_view.run_btn.setEnabled(False)
-        self.sweep_view.status.setText(f"sweep started: {jid}")
+        self.sweep_view.status.setText(self._message("sweep_started_fixture", job_id=jid))
         self._show_status("status_started", kind=self.tr_map["kind_sweep"], job_id=jid)
         return jid
 
@@ -1713,7 +2089,14 @@ class CmigMainWindow(QMainWindow):
             self.scenario_compare.status.setText(f"Scenario compare failed: {e}")
             return
         self.scenario_compare.load_comparison(delta)
-        self.scenario_compare.status.setText(f"compare complete: {dir_a} vs {dir_b}")
+        self.profile_view.show_delta_overlay(
+            delta,
+            baseline_label=self._message("profile_scenario_baseline", name=path_a.name),
+            variant_label=self._message("profile_scenario_variant", name=path_b.name),
+        )
+        self.scenario_compare.status.setText(
+            f"compare complete: {dir_a} vs {dir_b} · {self.tr_map['profile_overlay_available']}"
+        )
         self._show_status("status_compare_complete")
 
     def _register_run_output(self, out_dir: Path) -> None:
@@ -1748,8 +2131,18 @@ class CmigMainWindow(QMainWindow):
             run_hash = getattr(result, "run_hash", None)
             if commit and run_hash:
                 self.sandbox_view.show_commit(result.delta, run_hash, constraint)
+                variant_label = self.tr_map["profile_sandbox_commit"]
             else:
                 self.sandbox_view.show_preview(result.delta, constraint)
+                variant_label = self.tr_map["profile_sandbox_preview"]
+            self.profile_view.show_delta_overlay(
+                result.delta,
+                baseline_label=self.tr_map["profile_sandbox_baseline"],
+                variant_label=variant_label,
+            )
+            self.sandbox_view.status.setText(
+                f"{self.sandbox_view.status.text()} · {self.tr_map['profile_overlay_available']}"
+            )
             self.runner.release_payload(jid)
         for jid in list(self._fixture_jobs):
             job = self.runner.poll(jid)
@@ -1955,14 +2348,28 @@ class CmigMainWindow(QMainWindow):
                 self.community_builder.status.setText(
                     f"community solve {job.status.value}: {job.error or jid}"
                 )
-        for jid, out_dir in list(self._sweep_fixture_jobs.items()):
+        for jid, (out_dir, mode) in list(self._sweep_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE:
-                self._sweep_fixture_jobs.pop(jid, None)
+                self._sweep_jobs.pop(jid, None)
                 self.sweep_view.run_btn.setEnabled(True)
                 rows = _load_sweep_rows(out_dir / "sweep.parquet")
                 self.sweep_view.load_results(rows)
-                self.sweep_view.status.setText(f"sweep complete: {len(rows)} runs → {out_dir}")
+                summary_path = out_dir / "sweep_summary.json"
+                summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
+                warnings = summary.get("warnings", []) if isinstance(summary, dict) else []
+                warning_note = ""
+                if warnings:
+                    warning_note = " · " + "; ".join(str(warning) for warning in warnings)
+                self.sweep_view.status.setText(
+                    self._message(
+                        "sweep_complete_detail",
+                        mode=self.tr_map[f"sweep_mode_{mode}"],
+                        count=len(rows),
+                        out_dir=out_dir,
+                        warnings=warning_note,
+                    )
+                )
                 self._register_run_output(out_dir)
                 self._show_status(
                     "status_complete_out",
@@ -1971,9 +2378,24 @@ class CmigMainWindow(QMainWindow):
                     out_dir=out_dir,
                 )
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
-                self._sweep_fixture_jobs.pop(jid, None)
+                self._sweep_jobs.pop(jid, None)
                 self.sweep_view.run_btn.setEnabled(True)
-                self.sweep_view.status.setText(f"sweep {job.status.value}: {job.error or jid}")
+                rows = _load_sweep_rows(out_dir / "sweep.parquet")
+                if rows:
+                    self.sweep_view.load_results(rows)
+                    self._register_run_output(out_dir)
+                artifact_note = (
+                    self._message("sweep_failed_artifacts", count=len(rows)) if rows else ""
+                )
+                self.sweep_view.status.setText(
+                    self._message(
+                        "sweep_failed_detail",
+                        mode=self.tr_map[f"sweep_mode_{mode}"],
+                        status=job.status.value,
+                        error=job.error or jid,
+                        artifact_note=artifact_note,
+                    )
+                )
         for jid, out_dir in list(self._medium_growth_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
@@ -2169,10 +2591,18 @@ def _load_sweep_rows(parquet_path: Path) -> list[Any]:
     table = pq.read_table(parquet_path)  # type: ignore[no-untyped-call]  # pyarrow has no stubs
     rows: list[Any] = []
     for record in table.to_pylist():
+        axis_values = {
+            "medium_variant": record.get("axis_medium_variant"),
+            "abundance": record.get("axis_abundance"),
+            "member_set": record.get("axis_member_set"),
+            "bounds": record.get("axis_bounds"),
+            "tradeoff_f": record.get("axis_tradeoff_f"),
+            "solver": record.get("axis_solver"),
+        }
         rows.append(
             SweepRow(
                 condition_id=str(record.get("condition_id", "")),
-                axis_values={},
+                axis_values=axis_values,
                 metric=str(record.get("metric", "")),
                 value=record.get("value"),
                 run_hash=str(record.get("run_hash", "")),
