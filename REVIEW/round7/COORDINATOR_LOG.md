@@ -74,6 +74,17 @@ Coordinator cross-cutting commit (`2254246`):
 5. `tests/test_cli_publication.py` stub module extended with
    `cli_exact_medium` (the T6-era stub predated T1's dispatch-scope import).
 
+Second integration fix, caught by the final randomized full suite: T5's
+`__getattr__` removal silently changed patch semantics — `cli/main.py` and
+`publication_benchmark` imported `run_bigg_host_microbe` *through*
+`cmig.core.host`, whose new static binding no longer follows a monkeypatch on
+`host_coupling`, so the round-5 non-optimal-host-LP guard tests were
+exercising the real solver instead of their stub (`test_round5_final_fixes.py`
+failed 2–3 tests depending on order). Fixed by importing the coupling entry
+points from their defining module `cmig.core.host_coupling`; `host.py` keeps
+the re-export for API compatibility. This is the round's best argument for
+running the full suite at integration rather than trusting per-track green.
+
 ## Final gates on `round7/integration`
 
 - `uv run ruff check .` → All checks passed.
