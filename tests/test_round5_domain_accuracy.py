@@ -924,7 +924,8 @@ def test_edge_weight_basis_reaches_the_figure_caption():
 
     network = panel_title_with_basis(PanelSpec(kind="network", title="Cross-feeding"))
     assert EDGE_WEIGHT_BASIS_CAPTION in network
-    assert "per-taxon" in network
+    # tidy 1.3 (round 8): the on-figure basis states the community weighting.
+    assert "community-weighted" in network
     chord = panel_title_with_basis(PanelSpec(kind="chord", title="Transfers"))
     assert EDGE_WEIGHT_BASIS_CAPTION in chord
     # a heatmap does not plot edge weights, so it must not gain a misleading caption
