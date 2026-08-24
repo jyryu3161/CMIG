@@ -12,6 +12,7 @@ donor→recipient 실제 전달은 식별되지 않으므로, 대사체별 총 �
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pyarrow as pa
@@ -23,6 +24,7 @@ from cmig.core.tidy import (
     NODES_SCHEMA,
     PROFILE_SCHEMA,
     TIDY_SCHEMA_VERSION,
+    MissingAbundanceError,
     TidyBundle,
 )
 
@@ -39,10 +41,11 @@ def allocate_cross_feeding(
 ) -> list[tuple[str, str, float]]:
     """Mass-conserving shared-pool allocation for one metabolite.
 
-    ``secretors`` values are positive raw secretion fluxes and ``consumers`` values are negative
-    raw uptake fluxes. Because a steady-state shared pool does not identify pairwise transfers,
-    CMIG uses a transparent proportional allocation rather than emitting every pairwise minimum
-    (which double-counts mass whenever more than one donor or consumer exists).
+    ``secretors`` values are positive secretion fluxes and ``consumers`` values are negative
+    uptake fluxes, both on the same caller-selected basis. Because a steady-state shared pool does
+    not identify pairwise transfers, CMIG uses a transparent proportional allocation rather than
+    emitting every pairwise minimum (which double-counts mass whenever more than one donor or
+    consumer exists).
 
     Returned weights satisfy, within floating tolerance:
 
@@ -73,24 +76,73 @@ def allocate_cross_feeding(
 DIRECT_ALLOCATION_METHOD = "direct_flux"
 
 
+def _community_abundances(result: SolveResult) -> dict[str, float]:
+    """Return finite, non-negative relative abundances or fail before emitting a mixed basis.
+
+    Round 5 considered falling back to a factor of 1.0 for a missing abundance. That turns
+    "MICOM did not report the scaling input" into "this taxon is the entire community" and leaves
+    a per-taxon number in a column declared to be community-basis. Failing bundle construction is
+    the only contract that cannot publish that fabricated quantity.
+    """
+    missing = [member for member in sorted(result.members) if result.abundances.get(member) is None]
+    if missing:
+        raise MissingAbundanceError(
+            "member abundance missing; cannot convert edges.weight and its FVA interval to "
+            f"community basis: {missing}"
+        )
+
+    abundances: dict[str, float] = {}
+    for member in sorted(result.members):
+        abundance = result.abundances.get(member)
+        if abundance is None:  # narrowed above; kept local so the type and contract stay coupled
+            raise MissingAbundanceError(
+                f"member abundance missing; cannot convert edges.weight: {member}"
+            )
+        abundances[member] = float(abundance)
+    invalid = {
+        member: abundance
+        for member, abundance in abundances.items()
+        if not math.isfinite(abundance) or abundance < 0.0
+    }
+    if invalid:
+        raise MissingAbundanceError(
+            "member abundance must be finite and non-negative to convert edges.weight and its "
+            f"FVA interval to community basis: {invalid}"
+        )
+    return abundances
+
+
 def build_tidy(
     result: SolveResult,
     eps: float = NOISE_FLOOR,
     *,
     edge_fva: dict[tuple[str, str], tuple[float, float]] | None = None,
 ) -> TidyBundle:
-    """SolveResult → TidyBundle. 정렬 결정적(determinism) for golden 비교."""
+    """SolveResult → TidyBundle with community-basis edge magnitudes.
+
+    Member exchange fluxes arrive from MICOM on a per-taxon basis. Direct edge weights and their
+    FVA bounds are multiplied by relative abundance here. Cross-feeding allocation is performed
+    *after* the same scaling, so direct and allocated rows share one basis.
+
+    Sorting remains deterministic for golden comparison.
+    """
     members = sorted(result.members)
+    abundances = _community_abundances(result)
 
     # ── nodes: 멤버 + 환경 pool ──
-    n_sv, n_id, n_type, n_label, n_growth, n_ab = [], [], [], [], [], []
+    n_sv: list[str] = []
+    n_id: list[str] = []
+    n_type: list[str] = []
+    n_label: list[str] = []
+    n_growth: list[float | None] = []
+    n_ab: list[float | None] = []
     for m in members:
         n_sv.append(TIDY_SCHEMA_VERSION)
         n_id.append(m)
         n_type.append("member")
         n_label.append(m)
         n_growth.append(result.member_growth.get(m))
-        n_ab.append(result.abundances.get(m))
+        n_ab.append(abundances[m])
     # 환경 pool 노드 1개
     n_sv.append(TIDY_SCHEMA_VERSION)
     n_id.append(ENV_POOL_ID)
@@ -138,14 +190,15 @@ def build_tidy(
         for metab in sorted(result.member_exchange.get(m, {})):
             raw = result.member_exchange[m][metab]
             sf = convert(raw, Scope.MEMBER_POOL, eps=eps)
+            community_weight = sf.ui_flux * abundances[m]
             if sf.label is Label.SECRETION:
                 edges.append((
-                    m, ENV_POOL_ID, metab, "secretion", sf.ui_flux, "secretion",
+                    m, ENV_POOL_ID, metab, "secretion", community_weight, "secretion",
                     DIRECT_ALLOCATION_METHOD, True,
                 ))
             elif sf.label is Label.UPTAKE:
                 edges.append((
-                    ENV_POOL_ID, m, metab, "uptake", sf.ui_flux, "uptake",
+                    ENV_POOL_ID, m, metab, "uptake", community_weight, "uptake",
                     DIRECT_ALLOCATION_METHOD, True,
                 ))
     # 2) cross-feeding: 동일 metabolite 의 secretor → consumer.
@@ -153,11 +206,14 @@ def build_tidy(
     # 공급/수요 비례로 보존 배분한다(CROSS_FEEDING_ALLOCATION_METHOD).
     metabolites = sorted({x for ex in result.member_exchange.values() for x in ex})
     for metab in metabolites:
-        secretors = {m: result.member_exchange[m][metab]
+        # Select signal on the engine's per-taxon noise floor, then allocate the already-scaled
+        # community contributions. Passing eps=0 avoids discarding a real rare-taxon contribution
+        # merely because abundance scaling made its magnitude smaller than the engine noise floor.
+        secretors = {m: result.member_exchange[m][metab] * abundances[m]
                      for m in members if result.member_exchange.get(m, {}).get(metab, 0.0) > eps}
-        consumers = {m: result.member_exchange[m][metab]
+        consumers = {m: result.member_exchange[m][metab] * abundances[m]
                      for m in members if result.member_exchange.get(m, {}).get(metab, 0.0) < -eps}
-        for source, target, weight in allocate_cross_feeding(secretors, consumers, eps=eps):
+        for source, target, weight in allocate_cross_feeding(secretors, consumers, eps=0.0):
             # identifiable=False: the shared-pool solution does not determine WHO fed WHOM.
             edges.append((
                 source, target, metab, "cross_feeding", weight, "secretion",
@@ -166,19 +222,32 @@ def build_tidy(
     edges.sort()
     intervals = edge_fva or {}
 
-    def _bound(edge: tuple[Any, ...], index: int) -> float | None:
-        """FVA bound for a DIRECT edge's metabolite; None for allocated cross-feeding.
+    def _bounds(edge: tuple[Any, ...]) -> tuple[float | None, float | None]:
+        """Community-basis magnitude interval for a direct edge.
 
         An allocated weight has no FVA interval of its own — the interval belongs to the exchange
         flux, not to the pairwise attribution, and pretending otherwise would dress an
-        unidentifiable number in a determined-looking range.
+        unidentifiable number in a determined-looking range. Direct FVA input is a signed
+        per-taxon reaction interval. It is first mapped to the row direction's non-negative
+        magnitude, then scaled by the member's relative abundance, exactly like ``weight``.
         """
         if edge[3] == "cross_feeding":
-            return None
+            return None, None
         found = intervals.get((str(edge[0]), str(edge[2]))) or intervals.get(
             (str(edge[1]), str(edge[2]))
         )
-        return None if found is None else float(found[index])
+        if found is None:
+            return None, None
+        raw_lo, raw_hi = sorted((float(found[0]), float(found[1])))
+        member = str(edge[0] if edge[3] == "secretion" else edge[1])
+        abundance = abundances[member]
+        if edge[3] == "secretion":
+            magnitude_lo, magnitude_hi = max(0.0, raw_lo), max(0.0, raw_hi)
+        else:
+            magnitude_lo, magnitude_hi = max(0.0, -raw_hi), max(0.0, -raw_lo)
+        return magnitude_lo * abundance, magnitude_hi * abundance
+
+    edge_bounds = [_bounds(edge) for edge in edges]
 
     edges_tbl = pa.table(
         {
@@ -191,8 +260,8 @@ def build_tidy(
             "label": [e[5] for e in edges],
             "allocation_method": [e[6] for e in edges],
             "identifiable": [e[7] for e in edges],
-            "weight_lo": [_bound(e, 0) for e in edges],
-            "weight_hi": [_bound(e, 1) for e in edges],
+            "weight_lo": [bounds[0] for bounds in edge_bounds],
+            "weight_hi": [bounds[1] for bounds in edge_bounds],
         },
         schema=EDGES_SCHEMA,
     )
