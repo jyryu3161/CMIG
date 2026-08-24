@@ -13,6 +13,9 @@ import csv
 import hashlib
 import json
 import math
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -45,6 +48,36 @@ MEDIUM_POLICY = "exchange_reactions_by_metabolite_v2"   # was: open_uptakes_exac
 # `cmig.core.boundary`, which is written against `model.boundary`.
 MEDIUM_APPLICATION_MERGE = "merge_onto_model_default"
 MEDIUM_APPLICATION_EXACT = "exact_boundary_isolation"
+
+# The public CLI reaches medium application through several stable service/core APIs that predate
+# ``--exact-medium`` and intentionally are outside round-7 T1's ownership.  Keep the new choice
+# scoped to one command invocation rather than widening all of those APIs in parallel.  Every
+# application still goes through ``apply_medium_translated`` below; the context only supplies the
+# CLI's requested default for existing callers that omit ``exact``.
+_CLI_EXACT_MEDIUM: ContextVar[bool] = ContextVar("cmig_cli_exact_medium", default=False)
+
+
+@contextmanager
+def cli_exact_medium(enabled: bool) -> Iterator[None]:
+    """Scope the CLI's ``--exact-medium`` choice to one command invocation."""
+    token = _CLI_EXACT_MEDIUM.set(bool(enabled))
+    try:
+        yield
+    finally:
+        _CLI_EXACT_MEDIUM.reset(token)
+
+
+def requested_medium_application_mode(*, has_custom_medium: bool) -> str | None:
+    """Return the manifest value for the currently scoped CLI medium request.
+
+    No translation exists when a command uses the model default, so ``None`` is the honest schema
+    value.  For custom media this uses the same constants stamped by
+    :meth:`MediumTranslation.as_provenance`, keeping the hashed workflow component and the actual
+    application record on one vocabulary.
+    """
+    if not has_custom_medium:
+        return None
+    return MEDIUM_APPLICATION_EXACT if _CLI_EXACT_MEDIUM.get() else MEDIUM_APPLICATION_MERGE
 
 
 @dataclass(frozen=True)
@@ -369,7 +402,10 @@ def apply_medium_translated(
             f"(matched on metabolite): {list(translation.unmatched)}"
         )
     declared = dict(translation.spec.uptake)
-    if exact:
+    # ``exact=True`` remains the direct programmatic API.  The scoped CLI choice upgrades callers
+    # that predate the flag and currently omit the keyword; it cannot leak into another command or
+    # thread because ContextVar state is reset by ``cli_exact_medium``.
+    if exact or _CLI_EXACT_MEDIUM.get():
         isolation = isolate_boundary(model, declared, strict_unmatched=False)
         return replace(
             translation,
