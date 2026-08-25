@@ -1,6 +1,6 @@
 [project]
 name = "cmig"
-version = "0.1.0"
+version = "0.2.0"
 description = "CMIG — Community Metabolic Interaction GUI (headless core). Community FBA delegated to MICOM; CMIG owns the value-added layer (namespace gate, sign, tidy, delta, sandbox, sweep, R figures)."
 readme = "README.md"
 requires-python = ">=3.10"

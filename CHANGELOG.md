@@ -5,6 +5,15 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+(nothing yet)
+
+## [0.2.0] - 2026-08-25
+
+Everything below shipped between 0.1.0 (2026-07-10) and this release —
+rounds 5–9 of parallel-worktree development. Entries are grouped by round;
+BREAKING items are flagged inline (workflow-manifest schema 1.2, tidy schema
+1.3 community-basis edge weights).
+
 ### Added (round 9)
 
 - **`cmig dfba-community`** — the well-mixed community dFBA prototype gets its CLI: per-member

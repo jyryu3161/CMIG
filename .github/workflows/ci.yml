@@ -40,6 +40,11 @@ jobs:
         run: |
           uv lock --check
           uv sync --extra engine --extra render --extra stats
+      # Round-9 release guard: every public version surface (pyproject, package,
+      # CITATION, zenodo, marketplace plugin, uv.lock) must agree; on a vX.Y.Z tag
+      # it additionally requires the finalized changelog heading and release date.
+      - name: Release version alignment
+        run: uv run python scripts/check_release_versions.py
       - name: Ruff
         run: uv run ruff check .
       - name: Strict mypy
