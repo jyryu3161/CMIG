@@ -63,3 +63,18 @@ def test_round8_pair_delta_single_commands_are_mapped_with_medium_controls():
     for command in ("pair", "single", "minimal-medium"):
         options = set(by_command[command]["common_options"])
         assert {"--medium", "--exact-medium", "--allow-unknown-medium"} <= options
+
+
+def test_round9_community_dfba_is_mapped_with_its_interpretability_controls():
+    by_command = {
+        entry["cli_command"].removeprefix("cmig ").split()[0]: entry
+        for entry in GUI_CLI_WORKFLOWS
+    }
+
+    mapped = by_command["dfba-community"]
+    assert set(mapped["required_args"]) == {
+        "--taxonomy", "--t-end", "--initial", "--initial-biomass", "--out",
+    }
+    assert {
+        "--member-vmax", "--close-untracked-uptake", "--allow-failed-run",
+    } <= set(mapped["common_options"])

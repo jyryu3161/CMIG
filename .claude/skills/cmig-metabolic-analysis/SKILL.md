@@ -140,6 +140,7 @@ in `references/workflows.md`; read it before assembling a non-trivial command.
 | Single-model FBA/pFBA, FVA, reaction KO, exchange summary       | `cmig single` |
 | Find a cardinality-minimal medium + limiting nutrients          | `cmig minimal-medium` |
 | Run well-mixed single-model dynamic FBA                         | `uv run cmig dfba --close-untracked-uptake` |
+| Run well-mixed **community** dynamic FBA (per-member biomass over a shared pool) | `cmig dfba-community` (round 9; Gurobi-only, exit 0 only when `acceptance.interpretable`) |
 | Check a dFBA endpoint's numerical robustness                    | `uv run cmig dfba-sensitivity --close-untracked-uptake` |
 | Preview a 2D source/sink medium gradient (design only)          | `cmig spatial-preview` |
 | Review / QC a user-provided GEM before analysis                 | `cmig model-review`, `cmig model-quality` |
@@ -176,10 +177,11 @@ host-microbe or publication run.
     (weighted sum), *not* a claim that rank 1 is best — say so. The run also
     reports how many front points are themselves single-metabolite specialists.
   - **Mode ≠ column.** A *scalar*-metric ranking also carries a `pareto` boolean
-    column, computed **only for exactly two targets**. With more targets every
-    cell stays `False`, meaning "not evaluated", not "dominated" — filtering a
-    6-target scalar ranking on `pareto == True` returns nothing, which is not a
-    finding.
+    column — since round 9 it is real N-dimensional frontier membership for any
+    target count (ties stay `True`; dominated/unevaluable rows are `False`). It
+    describes dominance among the displayed scalar vectors only; the pareto
+    **mode** additionally performs the epsilon-constraint sweep, so the two can
+    legitimately disagree about which consortia appear.
   - `--multi-metric carbon_equivalent` gives an **absolute, run-comparable** total
     in mmol C gDW⁻¹ h⁻¹ by weighting each target by its carbon number from the
     model formula. Use it when the question is genuinely "most carbon as SCFA" —

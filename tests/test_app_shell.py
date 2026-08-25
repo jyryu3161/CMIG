@@ -802,13 +802,13 @@ def test_sweep_fixture_button_launches_and_loads_result_matrix(monkeypatch, tmp_
     runner.shutdown()
 
 
-def test_medium_growth_check_requires_model():
+def test_medium_growth_check_requires_taxonomy():
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
     jid = w.run_medium_growth_check()
     assert jid == ""
-    assert "model" in w.medium_editor.growth_label.text().lower()
+    assert "taxonomy" in w.medium_editor.growth_label.text().lower()
     runner.shutdown()
 
 
@@ -817,9 +817,10 @@ def test_medium_growth_check_invalid_uptake_shows_status_not_exception(tmp_path)
     the slot either; the guard must show a status message instead (no crash)."""
     _app()
     w = build_main_window()
-    model_path = tmp_path / "model.xml"
-    model_path.write_text("<sbml/>")
-    w.medium_editor.model_path_input.setText(str(model_path))
+    taxonomy_path = tmp_path / "taxonomy.csv"
+    taxonomy_path.write_text("id,file,abundance\nmodel,model.xml,1.0\n")
+    w.medium_editor.taxonomy_input.setText(str(taxonomy_path))
+    w.medium_editor.assume_bigg_check.setChecked(True)
     w.medium_editor.add_row("EX_glc__D_e", 0.0)
     w.medium_editor.table.item(0, 1).setText("not_a_number")
     jid = w.run_medium_growth_check()
@@ -827,45 +828,49 @@ def test_medium_growth_check_invalid_uptake_shows_status_not_exception(tmp_path)
     assert "Invalid" in w.medium_editor.status.text()
 
 
-def test_medium_growth_check_button_uses_strain_growth_command(monkeypatch, tmp_path):
+def test_medium_growth_check_button_uses_solve_command(monkeypatch, tmp_path):
     import json
 
     import cmig.cli.main
+    from cmig.core.engine import SolveResult
+    from cmig.core.interactions import build_tidy
 
-    model_path = tmp_path / "model.xml"
-    model_path.write_text("<sbml/>")
+    taxonomy_path = tmp_path / "taxonomy.csv"
+    taxonomy_path.write_text("id,file,abundance\nmodel,model.xml,1.0\n")
     seen = {"argv": []}
 
     def fake_main(argv):
         seen["argv"] = list(argv)
         out = Path(argv[argv.index("--out") + 1])
-        out.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "status": "optimal",
-            "members": [
-                {
-                    "member": "model",
-                    "single_growth": 0.87,
-                    "single_status": "optimal",
-                    "community_member_growth": 0.87,
-                    "community_growth": 0.87,
-                    "community_status": "optimal",
-                }
-            ],
-        }
-        (out / "strain_growth_summary.json").write_text(json.dumps(payload))
+        result = SolveResult(
+            objective=0.87,
+            member_growth={"model": 0.87},
+            abundances={"model": 1.0},
+            external_exchange={"glc__D": -1.0},
+            member_exchange={"model": {"glc__D": -1.0}},
+            status="optimal",
+            flux_report_status="full",
+            growth_solver="gurobi",
+            flux_solver="gurobi",
+            members=["model"],
+        )
+        build_tidy(result).write(out)
+        (out / "manifest.json").write_text(
+            json.dumps({"run_hash": "growth", "diagnostic": None, "provenance": {}})
+        )
         return 0
 
     monkeypatch.setattr(cmig.cli.main, "main", fake_main)
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.medium_editor.model_path_input.setText(str(model_path))
+    w.medium_editor.taxonomy_input.setText(str(taxonomy_path))
+    w.medium_editor.assume_bigg_check.setChecked(True)
     w.medium_editor.add_row("EX_glc__D_e", 10.0)
     jid = w.run_medium_growth_check()
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
-    assert seen["argv"][0] == "strain-growth"
+    assert seen["argv"][0] == "solve"
     assert "--medium" in seen["argv"]
     assert "0.87" in w.medium_editor.growth_label.text()
     assert w.medium_editor.check_growth_btn.isEnabled()

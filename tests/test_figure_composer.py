@@ -40,8 +40,19 @@ def test_invalid_kind_rejected(tmp_path):
 def test_render_unavailable_is_explicit(tmp_path):
     """SC-FC5: Rscript 부재 → RenderError(matplotlib fallback 없음 — 정직, silent 위장 금지)."""
     fc = FigureComposer(rscript="")          # 강제 unavailable
+    out = tmp_path / "x.svg"
     with pytest.raises(RenderError, match="Rscript 부재"):
-        fc.render_panel(_EDGES, PanelSpec(kind="network"), tmp_path / "x.svg")
+        fc.render_panel(_EDGES, PanelSpec(kind="network"), out)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_invalid_journal_preset_rejected_before_render(tmp_path):
+    with pytest.raises(RenderError, match="journal preset"):
+        FigureComposer().render_panel(
+            _EDGES,
+            PanelSpec(kind="network", journal_preset="not-a-journal"),
+            tmp_path / "x.svg",
+        )
 
 
 @_needs_r

@@ -30,6 +30,7 @@ from cmig.core.metrics import (  # noqa: E402
     target_secretion_share,
     target_turnover_share,
 )
+from cmig.core.tidy import MissingAbundanceError  # noqa: E402
 
 # The red-team's measured per-taxon fluxes, with the partner consuming at the matching rate.
 _F4_SWEEP = [(0.25, 7.14445047716), (0.50, 3.80404525211), (0.75, 2.71113283097)]
@@ -73,9 +74,9 @@ def test_shares_are_zero_when_nothing_moves():
     assert target_secretion_share(contributions, "a") == 0.0
 
 
-def test_missing_abundance_falls_back_to_unit_weight_not_a_crash():
-    contributions = community_contributions({"a": {"ac": 2.0}}, {"a": None}, "ac")
-    assert contributions["a"] == pytest.approx(2.0)
+def test_missing_abundance_fails_instead_of_fabricating_a_unit_weight():
+    with pytest.raises(MissingAbundanceError, match="abundance missing"):
+        community_contributions({"a": {"ac": 2.0}}, {"a": None}, "ac")
 
 
 # ── item 2: exit contract ────────────────────────────────────────────────────────
@@ -419,8 +420,7 @@ def test_epsilon_grid_starts_at_zero_and_increases():
 
 
 def test_nd_front_keeps_genuine_tradeoffs_and_drops_dominated_points():
-    """Six targets: the 2-target helper cannot express this, which is why the flag was always
-    False for the SCFA preset."""
+    """Six targets: the scalar ranking column now shares this N-dimensional helper."""
     specialist_a = (10.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     specialist_b = (0.0, 10.0, 0.0, 0.0, 0.0, 0.0)
     balanced = (5.0, 5.0, 0.0, 0.0, 0.0, 0.0)

@@ -322,10 +322,12 @@ Two things to carry into the write-up:
   specialists, so you can say how much genuine trade-off the pool actually offers.
 
 Note a separate use of the same word: when you use a **scalar** metric, the
-rankings table also carries a `pareto` boolean column, and that column is only
-computed for **exactly two** targets. With more targets every cell stays `False`,
-meaning "not evaluated" rather than "dominated". Do not filter a 6-target scalar
-ranking on `pareto == True` — it will be empty.
+rankings table also carries a `pareto` boolean column. Since round 9 it is real
+N-dimensional frontier membership among the displayed scalar-solution vectors,
+for **any** number of targets (exact ties stay `True`; dominated and unevaluable
+rows are `False`). It describes dominance among the one displayed joint vector
+per consortium — the `--multi-metric pareto` **mode** additionally performs the
+epsilon-constraint sweep and reports a larger trade-off set.
 
 Multi-target search writes a different artifact set from single-target search:
 `pool_taxonomy.csv`, `search_rankings.csv`, `search_summary.json`,
@@ -664,6 +666,38 @@ gave exit `0`, `interpretable: True`, 4/4 completed, and a genuine step-size sig
 (`final_biomass` 0.0536 at `dt 0.1` vs 0.0503 at `dt 0.2`). `dfba-sensitivity`
 accepts `--initial` with the same syntax as `dfba`.
 
+### 7b. Run well-mixed **community** dFBA (round 9)
+
+`cmig dfba-community` integrates per-member biomass over a shared extracellular
+pool: each step derives MICOM abundances from current biomasses, rebinds every
+member's tracked uptake with Michaelis-Menten kinetics, solves the cooperative
+tradeoff, and advances biomass and the pool with adaptive non-negative Euler
+steps.
+
+```bash
+uv run cmig dfba-community \
+  --taxonomy tax.csv --t-end 0.6 --dt 0.1 --km 0.01 \
+  --initial EX_glc__D_m=2.0 --initial EX_xfeed_m=0.0 \
+  --initial-biomass memberA=0.01 --initial-biomass memberB=0.01 \
+  --member-vmax memberA:EX_glc__D_m=10 \
+  --close-untracked-uptake --out runs/dfba_community
+```
+
+Contract highlights:
+
+- **Gurobi-only** — the integrator needs a complete member-level pFBA flux
+  vector; approximate QP-only output is rejected before building.
+- Exit **0 only when `acceptance.interpretable` is true**; a completed but
+  non-interpretable run or a solver failure exits 3 (`--allow-failed-run`
+  softens the exit, never the recorded verdict); input errors exit 2.
+- Outputs: `community_dfba_summary.json` (state + structured acceptance + raw
+  timing telemetry), `community_dfba_timecourse.parquet` (long format, a
+  distinct kind from the single-model table), `community_dfba_events.json`.
+- Death/washout are **not modeled** and every result says so. The workflow kind
+  `community_dfba` is deliberately not cross-run byte-comparable because raw
+  timing telemetry is a required output; its result digest still verifies each
+  run's artifacts in place.
+
 ### 8. Preview a spatial medium gradient
 
 This is a lightweight design tool inspired by COMETS spatial layouts. It is not
@@ -909,10 +943,11 @@ line. Edge width in the interaction figures uses the same community basis.
 - `edges.parquet.weight` became community-basis in tidy 1.3 (round 8), resolving
   the long-standing per-taxon inversion item. Consumers of pre-1.3 artifacts must
   not mix bases — see *Reading `edges.parquet`*.
-- The `pareto` **column** on a scalarised ranking is only computed for exactly two
-  targets; with more, every cell stays `False`, meaning "not evaluated" rather
-  than "dominated". The `--multi-metric pareto` **mode** is unaffected and works
-  for any number of targets.
+- The `pareto` **column** on a scalarised ranking is, since round 9, true
+  N-dimensional frontier membership for any target count (previously it was only
+  computed for exactly two targets and stayed `False` elsewhere). Column and
+  `--multi-metric pareto` mode share one dominance implementation but keep their
+  distinct solve semantics (displayed vectors vs epsilon sweep).
 - Atomic writes (staged same-directory tempfile + fsync + `os.replace`, with
   best-effort parent-directory sync on POSIX) cover text artifacts and, since
   round 8, every Parquet writer and every matplotlib figure writer. Atomicity is

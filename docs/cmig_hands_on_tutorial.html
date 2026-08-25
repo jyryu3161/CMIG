@@ -99,7 +99,11 @@ Solver capability matrix (§5.1):
   cmig golden                      Verify solver and workflow-envelope reproducibility goldens.
   cmig sandbox-fixture             Preview or commit a reaction bound edit on the bundled fixture community.</pre>
 <h2 id="solve">2. Community solve</h2>
-<p>A 3-member community (iYO844, iHN637, iSFV_1184 from the bundled methods-demo pool) on the literature-grounded AGORA Western gut overlay. The taxonomy CSV has three columns: <code>id,file,abundance</code>.</p>
+<p>A 3-member community (iYO844, iHN637, iSFV_1184 from the bundled methods-demo pool) on the literature-grounded AGORA Western gut overlay. The exact taxonomy CSV — the abundances are inputs to the run hash, so a different split gives a different (equally valid) answer; the round-9 solver audit measured 0.1645&nbsp;h⁻¹ for an equal-abundance 1/3 split versus the 0.1502&nbsp;h⁻¹ below:</p>
+<pre>id,file,abundance
+iYO844,models/iYO844.xml,0.4
+iHN637,models/iHN637.xml,0.35
+iSFV_1184,models/iSFV_1184.xml,0.25</pre>
 <pre class="cmd">uv run cmig solve --taxonomy demo/taxonomy.csv \
   --medium medium_presets/gut_overlay_agora_western.csv \
   --allow-unknown-medium --assume-bigg-namespace \

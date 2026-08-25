@@ -17,6 +17,7 @@ import math
 from collections.abc import Mapping
 
 from cmig.core.sign import NOISE_FLOOR, Label, classify
+from cmig.core.tidy import MissingAbundanceError
 
 # member_id → 흡수(uptake)/분비(secretion) 대사체 집합
 MetaboliteSets = Mapping[str, set[str]]
@@ -146,11 +147,26 @@ def community_contributions(
     the NaN in poisoned every downstream share (``total`` became NaN, ``total <= eps`` was False,
     and the share came out NaN), which is why ``abundance_impact.csv``'s documented
     ``target_influence_share`` column was empty for every heterogeneous pool.
+
+    A missing or invalid abundance is different: the per-taxon flux cannot be converted to a
+    community-basis contribution without that scaling input. Fail closed with the same exception
+    used by tidy edge construction instead of silently treating the member as the whole
+    community. A recorded abundance of zero remains a valid zero contribution.
     """
     contributions: dict[str, float] = {}
     for member, exchange in member_exchange.items():
         abundance = abundances.get(member)
-        weight = 1.0 if abundance is None else float(abundance)
+        if abundance is None:
+            raise MissingAbundanceError(
+                "member abundance missing; cannot compute abundance-weighted target "
+                f"contribution: {member}"
+            )
+        weight = float(abundance)
+        if not math.isfinite(weight) or weight < 0.0:
+            raise MissingAbundanceError(
+                "member abundance must be finite and non-negative to compute "
+                f"abundance-weighted target contribution: {member}={weight!r}"
+            )
         raw = float(exchange.get(target, 0.0))
         contributions[str(member)] = 0.0 if math.isnan(raw) else raw * weight
     return contributions
