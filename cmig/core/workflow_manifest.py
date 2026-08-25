@@ -101,6 +101,7 @@ WORKFLOW_COMPONENT_VOCABULARY: frozenset[str] = frozenset({
     "solve_run_hash",             # embedded 11-component solve hash ([HASH-SINGLE])
     "sweep_spec",
     "dfba_spec",
+    "community_dfba_spec",       # well-mixed community dFBA inputs and integration policy
     "quality_spec",
     "map_spec",                   # host-map matching policy + id-normalization rules
     "bundle_spec",                # the sub-runs a bundling command certifies (kinds + hashes)
@@ -153,6 +154,7 @@ WORKFLOW_HASH_COMPONENTS: dict[str, tuple[str, ...]] = {
     ),
     "sweep": _BASE + ("tradeoff_f", "sweep_spec"),
     "dfba": _BASE + ("dfba_spec",),
+    "community_dfba": _BASE + ("community_dfba_spec",),
     "model_quality": _BASE + ("quality_spec",),
     # `host-map` does not solve, but it decides the interface map every host run then depends on.
     # What determines that map: the host model bytes, the microbial pool bytes (model_checksum),
@@ -184,6 +186,7 @@ _EXPECTED_ARITY: dict[str, int] = {
     "host_ko_impact": 12,
     "sweep": 8,
     "dfba": 7,
+    "community_dfba": 7,
     "model_quality": 7,
     "host_map": 8,
     "publication_benchmark": 14,
@@ -297,12 +300,19 @@ RESULT_DIGEST_SCHEMA_VERSION = "1.0"
 
 #: Kinds whose declared artifacts are byte-deterministic for identical inputs, so
 #: ``result_digest`` is comparable *across* runs and not merely within one. Verified by running the
-#: command twice and diffing (`host_map`: artifacts byte-identical, nothing timestamped). A kind is
-#: not listed until that has actually been measured — a kind whose artifacts embed a timestamp, a
-#: figure raster or a parquet write id would differ between two identical runs, and claiming
-#: comparability for it would manufacture false alarms. Unlisted kinds still get a digest; it
-#: certifies *those bytes* and is still checked by `inspect-run`.
-DETERMINISTIC_ARTIFACT_KINDS: frozenset[str] = frozenset({"host_map"})
+#: command twice and diffing (`host_map`, plus round-9 real-Gurobi synthetic-fixture measurements
+#: for `pair`, `delta`, `single`, and `minimal_medium`: every declared artifact was identical). A
+#: kind is not listed until that has actually been measured — a kind whose artifacts embed a
+#: timestamp, a figure raster or a parquet write id would differ between two identical runs, and
+#: claiming comparability for it would manufacture false alarms. Unlisted kinds still get a
+#: digest; it certifies *those bytes* and is still checked by `inspect-run`.
+DETERMINISTIC_ARTIFACT_KINDS: frozenset[str] = frozenset({
+    "delta",
+    "host_map",
+    "minimal_medium",
+    "pair",
+    "single",
+})
 
 
 def artifact_result_digest(

@@ -372,6 +372,32 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         "example": "uv run cmig dfba --model models/iML1515.xml --dt 0.1 --out runs/dfba_iML1515",
     },
     {
+        "gui_surface": "Dynamics / Run Community dFBA",
+        "cli_command": "cmig dfba-community",
+        "purpose": (
+            "Run well-mixed MICOM community dFBA with member biomasses and shared "
+            "extracellular pools."
+        ),
+        "required_args": [
+            "--taxonomy", "--t-end", "--initial", "--initial-biomass", "--out",
+        ],
+        "common_options": [
+            "--solver", "--dt", "--min-dt", "--km", "--growth-floor",
+            "--tradeoff-fraction", "--member-vmax", "--close-untracked-uptake",
+            "--allow-failed-run",
+        ],
+        "key_outputs": [
+            "community_dfba_summary.json", "community_dfba_timecourse.parquet",
+            "community_dfba_events.json", "manifest.json",
+        ],
+        "example": (
+            "uv run cmig dfba-community --taxonomy taxonomy.csv --t-end 0.6 "
+            "--initial EX_glc_m=2 --initial EX_xfeed_m=0 "
+            "--initial-biomass producer=0.01 --initial-biomass consumer=0.01 "
+            "--close-untracked-uptake --out runs/community_dfba"
+        ),
+    },
+    {
         "gui_surface": "Dynamics / Preview Spatial Medium",
         "cli_command": "cmig spatial-preview",
         "purpose": "Preview a 2D source/sink diffusion medium gradient.",
@@ -581,6 +607,7 @@ RUN_SUMMARY_FILES: list[tuple[str, str]] = [
     ("strain_growth_summary.json", "strain_growth"),
     ("abundance_impact_summary.json", "abundance_impact"),
     ("gene_ko_summary.json", "gene_ko_search"),
+    ("community_dfba_summary.json", "community_dfba"),
     ("dfba_summary.json", "dfba"),
     ("spatial_summary.json", "spatial_preview"),
     ("model_review.json", "model_review"),
@@ -5166,6 +5193,102 @@ def _cmd_dfba(args: argparse.Namespace) -> int:
     return _exit_code_for_status(_dfba_run_status(str(result.status)), args)
 
 
+def _cmd_dfba_community(args: argparse.Namespace) -> int:
+    """Run well-mixed, member-resolved dFBA on a MICOM taxonomy."""
+    try:
+        import pandas as pd
+
+        from cmig.core.dfba_community import CommunityDfbaConfig, run_community_dfba
+
+        taxonomy_path = Path(args.taxonomy)
+        if not taxonomy_path.exists():
+            raise ValueError(f"taxonomy file not found: {taxonomy_path}")
+        taxonomy = _read_taxonomy_csv(pd, taxonomy_path)
+        missing_columns = {"id", "file"} - set(taxonomy.columns)
+        if missing_columns:
+            raise ValueError(
+                f"taxonomy missing required columns: {sorted(missing_columns)}"
+            )
+        member_ids = [str(member) for member in taxonomy["id"]]
+        if not member_ids:
+            raise ValueError("taxonomy must contain at least one member")
+        if len(member_ids) != len(set(member_ids)):
+            raise ValueError("taxonomy id values must be unique")
+        taxonomy = _resolve_taxonomy_model_paths(taxonomy, taxonomy_path)
+
+        initial_concentrations = _parse_repeated_key_float_map(
+            args.initial_concentrations, flag="--initial"
+        )
+        initial_biomasses = _parse_repeated_key_float_map(
+            args.initial_biomasses, flag="--initial-biomass"
+        )
+        member_vmax = _parse_member_vmax(args.member_vmax)
+        config = CommunityDfbaConfig(
+            t_end=args.t_end,
+            dt=args.dt,
+            min_dt=args.min_dt,
+            km=args.km,
+            growth_floor=args.growth_floor,
+            tradeoff_fraction=args.tradeoff_fraction,
+            initial_concentrations=initial_concentrations,
+            initial_biomasses=initial_biomasses,
+            member_vmax=member_vmax or None,
+            close_untracked_uptake=args.close_untracked_uptake,
+        )
+        result = run_community_dfba(taxonomy, config, solver=args.solver)
+    except ImportError:
+        print("dfba-community requires the engine stack", file=sys.stderr)
+        return 2
+    except (KeyError, OSError, RuntimeError, ValueError) as error:
+        print(f"dfba-community input error: {error}", file=sys.stderr)
+        return 2
+    except Exception as error:  # noqa: BLE001 - an unexpected engine failure is operational
+        print(f"dfba-community failed: {error}", file=sys.stderr)
+        return 1
+
+    try:
+        artifacts = _write_community_dfba_outputs(
+            result,
+            Path(args.out),
+            taxonomy_path=taxonomy_path,
+            solver=args.solver,
+            config=config,
+        )
+    except OSError as error:
+        print(f"dfba-community output error: {error}", file=sys.stderr)
+        return 1
+
+    run_status = "ok" if result.acceptance.interpretable else "failed"
+    initial_abundances = _initial_abundances(config.initial_biomasses)
+    _emit_workflow_manifest(
+        Path(args.out),
+        "community_dfba",
+        lambda: _community_dfba_hash_components(args, taxonomy, config),
+        status=run_status,
+        artifacts=artifacts,
+        warnings=list(result.warnings),
+        diagnostic=result.diagnostic,
+        summary={
+            "status": result.status,
+            "acceptance": {"interpretable": result.acceptance.interpretable},
+            "initial_abundances": initial_abundances,
+            "n_timepoints": len(result.timecourse),
+            "n_events": len(result.events),
+        },
+    )
+    print(f"dfba-community complete ({result.status}) -> {args.out}")
+    for warning in result.warnings:
+        print(f"  warning: {warning}", file=sys.stderr)
+    if not result.acceptance.interpretable:
+        print(
+            "  community dFBA is NOT interpretable (acceptance.interpretable=false):",
+            file=sys.stderr,
+        )
+        for reason in result.acceptance.not_interpretable_because:
+            print(f"    - {reason}", file=sys.stderr)
+    return _exit_code_for_status(run_status, args)
+
+
 def _cmd_dfba_sensitivity(args: argparse.Namespace) -> int:
     """Run a numerical dt×Km sensitivity grid for one user model."""
     try:
@@ -6047,6 +6170,61 @@ def _single_model_workflow_base(
     )
 
 
+def _initial_abundances(initial_biomasses: dict[str, float]) -> dict[str, float]:
+    """Relative member abundances implied by the absolute initial biomass state."""
+    total = sum(initial_biomasses.values())
+    return {
+        member: float(initial_biomasses[member]) / total
+        for member in sorted(initial_biomasses)
+    }
+
+
+def _community_dfba_hash_components(
+    args: argparse.Namespace, taxonomy: Any, config: Any
+) -> dict[str, Any]:
+    """Answer-determining community dFBA inputs; result telemetry stays outside the hash."""
+    from cmig.core.workflow_manifest import base_components, medium_component, pool_model_checksum
+
+    components = base_components(
+        "community_dfba",
+        solver_setting=_pool_solver_setting(args),
+        model_checksum=pool_model_checksum(taxonomy),
+        medium=medium_component(
+            None,
+            "community_dfba_shared_pool_state_in_community_dfba_spec",
+            application_mode=None,
+        ),
+    )
+    components["community_dfba_spec"] = {
+        "integrator": "explicit_euler_adaptive_nonnegative",
+        "t_end": float(config.t_end),
+        "dt": float(config.dt),
+        "min_dt": float(config.min_dt),
+        "km": float(config.km),
+        "growth_floor": float(config.growth_floor),
+        "tradeoff_fraction": float(config.tradeoff_fraction),
+        "initial_biomasses": {
+            member: float(value)
+            for member, value in sorted(config.initial_biomasses.items())
+        },
+        "initial_abundances": _initial_abundances(config.initial_biomasses),
+        "initial_concentrations": {
+            exchange: float(value)
+            for exchange, value in sorted(config.initial_concentrations.items())
+        },
+        "member_vmax": {
+            member: {
+                exchange: float(value)
+                for exchange, value in sorted(exchanges.items())
+            }
+            for member, exchanges in sorted((config.member_vmax or {}).items())
+        },
+        "close_untracked_uptake": bool(config.close_untracked_uptake),
+        "death_washout": "not_modeled",
+    }
+    return components
+
+
 def _workflow_base(
     kind: str,
     args: argparse.Namespace,
@@ -6789,6 +6967,95 @@ def _write_dfba_outputs(
     )
     _write_dfba_figure(rows, out / "dfba_timecourse.svg", out / "dfba_timecourse.tiff")
     return list(payload["artifacts"])
+
+
+def _write_community_dfba_outputs(
+    result: Any,
+    out: Path,
+    *,
+    taxonomy_path: Path,
+    solver: str,
+    config: Any,
+) -> list[str]:
+    """Publish the three community dFBA artifacts, retaining raw timing telemetry."""
+    from dataclasses import asdict
+
+    from cmig.io.dfba_output import write_community_timecourse
+
+    out.mkdir(parents=True, exist_ok=True)
+    artifacts = [
+        "community_dfba_summary.json",
+        "community_dfba_timecourse.parquet",
+        "community_dfba_events.json",
+    ]
+    write_community_timecourse(result, out / "community_dfba_timecourse.parquet")
+    events_payload = {
+        "community_dfba_events_schema_version": "1.0",
+        "kind": "community_dfba_events",
+        "status": result.status,
+        "n_events": len(result.events),
+        "events": [asdict(event) for event in result.events],
+    }
+    atomic_write_text(
+        out / "community_dfba_events.json",
+        json.dumps(
+            events_payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False
+        ) + "\n",
+    )
+    final = result.timecourse[-1]
+    step_solve_seconds = [float(value) for value in result.step_solve_seconds]
+    config_payload = {
+        "integrator": "explicit_euler_adaptive_nonnegative",
+        "t_end": float(config.t_end),
+        "dt": float(config.dt),
+        "min_dt": float(config.min_dt),
+        "km": float(config.km),
+        "growth_floor": float(config.growth_floor),
+        "tradeoff_fraction": float(config.tradeoff_fraction),
+        "initial_biomasses": dict(config.initial_biomasses),
+        "initial_abundances": _initial_abundances(config.initial_biomasses),
+        "initial_concentrations": dict(config.initial_concentrations),
+        "member_vmax": config.member_vmax or {},
+        "close_untracked_uptake": bool(config.close_untracked_uptake),
+        "death_washout": "not_modeled",
+    }
+    summary_payload = {
+        "community_dfba_summary_schema_version": "1.0",
+        "kind": "community_dfba",
+        "status": result.status,
+        "diagnostic": result.diagnostic,
+        "taxonomy": str(taxonomy_path),
+        "solver": solver,
+        "config": config_payload,
+        "members": list(result.members),
+        "managed_exchanges": list(result.managed_exchanges),
+        "untracked_uptake": dict(result.untracked_uptake),
+        "warnings": list(result.warnings),
+        "limitations": list(result.limitations),
+        "acceptance": asdict(result.acceptance),
+        "n_timepoints": len(result.timecourse),
+        "final_t": float(final.t),
+        "final_member_biomasses": dict(final.member_biomasses),
+        "final_member_growth_rates": dict(final.member_growth_rates),
+        "final_concentrations": dict(final.concentrations),
+        "flux_report_statuses": list(result.flux_report_statuses),
+        "timing": {
+            "community_build_seconds": float(result.community_build_seconds),
+            "step_solve_seconds": step_solve_seconds,
+            "n_step_solves": len(step_solve_seconds),
+            "total_step_solve_seconds": sum(step_solve_seconds),
+            "mean_step_solve_seconds": float(result.mean_step_solve_seconds),
+        },
+        "n_events": len(result.events),
+        "artifacts": artifacts,
+    }
+    atomic_write_text(
+        out / "community_dfba_summary.json",
+        json.dumps(
+            summary_payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False
+        ) + "\n",
+    )
+    return artifacts
 
 
 def _write_dfba_figure(rows: list[dict[str, Any]], out_svg: Path, out_tiff: Path) -> None:
@@ -7847,6 +8114,60 @@ def _parse_key_float_map(raw: str, *, flag: str) -> dict[str, float]:
         if number < 0.0 or not math.isfinite(number):
             raise ValueError(f"{flag} value for {key!r} must be finite and non-negative")
         values[key] = number
+    return values
+
+
+def _parse_repeated_key_float_map(raw: list[str], *, flag: str) -> dict[str, float]:
+    """Parse repeated ``key=value`` flags, rejecting ambiguous duplicate assignments."""
+    values: dict[str, float] = {}
+    for occurrence in raw:
+        parsed = _parse_key_float_map(occurrence, flag=flag)
+        duplicates = sorted(set(values) & set(parsed))
+        if duplicates:
+            raise ValueError(f"{flag} repeats keys: {duplicates}")
+        values.update(parsed)
+    if not values:
+        raise ValueError(f"{flag} requires at least one key=value entry")
+    return values
+
+
+def _parse_member_vmax(raw: list[str]) -> dict[str, dict[str, float]]:
+    """Parse repeated ``MEMBER:EXCHANGE=VALUE`` uptake-capacity overrides."""
+    values: dict[str, dict[str, float]] = {}
+    seen: set[tuple[str, str]] = set()
+    for occurrence in raw:
+        for item in _parse_csv_strings(occurrence, flag="--member-vmax"):
+            if "=" not in item:
+                raise ValueError(
+                    f"--member-vmax entries must be MEMBER:EXCHANGE=VALUE, got {item!r}"
+                )
+            key, raw_value = item.split("=", 1)
+            if ":" not in key:
+                raise ValueError(
+                    f"--member-vmax entries must be MEMBER:EXCHANGE=VALUE, got {item!r}"
+                )
+            member, exchange = (part.strip() for part in key.split(":", 1))
+            if not member or not exchange:
+                raise ValueError(
+                    f"--member-vmax entries must name a member and exchange, got {item!r}"
+                )
+            try:
+                value = float(raw_value)
+            except ValueError as error:
+                raise ValueError(
+                    f"--member-vmax value for {member}:{exchange} is not numeric: "
+                    f"{raw_value!r}"
+                ) from error
+            if value < 0.0 or not math.isfinite(value):
+                raise ValueError(
+                    f"--member-vmax value for {member}:{exchange} must be finite and "
+                    "non-negative"
+                )
+            identity = (member, exchange)
+            if identity in seen:
+                raise ValueError(f"--member-vmax repeats {member}:{exchange}")
+            seen.add(identity)
+            values.setdefault(member, {})[exchange] = value
     return values
 
 
@@ -9247,6 +9568,68 @@ def build_parser() -> argparse.ArgumentParser:
     )
     df_user.add_argument("--out", required=True, help="output directory")
     df_user.set_defaults(func=_cmd_dfba)
+    df_community = sub.add_parser(
+        "dfba-community",
+        help="run well-mixed member-resolved MICOM community dFBA",
+    )
+    df_community.add_argument("--taxonomy", required=True, help="MICOM taxonomy CSV")
+    df_community.add_argument(
+        "--solver",
+        default="gurobi",
+        choices=["gurobi"],
+        help="Gurobi is required for full member-level pFBA flux vectors",
+    )
+    df_community.add_argument("--t-end", required=True, type=float, dest="t_end")
+    df_community.add_argument("--dt", type=float, default=0.1)
+    df_community.add_argument("--min-dt", type=float, default=1e-4, dest="min_dt")
+    df_community.add_argument("--km", type=float, default=0.01)
+    df_community.add_argument(
+        "--growth-floor", type=float, default=1e-6, dest="growth_floor"
+    )
+    df_community.add_argument(
+        "--tradeoff-fraction",
+        type=float,
+        default=1.0,
+        dest="tradeoff_fraction",
+        help="cooperative-tradeoff fraction (0 < fraction <= 1)",
+    )
+    df_community.add_argument(
+        "--initial",
+        required=True,
+        action="append",
+        dest="initial_concentrations",
+        metavar="EX_MET_m=VALUE",
+        help="tracked shared-pool concentration in mmol/L; repeat for each exchange",
+    )
+    df_community.add_argument(
+        "--initial-biomass",
+        required=True,
+        action="append",
+        dest="initial_biomasses",
+        metavar="MEMBER=VALUE",
+        help="initial member biomass in gDW/L; repeat for every taxonomy member",
+    )
+    df_community.add_argument(
+        "--member-vmax",
+        action="append",
+        default=[],
+        metavar="MEMBER:EX_MET_m=VALUE",
+        help="optional member/exchange uptake maximum in mmol/gDW/h; repeat as needed",
+    )
+    df_community.add_argument(
+        "--close-untracked-uptake",
+        action="store_true",
+        dest="close_untracked_uptake",
+        help="close every environmental uptake exchange outside the tracked shared pools",
+    )
+    df_community.add_argument(
+        "--allow-failed-run",
+        action="store_true",
+        dest="allow_failed_run",
+        help="exit 0 despite acceptance.interpretable=false; the recorded verdict is unchanged",
+    )
+    df_community.add_argument("--out", required=True, help="output run directory")
+    df_community.set_defaults(func=_cmd_dfba_community)
     dfs = sub.add_parser(
         "dfba-sensitivity",
         help="numerical dt x Km sensitivity for a user SBML model",

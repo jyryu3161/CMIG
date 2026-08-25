@@ -73,6 +73,80 @@
         "workflow_kind": "abundance_impact"
       }
     },
+    "community_dfba": {
+      "canonical_json": "[[\"workflow_kind\",\"community_dfba\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"community_dfba_spec\",{\"close_untracked_uptake\":true,\"death_washout\":\"not_modeled\",\"dt\":0.1,\"growth_floor\":1e-06,\"initial_abundances\":{\"consumer\":0.5,\"producer\":0.5},\"initial_biomasses\":{\"consumer\":0.01,\"producer\":0.01},\"initial_concentrations\":{\"EX_glc_m\":2.0,\"EX_xfeed_m\":0.0},\"integrator\":\"explicit_euler_adaptive_nonnegative\",\"km\":0.01,\"member_vmax\":{\"consumer\":{\"EX_xfeed_m\":10.0},\"producer\":{\"EX_glc_m\":10.0,\"EX_xfeed_m\":10.0}},\"min_dt\":0.0001,\"t_end\":0.6,\"tradeoff_fraction\":1.0}]]",
+      "components": [
+        "workflow_kind",
+        "cmig_core_version",
+        "dependency_versions",
+        "solver_setting",
+        "model_checksum",
+        "medium",
+        "community_dfba_spec"
+      ],
+      "hash": "1c791b087543ca004db27a40f8165e0ae9834e9b0fe8f68f70c1984ff0a18077",
+      "input": {
+        "cmig_core_version": "0.0.0-envelope-golden",
+        "community_dfba_spec": {
+          "close_untracked_uptake": true,
+          "death_washout": "not_modeled",
+          "dt": 0.1,
+          "growth_floor": 1e-06,
+          "initial_abundances": {
+            "consumer": 0.5,
+            "producer": 0.5
+          },
+          "initial_biomasses": {
+            "consumer": 0.01,
+            "producer": 0.01
+          },
+          "initial_concentrations": {
+            "EX_glc_m": 2.0,
+            "EX_xfeed_m": 0.0
+          },
+          "integrator": "explicit_euler_adaptive_nonnegative",
+          "km": 0.01,
+          "member_vmax": {
+            "consumer": {
+              "EX_xfeed_m": 10.0
+            },
+            "producer": {
+              "EX_glc_m": 10.0,
+              "EX_xfeed_m": 10.0
+            }
+          },
+          "min_dt": 0.0001,
+          "t_end": 0.6,
+          "tradeoff_fraction": 1.0
+        },
+        "dependency_versions": {
+          "cobra": "0.0.0-golden",
+          "micom": "0.0.0-golden",
+          "optlang": "0.0.0-golden"
+        },
+        "medium": {
+          "allow_unknown_medium": false,
+          "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "medium_application_mode": "merge_onto_model_default",
+          "namespace_bridge": {
+            "unavailable_per_member": {
+              "m_a": [],
+              "m_b": [
+                "o2_e"
+              ]
+            }
+          },
+          "source": "golden/diet.csv"
+        },
+        "model_checksum": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "solver_setting": {
+          "flux_solver": "golden",
+          "growth_solver": "golden",
+          "solver": "golden"
+        },
+        "workflow_kind": "community_dfba"
+      }
+    },
     "delta": {
       "canonical_json": "[[\"workflow_kind\",\"delta\"],[\"cmig_core_version\",\"0.0.0-envelope-golden\"],[\"dependency_versions\",{\"cobra\":\"0.0.0-golden\",\"micom\":\"0.0.0-golden\",\"optlang\":\"0.0.0-golden\"}],[\"solver_setting\",{\"flux_solver\":\"golden\",\"growth_solver\":\"golden\",\"solver\":\"golden\"}],[\"model_checksum\",\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"],[\"medium\",{\"allow_unknown_medium\":false,\"checksum\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"medium_application_mode\":\"merge_onto_model_default\",\"namespace_bridge\":{\"unavailable_per_member\":{\"m_a\":[],\"m_b\":[\"o2_e\"]}},\"source\":\"golden/diet.csv\"}],[\"delta_spec\",{\"baseline_run_hash\":\"sha256:aaaa\",\"significance_threshold\":1e-06,\"variant_run_hash\":\"sha256:bbbb\"}]]",
       "components": [
