@@ -7,11 +7,31 @@ after round 7). Round-7 lessons applied: workers run no git (coordinator
 commits after review), venvs pre-synced sequentially (6/6 first try), completion
 signal = the report file appearing in the worktree.
 
-## Incident
+## Incident — root cause established post-round
 
-Minutes after dispatch, codex self-updated 0.148.0 → 0.149.1 and every running
-TUI lost its tool host (`codex-code-mode-host is missing`). All six workers were
+Minutes after dispatch, every running TUI lost its tool host
+(`codex-code-mode-host is missing at its configured path`) and one terminal
+showed "update ran successfully! Please restart Codex." All six workers were
 restarted on the new binary and re-prompted; no files had been changed.
+
+Root cause (verified 2026-08-25): codex ships with
+`check_for_update_on_startup = true` (`codex doctor` → "startup update check:
+true", update action `npm install -g @openai/codex`). Launching six TUIs at
+once let one of them run that updater (0.148.0 → 0.149.1), which replaced the
+npm-installed binaries underneath every already-running codex process —
+including each TUI's `codex-code-mode-host` companion, hence the simultaneous
+tool-host loss.
+
+Mitigation (verified: flips doctor's "startup update check" to false) — worker
+launches now carry a per-invocation override, standardized in
+`REVIEW/ORCHESTRATION_NOTES.md`:
+
+```text
+codex -a never --sandbox workspace-write -c check_for_update_on_startup=false
+```
+
+Codex is to be updated deliberately between rounds, never implicitly mid-round.
+The user's interactive codex keeps its normal update behavior.
 
 ## Track review results
 
