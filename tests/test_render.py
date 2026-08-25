@@ -36,15 +36,11 @@ def test_figure_spec_validate_rejects_bad_format():
     FigureSpec(format="eps").validate()
 
 
-def test_render_writes_figure_spec_sidecar(tmp_path):
-    """figure_spec sidecar(seed 포함) 항상 기록 (§9 재현)."""
+def test_successful_render_writes_figure_spec_sidecar(tmp_path):
+    """A completed figure atomically publishes its figure_spec sidecar (§9 reproduction)."""
     out = tmp_path / "fig.svg"
     spec = FigureSpec(seed=7, title="T")
-    # R 부재 + matplotlib 부재면 RenderError 나기 전에 sidecar 는 이미 기록됨
-    try:
-        render_profile(_bundle(), spec, out)
-    except RenderError:
-        pass
+    render_profile(_bundle(), spec, out, client=RenderClient(rscript=""))
     sidecar = out.with_name("fig.svg.figure_spec.json")
     assert sidecar.exists()
     assert json.loads(sidecar.read_text())["seed"] == 7

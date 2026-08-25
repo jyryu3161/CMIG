@@ -14,13 +14,17 @@ import csv
 import json
 import math
 import subprocess
-import tempfile
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from cmig.render.client import RenderError, rscript_path
 from cmig.render.provenance import sha256_file, write_render_provenance
+from cmig.render.publication import publish_render_artifacts, staged_render_path
+
+if TYPE_CHECKING:
+    from cmig.core.tidy import TidyBundle
 
 _RENDER_R_DIR = Path(__file__).resolve().parent.parent / "render_r"
 _RLIB = Path(__file__).resolve().parents[2] / ".Rlib"
@@ -80,6 +84,11 @@ class PanelSpec:
             raise RenderError(f"미지원 panel kind: {self.kind} (지원: {PANEL_KINDS})")
         if self.format not in SUPPORTED_FORMATS:
             raise RenderError(f"미지원 format: {self.format}")
+        if self.journal_preset not in JOURNAL_PRESETS:
+            raise RenderError(
+                f"미지원 journal preset: {self.journal_preset} "
+                f"(지원: {sorted(JOURNAL_PRESETS)})"
+            )
 
     def with_journal(self, preset: str) -> PanelSpec:
         """출판사 규격(width/height/dpi) 적용 → 새 PanelSpec (§9 journal preset)."""
@@ -125,35 +134,34 @@ class FigureComposer:
         """단일 패널 렌더 → 그림 파일 + figure_spec sidecar(재현). R 부재 → RenderError."""
         spec.validate()
         out = Path(out_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        spec_path = out.with_name(out.name + ".figure_spec.json")
-        spec_path.write_text(
-            json.dumps(asdict(spec), indent=2, sort_keys=True, ensure_ascii=True) + "\n"
-        )
         if not self.available():
             raise RenderError(
                 f"Rscript 부재 — {spec.kind} 패널은 R 전용(ggraph/ComplexHeatmap/circlize). "
                 f"matplotlib fallback 없음(정직: 패널 미생성)."
             )
         script = _RENDER_R_DIR / f"{spec.kind}.R"
-        with tempfile.TemporaryDirectory() as td:
-            data_csv = Path(td) / "data.csv"
+        with staged_render_path(out) as staged_out:
+            spec_path = staged_out.with_name(staged_out.name + ".figure_spec.json")
+            spec_path.write_text(
+                json.dumps(asdict(spec), indent=2, sort_keys=True, ensure_ascii=True) + "\n"
+            )
+            data_csv = staged_out.parent / "data.csv"
             _write_panel_csv(spec.kind, rows, data_csv)
             cmd = [
                 str(self._rscript), str(script),
-                "--data", str(data_csv), "--out", str(out), "--format", spec.format,
+                "--data", str(data_csv), "--out", str(staged_out), "--format", spec.format,
                 "--width", str(spec.width_in), "--height", str(spec.height_in),
                 "--dpi", str(spec.dpi), "--title", panel_title_with_basis(spec),
                 "--seed", str(spec.seed),
                 "--rlib", str(_RLIB),
             ]
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-            if proc.returncode != 0 or not out.exists():
+            if proc.returncode != 0 or not staged_out.exists():
                 raise RenderError(
                     f"R {spec.kind} 패널 실패 (rc={proc.returncode}): {proc.stderr.strip()[:400]}"
                 )
             write_render_provenance(
-                out,
+                staged_out,
                 renderer="r",
                 spec_path=spec_path,
                 input_sha256=sha256_file(data_csv),
@@ -162,7 +170,7 @@ class FigureComposer:
                 rscript=str(self._rscript),
                 r_stdout=proc.stdout,
             )
-        return out
+            return publish_render_artifacts(staged_out, out)
 
     def render_panels(
         self, panels: list[tuple[PanelSpec, list[dict[str, Any]]]], out_dir: str | Path,
@@ -175,3 +183,99 @@ class FigureComposer:
             fname = f"panel_{i:02d}_{spec.kind}.{spec.format}"
             out.append(self.render_panel(rows, spec, d / fname))
         return out
+
+
+def _edge_weight(row: dict[str, Any]) -> float:
+    """Return one finite community-basis edge weight or reject the panel honestly."""
+    value = row.get("weight")
+    if value is None:
+        raise RenderError(
+            "panel rendering requires finite community-basis edges.weight values; found null"
+        )
+    weight = float(value)
+    if not math.isfinite(weight):
+        raise RenderError(
+            "panel rendering requires finite community-basis edges.weight values; "
+            f"found {value!r}"
+        )
+    return weight
+
+
+def _panel_rows_from_bundle(bundle: TidyBundle, kind: str) -> list[dict[str, Any]]:
+    """Project a validated tidy bundle onto one shipped panel script's CSV contract."""
+    edge_rows: list[dict[str, Any]] = bundle.edges.to_pylist()
+    if kind in EDGE_WEIGHT_PANEL_KINDS:
+        return [
+            {
+                "source_id": row["source_id"],
+                "target_id": row["target_id"],
+                "weight": _edge_weight(row),
+                "edge_type": row["edge_type"],
+            }
+            for row in edge_rows
+        ]
+    if kind != "heatmap":
+        raise RenderError(f"미지원 panel kind: {kind} (지원: {PANEL_KINDS})")
+
+    # A member×metabolite heatmap is the signed form of the direct member↔pool edges:
+    # secretion is positive, uptake negative. Allocated cross-feeding rows are deliberately
+    # excluded because adding them would count the same shared-pool flux a second time.
+    cells: dict[tuple[str, str], float] = {}
+    for row in edge_rows:
+        edge_type = row.get("edge_type")
+        if edge_type == "secretion":
+            member, sign = str(row["source_id"]), 1.0
+        elif edge_type == "uptake":
+            member, sign = str(row["target_id"]), -1.0
+        else:
+            continue
+        key = (member, str(row["metabolite"]))
+        cells[key] = cells.get(key, 0.0) + sign * _edge_weight(row)
+    return [
+        {"row_key": member, "col_key": metabolite, "value": value}
+        for (member, metabolite), value in sorted(cells.items())
+    ]
+
+
+def render_panels_from_run(
+    run_dir: str | Path,
+    panels: Sequence[str | PanelSpec],
+    out_dir: str | Path,
+    *,
+    journal_preset: str | None = None,
+    figure_format: str = "svg",
+    seed: int = 42,
+    composer: FigureComposer | None = None,
+) -> list[Path]:
+    """Render requested Figure Composer panels from a completed tidy run directory.
+
+    String entries use default titles and the shared ``figure_format``/``seed`` options. A
+    :class:`PanelSpec` entry retains its own settings. ``journal_preset`` overrides either form
+    when supplied; otherwise each ``PanelSpec.journal_preset`` is applied independently.
+    """
+    if not panels:
+        raise RenderError("panel list must contain at least one panel")
+
+    from dataclasses import replace
+
+    from cmig.core.tidy import TidyBundle
+
+    prepared: list[tuple[PanelSpec, list[dict[str, Any]]]] = []
+    bundle = TidyBundle.read(run_dir)
+    for requested in panels:
+        if isinstance(requested, str):
+            spec = PanelSpec(
+                kind=requested,
+                title=requested.capitalize(),
+                format=figure_format,
+                seed=seed,
+            )
+        else:
+            spec = requested
+        if journal_preset is not None:
+            spec = replace(spec, journal_preset=journal_preset)
+        spec.validate()
+        if spec.journal_preset != "default":
+            spec = spec.with_journal(spec.journal_preset)
+        prepared.append((spec, _panel_rows_from_bundle(bundle, spec.kind)))
+    return (composer or FigureComposer()).render_panels(prepared, out_dir)
