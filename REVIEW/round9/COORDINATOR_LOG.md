@@ -44,6 +44,12 @@ Coordinator commits:
    `MissingAbundanceError` docstring covers every community-basis quantity;
    round-9 CHANGELOG entries; new regression tests for all of the above.
 
+The full randomized suite then surfaced two stale assertions — including the
+round-5 OSQP fixture-hash test that had literally pinned defect 2 by asserting
+the wrong-decimals hash as "canonical" — both updated, suite re-run green on a
+fresh seed. (Third consecutive round in which the integration-level randomized
+suite caught what per-track green could not.)
+
 ## Final gates on `round9/integration`
 
 - ruff clean; `mypy cmig` 0 errors in 79 files.
