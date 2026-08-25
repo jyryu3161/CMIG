@@ -12,7 +12,6 @@ import json
 import math
 import shutil
 import subprocess
-import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +21,7 @@ from cmig.render.provenance import (
     sha256_file,
     write_render_provenance,
 )
+from cmig.render.publication import publish_render_artifacts, staged_render_path
 
 # cmig/render/client.py → cmig/render_r/figure.R
 R_SCRIPT = Path(__file__).resolve().parent.parent / "render_r" / "figure.R"
@@ -103,30 +103,31 @@ class RenderClient:
         """external profile rows → 그림 파일. figure_spec sidecar 동반(§9 재현)."""
         spec.validate()
         out = Path(out_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        # figure_spec sidecar (seed·dims 재현 자산)
-        spec_path = out.with_name(out.name + ".figure_spec.json")
-        spec_path.write_text(
-            json.dumps(asdict(spec), indent=2, sort_keys=True, ensure_ascii=True) + "\n"
-        )
-        if not self.available():
-            return self._fallback(profile_rows, spec, out, spec_path)
-        with tempfile.TemporaryDirectory() as td:
-            data_csv = Path(td) / "data.csv"
+        with staged_render_path(out) as staged_out:
+            # The spec, figure, and provenance remain private until the complete set exists.
+            spec_path = staged_out.with_name(staged_out.name + ".figure_spec.json")
+            spec_path.write_text(
+                json.dumps(asdict(spec), indent=2, sort_keys=True, ensure_ascii=True) + "\n"
+            )
+            if not self.available():
+                self._fallback(profile_rows, spec, staged_out, spec_path)
+                return publish_render_artifacts(staged_out, out)
+
+            data_csv = staged_out.parent / "data.csv"
             _write_csv(profile_rows, data_csv)
             cmd = [
                 str(self._rscript), str(R_SCRIPT),
-                "--data", str(data_csv), "--out", str(out), "--format", spec.format,
+                "--data", str(data_csv), "--out", str(staged_out), "--format", spec.format,
                 "--width", str(spec.width_in), "--height", str(spec.height_in),
                 "--dpi", str(spec.dpi), "--title", spec.title, "--seed", str(spec.seed),
                 "--rlib", str(_RLIB),
             ]
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-            if proc.returncode != 0 or not out.exists():
+            if proc.returncode != 0 or not staged_out.exists():
                 err = proc.stderr.strip()[:400]
                 raise RenderError(f"R render 실패 (rc={proc.returncode}): {err}")
             write_render_provenance(
-                out,
+                staged_out,
                 renderer="r",
                 spec_path=spec_path,
                 input_sha256=sha256_file(data_csv),
@@ -135,7 +136,7 @@ class RenderClient:
                 rscript=str(self._rscript),
                 r_stdout=proc.stdout,
             )
-        return out
+            return publish_render_artifacts(staged_out, out)
 
     def _fallback(
         self,
