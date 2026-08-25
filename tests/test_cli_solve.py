@@ -61,7 +61,14 @@ def test_solve_fixture_osqp_records_approximate_flux_solver(tmp_path):
 
 
 def test_solve_fixture_osqp_run_hash_matches_canonical_and_differs_from_gurobi(tmp_path):
-    """C-1: OSQP manifest run_hash 는 canonical hash 와 일치하고 solver provenance 로 분리된다."""
+    """C-1: OSQP manifest run_hash 는 canonical hash 와 일치하고 solver provenance 로 분리된다.
+
+    Round 9 (V6 defect 2): canonical for the fixture means the FROZEN VARIANT decimals
+    (osqp=4), not the default 6 — the old form of this assertion pinned the drift bug in
+    which a fresh CLI run could never emit the published golden hash.
+    """
+    from cmig.golden_fixture import VARIANT_DECIMALS
+
     gurobi_out = tmp_path / "gurobi"
     osqp_out = tmp_path / "osqp"
     main(["solve-fixture", "--solver", "gurobi", "--out", str(gurobi_out)])
@@ -70,7 +77,10 @@ def test_solve_fixture_osqp_run_hash_matches_canonical_and_differs_from_gurobi(t
     gurobi_manifest = json.loads((gurobi_out / "manifest.json").read_text())
     osqp_manifest = json.loads((osqp_out / "manifest.json").read_text())
     osqp_result, _ = solve("osqp")
-    assert osqp_manifest["run_hash"] == compute_run_hash(_run_hash_components(osqp_result))
+    decimals = VARIANT_DECIMALS["osqp"]
+    assert osqp_manifest["run_hash"] == compute_run_hash(
+        _run_hash_components(osqp_result, decimals), decimals
+    )
     assert osqp_manifest["run_hash"] != gurobi_manifest["run_hash"]
 
 
