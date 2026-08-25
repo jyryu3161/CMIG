@@ -654,7 +654,7 @@ def search_model_pool(
 # ── Multi-target search (§14 다중 타깃) ─────────────────────────────────────────
 # Users can rank model-pool combinations against several targets at once, combined
 # by a weighted sum of per-target scores normalized into [0,1] over the observed
-# range, plus (for exactly two targets) a Pareto non-dominated flag.
+# range, plus an N-dimensional Pareto non-dominated flag.
 
 
 MultiTargetMetric = Literal[
@@ -785,7 +785,7 @@ def rank_multi_target(
     """
     from cmig.core.search_advanced import (
         normalize_score,
-        pareto_frontier,
+        pareto_frontier_nd,
         weighted_multi_target,
     )
 
@@ -829,11 +829,10 @@ def rank_multi_target(
             0, e.members, score, e.fluxes, contributions, e.community_growth, "optimal",
             False, None, e.missing_targets, e.flux_basis))
 
-    if len(mets) == 2:
-        ok_idx = [i for i, r in enumerate(rows) if r.status == "optimal"]
-        pts = [(evals[i].signed[mets[0]], evals[i].signed[mets[1]]) for i in ok_idx]
-        keep = {ok_idx[k] for k in pareto_frontier(pts)}
-        rows = [replace(r, pareto=(i in keep)) for i, r in enumerate(rows)]
+    ok_idx = [i for i, row in enumerate(rows) if row.status == "optimal"]
+    points = [tuple(evals[i].signed[metabolite] for metabolite in mets) for i in ok_idx]
+    keep = {ok_idx[k] for k in pareto_frontier_nd(points)}
+    rows = [replace(row, pareto=(i in keep)) for i, row in enumerate(rows)]
 
     # P0-C: 평가 불가 행은 rank 를 받지 않는다 — rank 2/3 을 부여받고 top_ranked 에 들어가면
     # "평가되었지만 낮은 점수"와 구별할 수 없다. rank 0 = 순위 없음.
@@ -1255,12 +1254,6 @@ def _multi_target_warnings(
                 for r in collapsed[:5]
             )
             + ")"
-        )
-    if len(config.targets) != 2:
-        # F10: pareto 는 2-target 에서만 계산된다. False 가 "지배됨"으로 읽히면 안 된다.
-        warnings.append(
-            f"pareto was NOT computed ({len(config.targets)} targets; the frontier is only "
-            "defined for 2); pareto=false means 'not evaluated', not 'dominated'"
         )
     partial = [r for r in ranked if r.status == "optimal" and r.missing_targets]
     if partial:
