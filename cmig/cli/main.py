@@ -1209,6 +1209,13 @@ def _string_or_none(value: Any) -> str | None:
     return None
 
 
+def _solve_artifact_consistency(bundle: Any) -> dict[str, Any]:
+    """Edge/profile mass-identity check shared by the two community-solve commands."""
+    from cmig.core.interactions import edge_profile_consistency
+
+    return edge_profile_consistency(bundle)
+
+
 def _cmd_solve_fixture(args: argparse.Namespace) -> int:
     """C7 (P0): 번들 3-member fixture 를 solve → parquet + manifest 산출 (facade 경유).
 
@@ -1238,6 +1245,17 @@ def _cmd_solve_fixture(args: argparse.Namespace) -> int:
     if outcome.status != "ok" or outcome.run_hash is None or outcome.manifest_path is None:
         print(f"solve-fixture 실패: {outcome.diagnostic}", file=sys.stderr)
         return 1
+    # Round-9 V6 defect 1 gate — same identity check as `cmig solve` (fail closed).
+    consistency = _solve_artifact_consistency(outcome.bundle)
+    if not consistency["consistent"]:
+        print(
+            f"solve-fixture artifacts are mass-inconsistent "
+            f"({consistency['n_failing']}/{consistency['n_keys']} metabolites, "
+            f"max residual {consistency['max_residual']:.6g}); the reported state "
+            f"is NOT a result",
+            file=sys.stderr,
+        )
+        return 3
     extra = " + target_summary.json" if args.targets else ""
     print(f"solve-fixture 완료 (solver={args.solver}) → {outcome.manifest_path.parent}")
     print(f"  run_hash: {outcome.run_hash[:16]}…  artifacts: parquet+manifest{extra}")
@@ -1341,6 +1359,28 @@ def _cmd_solve(args: argparse.Namespace) -> int:
             print(f"  warning: {warning}", file=sys.stderr)
         if outcome.result.diagnostic:
             print(f"  diagnostic: {outcome.result.diagnostic}", file=sys.stderr)
+        return _exit_code_for_status("failed", args)
+    # Round-9 V6 defect 1: an OSQP community state can report `optimal` while its
+    # artifacts violate the edge↔profile mass identity by orders of magnitude
+    # (measured: 160/161 keys, residual up to ~1.5e3). Publishing that as success
+    # is exactly the silent-degradation class this product forbids — fail closed.
+    consistency = _solve_artifact_consistency(outcome.bundle)
+    if not consistency["consistent"]:
+        worst = consistency["worst"][0]
+        approx_note = (
+            " (osqp is qp_only_approximate; use --solver gurobi for a "
+            "publication-safe community state)" if args.solver == "osqp" else ""
+        )
+        print(
+            f"solve artifacts are mass-inconsistent: {consistency['n_failing']}/"
+            f"{consistency['n_keys']} metabolites violate the edge/profile identity "
+            f"(max residual {consistency['max_residual']:.6g}, worst "
+            f"{worst['metabolite']}: edges {worst['edge_sum']:.6g} vs profile "
+            f"{worst['net_flux']:.6g}); artifacts were written to "
+            f"{outcome.manifest_path.parent} for forensics but the reported growth "
+            f"is NOT a result{approx_note}",
+            file=sys.stderr,
+        )
         return _exit_code_for_status("failed", args)
     print(f"solve 완료 (solver={args.solver}, medium={medium_label}) "
           f"→ {outcome.manifest_path.parent}")

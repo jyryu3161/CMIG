@@ -269,3 +269,55 @@ def build_tidy(
     bundle = TidyBundle(nodes=nodes, edges=edges_tbl, profile=profile)
     bundle.validate()
     return bundle
+
+
+def edge_profile_consistency(
+    bundle: Any, *, atol: float = 1e-4, rtol: float = 1e-5
+) -> dict[str, Any]:
+    """Check the documented edge↔profile mass identity on a tidy bundle.
+
+    Since tidy 1.3 the signed sum of direct member↔pool edges (secretion +,
+    uptake −; allocated cross_feeding excluded) must equal each metabolite's
+    ``profile.net_flux``. Round-9 V6 measured a real OSQP community state where
+    160/161 union keys violate this identity by up to ~1.5e3 while the run still
+    reported ``optimal`` — a mass-inconsistent artifact set must not be published
+    as a successful solve. The tolerance is the documented cross-solver rule
+    (``atol + rtol * |net_flux|``); metabolites missing from one side count as 0
+    on that side, matching the audit's method.
+    """
+    profile_net: dict[str, float] = {}
+    for row in bundle.profile.to_pylist():
+        profile_net[str(row["metabolite"])] = float(row["net_flux"])
+    edge_sum: dict[str, float] = {}
+    for row in bundle.edges.to_pylist():
+        edge_type = str(row["edge_type"])
+        if edge_type not in ("secretion", "uptake"):
+            continue
+        weight = row["weight"]
+        if weight is None or not math.isfinite(float(weight)):
+            continue
+        signed = float(weight) if edge_type == "secretion" else -float(weight)
+        key = str(row["metabolite"])
+        edge_sum[key] = edge_sum.get(key, 0.0) + signed
+
+    failing: list[dict[str, float | str]] = []
+    max_residual = 0.0
+    keys = sorted(set(profile_net) | set(edge_sum))
+    for key in keys:
+        net = profile_net.get(key, 0.0)
+        summed = edge_sum.get(key, 0.0)
+        residual = abs(summed - net)
+        max_residual = max(max_residual, residual)
+        if residual > atol + rtol * abs(net):
+            failing.append({
+                "metabolite": key, "edge_sum": summed,
+                "net_flux": net, "residual": residual,
+            })
+    failing.sort(key=lambda item: -float(item["residual"]))
+    return {
+        "n_keys": len(keys),
+        "n_failing": len(failing),
+        "max_residual": max_residual,
+        "worst": failing[:5],
+        "consistent": not failing,
+    }

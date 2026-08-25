@@ -63,6 +63,7 @@ class EngineService:
         """
         from cmig.golden_fixture import (
             TRADEOFF_F,
+            VARIANT_DECIMALS,
             _run_hash_components,
             solve_with_community,
         )
@@ -77,10 +78,13 @@ class EngineService:
             attach_community_fva_to_bundle(bundle, ranges)
         tsum = self._target_summary_or_none(bundle, targets)  # 미지 preset → ValueError
         # fixture 경로는 _run_hash_components(고정 11구성), build_run_components 아님.
-        components = _run_hash_components(result)
+        # Round-9 V6 defect 2: components and hash must use the frozen variant decimals
+        # (osqp=4), or a fresh osqp fixture can never emit its published golden hash.
+        decimals = VARIANT_DECIMALS[solver]
+        components = _run_hash_components(result, decimals)
         manifest_path = write_solve_output(
             bundle, components, out_dir, diagnostic=result.diagnostic, target_summary=tsum,
-            flux_report_status=result.flux_report_status,
+            flux_report_status=result.flux_report_status, float_decimals=decimals,
         )
         return SolveOutcome.from_manifest(
             result, bundle, components, manifest_path, community=community,

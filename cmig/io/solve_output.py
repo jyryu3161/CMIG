@@ -204,11 +204,17 @@ def write_solve_output(
     figure_specs: list[dict[str, Any]] | None = None,
     flux_report_status: str | None = None,
     provenance: dict[str, Any] | None = None,
+    float_decimals: int = DEFAULT_DECIMALS,
 ) -> Path:
     """tidy bundle(parquet) + manifest.json 산출. manifest 경로 반환.
 
     parquet: nodes/edges/profile(+matrix). manifest: run_hash(canonical) + components + meta.
     target_summary 제공 시 target_summary.json 산출 + artifacts 반영 (F3).
+
+    ``float_decimals`` must equal the precision ``components`` was rounded at
+    (round-9 V6 defect 2: the OSQP fixture variant is frozen at 4 decimals, so
+    hashing its components at the default 6 emitted a hash that could never
+    match the published golden).
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -255,7 +261,8 @@ def write_solve_output(
             ).hexdigest()
         )
         manifest = RunManifest(
-            components=components, env_lock=resolved_env_lock, platform=platform_info
+            components=components, env_lock=resolved_env_lock, platform=platform_info,
+            float_decimals=float_decimals,
         )
         payload = {
             "manifest_schema_version": "2.0",
