@@ -204,7 +204,7 @@ I18N: dict[str, dict[str, str]] = {
         "profile_delta_overlay_title": "기준 / 변형 오버레이",
         "profile_no_fluxes": "측정된 프로필 플럭스 없음",
         "profile_delta_legend": "연한 색 = {baseline}; 진한 색 = {variant}",
-        "profile_member_chart_title": "멤버별 기여(직접 플럭스 × abundance)",
+        "profile_member_chart_title": "멤버별 기여(군집 가중 플럭스, tidy ≥1.3)",
         "profile_no_member_contributions": "Abundance 기준 멤버 기여 없음",
         "profile_heatmap_title": "플럭스 히트맵(+ 분비 / − 흡수)",
         "profile_heatmap_blank_note": "빈 칸 = 플럭스 미기록(0으로 채우지 않음).",
@@ -387,7 +387,9 @@ I18N: dict[str, dict[str, str]] = {
         "profile_delta_overlay_title": "baseline / variant overlay",
         "profile_no_fluxes": "No measured profile fluxes",
         "profile_delta_legend": "light = {baseline}; solid = {variant}",
-        "profile_member_chart_title": "Per-member contribution (direct flux × abundance)",
+        "profile_member_chart_title": (
+            "Per-member contribution (community-weighted flux, tidy ≥1.3)"
+        ),
         "profile_no_member_contributions": "No abundance-weighted member contributions",
         "profile_heatmap_title": "Flux heatmap (+ secretion / − uptake)",
         "profile_heatmap_blank_note": "Blank = flux not recorded (never zero-filled).",

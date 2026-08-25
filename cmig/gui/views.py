@@ -353,7 +353,7 @@ class MemberContributionChart(QWidget):
             _view_text(
                 self.strings,
                 "profile_member_chart_title",
-                "Per-member contribution (direct flux × abundance)",
+                "Per-member contribution (community-weighted flux, tidy ≥1.3)",
             ),
         )
         if not self.rows:
