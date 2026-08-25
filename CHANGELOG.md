@@ -5,6 +5,63 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Added (round 9)
+
+- **`cmig dfba-community`** — the well-mixed community dFBA prototype gets its CLI: per-member
+  biomass over a shared pool, MM uptake rebinding, adaptive non-negative integration; exit 0 only
+  when `acceptance.interpretable` is true (3 for non-interpretable/solver failure;
+  `--allow-failed-run` softens the exit, never the recorded verdict); Gurobi-only. New additive
+  workflow kind `community_dfba` (envelope now 18 kinds; initial biomasses/concentrations and
+  member vmax are hashed inputs, telemetry/events/acceptance are not); deliberately not cross-run
+  byte-comparable because raw timing telemetry is a required output.
+- **`cmig render-figure --panel network|heatmap|chord`** — the shipped-but-unreachable Figure
+  Composer R panels are now a CLI surface (repeatable, order-preserving; R-only with an explicit
+  refusal to substitute matplotlib; svg/tiff). Render publication is atomic end-to-end: R,
+  matplotlib-fallback, and panel paths stage the full figure/spec/provenance set and publish each
+  file atomically — a failed render leaves the previous public set untouched (profile-path bytes
+  proven unchanged).
+- **Stats 5b/5c core**: frozen validated `StatsConfig` with deterministic provenance; the orphaned
+  PCA/UMAP/KMeans layer becomes a seeded, fail-closed `run_embedding_pipeline` (embeddings whose
+  interpretability gates fail are never returned, with stable reasons); volcano data preparation
+  with validated effects/p-values. CLI wiring proposed for a later round.
+- **GUI medium tools (spec §11)**: preset picker with `row_role`-aware display, clipboard CSV
+  paste validated by the real loader, community Check Growth through `cmig solve` (explicit
+  namespace policy and merge/exact toggle), before/after profile comparison via the Compare
+  overlay, and a `cmig minimal-medium` hook. The nutrients-only view filters in memory only and
+  refuses to run in merge mode (it would reopen undeclared model-default suppliers).
+- Cross-run artifact determinism measured by double console runs: `pair`, `delta`, `single`, and
+  `minimal_medium` promoted to the deterministic-artifact set (byte-identical digests recorded);
+  relocation caveat documented for their path-bearing summaries.
+
+### Fixed (round 9)
+
+- **Missing member abundance now fails target-share calculation closed**:
+  `community_contributions` raises `MissingAbundanceError` instead of assuming factor 1.0,
+  aligning abundance-impact shares with the tidy-1.3 policy; failed sweep points publish null
+  cells plus a diagnostic, and an abundance-impact sweep in which every point failed now exits 3
+  instead of 0 (partial failures still exit 0 with per-row disclosure).
+- **The scalar multi-target `pareto` column is real N-dimensional frontier membership** for any
+  target count (was: computed only for exactly two targets, silent `False` above); both pareto
+  surfaces share one dominance implementation while keeping their distinct solve semantics.
+- **Mass-inconsistent community solves fail closed** (round-9 solver audit, defect 1): `cmig
+  solve`/`solve-fixture` now verify the documented edge↔profile identity on the produced bundle
+  and exit 3 with a named worst offender instead of reporting `optimal` — the audit measured a
+  real OSQP state with zero member growth and residuals up to ~1.5e3 publishing as success.
+  Artifacts are kept for forensics; OSQP diagnostics point to `--solver gurobi`.
+- **Fresh `solve-fixture --solver osqp` emits its frozen golden hash again** (audit defect 2):
+  the fixture path now hashes components and the manifest at the frozen variant decimals
+  (osqp=4) instead of the default 6; Gurobi output is byte-unchanged, both pinned by regression.
+- The hands-on tutorial now prints its exact taxonomy (abundances are run-hash inputs); the
+  round-9 solver audit showed the document was not reproducible without them.
+
+### Verified (round 9)
+
+- **Second-solver reproduction audit** (`REVIEW/round9/report_V6.md`): the dual-golden fixture,
+  single-model objective/exchange phenotype, and a controlled dFBA point reproduce on OSQP within
+  the documented tolerance; the real bundled-pool community does NOT (now failing closed, above);
+  every Gurobi-only surface is inventoried with its code-level reason. Real community results
+  remain Gurobi-only for publication.
+
 ### Changed (round 8) — BREAKING
 
 - **Tidy schema 1.3 / `edges.parquet.weight` basis.** `weight` is now the unsigned

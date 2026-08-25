@@ -527,11 +527,14 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
     {
         "gui_surface": "Profile / Render Figure",
         "cli_command": "cmig render-figure",
-        "purpose": "Render a run's tidy profile as a publication-format figure.",
+        "purpose": (
+            "Render a run's tidy profile as a publication-format figure, or (with "
+            "--panel) the R network/heatmap/chord composer panels."
+        ),
         "required_args": ["--run-dir", "--out"],
         "common_options": [
-            "--renderer", "--format", "--journal-preset", "--title", "--width", "--height",
-            "--dpi", "--seed",
+            "--panel", "--renderer", "--format", "--journal-preset", "--title", "--width",
+            "--height", "--dpi", "--seed",
         ],
         "key_outputs": ["requested figure", "figure provenance sidecar"],
         "example": (
@@ -1972,6 +1975,59 @@ def _cmd_render_figure(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+
+    # Round-9 V3: multi-panel Figure Composer mode. R-only — no equivalent matplotlib
+    # panel renderer exists, so `auto` must not silently substitute one.
+    if args.panels:
+        if args.format not in ("svg", "tiff"):
+            print(
+                f"--panel supports svg/tiff only (got {args.format})", file=sys.stderr,
+            )
+            return 2
+        if args.renderer == "matplotlib":
+            print(
+                "--panel has no matplotlib renderer; the network/heatmap/chord panels "
+                "are R-only (--renderer r or auto with Rscript installed)",
+                file=sys.stderr,
+            )
+            return 2
+        if not rscript_available():
+            print(
+                "Rscript not found; panel rendering is R-only (install R with the "
+                "ggraph/ComplexHeatmap/circlize packages)",
+                file=sys.stderr,
+            )
+            return 2
+        from cmig.render.composer import PanelSpec, render_panels_from_run
+
+        preset = None if args.journal_preset == "default" else args.journal_preset
+        panel_requests: list[Any]
+        if args.title != "External Profile":
+            panel_requests = [
+                PanelSpec(
+                    kind=kind, title=args.title, width_in=args.width,
+                    height_in=args.height, dpi=args.dpi, format=args.format,
+                    seed=args.seed,
+                )
+                for kind in args.panels
+            ]
+        else:
+            panel_requests = list(args.panels)
+        try:
+            written = render_panels_from_run(
+                run_dir, panel_requests, args.out,
+                journal_preset=preset, figure_format=args.format, seed=args.seed,
+            )
+        except RenderError as e:
+            print(f"panel render failed: {e}", file=sys.stderr)
+            return 2
+        except OSError as e:
+            print(f"failed to write panel figures: {e}", file=sys.stderr)
+            return 2
+        print(f"render-figure complete [R panels, {args.format}] -> {args.out}")
+        for path in written:
+            print(f"  - {path.name}")
+        return 0
     try:
         bundle = TidyBundle.read(run_dir)
     except (OSError, ValueError) as e:
@@ -4307,13 +4363,14 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
         print(f"failed to write abundance-impact outputs: {e}", file=sys.stderr)
         return 2
     print(f"abundance-impact complete ({args.member}, target={args.target}) -> {out}")
+    sweep_status = _worst_status(*[
+        _run_status_from_solve(str(row.get("status"))) for row in rows
+    ] or ["failed"])
     _emit_workflow_manifest(
         out,
         "abundance_impact",
         lambda: _abundance_hash_components(args, taxonomy, medium_spec, fractions, rows),
-        status=_worst_status(*[
-            _run_status_from_solve(str(row.get("status"))) for row in rows
-        ] or ["failed"]),
+        status=sweep_status,
         artifacts=run_artifacts,
         summary={
             "n_points": len(rows),
@@ -4321,7 +4378,15 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
             "target": args.target,
         },
     )
-    return 0
+    # Round-9 V2 handoff: a sweep in which EVERY point failed used to exit 0, so shell
+    # automation could not tell an all-invalid sweep from success. Partial failures stay
+    # exit 0 (each failed point is disclosed per-row and in the degraded manifest status);
+    # an all-failed sweep now exits like every other failed analysis, respecting
+    # --allow-failed-run.
+    all_failed = bool(rows) and all(
+        _run_status_from_solve(str(row.get("status"))) == "failed" for row in rows
+    )
+    return _exit_code_for_status("failed" if all_failed else "ok", args)
 
 
 def _ko_ranked_rows(rows: list[dict[str, Any]]) -> list[tuple[int, dict[str, Any]]]:
@@ -9311,7 +9376,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="render a run's tidy profile to a publication figure (R ggplot2, matplotlib fallback)",
     )
     rf.add_argument("--run-dir", required=True, dest="run_dir", help="completed run directory")
-    rf.add_argument("--out", required=True, help="output figure path (e.g. runs/x/profile.svg)")
+    rf.add_argument(
+        "--out", required=True,
+        help="output figure path; output directory when --panel is used",
+    )
+    rf.add_argument(
+        "--panel",
+        action="append",
+        choices=["network", "heatmap", "chord"],
+        dest="panels",
+        default=None,
+        help="render this Figure Composer panel instead of the single profile figure "
+        "(repeatable, order preserved; R-only, svg/tiff only)",
+    )
     rf.add_argument(
         "--renderer", default="auto", choices=["auto", "r", "matplotlib"],
         help="auto (R if available, else/ on failure matplotlib) | r | matplotlib",

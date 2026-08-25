@@ -96,11 +96,14 @@ class TidyContractError(ValueError):
 
 
 class MissingAbundanceError(TidyContractError):
-    """A community-basis edge cannot be derived because member abundance is absent.
+    """A community-basis quantity cannot be derived because member abundance is absent.
 
     ``SolveResult.abundances[member] is None`` means the engine summary did not report the
     scaling input.  It is not a biological abundance of one and must never be replaced by 1.0:
-    doing so would put an unweighted per-taxon value in a community-basis column.
+    doing so would put an unweighted per-taxon value in a community-basis column. The same
+    fail-closed policy covers every community-basis derivation, not only tidy edges — since
+    round 9 ``cmig.core.metrics.community_contributions`` (target shares) raises this exact
+    exception under the same contract. A recorded abundance of zero stays a valid zero.
     """
 
 
