@@ -11,6 +11,9 @@ import math
 import pytest
 
 from cmig.core.stats import (
+    TestResult as StatsTestResult,
+)
+from cmig.core.stats import (
     cliffs_delta,
     cohens_d,
     distribution_summary,
@@ -18,6 +21,7 @@ from cmig.core.stats import (
     groups_from_sweep_rows,
     multi_group_test,
     normality_pvalue,
+    prepare_volcano_data,
     stats_warnings,
     two_group_test,
 )
@@ -214,3 +218,48 @@ def test_umap_rejects_too_few_samples():
     from cmig.core.stats_embed import umap_embed
     with pytest.raises(ValueError, match="at least 3 samples"):
         umap_embed(np.ones((2, 4)), n_components=2)
+
+
+def test_seeded_low_level_embedding_helpers_record_the_seed():
+    pytest.importorskip("sklearn")
+    import numpy as np
+
+    from cmig.core.stats_embed import kmeans_cluster, pca_embed
+
+    matrix = np.array([
+        [0.0, 0.2, 0.4],
+        [0.1, 0.4, 0.2],
+        [4.0, 4.2, 4.1],
+        [4.3, 4.0, 4.2],
+    ])
+    embedding = pca_embed(matrix, n_components=2, seed=23)
+    assert embedding.seed == 23
+    assert kmeans_cluster(matrix, k=2, seed=23) == kmeans_cluster(matrix, k=2, seed=23)
+
+
+def test_umap_rejects_neighbor_count_instead_of_silently_clamping():
+    pytest.importorskip("umap")
+    import numpy as np
+
+    from cmig.core.stats_embed import umap_embed
+
+    with pytest.raises(ValueError, match="less than n_samples"):
+        umap_embed(np.ones((5, 3)), n_components=2, n_neighbors=5, seed=4)
+
+
+def test_prepare_volcano_data_adjusts_and_sorts_per_feature_results():
+    rows = prepare_volcano_data({
+        "z_flux": StatsTestResult("mann_whitney_u", 3.0, 0.04, -0.5, "cliffs_delta"),
+        "a_flux": StatsTestResult("mann_whitney_u", 8.0, 0.01, 0.8, "cliffs_delta"),
+    })
+    assert [row["feature"] for row in rows] == ["a_flux", "z_flux"]
+    assert [row["adjusted_pvalue"] for row in rows] == pytest.approx([0.02, 0.04])
+    assert rows[0]["effect_size"] == 0.8
+    assert rows[0]["fdr_method"] == "fdr_bh"
+
+
+def test_prepare_volcano_data_rejects_unplottable_values():
+    with pytest.raises(ValueError, match="effect_size must be finite"):
+        prepare_volcano_data([
+            {"feature": "growth", "effect_size": float("nan"), "pvalue": 0.2}
+        ])

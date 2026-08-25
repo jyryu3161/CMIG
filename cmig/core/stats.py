@@ -15,7 +15,194 @@ from __future__ import annotations
 import math
 import statistics
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+STATS_METHODS = (
+    "robust",
+    "parametric",
+    "distribution_summary",
+    "mann_whitney_u",
+    "welch_t",
+    "kruskal_wallis",
+    "one_way_anova",
+    "cliffs_delta",
+    "cohens_d",
+)
+FDR_METHODS = ("fdr_bh", "fdr_by")
+DIMRED_METHODS = ("none", "pca", "umap")
+CLUSTERING_METHODS = ("none", "kmeans")
+_MAX_RANDOM_SEED = 2**32 - 1
+
+
+def _positive_int(value: object, *, field_name: str, minimum: int = 1) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"{field_name} must be an integer >= {minimum}")
+    return value
+
+
+@dataclass(frozen=True)
+class DimredConfig:
+    """Configuration for an optional dimensionality-reduction step."""
+
+    method: str = "none"
+    n_components: int = 2
+    n_neighbors: int = 15
+
+    def __post_init__(self) -> None:
+        if self.method not in DIMRED_METHODS:
+            raise ValueError(
+                f"dimred.method must be one of {list(DIMRED_METHODS)}; got {self.method!r}"
+            )
+        _positive_int(self.n_components, field_name="dimred.n_components")
+        _positive_int(self.n_neighbors, field_name="dimred.n_neighbors", minimum=2)
+
+    def as_provenance(self) -> dict[str, object]:
+        if self.method == "none":
+            return {"method": "none"}
+        record: dict[str, object] = {
+            "method": self.method,
+            "n_components": self.n_components,
+        }
+        if self.method == "umap":
+            record["n_neighbors"] = self.n_neighbors
+        return record
+
+
+@dataclass(frozen=True)
+class ClusteringConfig:
+    """Configuration for an optional clustering step."""
+
+    method: str = "none"
+    k: int = 2
+
+    def __post_init__(self) -> None:
+        if self.method not in CLUSTERING_METHODS:
+            raise ValueError(
+                "clustering.method must be one of "
+                f"{list(CLUSTERING_METHODS)}; got {self.method!r}"
+            )
+        _positive_int(self.k, field_name="clustering.k")
+
+    def as_provenance(self) -> dict[str, object]:
+        if self.method == "none":
+            return {"method": "none"}
+        return {"method": "kmeans", "k": self.k}
+
+
+DimredInput = DimredConfig | Mapping[str, object] | str
+ClusteringInput = ClusteringConfig | Mapping[str, object] | str
+
+
+def _coerce_dimred(value: DimredInput) -> DimredConfig:
+    if isinstance(value, DimredConfig):
+        return value
+    if isinstance(value, str):
+        return DimredConfig(method=value)
+    allowed = {"method", "n_components", "n_neighbors"}
+    unexpected = sorted(set(value) - allowed)
+    if unexpected:
+        raise ValueError(f"dimred contains unsupported fields: {unexpected}")
+    try:
+        return DimredConfig(**dict(value))  # type: ignore[arg-type]
+    except TypeError as error:
+        raise ValueError(f"invalid dimred configuration: {error}") from error
+
+
+def _coerce_clustering(value: ClusteringInput) -> ClusteringConfig:
+    if isinstance(value, ClusteringConfig):
+        return value
+    if isinstance(value, str):
+        return ClusteringConfig(method=value)
+    allowed = {"method", "k"}
+    unexpected = sorted(set(value) - allowed)
+    if unexpected:
+        raise ValueError(f"clustering contains unsupported fields: {unexpected}")
+    try:
+        return ClusteringConfig(**dict(value))  # type: ignore[arg-type]
+    except TypeError as error:
+        raise ValueError(f"invalid clustering configuration: {error}") from error
+
+
+@dataclass(frozen=True)
+class StatsConfig:
+    """Validated, JSON-ready configuration for a statistics workflow.
+
+    Group and method order is intentionally preserved because it can determine an
+    effect-size direction. Mutable input sequences/mappings are normalized during
+    construction so a frozen instance cannot drift after its provenance is recorded.
+    """
+
+    groups: tuple[str, ...]
+    methods: tuple[str, ...] = ("robust",)
+    fdr_method: str = "fdr_bh"
+    seed: int = 0
+    dimred: DimredInput = field(default_factory=DimredConfig)
+    clustering: ClusteringInput = field(default_factory=ClusteringConfig)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.groups, str):
+            raise ValueError("groups must be a sequence of group names, not a string")
+        groups = tuple(self.groups)
+        if not groups:
+            raise ValueError("groups must contain at least one group name")
+        if any(not isinstance(group, str) or not group.strip() for group in groups):
+            raise ValueError("groups must contain only non-empty strings")
+        if any(group != group.strip() for group in groups):
+            raise ValueError("group names must not contain leading or trailing whitespace")
+        if len(groups) != len(set(groups)):
+            raise ValueError("groups must not contain duplicates")
+
+        if isinstance(self.methods, str):
+            raise ValueError("methods must be a sequence, not a string")
+        methods = tuple(self.methods)
+        if not methods:
+            raise ValueError("methods must contain at least one method")
+        if any(not isinstance(method, str) or not method for method in methods):
+            raise ValueError("methods must contain only non-empty strings")
+        unsupported_methods = sorted(set(methods) - set(STATS_METHODS))
+        if unsupported_methods:
+            raise ValueError(
+                f"methods contains unsupported values {unsupported_methods}; "
+                f"allowed values are {list(STATS_METHODS)}"
+            )
+        if len(methods) != len(set(methods)):
+            raise ValueError("methods must not contain duplicates")
+        if self.fdr_method not in FDR_METHODS:
+            raise ValueError(
+                f"fdr_method must be one of {list(FDR_METHODS)}; got {self.fdr_method!r}"
+            )
+        if (
+            isinstance(self.seed, bool)
+            or not isinstance(self.seed, int)
+            or not 0 <= self.seed <= _MAX_RANDOM_SEED
+        ):
+            raise ValueError(f"seed must be an integer between 0 and {_MAX_RANDOM_SEED}")
+
+        object.__setattr__(self, "groups", groups)
+        object.__setattr__(self, "methods", methods)
+        object.__setattr__(self, "dimred", _coerce_dimred(self.dimred))
+        object.__setattr__(self, "clustering", _coerce_clustering(self.clustering))
+
+    def as_provenance(self) -> dict[str, object]:
+        """Return the canonical JSON-ready record proposed for workflow hashing."""
+        dimred = self.dimred
+        clustering = self.clustering
+        assert isinstance(dimred, DimredConfig)
+        assert isinstance(clustering, ClusteringConfig)
+        return {
+            "groups": list(self.groups),
+            "methods": list(self.methods),
+            "fdr_method": self.fdr_method,
+            "seed": self.seed,
+            "dimred": dimred.as_provenance(),
+            "clustering": clustering.as_provenance(),
+        }
+
+
+# Readable aliases for callers that prefer the expanded name.
+DimensionalityReductionConfig = DimredConfig
+DimRedConfig = DimredConfig
+ClusterConfig = ClusteringConfig
 
 
 def groups_from_sweep_rows(
@@ -166,10 +353,102 @@ def multi_group_test(
 def fdr_correct(pvalues: Sequence[float], *, method: str = "fdr_bh") -> list[float]:
     """BH(fdr_bh)/BY(fdr_by) FDR 보정 — statsmodels multipletests. 보정 p-value 반환."""
     from statsmodels.stats.multitest import multipletests
-    if not pvalues:
+    if method not in FDR_METHODS:
+        raise ValueError(f"FDR method must be one of {list(FDR_METHODS)}; got {method!r}")
+    checked: list[float] = []
+    for pvalue in pvalues:
+        value = float(pvalue)
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError(f"p-values must be finite and between 0 and 1; got {pvalue!r}")
+        checked.append(value)
+    if not checked:
         return []
-    _, q, _, _ = multipletests(list(pvalues), method=method)
+    _, q, _, _ = multipletests(checked, method=method)
     return [float(x) for x in q]
+
+
+def prepare_volcano_data(
+    results: Mapping[str, TestResult | Mapping[str, object]]
+    | Sequence[Mapping[str, object]],
+    *,
+    fdr_method: str = "fdr_bh",
+    feature_column: str = "feature",
+) -> list[dict[str, object]]:
+    """Build a deterministic effect-size versus adjusted-p-value table.
+
+    ``results`` may be a mapping from feature name to :class:`TestResult` (or a
+    mapping with equivalent fields), or tidy input rows containing ``feature``,
+    ``effect_size``, and ``pvalue``. The returned rows are sorted by feature so
+    mapping insertion order cannot affect serialized output.
+    """
+    prepared: list[dict[str, object]] = []
+    if isinstance(results, Mapping):
+        items: Sequence[tuple[object, object]] = list(results.items())
+        for feature, result in items:
+            if isinstance(result, TestResult):
+                prepared.append({
+                    feature_column: feature,
+                    "test": result.test,
+                    "effect_size": result.effect_size,
+                    "effect_name": result.effect_name,
+                    "pvalue": result.pvalue,
+                })
+            elif isinstance(result, Mapping):
+                prepared.append({feature_column: feature, **dict(result)})
+            else:
+                raise ValueError(
+                    "volcano results mapping values must be TestResult or mappings"
+                )
+    else:
+        prepared = [dict(row) for row in results]
+
+    seen_features: set[str] = set()
+    validated: list[dict[str, object]] = []
+    for row in prepared:
+        if feature_column not in row or not str(row[feature_column]).strip():
+            raise ValueError(f"volcano row missing non-empty {feature_column!r}")
+        feature = str(row[feature_column])
+        if feature in seen_features:
+            raise ValueError(f"duplicate volcano feature: {feature!r}")
+        seen_features.add(feature)
+        try:
+            effect_size = float(row["effect_size"])  # type: ignore[arg-type]
+            pvalue = float(row["pvalue"])  # type: ignore[arg-type]
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"volcano feature {feature!r} requires numeric effect_size and pvalue"
+            ) from error
+        if not math.isfinite(effect_size):
+            raise ValueError(f"volcano effect_size must be finite for feature {feature!r}")
+        if not math.isfinite(pvalue) or not 0.0 <= pvalue <= 1.0:
+            raise ValueError(
+                f"volcano pvalue must be finite and between 0 and 1 for feature {feature!r}"
+            )
+        clean = dict(row)
+        clean[feature_column] = feature
+        clean["effect_size"] = effect_size
+        clean["pvalue"] = pvalue
+        validated.append(clean)
+
+    validated.sort(key=lambda row: str(row[feature_column]))
+    adjusted = fdr_correct(
+        [float(row["pvalue"]) for row in validated],  # type: ignore[arg-type]
+        method=fdr_method,
+    )
+    output: list[dict[str, object]] = []
+    for row, qvalue in zip(validated, adjusted, strict=True):
+        out = dict(row)
+        out["adjusted_pvalue"] = qvalue
+        out["neg_log10_adjusted_pvalue"] = (
+            float("inf") if qvalue == 0.0 else -math.log10(qvalue)
+        )
+        out["fdr_method"] = fdr_method
+        output.append(out)
+    return output
+
+
+# Short noun-form alias for figure-preparation callers.
+volcano_data = prepare_volcano_data
 
 
 def normality_pvalue(x: Sequence[float]) -> float:
