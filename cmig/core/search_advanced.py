@@ -2,7 +2,7 @@
 
 Design Ref: §14 / cmig-search-advanced.design. Plan SC: SC-SA1~SA7.
 
-search-core(target_max_solve·rank_consortia) 위에 부가가치: weighted 다중표적 정규화, 2-표적
+search-core(target_max_solve·rank_consortia) 위에 부가가치: weighted 다중표적 정규화, N-표적
 Pareto frontier, 전략 dispatch(exhaustive/MRO-MIP greedy/GA), robustness(FVA), 자연어 explain.
 
 [honesty] 정규화 normalizer 명시 강제(literature_max 우선·observed_range 폴백+경고). GA(>100)는
@@ -13,6 +13,7 @@ core.search_ga 의 결정적 근사 탐색으로 분리 구현되어 있으며, 
 from __future__ import annotations
 
 import enum
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -58,12 +59,11 @@ def weighted_multi_target(
     return sum(by_met[m].weight * v for m, v in normalized.items() if m in by_met)
 
 
-def pareto_frontier_nd(points: list[tuple[float, ...]]) -> list[int]:
+def pareto_frontier_nd(points: Sequence[tuple[float, ...]]) -> list[int]:
     """Non-dominated indices for ANY number of maximised objectives.
 
-    `pareto_frontier` handles exactly two targets; the SCFA preset has six, which is why the
-    Pareto flag was previously left at its `False` default for every row. Domination here is the
-    standard definition: j dominates i when j is >= i on every objective and > on at least one.
+    Domination here is the standard definition: j dominates i when j is >= i on every objective
+    and > on at least one. Equal vectors therefore remain tied members of the frontier.
     """
     keep: list[int] = []
     for i, candidate in enumerate(points):
@@ -78,16 +78,8 @@ def pareto_frontier_nd(points: list[tuple[float, ...]]) -> list[int]:
 
 
 def pareto_frontier(points: list[tuple[float, float]]) -> list[int]:
-    """2-표적 비지배(non-dominated) 점 인덱스 (둘 다 최대화 가정). Pareto frontier(≤2 표적)."""
-    keep: list[int] = []
-    for i, (ai, bi) in enumerate(points):
-        dominated = any(
-            (aj >= ai and bj >= bi) and (aj > ai or bj > bi)
-            for j, (aj, bj) in enumerate(points) if j != i
-        )
-        if not dominated:
-            keep.append(i)
-    return keep
+    """Backward-compatible 2-objective wrapper around the shared N-dimensional semantics."""
+    return pareto_frontier_nd(points)
 
 
 class Strategy(enum.Enum):
