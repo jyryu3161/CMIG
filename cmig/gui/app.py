@@ -98,7 +98,123 @@ I18N: dict[str, dict[str, str]] = {
         "kind_community_solve": "군집 계산",
         "kind_sweep": "스윕",
         "kind_growth_check": "성장 확인",
+        "kind_minimal_medium": "최소 배지",
         "kind_search": "탐색",
+        "medium_title": "배지 편집기",
+        "medium_preset": "프리셋",
+        "medium_choose_preset": "프리셋 선택…",
+        "medium_load_preset": "프리셋 불러오기",
+        "medium_nutrients_only": "영양소만 보기",
+        "medium_pool_closure_warning": (
+            "pool_closure 행은 번들 모델 풀을 위한 장부 기록 행입니다. 이를 제거하는 것은 "
+            "엄밀한 배지 모드(다른 풀에서 사용할 때도 포함)에서만 안전합니다. 영양소만 남긴 "
+            "배지를 병합 모드에서 사용하지 마세요."
+        ),
+        "medium_col_exchange": "Exchange",
+        "medium_col_uptake": "흡수 한도(mmol gDW⁻¹ h⁻¹; 양의 크기)",
+        "medium_col_row_role": "행 역할",
+        "medium_add_row": "행 추가",
+        "medium_remove_selected": "선택 행 제거",
+        "medium_clear_all": "모두 지우기",
+        "medium_paste_csv": "CSV 붙여넣기",
+        "medium_status_ready": (
+            "고급 편집기: 배지를 불러오거나 붙여넣거나 편집한 뒤 CLI 기반 검사를 실행하세요."
+        ),
+        "medium_taxonomy_placeholder": "군집 taxonomy CSV",
+        "medium_browse_taxonomy": "Taxonomy…",
+        "medium_taxonomy_label": "Taxonomy",
+        "medium_assume_bigg": "모델을 검토했고 BiGG namespace임을 확인합니다",
+        "medium_namespace_placeholder": "또는 검토된 namespace-decisions JSON 파일",
+        "medium_namespace_button": "판정 파일…",
+        "medium_exact_mode": "엄밀한 배지(해제 시 기본 배지에 병합)",
+        "medium_allow_unknown": "알 수 없는 ID를 허용하고 누락된 ID를 모두 보고",
+        "medium_check_growth": "성장 확인",
+        "medium_model_placeholder": "최소 배지용 단일 SBML/JSON/MAT 모델",
+        "medium_browse_model": "모델…",
+        "medium_model_label": "모델",
+        "medium_min_growth": "최소 성장률",
+        "medium_oxygen_aerobic": "호기성",
+        "medium_oxygen_anaerobic": "혐기성",
+        "medium_run_minimal": "최소 배지 찾기",
+        "medium_minimal_uptake": "후보 흡수량",
+        "medium_limiting": "제한 영양소(하나씩 제외)",
+        "medium_yes": "예",
+        "medium_no": "아니요",
+        "medium_select_preset": "불러올 프리셋을 선택하세요.",
+        "medium_preset_failed": "프리셋 검증 실패: {error}",
+        "medium_preset_loaded": "{name} 불러옴: 검증된 행 {count}개.",
+        "medium_paste_empty": "클립보드의 CSV가 비어 있습니다.",
+        "medium_paste_parse_failed": "CSV 붙여넣기를 해석할 수 없습니다: {error}",
+        "medium_paste_bad_header": (
+            "CSV 붙여넣기 {row}행: 헤더는 exchange_id,uptake_limit[,row_role]이어야 합니다."
+        ),
+        "medium_paste_bad_column_count": (
+            "CSV 붙여넣기 {row}행: 열은 2개 또는 3개여야 하지만 {count}개입니다."
+        ),
+        "medium_paste_bad_columns": (
+            "CSV 붙여넣기 {row}행: 열 {expected}개가 필요하지만 {count}개입니다."
+        ),
+        "medium_paste_blank_exchange": "CSV 붙여넣기 {row}행: exchange_id가 비어 있습니다.",
+        "medium_paste_duplicate": (
+            "CSV 붙여넣기 {row}행({exchange})이 {first}행과 중복됩니다."
+        ),
+        "medium_paste_bad_role": (
+            "CSV 붙여넣기 {row}행({exchange}): row_role은 nutrient 또는 "
+            "pool_closure여야 합니다."
+        ),
+        "medium_paste_validation_failed": (
+            "CSV 붙여넣기 검증 실패; 데이터 행 {rows}: {error}"
+        ),
+        "medium_paste_loaded": "검증된 CSV 행 {count}개를 붙여넣었습니다.",
+        "medium_nutrients_merge_unsafe": (
+            "영양소만 필터링한 배지는 병합 모드에서 실행할 수 없습니다. 엄밀한 배지를 "
+            "선택하세요. 병합 모드는 명시하지 않은 모델 기본 공급원을 다시 엽니다."
+        ),
+        "medium_namespace_choice": (
+            "Namespace 정책은 검토 파일과 BiGG 확인 중 하나만 선택하세요."
+        ),
+        "medium_namespace_required": (
+            "Namespace 검토가 필요합니다. 검토된 판정 파일을 선택하거나 BiGG임을 확인하세요."
+        ),
+        "medium_table_duplicate": (
+            "exchange_id {exchange} 중복: {first}행과 {row}행."
+        ),
+        "medium_invalid_uptake": "잘못된 uptake_limit({row}행: {exchange})",
+        "medium_validation_failed": (
+            "{error} — mmol gDW⁻¹ h⁻¹ 단위의 양의 흡수 크기를 입력하세요(예: -10이 "
+            "아닌 10). CMIG가 내부적으로 흡수 부호를 적용합니다."
+        ),
+        "medium_valid_exchanges": "유효한 exchange {count}개",
+        "medium_minimal_result": (
+            "최소 배지 상태: {status}; 성분 {count}개; 달성 성장률: {growth}; 제한 영양소 "
+            "{limiting}개{warnings}"
+        ),
+        "medium_dialog_taxonomy": "성장 확인용 taxonomy CSV 선택",
+        "medium_dialog_namespace": "Namespace 판정 파일 선택",
+        "medium_dialog_model": "최소 배지용 단일 모델 선택",
+        "medium_select_taxonomy_growth": "성장을 확인할 taxonomy CSV를 선택하세요.",
+        "medium_select_model_minimal": "최소 배지를 계산할 단일 모델을 선택하세요.",
+        "medium_growth_started": "성장 확인 시작: {job_id}",
+        "medium_growth_result": "성장률: {growth} · 상태: {status} · 모드: {mode}",
+        "medium_mode_exact": "엄밀한 배지",
+        "medium_mode_merge": "기본 배지에 병합",
+        "medium_dropped_none": "누락된 배지 ID: 없음",
+        "medium_dropped_ids": "누락된 배지 ID({count}개): {ids}",
+        "medium_diagnostic": "진단: {diagnostic}",
+        "medium_profile_delta_active": (
+            "이전 배지 검사와 현재 검사의 외부 프로필 차이를 외부 프로필 탭에 표시했습니다."
+        ),
+        "medium_profile_delta_cleared": (
+            "배지가 다시 변경되어 외부 프로필 비교를 지웠습니다. 다시 성장 확인을 실행하세요."
+        ),
+        "medium_profile_delta_ineligible": (
+            "이전 검사와 taxonomy 또는 배지 적용 모드가 달라 프로필을 비교하지 않았습니다."
+        ),
+        "medium_growth_failed": "성장 확인 {status}: {error}",
+        "medium_minimal_started": "최소 배지 계산 시작: {job_id}",
+        "medium_minimal_failed": "최소 배지 계산 {status}: {error}",
+        "medium_profile_baseline": "이전 배지 검사",
+        "medium_profile_variant": "현재 배지 검사",
         "ready": "준비됨",
         "status_select_job": "취소할 실행 중 작업을 선택하세요.",
         "status_job_already": "작업이 이미 {status} 상태입니다: {job_id}",
@@ -277,7 +393,124 @@ I18N: dict[str, dict[str, str]] = {
         "kind_community_solve": "Community solve",
         "kind_sweep": "Sweep",
         "kind_growth_check": "Growth check",
+        "kind_minimal_medium": "Minimal medium",
         "kind_search": "Search",
+        "medium_title": "Medium Editor",
+        "medium_preset": "Preset",
+        "medium_choose_preset": "Choose a preset…",
+        "medium_load_preset": "Load preset",
+        "medium_nutrients_only": "Nutrients only",
+        "medium_pool_closure_warning": (
+            "Pool-closure rows are bookkeeping for the bundled model pool. Removing them is "
+            "safe only with exact-medium semantics (including use with another pool); never "
+            "use a nutrients-only file in merge mode."
+        ),
+        "medium_col_exchange": "Exchange",
+        "medium_col_uptake": "Uptake limit (mmol gDW⁻¹ h⁻¹; positive magnitude)",
+        "medium_col_row_role": "Row role",
+        "medium_add_row": "Add row",
+        "medium_remove_selected": "Remove selected",
+        "medium_clear_all": "Clear all",
+        "medium_paste_csv": "Paste CSV",
+        "medium_status_ready": (
+            "Advanced editor: load, paste, or edit a medium, then run a CLI-backed check."
+        ),
+        "medium_taxonomy_placeholder": "Community taxonomy CSV",
+        "medium_browse_taxonomy": "Taxonomy…",
+        "medium_taxonomy_label": "Taxonomy",
+        "medium_assume_bigg": "I reviewed the models and confirm BiGG namespace",
+        "medium_namespace_placeholder": "Or a reviewed namespace-decisions JSON file",
+        "medium_namespace_button": "Decisions…",
+        "medium_exact_mode": "Exact medium (unchecked = merge overlay)",
+        "medium_allow_unknown": "Allow unknown IDs and report every dropped ID",
+        "medium_check_growth": "Check Growth",
+        "medium_model_placeholder": "Single SBML/JSON/MAT model for minimal-medium",
+        "medium_browse_model": "Model…",
+        "medium_model_label": "Model",
+        "medium_min_growth": "Minimum growth",
+        "medium_oxygen_aerobic": "Aerobic",
+        "medium_oxygen_anaerobic": "Anaerobic",
+        "medium_run_minimal": "Find Minimal Medium",
+        "medium_minimal_uptake": "Candidate uptake",
+        "medium_limiting": "Limiting (leave-one-out)",
+        "medium_yes": "Yes",
+        "medium_no": "No",
+        "medium_select_preset": "Choose a preset before loading it.",
+        "medium_preset_failed": "Preset failed validation: {error}",
+        "medium_preset_loaded": "Loaded {name}: {count} validated rows.",
+        "medium_paste_empty": "Clipboard CSV is empty.",
+        "medium_paste_parse_failed": "CSV paste could not be parsed: {error}",
+        "medium_paste_bad_header": (
+            "CSV paste row {row}: header must be exchange_id,uptake_limit[,row_role]."
+        ),
+        "medium_paste_bad_column_count": (
+            "CSV paste row {row}: expected 2 or 3 columns, got {count}."
+        ),
+        "medium_paste_bad_columns": (
+            "CSV paste row {row}: expected {expected} columns, got {count}."
+        ),
+        "medium_paste_blank_exchange": "CSV paste row {row}: exchange_id is blank.",
+        "medium_paste_duplicate": (
+            "CSV paste row {row} ({exchange}) duplicates row {first}."
+        ),
+        "medium_paste_bad_role": (
+            "CSV paste row {row} ({exchange}): row_role must be nutrient or pool_closure."
+        ),
+        "medium_paste_validation_failed": (
+            "CSV paste validation failed; data rows {rows}: {error}"
+        ),
+        "medium_paste_loaded": "Pasted {count} validated CSV rows.",
+        "medium_nutrients_merge_unsafe": (
+            "Nutrients-only filtering cannot run in merge mode; choose Exact medium. Merge "
+            "would reopen undeclared model defaults."
+        ),
+        "medium_namespace_choice": (
+            "Choose only one namespace policy: reviewed decisions or BiGG confirmation."
+        ),
+        "medium_namespace_required": (
+            "Namespace review is required: choose reviewed decisions or confirm BiGG namespace."
+        ),
+        "medium_table_duplicate": (
+            "Duplicate exchange_id {exchange}: rows {first} and {row}."
+        ),
+        "medium_invalid_uptake": "Invalid uptake_limit (row {row}: {exchange})",
+        "medium_validation_failed": (
+            "{error} — enter a POSITIVE uptake magnitude in mmol gDW⁻¹ h⁻¹ (e.g. 10, not "
+            "-10); CMIG applies the uptake sign internally."
+        ),
+        "medium_valid_exchanges": "{count} valid exchanges",
+        "medium_minimal_result": (
+            "Minimal-medium status: {status}; {count} components; achieved growth: {growth}; "
+            "{limiting} limiting nutrients{warnings}"
+        ),
+        "medium_dialog_taxonomy": "Select taxonomy CSV for Growth Check",
+        "medium_dialog_namespace": "Select Namespace Decisions",
+        "medium_dialog_model": "Select Single Model for Minimal Medium",
+        "medium_select_taxonomy_growth": "Select a taxonomy CSV before checking growth.",
+        "medium_select_model_minimal": "Select a single model before finding a minimal medium.",
+        "medium_growth_started": "growth check started: {job_id}",
+        "medium_growth_result": "growth: {growth} · status: {status} · mode: {mode}",
+        "medium_mode_exact": "exact medium",
+        "medium_mode_merge": "merge onto model default",
+        "medium_dropped_none": "Dropped medium IDs: none",
+        "medium_dropped_ids": "Dropped medium IDs ({count}): {ids}",
+        "medium_diagnostic": "Diagnostic: {diagnostic}",
+        "medium_profile_delta_active": (
+            "External-profile delta versus the previous medium check is active in Profile."
+        ),
+        "medium_profile_delta_cleared": (
+            "The medium changed again, so the external-profile comparison was cleared. Run "
+            "Check Growth again."
+        ),
+        "medium_profile_delta_ineligible": (
+            "The previous check used a different taxonomy or application mode, so profiles "
+            "were not compared."
+        ),
+        "medium_growth_failed": "growth check {status}: {error}",
+        "medium_minimal_started": "minimal-medium started: {job_id}",
+        "medium_minimal_failed": "minimal-medium {status}: {error}",
+        "medium_profile_baseline": "Previous medium check",
+        "medium_profile_variant": "Current medium check",
         "ready": "Ready",
         "status_select_job": "Select a running job to cancel.",
         "status_job_already": "Job already {status}: {job_id}",
@@ -612,7 +845,12 @@ class CmigMainWindow(QMainWindow):
         self._community_jobs: dict[str, Path] = {}
         #: sweep job id -> (artifact directory, "real" | "fixture")
         self._sweep_jobs: dict[str, tuple[Path, str]] = {}
-        self._medium_growth_jobs: dict[str, Path] = {}
+        #: growth job id -> (artifact directory, answer-determining request snapshot)
+        self._medium_growth_jobs: dict[str, tuple[Path, dict[str, Any]]] = {}
+        self._minimal_medium_jobs: dict[str, Path] = {}
+        #: The most recent completed Check Growth is the baseline for a later medium edit.
+        self._last_medium_growth_check: tuple[Path, dict[str, Any]] | None = None
+        self._medium_delta_active = False
         #: sandbox job id -> (commit?, the bound constraint the result will belong to)
         self._sandbox_jobs: dict[str, tuple[bool, Any]] = {}
         self.current_manifest: dict[str, Any] | None = None
@@ -627,7 +865,7 @@ class CmigMainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.model_manager = ModelManagerPanel()
         self.community_builder = CommunityBuilderView()
-        self.medium_editor = MediumEditor()
+        self.medium_editor = MediumEditor(strings=self.tr_map)
         self.profile_view = ExternalProfileView(strings=self.tr_map)
         self.graph_view = InteractionGraphView()
         self.graph_gate_badge = GateBadge(lang=self.lang)
@@ -783,8 +1021,17 @@ class CmigMainWindow(QMainWindow):
         self.sweep_view.browse_bounds_btn.clicked.connect(self._browse_sweep_bounds)
         self.sweep_view.browse_namespace_btn.clicked.connect(self._browse_sweep_namespace)
         self.sweep_view.run_btn.clicked.connect(self.run_sweep_from_view)
+        self.medium_editor.browse_taxonomy_btn.clicked.connect(self._browse_medium_taxonomy)
+        self.medium_editor.browse_namespace_btn.clicked.connect(self._browse_medium_namespace)
         self.medium_editor.browse_model_btn.clicked.connect(self._browse_medium_model)
         self.medium_editor.check_growth_btn.clicked.connect(self.run_medium_growth_check)
+        self.medium_editor.minimal_medium_btn.clicked.connect(self.run_minimal_medium)
+        self.medium_editor.medium_changed.connect(self._medium_context_changed)
+        self.medium_editor.taxonomy_input.textChanged.connect(self._medium_context_changed)
+        self.medium_editor.namespace_decisions_input.textChanged.connect(
+            self._medium_context_changed
+        )
+        self.medium_editor.assume_bigg_check.toggled.connect(self._medium_context_changed)
         self.scenario_compare.browse_a_btn.clicked.connect(self._browse_scenario_run_a)
         self.scenario_compare.browse_b_btn.clicked.connect(self._browse_scenario_run_b)
         self.scenario_compare.compare_btn.clicked.connect(self.run_scenario_compare)
@@ -908,12 +1155,45 @@ class CmigMainWindow(QMainWindow):
         if path:
             self.community_builder.model_dir_input.setText(path)
 
+    def _browse_medium_taxonomy(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr_map["medium_dialog_taxonomy"],
+            "",
+            self.tr_map["sweep_filter_csv"],
+        )
+        if path:
+            self.medium_editor.taxonomy_input.setText(path)
+
+    def _browse_medium_namespace(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr_map["medium_dialog_namespace"],
+            "",
+            self.tr_map["sweep_filter_json"],
+        )
+        if path:
+            self.medium_editor.namespace_decisions_input.setText(path)
+
     def _browse_medium_model(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select Model for Growth Check", "", "Models (*.xml *.sbml *.xml.gz *.sbml.gz)"
+            self,
+            self.tr_map["medium_dialog_model"],
+            "",
+            "Models (*.xml *.sbml *.xml.gz *.sbml.gz *.json *.mat)",
         )
         if path:
             self.medium_editor.model_path_input.setText(path)
+
+    def _medium_context_changed(self, *_args: Any) -> None:
+        """Clear only a medium-owned overlay when its displayed request becomes stale."""
+        if not self._medium_delta_active:
+            return
+        self.profile_view.clear_delta_overlay()
+        self._medium_delta_active = False
+        self.medium_editor.profile_delta_label.setText(
+            self.tr_map["medium_profile_delta_cleared"]
+        )
 
     def _browse_scenario_run_a(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Run A Directory")
@@ -2001,18 +2281,23 @@ class CmigMainWindow(QMainWindow):
         return jid
 
     def run_medium_growth_check(self) -> str:
-        """Run a single-model growth check from the Medium Editor tab (`cmig strain-growth`).
-
-        The selected model is copied into an isolated model-pool folder (strain-growth needs
-        --model-dir/--taxonomy, not a bare file) and the editor's MediumSpec, if non-empty, is
-        written out and passed as --medium.
-        """
+        """Run the editor request through the real ``cmig solve`` CLI workflow."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        model_path = self.medium_editor.model_path_input.text().strip()
-        if not model_path:
-            self.medium_editor.growth_label.setText("Select a model before checking growth.")
+        taxonomy = self.medium_editor.taxonomy_input.text().strip()
+        if not taxonomy:
+            self.medium_editor.growth_label.setText(
+                self.tr_map["medium_select_taxonomy_growth"]
+            )
+            return ""
+        namespace_argv, namespace_error = self.medium_editor.namespace_policy()
+        if namespace_error:
+            self.medium_editor.growth_label.setText(namespace_error)
+            return ""
+        mode_error = self.medium_editor.medium_mode_error()
+        if mode_error:
+            self.medium_editor.growth_label.setText(mode_error)
             return ""
         try:
             spec = self.medium_editor.to_spec()
@@ -2023,41 +2308,144 @@ class CmigMainWindow(QMainWindow):
             tempfile.mkdtemp(prefix="cmig-medium-growth-", dir=_search_temp_root())
         ).resolve()
         uptake = dict(spec.uptake)
+        exact = self.medium_editor.exact_medium_check.isChecked()
+        allow_unknown = self.medium_editor.allow_unknown_check.isChecked()
+        request: dict[str, Any] = {
+            "taxonomy": str(Path(taxonomy).resolve()),
+            "medium": tuple(sorted((exchange, float(limit)) for exchange, limit in uptake.items())),
+            "exact": exact,
+            "namespace": tuple(namespace_argv),
+        }
+        self._medium_context_changed()
+        self.medium_editor.profile_delta_label.clear()
+        self.medium_editor.dropped_ids_label.clear()
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            src = Path(model_path)
-            if not src.exists():
-                raise RuntimeError(f"model file not found: {src}")
-            model_dir = out_dir / "model_pool"
-            model_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src, model_dir / src.name)
+            taxonomy_path = Path(taxonomy)
+            if not taxonomy_path.exists():
+                raise RuntimeError(f"taxonomy file not found: {taxonomy_path}")
             argv = [
-                "strain-growth",
-                "--model-dir",
-                str(model_dir),
+                "solve",
+                "--taxonomy",
+                str(taxonomy_path),
                 "--out",
                 str(out_dir),
+                *namespace_argv,
             ]
             if uptake:
                 medium_path = out_dir / "medium.json"
                 medium_path.write_text(json.dumps(uptake))
                 argv.extend(["--medium", str(medium_path)])
+            if exact:
+                argv.append("--exact-medium")
+            if allow_unknown:
+                argv.append("--allow-unknown-medium")
             rc = main(argv)
-            if rc != 0:
+            manifest_path = out_dir / "manifest.json"
+            if not manifest_path.exists() or not (out_dir / "profile.parquet").exists():
                 raise RuntimeError(f"growth check failed with rc={rc}")
             _finish_after_artifacts(ctx)
-            payload = json.loads((out_dir / "strain_growth_summary.json").read_text())
-            if not isinstance(payload, dict):
-                raise RuntimeError("growth check output is not a JSON object")
-            return payload
+            manifest = json.loads(manifest_path.read_text())
+            if not isinstance(manifest, dict):
+                raise RuntimeError("growth check manifest is not a JSON object")
+            result = _solve_result_like_from_run_dir(out_dir)
+            return {
+                "manifest": manifest,
+                "growth": result.objective if result.status == "optimal" else None,
+                "status": result.status,
+                "dropped_ids": _medium_dropped_ids(manifest),
+                "diagnostic": manifest.get("diagnostic"),
+                "cli_rc": rc,
+            }
 
         jid = self.submit_job("medium_growth_check", _job)
-        self._medium_growth_jobs[jid] = out_dir
+        self._medium_growth_jobs[jid] = (out_dir, request)
         self.medium_editor.check_growth_btn.setEnabled(False)
-        self.medium_editor.growth_label.setText(f"growth check started: {jid}")
+        self.medium_editor.growth_label.setText(
+            self._message("medium_growth_started", job_id=jid)
+        )
         self._show_status("status_started", kind=self.tr_map["kind_growth_check"], job_id=jid)
+        return jid
+
+    def run_minimal_medium(self) -> str:
+        """Launch ``cmig minimal-medium`` for the selected model and current medium."""
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        model = self.medium_editor.model_path_input.text().strip()
+        if not model:
+            self.medium_editor.minimal_status.setText(
+                self.tr_map["medium_select_model_minimal"]
+            )
+            return ""
+        namespace_argv, namespace_error = self.medium_editor.namespace_policy()
+        if namespace_error:
+            self.medium_editor.minimal_status.setText(namespace_error)
+            return ""
+        mode_error = self.medium_editor.medium_mode_error()
+        if mode_error:
+            self.medium_editor.minimal_status.setText(mode_error)
+            return ""
+        try:
+            spec = self.medium_editor.to_spec()
+        except ValueError:
+            return ""
+
+        out_dir = Path(
+            tempfile.mkdtemp(prefix="cmig-minimal-medium-", dir=_search_temp_root())
+        ).resolve()
+        uptake = dict(spec.uptake)
+        exact = self.medium_editor.exact_medium_check.isChecked()
+        allow_unknown = self.medium_editor.allow_unknown_check.isChecked()
+        min_growth = self.medium_editor.min_growth_spin.value()
+        oxygen_mode = str(self.medium_editor.oxygen_mode_combo.currentData())
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            model_path = Path(model)
+            if not model_path.exists():
+                raise RuntimeError(f"model file not found: {model_path}")
+            argv = [
+                "minimal-medium",
+                "--model",
+                str(model_path),
+                "--min-growth",
+                f"{min_growth:.12g}",
+                "--oxygen-mode",
+                oxygen_mode,
+                "--out",
+                str(out_dir),
+                *namespace_argv,
+            ]
+            if uptake:
+                medium_path = out_dir / "medium.json"
+                medium_path.write_text(json.dumps(uptake))
+                argv.extend(["--medium", str(medium_path)])
+            if exact:
+                argv.append("--exact-medium")
+            if allow_unknown:
+                argv.append("--allow-unknown-medium")
+            rc = main(argv)
+            summary_path = out_dir / "minimal_medium_summary.json"
+            if not summary_path.exists():
+                raise RuntimeError(f"minimal-medium failed with rc={rc}")
+            _finish_after_artifacts(ctx)
+            payload = json.loads(summary_path.read_text())
+            if not isinstance(payload, dict):
+                raise RuntimeError("minimal-medium output is not a JSON object")
+            payload["cli_rc"] = rc
+            return payload
+
+        jid = self.submit_job("minimal_medium", _job)
+        self._minimal_medium_jobs[jid] = out_dir
+        self.medium_editor.minimal_medium_btn.setEnabled(False)
+        self.medium_editor.minimal_status.setText(
+            self._message("medium_minimal_started", job_id=jid)
+        )
+        self._show_status("status_started", kind=self.tr_map["kind_minimal_medium"], job_id=jid)
         return jid
 
     def run_scenario_compare(self) -> None:
@@ -2398,30 +2786,119 @@ class CmigMainWindow(QMainWindow):
                         artifact_note=artifact_note,
                     )
                 )
-        for jid, out_dir in list(self._medium_growth_jobs.items()):
+        for jid, (out_dir, request) in list(self._medium_growth_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._medium_growth_jobs.pop(jid, None)
                 self.medium_editor.check_growth_btn.setEnabled(True)
                 self._register_run_output(out_dir)
-                members = job.result.get("members", [])
-                if members and isinstance(members[0], dict):
-                    growth = members[0].get("single_growth")
-                    status = members[0].get("single_status", members[0].get("community_status", ""))
-                    growth_text = "—" if growth is None else f"{growth:.4g}"
-                    self.medium_editor.growth_label.setText(f"growth: {growth_text} ({status})")
-                else:
-                    self.medium_editor.growth_label.setText(
-                        "growth check complete (no result rows)"
-                    )
-                self._show_status(
-                    "status_complete", kind=self.tr_map["kind_growth_check"], job_id=jid
+                growth = job.result.get("growth")
+                status = str(job.result.get("status", "unknown"))
+                mode_key = (
+                    "medium_mode_exact" if request.get("exact") else "medium_mode_merge"
                 )
+                growth_text = "—" if growth is None else f"{float(growth):.6g}"
+                self.medium_editor.growth_label.setText(
+                    self._message(
+                        "medium_growth_result",
+                        growth=growth_text,
+                        status=status,
+                        mode=self.tr_map[mode_key],
+                    )
+                )
+                dropped = [str(item) for item in job.result.get("dropped_ids", [])]
+                self.medium_editor.dropped_ids_label.setText(
+                    self.tr_map["medium_dropped_none"]
+                    if not dropped
+                    else self._message(
+                        "medium_dropped_ids",
+                        count=len(dropped),
+                        ids=", ".join(dropped),
+                    )
+                )
+                diagnostic = job.result.get("diagnostic")
+                if diagnostic and not dropped:
+                    self.medium_editor.dropped_ids_label.setText(
+                        self._message("medium_diagnostic", diagnostic=diagnostic)
+                    )
+
+                previous = self._last_medium_growth_check
+                self.load_run_dir(out_dir)
+                cli_succeeded = int(job.result.get("cli_rc", 1)) == 0 and status == "optimal"
+                if cli_succeeded and previous is not None:
+                    previous_dir, previous_request = previous
+                    same_context = (
+                        previous_request.get("taxonomy") == request.get("taxonomy")
+                        and previous_request.get("exact") == request.get("exact")
+                        and previous_request.get("namespace") == request.get("namespace")
+                    )
+                    medium_modified = previous_request.get("medium") != request.get("medium")
+                    if same_context and medium_modified:
+                        from cmig.core.delta import compute_delta
+
+                        baseline = _solve_result_like_from_run_dir(previous_dir)
+                        variant = _solve_result_like_from_run_dir(out_dir)
+                        delta = compute_delta(baseline, variant)  # type: ignore[arg-type]
+                        self.profile_view.show_delta_overlay(
+                            delta,
+                            baseline_label=self.tr_map["medium_profile_baseline"],
+                            variant_label=self.tr_map["medium_profile_variant"],
+                        )
+                        self._medium_delta_active = True
+                        self.medium_editor.profile_delta_label.setText(
+                            self.tr_map["medium_profile_delta_active"]
+                        )
+                    elif not same_context:
+                        self.medium_editor.profile_delta_label.setText(
+                            self.tr_map["medium_profile_delta_ineligible"]
+                        )
+                if cli_succeeded:
+                    self._last_medium_growth_check = (out_dir, request)
+                    self._show_status(
+                        "status_complete", kind=self.tr_map["kind_growth_check"], job_id=jid
+                    )
+                else:
+                    self._show_status(
+                        "medium_growth_failed",
+                        status=status,
+                        error=f"CLI rc={job.result.get('cli_rc')}; artifacts retained",
+                    )
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._medium_growth_jobs.pop(jid, None)
                 self.medium_editor.check_growth_btn.setEnabled(True)
                 self.medium_editor.growth_label.setText(
-                    f"growth check {job.status.value}: {job.error or jid}"
+                    self._message(
+                        "medium_growth_failed",
+                        status=job.status.value,
+                        error=job.error or jid,
+                    )
+                )
+        for jid, out_dir in list(self._minimal_medium_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE and isinstance(job.result, dict):
+                self._minimal_medium_jobs.pop(jid, None)
+                self.medium_editor.minimal_medium_btn.setEnabled(True)
+                self.medium_editor.load_minimal_result(job.result)
+                self._register_run_output(out_dir)
+                if int(job.result.get("cli_rc", 1)) == 0 and job.result.get("status") != "failed":
+                    self._show_status(
+                        "status_complete", kind=self.tr_map["kind_minimal_medium"], job_id=jid
+                    )
+                else:
+                    self._show_status(
+                        "medium_minimal_failed",
+                        status=job.result.get("status", "failed"),
+                        error=f"CLI rc={job.result.get('cli_rc')}; artifacts retained",
+                    )
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                self._minimal_medium_jobs.pop(jid, None)
+                self.medium_editor.minimal_medium_btn.setEnabled(True)
+                self.medium_editor.minimal_status.setText(
+                    self._message(
+                        "medium_minimal_failed",
+                        status=job.status.value,
+                        error=job.error or jid,
+                    )
                 )
 
 
@@ -2650,6 +3127,35 @@ def _solve_result_like_from_run_dir(run_dir: Path) -> SimpleNamespace:
         status=status,
         objective=objective,
     )
+
+
+def _medium_dropped_ids(manifest: dict[str, Any]) -> list[str]:
+    """Extract every CLI-recorded ``medium_unapplied`` id from a solve manifest."""
+    found: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError):
+                return
+            visit(parsed)
+            return
+        if isinstance(value, dict):
+            if value.get("code") == "medium_unapplied":
+                detail = value.get("detail")
+                if isinstance(detail, dict):
+                    exchange_ids = detail.get("exchange_ids")
+                    if isinstance(exchange_ids, list):
+                        found.update(str(item) for item in exchange_ids)
+            for nested in value.values():
+                visit(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                visit(nested)
+
+    visit(manifest.get("diagnostic"))
+    return sorted(found)
 
 
 def build_main_window(runner: JobRunner | None = None, lang: str = "en") -> CmigMainWindow:
