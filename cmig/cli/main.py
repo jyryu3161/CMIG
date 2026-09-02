@@ -80,6 +80,23 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
         ),
     },
     {
+        "gui_surface": "Medium / Diagnose Medium Gap",
+        "cli_command": "cmig medium-gap",
+        "purpose": "Explain why a model pool cannot grow on a medium and compute the "
+        "cardinality-minimal supplement that lifts it above a growth floor.",
+        "required_args": ["--out"],
+        "common_options": [
+            "--model", "--model-dir", "--taxonomy", "--medium", "--exact-medium",
+            "--allow-unknown-medium", "--min-growth", "--candidate-bound", "--oxygen-mode",
+        ],
+        "key_outputs": ["medium_gap.json", "medium_gap.csv", "medium_gap_supplemented.csv"],
+        "example": (
+            "uv run cmig medium-gap --model-dir models/agora2_pool "
+            "--medium medium_presets/gut_overlay_agora_western.csv --exact-medium "
+            "--out runs/medium_gap"
+        ),
+    },
+    {
         "gui_surface": "Models / Import Model",
         "cli_command": "cmig model-review",
         "purpose": "Review a user-provided GEM and generate namespace/import diagnostics.",
@@ -8402,6 +8419,171 @@ def _cmd_agora2_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_medium_gap(args: argparse.Namespace) -> int:
+    """Why a pool cannot grow on a medium, and the smallest supplement that fixes it."""
+    try:
+        import pandas as pd
+
+        from cmig.core.medium import MILPInfeasibleError, MILPUnavailableError, medium_gap
+        from cmig.core.medium_spec import load_medium
+        from cmig.core.model_pool import taxonomy_from_model_dir
+        from cmig.io.model_import import load_cobra_model
+    except ImportError:
+        print("medium-gap 는 engine stack 필요: uv sync --extra engine", file=sys.stderr)
+        return 2
+    try:
+        if args.model:
+            models = [(Path(args.model).stem, Path(args.model))]
+        else:
+            taxonomy = _load_pool_taxonomy(
+                taxonomy_path=args.taxonomy, model_dir=args.model_dir,
+                recursive=args.recursive, pd=pd,
+                taxonomy_from_model_dir=taxonomy_from_model_dir,
+            )
+            if args.taxonomy:
+                taxonomy = _resolve_taxonomy_model_paths(taxonomy, Path(args.taxonomy))
+            models = [
+                (str(row["id"]), Path(str(row["file"]))) for row in taxonomy.to_dict("records")
+            ]
+        medium_spec = load_medium(args.medium) if args.medium else None
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+    rows: list[dict[str, Any]] = []
+    supplement_union: dict[str, float] = {}
+    unfixable: dict[str, list[str]] = {}
+    for member_id, model_path in models:
+        try:
+            model = load_cobra_model(model_path)
+        except Exception as e:  # noqa: BLE001 - one unreadable model must not end the survey
+            rows.append({"id": member_id, "status": "load_failed", "diagnostic": str(e)})
+            print(f"  {member_id}: model could not be loaded: {e}", file=sys.stderr)
+            continue
+        try:
+            result = medium_gap(
+                model,
+                min_growth=args.min_growth,
+                solver=args.solver,
+                medium=medium_spec,
+                strict_medium=not args.allow_unknown_medium,
+                exact_medium=args.exact_medium,
+                oxygen_mode=args.oxygen_mode,
+                candidate_bound=args.candidate_bound,
+                max_supplement=args.max_supplement,
+            )
+        except MILPUnavailableError as e:
+            print(str(e), file=sys.stderr)
+            return 2
+        except MILPInfeasibleError as e:
+            # An honest outcome: no supplement of the allowed size reaches the floor.
+            rows.append({"id": member_id, "status": "no_supplement_found", "diagnostic": str(e)})
+            print(f"  {member_id}: NO SUPPLEMENT REACHES min-growth — {e}")
+            continue
+        status = "sufficient" if result.base_is_sufficient else "supplement_required"
+        rows.append({
+            "id": member_id,
+            "status": status,
+            "base_growth": _finite_or_none(result.base_growth),
+            "achieved_growth": _finite_or_none(result.achieved_growth),
+            "n_supplement": len(result.supplement),
+            "supplement": ";".join(result.supplement),
+            "essential_supplement": ";".join(result.essential_supplement),
+            "pseudo_supply_open": ";".join(result.pseudo_supply_open),
+            "n_unmatched_medium": len(result.unmatched_medium),
+        })
+        for exchange_id in result.supplement:
+            if exchange_id.startswith("EX_") and exchange_id.endswith("_e"):
+                supplement_union[exchange_id] = max(
+                    supplement_union.get(exchange_id, 0.0), args.candidate_bound
+                )
+            else:
+                unfixable.setdefault(member_id, []).append(exchange_id)
+        print(f"  {member_id}: {status} base={result.base_growth:.4g} "
+              f"achieved={result.achieved_growth:.4g} supplement={result.supplement}")
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "id", "status", "base_growth", "achieved_growth", "n_supplement", "supplement",
+        "essential_supplement", "pseudo_supply_open", "n_unmatched_medium", "diagnostic",
+    ]
+    _write_csv_records(
+        out / "medium_gap.csv",
+        fieldnames,
+        [{key: row.get(key, "") for key in fieldnames} for row in rows],
+    )
+    payload = {
+        "kind": "medium_gap",
+        "medium": args.medium,
+        "min_growth": args.min_growth,
+        "oxygen_mode": args.oxygen_mode,
+        "candidate_bound": args.candidate_bound,
+        "n_models": len(models),
+        "n_sufficient": sum(1 for r in rows if r.get("status") == "sufficient"),
+        "n_supplement_required": sum(
+            1 for r in rows if r.get("status") == "supplement_required"
+        ),
+        "n_no_supplement_found": sum(
+            1 for r in rows if r.get("status") == "no_supplement_found"
+        ),
+        "supplement_union_exchanges": sorted(supplement_union),
+        "not_expressible_as_medium_rows": {k: sorted(v) for k, v in sorted(unfixable.items())},
+        "models": rows,
+    }
+    atomic_write_text(
+        out / "medium_gap.json",
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n",
+    )
+    artifacts = ["medium_gap.csv", "medium_gap.json"]
+    if supplement_union and args.medium:
+        artifacts.append(_write_supplemented_medium(out, Path(args.medium), supplement_union))
+    print(f"\nmedium-gap complete -> {out}")
+    for artifact in artifacts:
+        print(f"  {artifact}")
+    if unfixable:
+        print(
+            "  note: some supplements are sinks/demands inside the model, not medium rows; "
+            f"they cannot be supplied by a diet file: {sorted(unfixable)}",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def _write_supplemented_medium(
+    out: Path, base_medium: Path, supplement: dict[str, float]
+) -> str:
+    """Write base medium + gap supplement, with the added rows marked `gap_supplement`.
+
+    The added rows are NOT part of the published diet and must never be reported as if they
+    were; `row_role` is what carries that distinction into every downstream reader.
+    """
+    import csv as _csv
+
+    buffer = io.StringIO()
+    writer = _csv.DictWriter(
+        buffer, fieldnames=["exchange_id", "uptake_limit", "row_role"], lineterminator="\n"
+    )
+    writer.writeheader()
+    with open(base_medium, newline="") as handle:
+        for record in _csv.DictReader(handle):
+            writer.writerow({
+                "exchange_id": record["exchange_id"],
+                "uptake_limit": record["uptake_limit"],
+                "row_role": record.get("row_role") or "nutrient",
+            })
+    for exchange_id, limit in sorted(supplement.items()):
+        # Medium files address the community pool (`_m`); the gap was measured per model (`_e`).
+        writer.writerow({
+            "exchange_id": f"{exchange_id[: -len('_e')]}_m",
+            "uptake_limit": limit,
+            "row_role": "gap_supplement",
+        })
+    name = "medium_gap_supplemented.csv"
+    atomic_write_text(out / name, buffer.getvalue())
+    return name
+
+
 def _cmd_model_review(args: argparse.Namespace) -> int:
     """User-provided GEM import review + namespace audit payload."""
     try:
@@ -10401,6 +10583,39 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
     ss.set_defaults(func=_cmd_stats_sweep)
     _add_agora2_parsers(sub)
+    mg = sub.add_parser(
+        "medium-gap",
+        help="why a model/pool cannot grow on a medium, and the smallest supplement that fixes it",
+    )
+    mg_source = mg.add_mutually_exclusive_group(required=True)
+    mg_source.add_argument("--model", default=None, help="single SBML/JSON/MAT model")
+    mg_source.add_argument("--model-dir", default=None, dest="model_dir", help="model folder")
+    mg_source.add_argument("--taxonomy", default=None, help="taxonomy csv (id,file)")
+    mg.add_argument("--recursive", action="store_true", help="recurse into --model-dir")
+    mg.add_argument("--medium", default=None, help="base medium csv/json (the diet under test)")
+    _add_exact_medium(mg)
+    _add_allow_unknown_medium(mg)
+    mg.add_argument(
+        "--min-growth", type=float, default=0.01, dest="min_growth",
+        help="growth the supplement must reach, 1/h (default 0.01)",
+    )
+    mg.add_argument(
+        "--candidate-bound", type=float, default=10.0, dest="candidate_bound",
+        help="uptake limit granted to each proposed supplement, mmol/gDW/h (default 10)",
+    )
+    mg.add_argument(
+        "--max-supplement", type=int, default=None, dest="max_supplement",
+        help="refuse a supplement larger than this many exchanges",
+    )
+    mg.add_argument(
+        "--oxygen-mode", default="anaerobic", dest="oxygen_mode",
+        choices=["aerobic", "anaerobic"],
+        help="anaerobic (default) keeps O2 out of the candidate set, so an anaerobe is not "
+        "'fixed' by being made to breathe",
+    )
+    mg.add_argument("--solver", default="gurobi", choices=["gurobi"])
+    mg.add_argument("--out", required=True, help="output directory")
+    mg.set_defaults(func=_cmd_medium_gap)
     ns = sub.add_parser("namespace-suggest", help="model exchange namespace decision 초안 생성")
     ns.add_argument("--model", required=True, help="SBML/JSON/MAT model path")
     ns.add_argument("--known-targets", default=None, help="known target metabolite id 목록(txt)")

@@ -134,6 +134,24 @@ def _is_minimisation(direction: str | None) -> bool:
     return str(direction) in MINIMISATION_DIRECTIONS
 
 
+def _non_viable_warnings(unevaluated: list[Any], n_total: int) -> list[str]:
+    """Name the medium when candidates were quarantined for being unable to grow at all.
+
+    Distinguishing this from "the target exchange is missing" is what tells a user to fix the
+    diet rather than the model pool.
+    """
+    non_viable = [row for row in unevaluated if getattr(row, "status", None) == "non_viable"]
+    if not non_viable:
+        return []
+    return [
+        f"{len(non_viable)} of {n_total} candidates could not grow at all on this medium "
+        "(community maximum growth ~ 0) and are excluded from the ranking, not ranked at zero "
+        "growth. This is a property of the medium, not of the target: run "
+        "`cmig medium-gap --model-dir <pool> --medium <medium.csv>` to see which nutrients the "
+        "medium has to add before a production ranking means anything"
+    ]
+
+
 def _ranking_degeneracy_warnings(
     scored: list[tuple[tuple[str, ...], float, str]],
     *,
@@ -598,6 +616,7 @@ def search_model_pool(
         [(row.members, row.score, row.status) for row in solved],
         direction=config.direction.value,
     ))
+    warnings.extend(_non_viable_warnings(failed, len(evaluated)))
     warnings.extend(unevaluable_warnings(
         [(row.members, row.status, row.diagnostic) for row in failed], len(evaluated)
     ))

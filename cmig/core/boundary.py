@@ -63,7 +63,14 @@ from typing import Any
 #: precedent: the discontinuity cannot be recorded in a hash component (`cmig_core_version` is
 #: frozen), and the fix moves published answers, so the marker is the only mechanical signal.
 #: `exchange_view_v0` is the era in which closure enumerated `model.exchanges` / `model.medium`.
-BOUNDARY_ISOLATION_POLICY = "boundary_reactions_v1"   # was: exchange_view_v0
+#: v2 (round-10 follow-up): a NON-EXCHANGE boundary reaction whose metabolite declares no
+#: elemental composition (formula ``X``) is a process pseudo-reaction, not a mass source, and is
+#: no longer closed — see :func:`is_pseudo_supply`. v1 closed them, which made every AGORA/AGORA2
+#: reconstruction non-viable under ``--exact-medium`` (measured: community growth exactly 0 on any
+#: diet, because AGORA encodes replication/translation cost as ``--> dnarep_c`` and friends).
+#: BREAKING: this is a hashed component of every workflow manifest, so the run_hash of every
+#: previously published medium-bearing workflow run derives differently from identical inputs.
+BOUNDARY_ISOLATION_POLICY = "boundary_reactions_v2"   # was: boundary_reactions_v1, exchange_view_v0
 
 #: Flux magnitudes below this are treated as no supply. Matches the 1e-9 used by the dFBA and
 #: host uptake readers, so "can supply" and "did supply" use one threshold.
@@ -100,6 +107,11 @@ class BoundaryIsolation:
     opened: dict[str, float] = field(default_factory=dict)   # reaction id -> declared supply limit
     forced_supply: dict[str, float] = field(default_factory=dict)  # id -> irreducible supply rate
     non_exchange_closed: tuple[str, ...] = ()   # the subset invisible to model.exchanges
+    #: Non-exchange suppliers whose metabolite declares no elemental composition (formula ``X``)
+    #: and which were therefore left OPEN: they add no mass, so the isolation invariant does not
+    #: reach them, while closing them makes an AGORA-style model non-viable. Named here because a
+    #: background that is closed "except for these" has to say which these are.
+    pseudo_supply_open: tuple[str, ...] = ()
     unmatched: tuple[str, ...] = ()          # declared ids the model does not have
 
     @property
@@ -167,6 +179,47 @@ def supply_capacity(reaction: Any) -> float:
     if getattr(reaction, "products", None):
         return max(0.0, float(reaction.upper_bound))
     return 0.0
+
+
+#: Formula strings that EXPLICITLY declare no elemental composition. BiGG/AGORA write ``X`` for a
+#: "pseudo-metabolite" that stands for a *process* rather than matter.
+#:
+#: A *missing* formula is deliberately not in this set. "The model did not say" is not the same
+#: claim as "the model said there are no atoms": an unannotated metabolite may well carry mass, so
+#: it stays a mass supplier and stays closed. Every toy model in this repo's own tests omits
+#: formulas, and treating those as massless would have silently disabled the isolation invariant
+#: they exist to check.
+UNSPECIFIED_FORMULAE = frozenset({"X", "x"})
+
+
+def supplies_at_negative_flux(reaction: Any) -> bool:
+    """Public name for the direction test: True when uptake is the negative-flux direction."""
+    return _supplies_at_negative_flux(reaction)
+
+
+def is_pseudo_supply(reaction: Any) -> bool:
+    """True when this boundary reaction supplies a metabolite with no declared composition.
+
+    Round-10 follow-up, measured on AGORA2: every reconstruction carries
+    ``dreplication --> dnarep_c``, ``pbiosynthesis --> proteinsynth_c`` and
+    ``rtranscription --> rnatrans_c``, whose metabolites have formula ``X`` and appear only in
+    the biomass reaction. They encode the cost of replication/translation, not a nutrient, but
+    structurally they are boundary reactions that add a metabolite — so the supply detector
+    counts them and ``--exact-medium`` closes them, which makes **every AGORA2 model
+    non-viable** (measured: community growth exactly 0 whatever the diet).
+
+    This function does not change what gets closed; it names the class so a run can say why it
+    could not grow instead of publishing a zero. Reclassifying them would move
+    ``BOUNDARY_ISOLATION_POLICY`` and re-hash every published workflow run, which is a
+    deliberate contract change and not something a diagnostic may do on its own.
+    """
+    metabolites = list(getattr(reaction, "metabolites", {}) or {})
+    if len(metabolites) != 1:
+        return False
+    formula = getattr(metabolites[0], "formula", None)
+    if formula is None:
+        return False
+    return str(formula).strip() in UNSPECIFIED_FORMULAE
 
 
 def forced_supply(reaction: Any) -> float:
@@ -293,12 +346,19 @@ def close_boundary_supply(
     exchange_ids = {str(reaction.id) for reaction in getattr(model, "exchanges", []) or []}
     closed: list[str] = []
     non_exchange_closed: list[str] = []
+    pseudo_closed: list[str] = []
     forced: dict[str, float] = {}
     for reaction in reactions:
         rid = str(reaction.id)
         if rid in kept:
             continue
         if supply_capacity(reaction) <= tolerance:
+            continue
+        pseudo = is_pseudo_supply(reaction) and rid not in exchange_ids
+        if pseudo:
+            # Not a mass source: it adds a metabolite with no declared atoms. Left open so the
+            # model stays viable, and named in the record so the background is still described.
+            pseudo_closed.append(rid)
             continue
         if _close_supply(reaction):
             closed.append(rid)
@@ -312,6 +372,7 @@ def close_boundary_supply(
         closed=tuple(closed),
         forced_supply=forced,
         non_exchange_closed=tuple(non_exchange_closed),
+        pseudo_supply_open=tuple(pseudo_closed),
     )
 
 
@@ -376,6 +437,7 @@ def isolate_boundary(
         opened=opened,
         forced_supply=closure.forced_supply,
         non_exchange_closed=closure.non_exchange_closed,
+        pseudo_supply_open=closure.pseudo_supply_open,
         unmatched=unmatched,
     )
 
@@ -400,9 +462,13 @@ def boundary_isolation_violations(
     per-site test is a way of *reaching* it, not a re-statement of it.
     """
     limits = {str(key): float(value) for key, value in declared.items()}
+    exchange_ids = {str(r.id) for r in getattr(model, "exchanges", []) or []}
     violations: dict[str, float] = {}
     for reaction in boundary_reactions(model):
         rid = str(reaction.id)
+        if rid not in exchange_ids and is_pseudo_supply(reaction):
+            # No declared atoms ⇒ no mass to account for (policy v2, see the module constant).
+            continue
         capacity = supply_capacity(reaction)
         allowed = limits.get(rid, 0.0)
         excess = capacity - allowed

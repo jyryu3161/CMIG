@@ -236,3 +236,273 @@ def minimal_medium_cardinality(
 def limiting_nutrients(result: MinimalMediumResult) -> list[str]:
     """Return leave-one-out verified essential nutrients, not all selected components."""
     return list(result.essential_components)
+
+
+# ── medium gap: what a defined medium has to add before a pool can grow ───────────────────────
+
+
+@dataclass(frozen=True)
+class MediumGapResult:
+    """Why a model cannot grow on a medium, and the smallest supplement that fixes it.
+
+    Round 10 follow-up. A defined diet curated for one model collection routinely fails to
+    support another: measured on AGORA2 strains held on CMIG's shipped AGORA gut overlay, the
+    community maximum growth is exactly 0 because the diet carries none of the lipids, quinones
+    and peptide nitrogen those reconstructions require. Before this, that surfaced only as a
+    ranking of zero-growth "producers".
+
+    ``supplement`` is a cardinality-minimal set of *additional* exchanges — the base medium is
+    granted for free, so the MILP minimises what the user has to add, not the medium's total
+    size. ``essential_supplement`` is the leave-one-out verified subset: removing one of those
+    from base+supplement puts growth back below the floor.
+    """
+
+    #: True when the model already reaches ``min_growth`` on the base medium alone.
+    base_is_sufficient: bool
+    base_growth: float
+    min_growth: float
+    supplement: list[str]
+    supplement_bounds: dict[str, float]
+    essential_supplement: list[str]
+    achieved_growth: float
+    #: Base-medium ids the model has no counterpart for; they cannot be the reason it grows.
+    unmatched_medium: list[str] = field(default_factory=list)
+    #: Exchanges whose SBML bounds force uptake, so the "base medium" was never the only supply.
+    forced_supply: dict[str, float] = field(default_factory=dict)
+    #: Non-exchange boundary suppliers of a no-composition (formula ``X``) metabolite. On
+    #: AGORA/AGORA2 these are the replication/translation pseudo-reactions; isolation policy v2
+    #: leaves them open because they add no mass. Listed so a reader can see what the "closed"
+    #: background still permits. See :func:`cmig.core.boundary.is_pseudo_supply`.
+    pseudo_supply_open: list[str] = field(default_factory=list)
+
+
+def medium_gap(
+    model: Any,
+    *,
+    min_growth: float,
+    solver: str = "gurobi",
+    medium: Any = None,
+    strict_medium: bool = False,
+    exact_medium: bool = True,
+    oxygen_mode: str = "anaerobic",
+    candidate_bound: float = 10.0,
+    max_supplement: int | None = None,
+) -> MediumGapResult:
+    """Cardinality-minimal supplement that lifts ``model`` to ``min_growth`` on ``medium``.
+
+    ``exact_medium`` decides what "the base medium" means, and the gap is only as meaningful as
+    that choice: applied exactly (every other boundary supplier closed) the answer is "what is
+    missing"; merged onto the model's own defaults it is "what is missing *given* those defaults",
+    which for a model that ships with every exchange open is usually nothing. Run it the way you
+    will run the analysis it is diagnosing. Each remaining uptake-capable exchange gets
+    an indicator variable bounded by ``candidate_bound``; the MILP minimises how many indicators
+    are on subject to the growth floor. ``oxygen_mode='anaerobic'`` keeps O2 out of the candidate
+    set, which is the right default for a gut community and stops the MILP from "fixing" an
+    anaerobe by making it breathe.
+
+    ``allow_pseudo_supply`` (default true, diagnostic-only) reopens boundary suppliers of a
+    no-composition metabolite before searching. Those are AGORA's biomass pseudo-reactions, which
+    ``--exact-medium`` closes; with them shut no nutrient supplement can ever restore growth, so
+    a diagnostic that left them closed would report "infeasible" and name nothing. They are always
+    listed in ``pseudo_supply_open`` whether or not they were reopened.
+
+    Raises :class:`MILPInfeasibleError` when no supplement of the allowed size works — that is a
+    statement about the model, not about the medium.
+    """
+    if oxygen_mode not in OXYGEN_MODES:
+        raise ValueError(f"oxygen_mode ∈ {OXYGEN_MODES} (받음: {oxygen_mode}) [§4.5]")
+    if not math.isfinite(min_growth) or min_growth <= 0.0:
+        raise ValueError("min_growth must be finite and > 0")
+    if not math.isfinite(candidate_bound) or candidate_bound <= 0.0:
+        raise ValueError("candidate_bound must be finite and > 0")
+    _load_cobra()
+    from cmig.core.solver import capability_matrix
+
+    cap = capability_matrix().get(solver)
+    if cap is None or not cap.supports("MILP"):
+        raise MILPUnavailableError(
+            f"solver '{solver}' MILP capability 부재/미가용 (§2 capability matrix)"
+        )
+    from cmig.core.boundary import isolate_boundary
+
+    with model as working:
+        working.solver = solver
+        unmatched: list[str] = []
+        if medium is not None:
+            from cmig.core.medium_spec import apply_medium_translated
+
+            translation = apply_medium_translated(
+                working, medium, strict=strict_medium, exact=exact_medium
+            )
+            unmatched = sorted(str(x) for x in translation.unmatched)
+        base_bounds = dict(working.medium)
+        if oxygen_mode == "anaerobic":
+            base_bounds.pop(O2_EXCHANGE, None)
+        isolation = isolate_boundary(working, base_bounds, strict_unmatched=False)
+        forced = dict(isolation.forced_supply)
+        pseudo_open = sorted(isolation.pseudo_supply_open)
+
+        base_growth = float(working.slim_optimize(error_value=float("nan")))
+        base_growth = 0.0 if not math.isfinite(base_growth) else base_growth
+        tolerance = 1e-7 * max(1.0, abs(min_growth))
+        if base_growth + tolerance >= min_growth:
+            return MediumGapResult(
+                base_is_sufficient=True, base_growth=base_growth, min_growth=min_growth,
+                supplement=[], supplement_bounds={}, essential_supplement=[],
+                achieved_growth=base_growth, unmatched_medium=unmatched, forced_supply=forced,
+                pseudo_supply_open=pseudo_open,
+            )
+
+        candidates = _gap_candidates(working, base_bounds, oxygen_mode=oxygen_mode)
+        if not candidates:
+            raise MILPInfeasibleError(
+                f"no uptake-capable exchange outside the base medium to supplement with "
+                f"(base growth {base_growth:.4g} < {min_growth})"
+            )
+        # The MILP replaces the objective with the indicator sum; every re-solve below has to
+        # measure growth again, so put the growth objective back before validating.
+        growth_objective = working.objective.expression
+        growth_direction = working.objective.direction
+        chosen = _solve_supplement_milp(
+            working, candidates,
+            min_growth=min_growth,
+            candidate_bound=candidate_bound,
+            max_supplement=max_supplement,
+        )
+        working.objective = working.problem.Objective(
+            growth_objective, direction=growth_direction
+        )
+        # Re-solve the exact medium that will be reported: a supplement that does not achieve the
+        # declared floor is never published as an answer.
+        supplement_bounds = {ex: candidate_bound for ex in chosen}
+
+        def _apply(bounds: dict[str, float]) -> None:
+            isolate_boundary(working, bounds, strict_unmatched=False)
+
+        _apply({**base_bounds, **supplement_bounds})
+        achieved = float(working.slim_optimize(error_value=float("nan")))
+        if not math.isfinite(achieved) or achieved + tolerance < min_growth:
+            raise MILPInfeasibleError(
+                f"medium-gap validation failed: achieved={achieved}, required={min_growth}"
+            )
+        essential: list[str] = []
+        for exchange_id in sorted(chosen):
+            trial = {**base_bounds, **supplement_bounds}
+            trial.pop(exchange_id, None)
+            _apply(trial)
+            value = float(working.slim_optimize(error_value=float("nan")))
+            if not math.isfinite(value) or value + tolerance < min_growth:
+                essential.append(exchange_id)
+
+    return MediumGapResult(
+        base_is_sufficient=False, base_growth=base_growth, min_growth=min_growth,
+        supplement=sorted(chosen), supplement_bounds=dict(sorted(supplement_bounds.items())),
+        essential_supplement=essential, achieved_growth=achieved,
+        unmatched_medium=unmatched, forced_supply=forced,
+        pseudo_supply_open=pseudo_open,
+    )
+
+
+def _gap_candidates(
+    model: Any, base_bounds: dict[str, float], *, oxygen_mode: str
+) -> list[str]:
+    """Boundary reactions outside the base medium that could supply mass, id-sorted.
+
+    The whole boundary, not just ``model.exchanges``: ``--exact-medium`` closes supplying sinks
+    and demands too, and a model that needs one of those back is otherwise reported as "no
+    supplement can fix this" when the real answer is a named sink. Reactions the objective
+    itself drains (``EX_biomass_e``) are excluded — granting uptake of the model's own product
+    would let the MILP satisfy any growth floor by feeding the model itself.
+    """
+    from cmig.core.boundary import SUPPLY_TOLERANCE, boundary_reactions, supply_capacity
+
+    # Only what the objective PRODUCES (biomass_e), never what it consumes: every biomass
+    # precursor is a metabolite of the objective reaction, so excluding all of them would remove
+    # the very nutrients a supplement has to propose.
+    objective_products = {
+        str(met.id)
+        for reaction in model.reactions
+        if reaction.objective_coefficient
+        for met, coefficient in reaction.metabolites.items()
+        if coefficient > 0
+    }
+    candidates = []
+    for reaction in boundary_reactions(model):
+        reaction_id = str(reaction.id)
+        if reaction_id in base_bounds:
+            continue
+        if oxygen_mode == "anaerobic" and reaction_id == O2_EXCHANGE:
+            continue
+        # A candidate is something the isolated model currently CANNOT get. Anything still able
+        # to supply (a pseudo-reaction policy v2 leaves open, a forced supply) is already
+        # available, and offering it would only clamp it to the candidate bound.
+        if supply_capacity(reaction) > SUPPLY_TOLERANCE:
+            continue
+        if any(str(met.id) in objective_products for met in reaction.metabolites):
+            continue
+        candidates.append(reaction_id)
+    return sorted(candidates)
+
+
+def _solve_supplement_milp(
+    model: Any,
+    candidates: list[str],
+    *,
+    min_growth: float,
+    candidate_bound: float,
+    max_supplement: int | None,
+) -> list[str]:
+    """min |{opened candidates}| s.t. growth >= min_growth. Returns the opened exchange ids."""
+    problem = model.problem
+    growth_floor = problem.Constraint(
+        model.objective.expression, lb=min_growth, name="cmig_medium_gap_growth_floor"
+    )
+    from cmig.core.boundary import supplies_at_negative_flux
+
+    indicators: dict[str, Any] = {}
+    extra: list[Any] = []
+    for exchange_id in candidates:
+        reaction = model.reactions.get_by_id(exchange_id)
+        indicator = problem.Variable(f"cmig_gap_{exchange_id}", type="binary")
+        indicators[exchange_id] = indicator
+        # Which sign supplies mass depends on how the boundary reaction is written. An exchange
+        # `met <=>` supplies at negative flux; AGORA's `--> dnarep_c` supplies at positive flux,
+        # and gating the wrong end leaves it clamped at 0 whatever the indicator says.
+        if supplies_at_negative_flux(reaction):
+            reaction.lower_bound = -candidate_bound
+            # v >= -candidate_bound * y  =>  v + candidate_bound * y >= 0
+            extra.append(problem.Constraint(
+                reaction.flux_expression + candidate_bound * indicator,
+                lb=0.0,
+                name=f"cmig_gap_gate_{exchange_id}",
+            ))
+        else:
+            reaction.upper_bound = candidate_bound
+            # v <= candidate_bound * y  =>  v - candidate_bound * y <= 0
+            extra.append(problem.Constraint(
+                reaction.flux_expression - candidate_bound * indicator,
+                ub=0.0,
+                name=f"cmig_gap_gate_{exchange_id}",
+            ))
+    model.add_cons_vars([growth_floor, *indicators.values(), *extra])
+    if max_supplement is not None:
+        model.add_cons_vars([problem.Constraint(
+            sum(indicators.values()), ub=float(max_supplement), name="cmig_gap_budget"
+        )])
+    model.solver.update()
+    model.objective = problem.Objective(sum(indicators.values()), direction="min")
+    # `Model.optimize` reads primals before checking status, so an infeasible MILP surfaces as a
+    # raw solver exception instead of a status (the same MICOM behaviour documented in
+    # `engine._delegate_cooperative_tradeoff`). Solve through the solver object and check first.
+    model.solver.optimize()
+    status = str(getattr(model.solver, "status", "no_solution"))
+    if status != "optimal":
+        raise MILPInfeasibleError(
+            f"medium-gap MILP did not solve (status={status}); the model may be unable to reach "
+            f"growth {min_growth} from any supplement"
+            + ("" if max_supplement is None else f" of at most {max_supplement} exchanges")
+        )
+    return sorted(
+        exchange_id for exchange_id, indicator in indicators.items()
+        if float(indicator.primal) > 0.5
+    )

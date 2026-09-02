@@ -66,6 +66,8 @@ def test_every_medium_bearing_command_accepts_exact_medium():
         "pair",
         "single",
         "minimal-medium",
+        # Round 10: diagnosing a medium is only meaningful against a declared application mode.
+        "medium-gap",
     }
     assert exact_commands == medium_commands
 

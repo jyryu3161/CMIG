@@ -5,6 +5,44 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Fixed — a medium that no model could grow on, reported as a producer ranking
+
+Follow-up to the AGORA2 fetcher: a 20-strain AGORA2 pool on CMIG's shipped AGORA gut overlay
+solved at **exactly zero growth for every strain**, and `cmig search` ranked them anyway. Two
+independent causes, both fixed.
+
+- **Boundary-isolation policy v1 closed AGORA's biomass pseudo-reactions.** AGORA/AGORA2 encode
+  replication and translation cost as boundary reactions that create a placeholder metabolite
+  from nothing (`--> dnarep_c`, `--> proteinsynth_c`, `--> rnatrans_c`) whose formula is the
+  explicit no-composition marker `X`. The supply detector counted them as mass sources, so
+  `--exact-medium` shut them and **every AGORA reconstruction became non-viable whatever the
+  diet contained**. Policy **`boundary_reactions_v2`** leaves a *non-exchange* supplier of a
+  formula-`X` metabolite open — it adds no atoms, so the mass-isolation invariant does not reach
+  it — and records each one in `BoundaryIsolation.pseudo_supply_open`. A *missing* formula is
+  deliberately still treated as mass (unknown is not zero), and an exchange is never reclassified
+  (`EX_biomass_e` also carries `X`; granting it uptake would feed a model its own product).
+  `boundary_isolation_policy` is a non-hashed provenance marker: results move, `run_hash` does
+  not, and the marker dates the manifest. Measured effect on the AGORA2 pool: 0/20 → 6/20 strains
+  grow on the diet alone.
+- **`cmig search` ranked communities that cannot grow.** With µ\* ≈ 0 the growth floor
+  `f · µ\*` is vacuous, so the target LP returns `optimal` with a positive flux at zero growth —
+  a "best butyrate producer" that does not grow. Such a candidate now gets status `non_viable`,
+  is quarantined into `search_unevaluated.csv`, and raises a run-level warning naming the medium
+  (not the target) as the cause.
+
+### Added — `cmig medium-gap`
+
+Answers "why can this pool not grow on this diet, and what do I add". Applies the medium exactly,
+then solves a cardinality-minimal MILP for the smallest set of *additional* boundary reactions
+reaching `--min-growth`, re-solves to verify it, and leave-one-out checks which are essential.
+`--oxygen-mode anaerobic` by default, so an anaerobe is never "fixed" by being made to breathe;
+the objective's own products are excluded from the candidate set. Writes `medium_gap.json`,
+`medium_gap.csv` and `medium_gap_supplemented.csv` — the base diet plus the supplement union,
+every added row marked `row_role: gap_supplement` so it is never mistaken for published diet.
+Supplements that are sinks or demands inside the model are reported separately, because a diet
+file cannot supply them. On the AGORA2 pool: 6 sufficient, 13 needing 1-6 additions (quinones,
+siroheme, a diacylglycerol, a few dipeptides), 1 with no supplement of any size.
+
 ### Added — AGORA2 model fetcher
 
 - **`cmig agora2-list` / `cmig agora2-fetch`** (`cmig/io/agora2.py`) — the first CMIG commands

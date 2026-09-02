@@ -94,6 +94,15 @@ def signed_target_flux(flux: float, direction: Direction) -> float:
     return -float(flux)
 
 
+#: μ_c* at or below this is numerically no growth (same floor as ``sign.NOISE_FLOOR``). A
+#: consortium at zero growth still has a feasible fermentation vertex, so the target LP returns
+#: `optimal` with a positive flux and a growth floor of ``growth_fraction * 0 == 0`` — a ranking
+#: built on that says "best producer" about a community that does not grow. Observed on a real
+#: AGORA2 pool held on a defined diet that lacked the strains' required lipids and quinones:
+#: every candidate reported non-zero butyrate at exactly zero growth.
+NON_VIABLE_GROWTH = 1e-6
+
+
 def _community_growth_star(community: Any) -> float:
     """μ_c* = 최대 community growth. target-max growth floor 의 기준값."""
     sol = community.cooperative_tradeoff(fraction=1.0, fluxes=False)
@@ -147,6 +156,19 @@ def target_max_solve(
                 return TargetMaxResult(
                     ex_id, spec.direction.value, 0.0, 0.0, "baseline_failed", diag
                 )
+        if mu_community <= NON_VIABLE_GROWTH:
+            from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
+
+            diag = diagnostic_from_parts([(
+                DiagnosticCode.INFEASIBLE,
+                f"community maximum growth is {mu_community:.3g} (<= {NON_VIABLE_GROWTH:g}): the "
+                "consortium cannot grow on this medium, so the growth floor is vacuous and any "
+                "target flux is a no-growth fermentation vertex, not production. Check the "
+                "medium with `cmig medium-gap`",
+            )])
+            return TargetMaxResult(
+                ex_id, spec.direction.value, 0.0, mu_community, "non_viable", diag
+            )
         if ex_id not in {r.id for r in m.reactions}:
             from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
 

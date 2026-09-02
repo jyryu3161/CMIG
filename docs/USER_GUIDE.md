@@ -206,6 +206,67 @@ CMIG asserts no licence for these reconstructions. Check the terms at
 Heinken *et al.*, *Nat Biotechnol* 2023 (`10.1038/s41587-022-01628-0`) for any
 result — the citation is in every manifest.
 
+### 0b. Diagnose a medium that cannot support the pool
+
+A diet curated for one model collection routinely fails on another. `medium-gap`
+answers the two questions a zero-growth run raises — *why*, and *what do I add*:
+
+```bash
+uv run cmig medium-gap --model-dir models/agora2_pool \
+  --medium medium_presets/gut_overlay_agora_western.csv --exact-medium \
+  --allow-unknown-medium --min-growth 0.01 --out runs/medium_gap
+```
+
+`--exact-medium` matters here as much as anywhere else, and for the same reason:
+merged onto a model that ships with every exchange open the diet is never the
+limiting thing and the gap comes back empty. Run `medium-gap` the way you will
+run the analysis it is diagnosing.
+
+It applies the medium in the mode you declared, then solves a cardinality-minimal
+MILP for the smallest set of *additional* boundary reactions that reaches
+`--min-growth`, verifies it by re-solving, and leave-one-out checks which of them
+are individually essential. `--oxygen-mode anaerobic` is the
+default so an anaerobe is never "fixed" by being made to breathe.
+
+Outputs: `medium_gap.json`, `medium_gap.csv`, and — when a base medium was given
+— `medium_gap_supplemented.csv`, which is the base diet plus the union of the
+supplements, with every added row marked `row_role: gap_supplement`. **Those rows
+are not part of the published diet**; keep the marker and say so in any write-up.
+
+Measured on a 20-strain AGORA2 pool against the shipped AGORA western overlay:
+6 strains grew on the diet alone, 13 needed 1-6 additions (quinones `mqn7`/`mqn8`/
+`q8`, siroheme `sheme`, the diacylglycerol `12dgr180`, a few dipeptides), and 1
+reported honestly that no supplement of any size reached the floor. A supplement
+that is a **sink or demand inside the model** rather than an exchange is reported
+separately: a diet file cannot supply it.
+
+#### Why an AGORA model used to report zero growth on any diet
+
+AGORA and AGORA2 encode replication and translation cost as boundary reactions
+that create a placeholder metabolite from nothing (`--> dnarep_c`,
+`--> proteinsynth_c`, `--> rnatrans_c`), whose formula is the explicit
+"no composition" marker `X`. Boundary-isolation policy v1 saw them as mass
+sources and closed them under `--exact-medium`, which made **every** AGORA
+reconstruction non-viable regardless of the diet — measured as community growth
+of exactly 0.
+
+Policy **v2** leaves a *non-exchange* boundary supplier of a formula-`X`
+metabolite open: it adds no atoms, so the mass-isolation invariant does not reach
+it. Every such reaction is listed in the isolation record's `pseudo_supply_open`,
+so a background that is closed "except for these" still says which these are. Two
+deliberate limits: a *missing* formula is not treated as massless (the model did
+not say there are no atoms, so it stays closed), and an **exchange** is never
+reclassified — `EX_biomass_e` also carries formula `X`, and granting it uptake
+would let a model be fed its own product. `boundary_isolation_policy` is a
+non-hashed provenance marker, so results move with it while `run_hash` does not;
+read it to date any manifest.
+
+A consortium whose maximum community growth is ~0 is now **quarantined** by
+`cmig search` instead of being ranked: the growth floor `f · µ* = 0` is vacuous,
+so any target flux is a no-growth fermentation vertex, not production. Those
+candidates appear in `search_unevaluated.csv` with status `non_viable` and a
+run-level warning naming the medium as the cause.
+
 ### 1. Review a user-provided model
 
 ```bash
