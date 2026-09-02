@@ -8,8 +8,8 @@ authors:
     email: "jyryu3161@kaist.ac.kr"
 repository-code: "https://github.com/jyryu3161/CMIG"
 url: "https://github.com/jyryu3161/CMIG"
-version: "0.2.0"
-date-released: "2026-08-25"
+version: "0.3.0"
+date-released: "2026-09-02"
 license: "Apache-2.0"
 keywords:
   - constraint-based modeling

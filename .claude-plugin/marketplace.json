@@ -5,7 +5,7 @@
     "url": "https://github.com/jyryu3161/CMIG"
   },
   "metadata": {
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "Agentic skill for community metabolic interaction analysis with CMIG (MICOM-backed community FBA, model-pool search, host-microbe coupling, dFBA, and gene-KO ranking)."
   },
   "plugins": [

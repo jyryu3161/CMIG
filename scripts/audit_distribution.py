@@ -44,7 +44,11 @@ SDIST_ALLOWED_ROOTS = frozenset(
         "PKG-INFO",
     }
 )
-SDIST_ALLOWED_DOCS = frozenset({"PUBLICATION_VALIDATION.md"})
+#: Kept in step with `pyproject.toml`'s sdist include list. USAGE/USER_GUIDE ship because
+#: the README delegates usage to them, and a shipped README must not link into nothing.
+SDIST_ALLOWED_DOCS = frozenset(
+    {"PUBLICATION_VALIDATION.md", "USAGE.md", "USER_GUIDE.md"}
+)
 DIST_INFO_RE = re.compile(r"^cmig-[^/]+\.dist-info$")
 
 

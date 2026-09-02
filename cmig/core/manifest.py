@@ -45,7 +45,8 @@ DEFAULT_FLOAT_DECIMALS = 6  # OD-12 안전 시작값 (§16 'spec 예: 6 decimal'
 # rule for an input that *determines* the answer.
 #
 # The fix has to be backward compatible, because the frozen 11-component fixture hash
-# (0721dcc0…307e46d) is a published contract. So: a value that is already exactly representable in
+# (0721dcc0…307e46d under core 0.2.0, 31d5647d…0e0bf63 under 0.3.0) is a published
+# contract. So: a value that is already exactly representable in
 # six decimals serializes exactly as it does today, and only a value the old rule would have
 # destroyed gets a lossless form. Every stored hash whose inputs were six-decimal-exact — which is
 # what the fixtures and the pre-rounded abundance vectors contain — is therefore preserved, while

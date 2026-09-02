@@ -909,7 +909,7 @@ def test_solve_manifest_records_the_medium_policy(tmp_path):
     assert manifest["provenance"]["medium_policy"] == MEDIUM_POLICY
     # and the frozen contract is untouched
     assert manifest["run_hash"] == (
-        "0721dcc0de9585f693b1bdcc32b075fd6d9fdefdf0d8eba1f9390aeee307e46d"
+        "31d5647dab537a807ea63a251520eb6f4cf00f7f8dc8426ee43534c380e0bf63"
     )
 
 

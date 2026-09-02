@@ -177,7 +177,7 @@ def test_gene_ko_summary_status_is_derived_not_a_literal():
 
 
 FROZEN_GOLDEN_SOLVE_RUN_HASH = (
-    "0721dcc0de9585f693b1bdcc32b075fd6d9fdefdf0d8eba1f9390aeee307e46d"
+    "31d5647dab537a807ea63a251520eb6f4cf00f7f8dc8426ee43534c380e0bf63"
 )
 FROZEN_KNOWN_SOLVE_RUN_HASH = (
     "cf3c73d97be5c3555d5d9e228c08e5088661cc6f1ba36fc7a333d2a9b2aaa633"
@@ -214,8 +214,8 @@ def test_frozen_solve_hash_does_not_move():
 # regression slipped through: the osqp golden hashes at 4 decimals while its components are
 # pre-rounded at 6, so the new canonicalization moved it from a422eb89… to 6a30a02a… in silence.
 FROZEN_GOLDEN_RUN_HASHES = {
-    "gurobi": "0721dcc0de9585f693b1bdcc32b075fd6d9fdefdf0d8eba1f9390aeee307e46d",
-    "osqp": "fbac47cfc2791c9c76dc47d9c54c09085d7d00d4ca01db16cefa4507acae2c7f",
+    "gurobi": "31d5647dab537a807ea63a251520eb6f4cf00f7f8dc8426ee43534c380e0bf63",
+    "osqp": "b8ca28e38624e96277d05e3df45819888569273e7f2214c71d03f27e770214ae",
 }
 
 

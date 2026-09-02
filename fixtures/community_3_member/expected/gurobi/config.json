@@ -6,7 +6,7 @@
       "Escherichia_coli_3": 0.333333
     },
     "bounds": {},
-    "cmig_core_version": "0.2.0",
+    "cmig_core_version": "0.3.0",
     "flux_normalization_method": "pfba",
     "medium_checksum": "micom_default_medium",
     "member_set": [
@@ -24,7 +24,7 @@
     "tradeoff_f": 0.5
   },
   "golden_decimals": 6,
-  "run_hash": "0721dcc0de9585f693b1bdcc32b075fd6d9fdefdf0d8eba1f9390aeee307e46d",
+  "run_hash": "31d5647dab537a807ea63a251520eb6f4cf00f7f8dc8426ee43534c380e0bf63",
   "tidy_hashes": {
     "edges": "c2f32999478b9e481a5277ec33224cc0d51fb562dbe612e6bed408f9007226b5",
     "nodes": "84be46a82ce9504ad9990894d583855db8da40ea7fa1ec605993775c35453dd0",

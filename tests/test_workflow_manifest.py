@@ -95,7 +95,7 @@ KNOWN_SOLVE_RUN_HASH = "cf3c73d97be5c3555d5d9e228c08e5088661cc6f1ba36fc7a333d2a9
 # independently by a round-2 evaluator before the workflow envelope existed, so it doubles as an
 # outside check that phase 4 did not disturb the frozen contract.
 GOLDEN_SOLVE_FIXTURE_RUN_HASH = (
-    "0721dcc0de9585f693b1bdcc32b075fd6d9fdefdf0d8eba1f9390aeee307e46d"
+    "31d5647dab537a807ea63a251520eb6f4cf00f7f8dc8426ee43534c380e0bf63"
 )
 
 

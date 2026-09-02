@@ -5,6 +5,21 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+(nothing yet)
+
+## [0.3.0] - 2026-09-02
+
+Round 10: a four-track code review of the 0.2.0 tree, an AGORA2 model fetcher, and the medium
+diagnosis that fetcher turned out to need.
+
+**Reproducibility migration.** `cmig_core_version` is component #9 of the frozen 11-component
+solve hash, so the version bump moves it by construction. The fixture goldens were re-captured
+under core 0.3.0 and every pinned hash migrated: gurobi `0721dcc0…` → `31d5647d…`, osqp
+`fbac47cf…` → `b8ca28e3…`. The workflow envelope is pinned to synthetic constants rather than the
+live version and did not move (18 kinds unchanged). A `run_hash` published under 0.2.0 is not
+comparable with one published under 0.3.0; the manifest records the core version for exactly this
+reason.
+
 ### Changed — documentation
 
 - **README rewritten as a front page.** It now states what CMIG does, the design
