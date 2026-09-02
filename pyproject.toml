@@ -88,6 +88,10 @@ include = [
     "/cmig",
     "/tests",
     "/scripts",
+    # The README delegates usage to these two, so an sdist without them ships a
+    # front page whose links go nowhere.
+    "/docs/USAGE.md",
+    "/docs/USER_GUIDE.md",
     "/docs/PUBLICATION_VALIDATION.md",
     "/pyproject.toml",
     "/uv.lock",

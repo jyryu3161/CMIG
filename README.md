@@ -1,130 +1,101 @@
 # CMIG — Community Metabolic Interaction GUI
 
-CMIG (**Community Metabolic Interaction GUI**) is a desktop and command-line
-platform for community metabolic interaction analysis. It uses user-provided
-GEM files and delegates community FBA to MICOM, while CMIG owns the product
-layer around model-pool search, host-microbe coupling, namespace checks,
-reproducible manifests, tidy outputs, diagnostics, and publication-oriented
-figures.
+[![CI](https://github.com/jyryu3161/CMIG/actions/workflows/ci.yml/badge.svg)](https://github.com/jyryu3161/CMIG/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](pyproject.toml)
 
-The workflow is intentionally local-file based: CMIG curates and redistributes
-no model catalogue. Prepare your microbial SBML/JSON/MAT models and load them
-through the GUI or CLI, or let `cmig agora2-fetch` pull user-selected AGORA2
-reconstructions from the publisher's server with a recorded provenance manifest.
+CMIG is a desktop and command-line platform for **metabolic interaction analysis
+in microbial communities**. Community flux balance analysis is delegated to
+[MICOM](https://github.com/micom-dev/micom); CMIG provides the layer around it
+that turns a solve into a result you can defend — model-pool search, host-microbe
+coupling, medium diagnostics, dynamic simulation, and a reproducibility record
+for every run.
 
-## Requirements
+---
 
-- Python 3.10+ and `uv`.
-- Gurobi 12.x with a valid license for the full solver workflow
-  (`osqp` is available for approximate QP-only community solves).
-- macOS, Linux, or Windows with Qt support for the GUI.
-- Optional: R 4.3.2 + the checked-in `renv.lock` for the R figure backend
-  (matplotlib is the fallback).
+## What CMIG does
 
-CMIG pins `micom==0.39.0`.
+| | |
+| --- | --- |
+| **Prepare models** | Import and audit user GEMs, check identifier namespaces, fetch selected AGORA2 reconstructions with recorded provenance, and diagnose a medium that cannot support the pool |
+| **Simulate communities** | MICOM community FBA on a defined medium, monoculture-vs-coculture comparison, per-strain growth, abundance sweeps |
+| **Design consortia** | Rank model-pool combinations by production of a target metabolite (exhaustive, random, or genetic-algorithm search), and rank gene or reaction knockouts |
+| **Couple host and microbes** | Map microbial secretion onto a host GEM through a reviewed interface map, and measure a knockout's effect on the host |
+| **Simulate dynamics** | Well-mixed dFBA for one model or a community, with a dt/Km sensitivity audit and a spatial medium preview |
+| **Report** | Tidy Parquet outputs, publication figures (R with a matplotlib fallback), and a submission preflight bundle |
+
+Run `cmig workflows --format text` for the full catalogue of all 34 analyses.
+
+## Design principles
+
+These are what the implementation is organised around, and each is enforced by a
+gate in continuous integration rather than by convention.
+
+- **Every run is reproducible.** Each analysis writes a manifest with a
+  `run_hash` over its declared inputs, checksums of models and media, solver and
+  dependency versions, and a digest of the artifacts it produced.
+  `cmig inspect-run` reads any run back; a frozen golden hash and a
+  serialization gate fail the build if that contract silently changes.
+- **A failed analysis is never dressed as a result.** Non-viable communities,
+  infeasible solves, unevaluable candidates and uninterpretable dynamics are
+  quarantined and named, not ranked or averaged. Exit code 3 means "artifacts
+  were written but the science did not succeed".
+- **The environment is explicit.** A medium either *merges* onto a model's
+  defaults or *replaces* them, the manifest records which, and the boundary
+  isolation that makes "replaces" true is measured rather than assumed.
+- **CMIG curates no data.** It reads the GEMs you give it. Its only network
+  commands fetch user-selected AGORA2 reconstructions on demand, from the
+  publisher's own server, and record exactly what was retrieved and how it was
+  transformed.
 
 ## Installation
+
+Requires Python 3.10+, [`uv`](https://docs.astral.sh/uv/), and a Gurobi 12
+license for the full solver workflow.
 
 ```bash
 git clone https://github.com/jyryu3161/CMIG.git
 cd CMIG
 uv sync --extra engine --extra gui --extra render --extra stats
-
-# check
-uv run cmig version
-uv run cmig solvers
+uv run cmig version && uv run cmig solvers
 ```
 
-For a headless (CLI-only) environment, drop `--extra gui --extra stats`.
-
-## GUI mode
+## Quick start
 
 ```bash
-uv run cmig gui          # or: uv run cmig-gui;  add --lang ko for Korean
-```
+uv run cmig gui                                    # graphical interface
 
-Primary tabs: **Models** (import/review a GEM), **Search** (best-producing
-model combinations, strain growth, ratio sweeps, gene-KO ranking), **Host**
-(host-microbe coupling), **Dynamics** (well-mixed dFBA, spatial preview),
-**Graph** (interaction network), **Profile** (open completed runs — charts,
-heatmap, comparison overlays). Less common tools (Community builder, Medium
-editor, Sweep, Sandbox, Compare) sit behind `Show Advanced Tools`.
-
-The GUI is a shell over the CLI: every run it launches is a normal CLI run
-with a manifest, inspectable afterwards from either side.
-
-## CLI mode
-
-Every analysis is a subcommand of `cmig`; discover them from the tool itself:
-
-```bash
-uv run cmig workflows --format json     # machine-readable map of all analyses
-uv run cmig <command> --help
-```
-
-Representative runs (all write a run directory with a reproducibility
-manifest; check any run with `uv run cmig inspect-run --run-dir <dir>`):
-
-```bash
-# Fetch a model pool from AGORA2 (the only command that reaches the network)
-uv run cmig agora2-list --genus Roseburia --limit 5
-uv run cmig agora2-fetch --genus Roseburia,Faecalibacterium --one-per-genus \
-  --format json --out models/agora2_pool
-
-# Solve a community from a taxonomy CSV on a defined medium
 uv run cmig solve --taxonomy tax.csv \
   --medium medium_presets/gut_overlay_agora_western.csv \
-  --assume-bigg-namespace --solver gurobi --out runs/solve
+  --exact-medium --assume-bigg-namespace --out runs/solve
 
-# Find the best 2-member producer combination for a target metabolite
-uv run cmig search --model-dir models/ --target but --out runs/search
-
-# Host-microbe coupling (BiGG-style host + microbial folder)
-uv run cmig host-microbe-bigg --host Recon3D.xml --model-dir models/ \
-  --target ac --microbial-biomass-gdw 57 --host-biomass-gdw 70 \
-  --biomass-basis-kind literature --biomass-basis-source "..." \
-  --assume-bigg-namespace --out runs/host
-
-# Well-mixed dFBA for one model
-uv run cmig dfba --model models/iML1515.xml.gz --t-end 8 \
-  --close-untracked-uptake --out runs/dfba
+uv run cmig inspect-run --run-dir runs/solve       # read the run back
 ```
 
-Two flags matter scientifically on every medium-bearing command:
-`--medium` **merges** onto the model's default environment, while
-`--exact-medium` makes the file the **whole** environment; the manifest
-records which mode produced the numbers.
+Full installation options, the GUI tour, worked command examples and the
+developer workflow are in **[docs/USAGE.md](docs/USAGE.md)**.
 
 ## Documentation
 
-- **Hands-on tutorial** (real commands + real outputs + GUI screenshots,
-  produced offscreen): `docs/cmig_hands_on_tutorial.html`
-- **Command reference tutorial** (all commands): `docs/cmig_workflow_tutorial.html`
-- **User guide** (agent/automation CLI contract, full workflow catalogue,
-  medium files, solver provenance, reading `edges.parquet`, scope and
-  limitations, repository layout): `docs/USER_GUIDE.md`
-- **Publication validation protocol**: `docs/PUBLICATION_VALIDATION.md`
+| Document | Contents |
+| --- | --- |
+| [docs/USAGE.md](docs/USAGE.md) | Installation, GUI, CLI, medium semantics, development |
+| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | Reference manual: full workflow catalogue, automation contract, output schemas, scope and limitations |
+| [docs/cmig_hands_on_tutorial.html](docs/cmig_hands_on_tutorial.html) | Tutorial with real commands, real outputs and GUI screenshots |
+| [docs/PUBLICATION_VALIDATION.md](docs/PUBLICATION_VALIDATION.md) | Validation protocol to re-run before publishing results |
+| [CHANGELOG.md](CHANGELOG.md) | Release history, including breaking contract changes |
 
-## Development
+## Citation
 
-```bash
-uv run ruff check cmig tests
-uv run mypy cmig
-uv run pytest -q
-uv run cmig golden verify            # frozen community_solve hash (needs solver)
-uv run cmig golden verify-envelope   # workflow-manifest serialization gate (no solver)
-```
-
-If `verify-envelope` reports drift, the serialization changed and every
-previously published workflow `run_hash` of the listed kinds now derives
-differently from identical inputs. Re-bless only when that is intended
-(`uv run python -m cmig.core.workflow_envelope_golden`) and record it as a
-contract change.
+If you use CMIG, please cite the software (see [CITATION.cff](CITATION.cff)) and
+the model and data resources your analysis used. MICOM, Gurobi and any model
+collection you load each carry their own citation requirements; the manifest of
+every run records the versions and sources involved.
 
 ## License
 
-CMIG-authored code and documentation are licensed under Apache-2.0; see
-`LICENSE` and `NOTICE`. External GEMs, Gurobi, Python/R dependencies, and
-generated research outputs keep their own terms. The validation models under
-`models/` are not Apache-licensed and are excluded from distributions; see
-`THIRD_PARTY_NOTICES.md` and `models/MODEL_SOURCES.json`.
+CMIG's own code and documentation are Apache-2.0 ([LICENSE](LICENSE),
+[NOTICE](NOTICE)). External GEMs, solvers, dependencies and generated research
+outputs keep their own terms — see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The validation models under
+`models/` are not Apache-licensed and are excluded from distributions.

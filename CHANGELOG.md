@@ -5,6 +5,22 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Changed — documentation
+
+- **README rewritten as a front page.** It now states what CMIG does, the design
+  principles each CI gate enforces, installation and a three-line quick start, and delegates
+  everything else. Usage moved to the new **`docs/USAGE.md`** (requirements, installation
+  variants, GUI tour, CLI examples, exit codes, medium semantics, reading a run back, a worked
+  butyrate-consortium example, and the developer workflow); `docs/USER_GUIDE.md` remains the
+  reference manual.
+- **Documented commands are now machine-verified.** `tests/test_docs_commands.py` parses every
+  `uv run cmig …` line out of the README and the usage guide and checks it against the real
+  parser, and checks that every relative link resolves. This caught a long-standing README
+  example: `host-microbe-bigg` was shown with a `--target` and an `--assume-bigg-namespace` the
+  command has never had, and without the mandatory provenanced biomass basis.
+- `docs/USAGE.md` and `docs/USER_GUIDE.md` are included in the sdist, so the shipped README's
+  links resolve.
+
 ### Fixed — a medium that no model could grow on, reported as a producer ranking
 
 Follow-up to the AGORA2 fetcher: a 20-strain AGORA2 pool on CMIG's shipped AGORA gut overlay
