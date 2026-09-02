@@ -198,6 +198,20 @@ def test_model_default_mode_leaves_native_bounds_untouched(patched, tmp_path):
     assert patched["A.xml"].reactions.EX_glc__D_e.lower_bound == pytest.approx(-5.0)
 
 
+def test_model_default_mode_ignores_the_user_medium_on_the_alone_leg(patched, tmp_path):
+    """`--single-medium model_default --medium X` used to apply X to the alone leg anyway,
+    contradicting both --help and the emitted warning ("keeps each member's native bounds")."""
+    medium = tmp_path / "medium.csv"
+    medium.write_text("exchange_id,uptake_limit\nEX_glc__D_m,3.0\n")
+    assert cli._cmd_strain_growth(
+        _args(tmp_path / "run", medium=str(medium), single_medium="model_default")
+    ) == 0
+    # native bound (5.0), not the medium's 3.0
+    assert patched["A.xml"].reactions.EX_glc__D_e.lower_bound == pytest.approx(-5.0)
+    summary = _summary(tmp_path / "run")
+    assert all(row["single_medium_applied"] is False for row in summary["members"])
+
+
 # ── P0-D: worst sub-status wins ──────────────────────────────────────────────────
 
 def test_failed_single_legs_cannot_report_a_healthy_run(patched, tmp_path, monkeypatch):
@@ -208,7 +222,9 @@ def test_failed_single_legs_cannot_report_a_healthy_run(patched, tmp_path, monke
             RuntimeError("single solve exploded")
         )
     )
-    assert cli._cmd_strain_growth(_args(tmp_path / "run")) == 0
+    # Every alone leg failed → the run is "failed" and, like every other failed analysis,
+    # exits 3 (the parser declares --allow-failed-run for exactly this case).
+    assert cli._cmd_strain_growth(_args(tmp_path / "run")) == cli.EXIT_ANALYSIS_FAILED
     summary = _summary(tmp_path / "run")
     # Community was optimal, but every alone leg failed → there is no comparison.
     assert summary["community_status"] == "optimal"

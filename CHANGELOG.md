@@ -5,7 +5,97 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
-(nothing yet)
+Round-10 codebase review (2026-09-02): four parallel read-only reviews (CLI, analysis core,
+engine/host/dynamics/provenance, io/service/render/GUI), every confirmed finding fixed and pinned
+by a regression test (`tests/test_round10_review_fixes.py` plus targeted additions).
+
+### Fixed (scientific results)
+
+- **Host coupling dropped stereo-descriptor metabolites.** `solve_bigg_host` published
+  `lumen_uptake`/`lumen_uptake_ranges` under the normalized spelling (`lac__d`) while
+  `host_impact` joined them against the raw MICOM ids (`lac__D`), so every `__D`/`__L`
+  metabolite (`lac__D`, `glc__D`, the L-amino acids) was reported as **unused secretion** with a
+  zero transfer in `microbe_to_host.csv`, `interaction_edges.csv`, `member_contribution.csv`
+  and `host-ko-impact --target`. Results are now keyed by the caller's raw id, and
+  `host_impact` also accepts either spelling.
+- **Community dFBA read each member's pool flux under a guessed key** (`EX_glc__D_m` ->
+  `glc__D`) and defaulted to 0.0 on a miss, so a member whose exchange is not literally
+  `EX_<met>_e` grew on a pool that never depleted while `member_exchange_fluxes` said 0 — with
+  `acceptance.interpretable: true`. The key is now derived from the member reaction MICOM
+  actually connected (`global_id`), and a missing report raises instead of defaulting.
+- **dFBA emergency clamp froze on solver noise**: a depleted exchange at bound `-0.0` reading
+  `-1e-12` counted as required mass (`0/1e-15 = 0` scale), zeroing growth for the rest of the
+  run. Only fluxes below the tolerance count (single-model and community integrators).
+- **Multi-target Pareto search silently dropped a consortium** whose epsilon sweep solved at no
+  level without raising: it appeared in neither the ranking nor `unevaluated` while
+  `n_candidates_evaluated` counted it. It is now a disclosed `failed` evaluation.
+- **`single_model.solve_single_model`**: pFBA raised `cobra.exceptions.Infeasible` where FBA
+  returned a status, and a non-optimal FBA recomputed a fabricated objective from stale primals
+  (10.0 for a biomass lower bound of 10). Both now return `objective: nan` with the status and a
+  diagnostic.
+- **`publication-benchmark`** judged its dFBA leg by completion and residuals only, so a bundle
+  could be `publication_ready: true` beside a `dfba_sensitivity.json` saying
+  `interpretable: false`. The verdict is now the writer's `sensitivity_acceptance`
+  (`checks.dfba_interpretable`); the protocol document says how to track every consumed substrate.
+- `core.sweep.run_sweep` recorded NaN/inf metrics as `ok`; they are now `failed` rows with a
+  diagnostic (the GUI sweep and `sweep-fixture` both go through it).
+- `host-ko-impact`: a raised arm carried `community_growth: 0.0` beside NaN host values; it is
+  NaN now.
+- `strain-growth --single-medium model_default --medium X` applied X to the alone leg anyway,
+  contradicting `--help` and its own warning; native bounds are kept.
+- `dfba`: a tracked substrate with a positive initial amount whose exchange cannot import
+  (`vmax == 0`) is now named in the warnings instead of silently staying constant.
+- `core.fva`: licence/time-limit/API errors were re-raised as `FVAInfeasibleError`; only
+  `OptimizationError` is an infeasibility, everything else is `FVAUnavailableError`.
+
+### Fixed (exit codes, provenance, outputs)
+
+- `strain-growth` and `gene-ko-search` declared `--allow-failed-run` but always exited 0; a
+  failed run (all alone legs failed / every knockout arm failed) now exits 3 like every other
+  analysis, and `gene-ko-search` writes the same `failed` tier to its manifest as to its summary.
+- `dfba` manifest `summary.n_steps` was always 0 (`DfbaResult` has `timecourse`, not `rows`).
+- `render-figure --panel` ignored `--width/--height/--dpi` unless `--title` was also given.
+- `search-advanced-fixture` recorded `strategy: mro_mip_greedy` while ranking exhaustively; the
+  summary now names the strategy that ran.
+- Every taxonomy CSV read goes through the guarded reader (an empty/truncated CSV is exit 2,
+  not a pandas traceback) and CSV-relative `file` paths resolve against the CSV in
+  `search`, `gene-ko-search`, `strain-growth`, `abundance-impact` and the three host commands,
+  as `solve`/`pair`/`sweep` already did.
+- `pair`, `strain-growth` and the namespace mapper loaded members with `read_sbml_model`;
+  `.json`/`.mat` pools (admitted by `--model-dir`) now load through the format-detecting loader.
+- Atomic publication: `host_exchange_map.csv`, `host_interface_map.json`,
+  `host_map_summary.json`, multi-target `search_summary.json`, `model_quality.{json,csv}`,
+  `dfba_sensitivity.{json,csv}`, `publication_benchmark.json`, interaction CSV/JSON artifacts,
+  fixture goldens and the workflow manifest all use `cmig.io.atomic` (bytes unchanged; envelope
+  gate green). `dfba` maps an output `OSError` to exit 1 like `dfba-community`.
+- `cmig.io.atomic` publishes files with the process umask (0644 under 022) instead of
+  `mkstemp`'s 0600, and keeps an existing file's mode on re-publication; group members could
+  read `manifest.json` but not the parquet/figures beside it.
+- `write_solve_output` stages beside the *resolved* run directory, so a symlinked `--out` onto
+  another filesystem no longer fails with EXDEV after the solve.
+- matplotlib fallback in `render-figure` goes through `figure_style` (hashsalt, no date), so
+  R-less renders are byte-reproducible as the provenance sidecar claims; Rscript invocations have
+  a 600 s timeout mapped to `RenderError`.
+- GUI: `JobRunner` treats `SystemExit` from an in-process CLI as a failed job instead of leaving
+  it `RUNNING` forever; double-clicking a Search/Sweep/KO run in the Project Explorer no longer
+  wipes the community run on screen (status names the kind and `inspect-run`); the Community
+  Builder refuses members that match no model file; the Profile tab shows the `--targets`
+  readout; figure panels prefer the SVG and fall back to the TIFF.
+- `model_import`: fallback model id for `foo.xml.gz` is `foo`, not `foo.xml`.
+
+### Changed
+
+- `edges.parquet` docs: `weight_lo`/`weight_hi` are reserved (null in every published run;
+  `--fva` fills `profile.fva_lo/fva_hi` only).
+- Parser: `--allow-unknown-medium` and the namespace gate group are added through the shared
+  helpers everywhere (help text unified).
+- Removed dead code: `sign.cross_feeding_weight` (semantics rejected by
+  `allocate_cross_feeding`), `manifest.sha256_checksum`, GUI `_float_value`,
+  `ModelManagerPanel.as_summary_dict`, the unused `welcome` i18n key, `host._interface_of`;
+  `DEFAULT_BIGG_COUPLING_EXCLUDE` has one definition; `NOISE_FLOOR` is imported rather than
+  restated as `1e-6` in metrics/delta/sandbox/single_model.
+- `solve_generic_host` labels its attribution `single_fba_point` (it is one LP vertex, not
+  objective-fixed FVA).
 
 ## [0.2.0] - 2026-08-25
 

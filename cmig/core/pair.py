@@ -51,8 +51,6 @@ def analyze_pair(
     co: micom community cooperative_tradeoff → member_growth.
     mono: 각 멤버 GEM 단독 FBA(single_model). 상호작용=metrics.interaction_type.
     """
-    import cobra
-
     from cmig.core.engine import MicomEngine
     from cmig.core.medium_spec import (
         MediumSpec,
@@ -62,6 +60,7 @@ def analyze_pair(
         exchange_metabolite,
     )
     from cmig.core.single_model import solve_single_model
+    from cmig.io.model_import import load_cobra_model
 
     ids = [str(x) for x in taxonomy["id"]]
     if len(ids) != 2:
@@ -107,7 +106,9 @@ def analyze_pair(
     mono_growth: dict[str, float] = {}
     unavailable_per_member: dict[str, list[str]] = {}
     for m, f in zip(ids, list(taxonomy["file"]), strict=True):
-        model = cobra.io.read_sbml_model(str(f))
+        # Format-detecting loader: the pool admits .json/.mat as well as SBML, and the
+        # co-culture leg (MICOM) already accepted them.
+        model = load_cobra_model(str(f))
         translation = apply_medium_translated(model, community_offer, strict=False, exact=True)
         unavailable = sorted(exchange_metabolite(ex) for ex in translation.unmatched)
         unavailable_per_member[m] = unavailable

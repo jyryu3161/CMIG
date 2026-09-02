@@ -77,13 +77,21 @@ def flux_variability(
     rxn_list = reactions if reactions is not None else [r.id for r in model.reactions]
     # cobra ≥0.29: loopless 는 None|'fastSNP'|'cycleFreeFlux' (bool deprecated).
     loopless_arg = "cycleFreeFlux" if loopless else None
+    from cobra.exceptions import OptimizationError
+
     try:
         df = flux_variability_analysis(
             model, reaction_list=rxn_list,
             fraction_of_optimum=fraction_of_optimum, loopless=loopless_arg,
         )
-    except Exception as e:  # cobra Infeasible 등 → 명시적 에러 (silent 금지)
+    except OptimizationError as e:  # cobra Infeasible 등 → 명시적 에러 (silent 금지)
         raise FVAInfeasibleError(f"FVA infeasible (fraction={fraction_of_optimum}): {e}") from e
+    except Exception as e:
+        # A licence, time-limit or API error is not an infeasibility; reporting it as one
+        # turned an environment problem into a scientific claim about the model.
+        raise FVAUnavailableError(
+            f"FVA could not run (fraction={fraction_of_optimum}): {type(e).__name__}: {e}"
+        ) from e
 
     out: dict[str, FVARange] = {}
     for rid, row in df.iterrows():
@@ -136,14 +144,21 @@ def community_fva(
         reactions if reactions is not None
         else [r.id for r in community.reactions if r.id.startswith("EX_") and r.id.endswith("_m")]
     )
+    from cobra.exceptions import OptimizationError
+
     try:
         df = flux_variability_analysis(
             community, reaction_list=rxn_list,
             fraction_of_optimum=fraction_of_optimum, processes=1,   # F2: 단일 프로세스 고정
         )
-    except Exception as e:  # cobra Infeasible 등 → 명시적 에러 (silent 금지)
+    except OptimizationError as e:  # cobra Infeasible 등 → 명시적 에러 (silent 금지)
         raise FVAInfeasibleError(
             f"community FVA infeasible (fraction={fraction_of_optimum}): {e}"
+        ) from e
+    except Exception as e:
+        raise FVAUnavailableError(
+            f"community FVA could not run (fraction={fraction_of_optimum}): "
+            f"{type(e).__name__}: {e}"
         ) from e
 
     out: dict[str, FVARange] = {}

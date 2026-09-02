@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
-from cmig.core.sign import Label, classify
+from cmig.core.sign import NOISE_FLOOR, Label, classify
 
 
 class SingleModelUnavailableError(RuntimeError):
@@ -83,11 +83,31 @@ def solve_single_model(
             return solve_single_model(model, method=method, solver=solver)
     _require_lp(solver)
     set_model_solver(model, solver)
-    if method == "pFBA":
-        from cobra.flux_analysis import pfba
-        sol = pfba(model)            # pFBA objective_value = 총 flux(절약), growth 아님
-    else:
-        sol = model.optimize()
+    from cobra.exceptions import OptimizationError
+
+    try:
+        if method == "pFBA":
+            from cobra.flux_analysis import pfba
+            sol = pfba(model)            # pFBA objective_value = 총 flux(절약), growth 아님
+        else:
+            sol = model.optimize()
+    except OptimizationError as error:
+        # pFBA raises on an infeasible model where plain FBA returns a non-optimal status;
+        # both are the same scientific outcome and must reach the caller the same way
+        # (engine_service.solve_single catches only SingleModelUnavailableError).
+        status = "infeasible" if "infeasible" in str(error).lower() else "failed"
+        return SingleModelResult(
+            objective=float("nan"), status=status, method=method, solver=solver,
+            diagnostic=f"{type(error).__name__}: {error}",
+        )
+    status = str(sol.status)
+    if status != "optimal":
+        # cobra reports stale primals for a non-optimal solve; recomputing growth from them
+        # published a fabricated objective (e.g. 10.0 for a biomass lower bound of 10).
+        return SingleModelResult(
+            objective=float("nan"), status=status, method=method, solver=solver,
+            diagnostic=f"{method} status={status}",
+        )
     fluxes = {str(rid): float(v) for rid, v in sol.fluxes.items()}
     # objective = **growth rate**(원 objective 식)로 일관 — FBA/pFBA 모두 동일 의미.
     # pFBA 는 sol.objective_value 가 총 flux 이므로 원 목적계수로 재계산(biomass flux).
@@ -95,7 +115,7 @@ def solve_single_model(
     coeffs = linear_reaction_coefficients(model)
     growth = sum(float(c) * fluxes.get(rxn.id, 0.0) for rxn, c in coeffs.items())
     return SingleModelResult(
-        objective=growth, status=str(sol.status), method=method, solver=solver, fluxes=fluxes,
+        objective=growth, status=status, method=method, solver=solver, fluxes=fluxes,
     )
 
 
@@ -169,7 +189,7 @@ def exchange_summary(
 
 
 def growth_feasible(
-    model: Any, *, threshold: float = 1e-6, solver: str = "gurobi", medium: Any = None,
+    model: Any, *, threshold: float = NOISE_FLOOR, solver: str = "gurobi", medium: Any = None,
     strict_medium: bool = True, exact_medium: bool = False,
 ) -> bool:
     """Growth feasibility under the same translated medium contract as every other entry point."""

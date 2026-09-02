@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -12,7 +13,7 @@ import pyarrow as pa
 
 from cmig.core.dfba import DfbaSensitivityResult
 from cmig.core.dfba_community import CommunityDfbaResult
-from cmig.io.atomic import atomic_write_parquet
+from cmig.io.atomic import atomic_write_parquet, atomic_write_text
 
 COMMUNITY_DFBA_TIMECOURSE_KIND = "community_dfba_timecourse"
 COMMUNITY_DFBA_TIMECOURSE_SCHEMA_VERSION = "1.0"
@@ -180,25 +181,27 @@ def write_dfba_sensitivity(
         "warnings": sorted({w for row in result.rows for w in row.warnings}),
         "rows": rows,
     }
-    (out / "dfba_sensitivity.json").write_text(
-        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    atomic_write_text(
+        out / "dfba_sensitivity.json",
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n",
     )
-    with open(out / "dfba_sensitivity.csv", "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=DFBA_SENSITIVITY_COLUMNS)
-        writer.writeheader()
-        for row in rows:
-            record = dict(row)
-            record["final_concentrations"] = json.dumps(
-                record["final_concentrations"], sort_keys=True, separators=(",", ":")
-            )
-            record["depletion_times"] = json.dumps(
-                record["depletion_times"], sort_keys=True, separators=(",", ":")
-            )
-            record["untracked_uptake"] = json.dumps(
-                record.get("untracked_uptake", {}), sort_keys=True, separators=(",", ":")
-            )
-            record["warnings"] = json.dumps(
-                record.get("warnings", []), sort_keys=True, separators=(",", ":")
-            )
-            writer.writerow(record)
+    csv_buffer = io.StringIO()
+    writer = csv.DictWriter(csv_buffer, fieldnames=DFBA_SENSITIVITY_COLUMNS, lineterminator="\n")
+    writer.writeheader()
+    for row in rows:
+        record = dict(row)
+        record["final_concentrations"] = json.dumps(
+            record["final_concentrations"], sort_keys=True, separators=(",", ":")
+        )
+        record["depletion_times"] = json.dumps(
+            record["depletion_times"], sort_keys=True, separators=(",", ":")
+        )
+        record["untracked_uptake"] = json.dumps(
+            record.get("untracked_uptake", {}), sort_keys=True, separators=(",", ":")
+        )
+        record["warnings"] = json.dumps(
+            record.get("warnings", []), sort_keys=True, separators=(",", ":")
+        )
+        writer.writerow(record)
+    atomic_write_text(out / "dfba_sensitivity.csv", csv_buffer.getvalue())
     return ["dfba_sensitivity.json", "dfba_sensitivity.csv"]

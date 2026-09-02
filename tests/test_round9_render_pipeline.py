@@ -52,7 +52,15 @@ def _assert_previous_set(previous: dict[Path, bytes]) -> None:
     }
 
 
-def _successful_fake_r(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def _successful_fake_r(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    if "--out" not in cmd:
+        # `cmig.render.client.subprocess` is the stdlib module, so this fake also sees the
+        # `uname -p` that `platform.processor()` runs from write_render_provenance on a cold
+        # platform cache; only the Rscript invocation is faked.
+        return _REAL_SUBPROCESS_RUN(cmd, **kwargs)
     output = Path(cmd[cmd.index("--out") + 1])
     output.write_bytes(b"<svg>complete staged figure</svg>\n")
     stdout = "CMIG_R_VERSION\tR 4.3.2\nCMIG_R_PACKAGE\tggplot2\t3.5.2\n"
@@ -66,8 +74,10 @@ def test_r_writer_failure_preserves_previous_artifact_set(
     previous = _write_previous_set(output)
 
     def fail_after_partial_write(
-        cmd: list[str], **_kwargs: Any
+        cmd: list[str], **kwargs: Any
     ) -> subprocess.CompletedProcess[str]:
+        if "--out" not in cmd:
+            return _REAL_SUBPROCESS_RUN(cmd, **kwargs)
         staged = Path(cmd[cmd.index("--out") + 1])
         staged.write_bytes(b"partial R output")
         return subprocess.CompletedProcess(cmd, 1, "", "injected R writer failure")
@@ -257,7 +267,7 @@ def test_composer_publishes_figure_and_sidecars_through_atomic_helper(
         calls.append(Path(path))
         return real_atomic_write_path(path, writer)
 
-    monkeypatch.setattr("cmig.render.composer.subprocess.run", _successful_fake_r)
+    monkeypatch.setattr("cmig.render.client.subprocess.run", _successful_fake_r)
     monkeypatch.setattr(publication, "atomic_write_path", recording_atomic_write_path)
 
     FigureComposer(rscript="Rscript").render_panel(

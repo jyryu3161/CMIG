@@ -66,17 +66,3 @@ def convert(raw_flux: float, scope: Scope, eps: float = NOISE_FLOOR) -> SignedFl
 def classify(raw_flux: float, eps: float = NOISE_FLOOR) -> Label | None:
     """raw_flux → Label|None (분류 단일 진입점). metrics 등이 inline 재구현 대신 경유 (TC-16)."""
     return convert(raw_flux, Scope.ENVIRONMENT, eps).label
-
-
-def cross_feeding_weight(
-    secretor_raw: float, consumer_raw: float, eps: float = NOISE_FLOOR
-) -> float | None:
-    """cross-feeding m→m′ edge weight = min(|분비량|, |흡수량|).
-
-    Design Ref: §4.3 — m 분비(raw>0) ∧ m′ 흡수(raw<0) 일 때만 유효.
-    판정은 raw_flux 부호 기준(ui_flux 는 항상 ≥0 이므로 부호 판정 불가).
-    조건 미충족이면 None (cross-feeding edge 없음).
-    """
-    if not (secretor_raw > eps and consumer_raw < -eps):
-        return None
-    return min(secretor_raw, -consumer_raw)

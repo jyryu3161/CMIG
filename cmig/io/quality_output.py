@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 from pathlib import Path
 from typing import Any
 
 from cmig.core.model_quality import ModelQualityReport
+from cmig.io.atomic import atomic_write_text
 
 MODEL_QUALITY_SUMMARY_COLUMNS = (
     "model_id",
@@ -55,12 +57,16 @@ def write_model_quality_reports(
         "n_models": len(reports),
         "reports": [report.as_dict() for report in reports],
     }
-    (out / "model_quality.json").write_text(
-        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    atomic_write_text(
+        out / "model_quality.json",
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n",
     )
-    with open(out / "model_quality.csv", "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=MODEL_QUALITY_SUMMARY_COLUMNS)
-        writer.writeheader()
-        for report in reports:
-            writer.writerow(_summary_row(report))
+    csv_buffer = io.StringIO()
+    writer = csv.DictWriter(
+        csv_buffer, fieldnames=MODEL_QUALITY_SUMMARY_COLUMNS, lineterminator="\n"
+    )
+    writer.writeheader()
+    for report in reports:
+        writer.writerow(_summary_row(report))
+    atomic_write_text(out / "model_quality.csv", csv_buffer.getvalue())
     return ["model_quality.json", "model_quality.csv"]

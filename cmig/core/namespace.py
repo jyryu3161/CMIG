@@ -253,16 +253,13 @@ def apply_namespace_decisions_to_model(
 
 
 def _load_cobra_model(path: Path) -> Any:
-    import cobra.io
+    """Single format-detecting loader (delegates to cmig.io.model_import)."""
+    from cmig.io.model_import import ModelImportError, load_cobra_model
 
-    name = path.name.lower()
-    if name.endswith((".xml", ".sbml", ".xml.gz", ".sbml.gz")):
-        return cobra.io.read_sbml_model(str(path))
-    if name.endswith(".json"):
-        return cobra.io.load_json_model(str(path))
-    if name.endswith(".mat"):
-        return cobra.io.load_matlab_model(str(path))
-    raise ValueError(f"namespace mapping 미지원 모델 형식: {path}")
+    try:
+        return load_cobra_model(path)
+    except ModelImportError as error:
+        raise ValueError(f"namespace mapping 미지원 모델 형식: {path}") from error
 
 
 @contextmanager

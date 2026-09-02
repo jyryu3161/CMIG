@@ -25,8 +25,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,6 +34,7 @@ from cmig.core.boundary import BOUNDARY_ISOLATION_POLICY
 from cmig.core.host_coupling import HOST_ISOLATION_POLICY
 from cmig.core.manifest import DEFAULT_FLOAT_DECIMALS, canonicalize_floats
 from cmig.core.medium_spec import MEDIUM_APPLICATION_MERGE, MEDIUM_POLICY
+from cmig.io.atomic import atomic_write_text
 
 #: **Non-hashed** provenance markers, stamped into every manifest by the writer.
 #:
@@ -460,27 +459,14 @@ def write_workflow_manifest(
         warnings=warnings, summary=summary,
         result_digest=artifact_result_digest(out, kind, artifacts),
     )
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(
         manifest.to_payload(), indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False
     ) + "\n"
     # R5-P3 (opus F4 / codex F8): `write_text` truncates the destination before it writes, so a
     # failure part-way through replaced the previous run's manifest with unparseable JSON — the
-    # run's only reproducibility record, destroyed by a re-run that itself failed. Stage into the
-    # same directory (so os.replace stays on one filesystem and is therefore atomic) and swap.
-    # This is the pattern io.solve_output already uses for the solve path.
-    fd, tmp_name = tempfile.mkstemp(dir=out, prefix=".manifest.", suffix=".tmp")
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, out / "manifest.json")
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+    # run's only reproducibility record, destroyed by a re-run that itself failed. Stage into
+    # the same directory and swap (cmig.io.atomic is the single implementation of that).
+    atomic_write_text(out / "manifest.json", payload)
     return manifest.run_hash
 
 

@@ -1444,14 +1444,21 @@ class DfbaSpatialView(QWidget):
 
     def _load_figure(self, run_dir: Any, artifact: str) -> None:
         path = run_dir / artifact
-        tiff = path.with_suffix(".tiff")
-        if tiff.exists():
-            path = tiff
-        if not path.exists():
+        # Prefer the vector artifact: it always decodes (QtSvg) and is a fraction of the
+        # 600-dpi TIFF's pixmap. The TIFF is the fallback, not the other way round — a Qt
+        # build without the TIFF image plugin used to show "Could not load figure" while a
+        # perfectly good SVG sat beside it.
+        candidates = [candidate for candidate in (path, path.with_suffix(".tiff"))
+                      if candidate.exists()]
+        if not candidates:
             return
-        pixmap = _load_pixmap(path)
+        pixmap = QPixmap()
+        for candidate in candidates:
+            pixmap = _load_pixmap(candidate)
+            if not pixmap.isNull():
+                break
         if pixmap.isNull():
-            self.figure_label.setText(f"Could not load figure: {path.name}")
+            self.figure_label.setText(f"Could not load figure: {candidates[0].name}")
             return
         target_width = max(600, self.figure_label.width() - 20)
         target_height = max(280, self.figure_label.height() - 20)

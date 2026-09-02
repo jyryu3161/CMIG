@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
 
-from cmig.core.engine import FLUX_REPORT_LABEL, MicomEngine, SolveResult
+from cmig.core.engine import FLUX_REPORT_LABEL, MicomEngine, SolveResult, _met_from_exchange
 
 COMMUNITY_DFBA_LIMITATIONS = (
     "death and washout are out of scope; member biomass changes only through solved growth",
@@ -312,11 +312,33 @@ def _finish_result(
     )
 
 
+def _member_flux_keys(
+    tracked_members: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, str]]:
+    """tracked env exchange -> member -> key under which the engine reports that member's flux.
+
+    ``SolveResult.member_exchange`` is keyed by ``_met_from_exchange(<member reaction id>, "_e")``
+    (engine.py), i.e. by the *member's* exchange id, not by the environmental exchange id. The
+    first cut guessed the key from the environmental id (``EX_glc__D_m`` -> ``glc__D``) and
+    defaulted to 0.0 when the guess missed, so any member whose exchange is not literally
+    ``EX_<met>_e`` grew on a pool that never depleted while ``member_exchange_fluxes`` said 0.
+    """
+    return {
+        exchange_id: {
+            # MICOM suffixes every member reaction with `__<taxon>`; `global_id` is the id the
+            # flux table (and therefore the engine's member_exchange) is keyed by.
+            member: _met_from_exchange(str(getattr(reaction, "global_id", reaction.id)), "_e")
+            for member, reaction in by_member.items()
+        }
+        for exchange_id, by_member in tracked_members.items()
+    }
+
+
 def _solve_member_state(
     solution: SolveResult,
     members: list[str],
     tracked_members: dict[str, dict[str, Any]],
-    tracked_metabolites: dict[str, str],
+    tracked_metabolites: dict[str, dict[str, str]],
 ) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
     growth: dict[str, float] = {}
     member_fluxes: dict[str, dict[str, float]] = {member: {} for member in members}
@@ -331,9 +353,18 @@ def _solve_member_state(
         growth[member] = max(0.0, float(value))
         reported = solution.member_exchange.get(member, {})
         for exchange_id, by_member in tracked_members.items():
-            value = reported.get(tracked_metabolites[exchange_id], 0.0)
             if member not in by_member:
-                value = 0.0
+                # This member has no reaction on the tracked pool metabolite: its flux is 0
+                # by construction, not by a missing report.
+                member_fluxes[member][exchange_id] = 0.0
+                continue
+            key = tracked_metabolites[exchange_id][member]
+            if key not in reported:
+                raise ValueError(
+                    f"MICOM solution did not report {exchange_id} for member {member} "
+                    f"(expected member exchange key {key!r})"
+                )
+            value = reported[key]
             if not math.isfinite(float(value)):
                 raise ValueError(
                     f"MICOM solution omitted finite {exchange_id} flux for member {member}"
@@ -376,9 +407,7 @@ def run_community_dfba(
     tracked = list(config.initial_concentrations)
     _validate_vmax_surface(config, members, tracked)
     tracked_members = _member_exchange_map(community, tracked, members)
-    tracked_metabolites = {
-        exchange_id: _exchange_metabolite(exchange_id) for exchange_id in tracked
-    }
+    tracked_metabolites = _member_flux_keys(tracked_members)
     initial_medium = {
         str(exchange): float(value) for exchange, value in community.medium.items()
     }
@@ -575,6 +604,12 @@ def run_community_dfba(
             step_dt = min(config.min_dt, config.t_end - t)
             fractions = []
             for exchange_id, rate in concentration_rates.items():
+                # Only genuine consumption limits the step. A depleted pool sits at a bound of
+                # -0.0 where a basic variable can legally read -1e-12 (solver feasibility
+                # tolerance); counting that as "required" mass gave 0/1e-15 = 0 and froze the
+                # whole community on numerical noise.
+                if rate >= -_FLUX_TOLERANCE:
+                    continue
                 required = -rate * step_dt
                 if required > 0.0:
                     fractions.append(

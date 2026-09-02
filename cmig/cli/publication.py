@@ -118,6 +118,7 @@ def cmd_publication_benchmark(args: argparse.Namespace) -> int:
         _dfba_initial_concentrations,
         _load_host_interface_map,
         _parse_csv_floats,
+        _read_taxonomy_csv,
         _require_model_exchanges,
     )
 
@@ -126,7 +127,7 @@ def cmd_publication_benchmark(args: argparse.Namespace) -> int:
             taxonomy_path = Path(args.taxonomy)
             if not taxonomy_path.exists():
                 raise ValueError(f"taxonomy file not found: {taxonomy_path}")
-            taxonomy = pd.read_csv(taxonomy_path)
+            taxonomy = _read_taxonomy_csv(pd, taxonomy_path)
             base_dir = taxonomy_path.parent
         else:
             taxonomy = taxonomy_from_model_dir(args.model_dir, recursive=args.recursive)

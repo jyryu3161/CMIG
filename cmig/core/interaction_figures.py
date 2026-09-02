@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import math
 from collections import defaultdict
@@ -206,8 +207,9 @@ def write_interaction_artifacts(
     _write_csv(out / "interaction_edges.csv", edge_rows, INTERACTION_EDGE_COLUMNS)
     _write_csv(out / "interaction_matrix.csv", matrix, INTERACTION_MATRIX_COLUMNS)
     _write_csv(out / "member_contribution.csv", contributions, MEMBER_CONTRIBUTION_COLUMNS)
-    (out / "figure_manifest.json").write_text(
-        json.dumps(figure_manifest, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
+    atomic_write_text(
+        out / "figure_manifest.json",
+        json.dumps(figure_manifest, indent=2, sort_keys=True, ensure_ascii=True) + "\n",
     )
     return artifacts
 
@@ -347,11 +349,12 @@ def _edge_row(
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]], columns: tuple[str, ...]) -> None:
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(columns))
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({col: _csv_cell(row.get(col)) for col in columns})
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=list(columns))
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({col: _csv_cell(row.get(col)) for col in columns})
+    atomic_write_text(path, buffer.getvalue())
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:

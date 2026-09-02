@@ -15,6 +15,7 @@ from pathlib import Path
 
 from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
 from cmig.core.engine import SolveResult
+from cmig.core.sign import NOISE_FLOOR
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,7 @@ class DeltaResult:
     status: str = "ok"                 # {ok, failed} — 입력 실패 전파
     diagnostic: str | None = None      # failed 면 ≠null (원인)
 
-    def significant(self, threshold: float = 1e-6) -> list[MetaboliteDelta]:
+    def significant(self, threshold: float = NOISE_FLOOR) -> list[MetaboliteDelta]:
         """변화 있는 대사체 (|delta| > threshold).
 
         TC-6: 비유한(NaN/inf) delta 는 **조용히 누락하지 않고 significant 로 본다**

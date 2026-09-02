@@ -166,10 +166,6 @@ def compute_run_hash(c: RunHashComponents, decimals: int = DEFAULT_FLOAT_DECIMAL
     return hashlib.sha256(canonical_json(c, decimals).encode("utf-8")).hexdigest()
 
 
-def sha256_checksum(data: bytes) -> str:
-    """model/medium checksum (OD-10: SHA-256)."""
-    return hashlib.sha256(data).hexdigest()
-
 
 @dataclass(frozen=True)
 class RunManifest:

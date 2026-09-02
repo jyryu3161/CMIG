@@ -19,7 +19,7 @@ from cmig.core.golden import DEFAULT_DECIMALS, bundle_hashes
 from cmig.core.interactions import build_tidy
 from cmig.core.manifest import RunHashComponents, compute_run_hash
 from cmig.core.tidy import TidyBundle
-from cmig.io.atomic import atomic_write_parquet
+from cmig.io.atomic import atomic_write_parquet, atomic_write_text
 
 SOLVER_VARIANTS = ("gurobi", "osqp")
 TRADEOFF_F = 0.5
@@ -109,18 +109,19 @@ def capture(base_dir: Path = FIXTURE_DIR) -> dict[str, dict[str, str]]:
             g = result.member_growth[m]
             lines.append(f"{m}\t{g:.{dec}f}" if g is not None else f"{m}\tnan")
         lines.append(f"__community__\t{result.objective:.{dec}f}")
-        (out / "growth_expected.tsv").write_text("\n".join(lines) + "\n")
+        atomic_write_text(out / "growth_expected.tsv", "\n".join(lines) + "\n")
         # sign_expected.tsv (external profile 의 (metabolite, ui_flux, label))
         prof = bundle.profile.to_pylist()
         slines = ["metabolite\tui_flux\tlabel"]
         slines += [f"{r['metabolite']}\t{r['ui_flux']:.{dec}f}\t{r['label']}"
                    for r in sorted(prof, key=lambda x: x["metabolite"])]
-        (out / "sign_expected.tsv").write_text("\n".join(slines) + "\n")
+        atomic_write_text(out / "sign_expected.tsv", "\n".join(slines) + "\n")
         # run_hash — 단일 canonical 구현 경유 ([HASH-SINGLE], I-5).
         # 반올림 자릿수는 builder 와 hash 가 반드시 같은 값을 써야 한다(위 docstring 참조).
         comps = _run_hash_components(result, dec)
         run_hash = compute_run_hash(comps, dec)
-        (out / "config.json").write_text(
+        atomic_write_text(
+            out / "config.json",
             json.dumps(
                 {"components": asdict(comps), "run_hash": run_hash,
                  "golden_decimals": dec, "tidy_hashes": bundle_hashes(bundle, dec)},

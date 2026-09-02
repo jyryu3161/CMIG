@@ -57,7 +57,13 @@ def _benchmark_config(base, out, **overrides):
         "search_max_size": 2,
         "dfba_model": dfba_model,
         "dfba_config": DfbaConfig(
-            t_end=0.2, dt=0.1, initial_concentrations={"EX_glc__D_e": 10.0}
+            t_end=0.2, dt=0.1, initial_concentrations={
+                        # Every substrate e_coli_core consumes is tracked: the benchmark's
+                        # dFBA verdict is the writer's `acceptance.interpretable`, which
+                        # fails a grid fed by untracked, never-depleting default-medium
+                        # uptake (nh4/o2/pi).
+                        "EX_glc__D_e": 10.0, "EX_o2_e": 20.0, "EX_nh4_e": 20.0, "EX_pi_e": 20.0,
+                    }
         ),
         "dfba_dts": [0.1],
         "dfba_kms": [0.01],

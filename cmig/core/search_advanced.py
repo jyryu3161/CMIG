@@ -84,7 +84,10 @@ def pareto_frontier(points: list[tuple[float, float]]) -> list[int]:
 
 class Strategy(enum.Enum):
     EXHAUSTIVE = "exhaustive"             # ≤ 20: 전수
-    MRO_MIP_GREEDY = "mro_mip_greedy"     # 20–100: MRO/MIP pre-screen greedy
+    # 20–100: MRO/MIP pre-screen greedy. Selected by `select_strategy` but no product path
+    # executes `mro_mip_prescreen`; callers that receive it run the exhaustive ranking and
+    # must record *that* as the executed strategy.
+    MRO_MIP_GREEDY = "mro_mip_greedy"
     GA = "ga"                             # > 100: 유전 알고리즘(근사)
 
 

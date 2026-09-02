@@ -218,10 +218,16 @@ def _record_untracked_uptake(
             untracked_uptake[rid] = max(untracked_uptake.get(rid, 0.0), rate)
 
 
+# Flux magnitude below which an exchange is treated as not consuming (matches the -1e-9
+# non-negativity slack used by the Euler step).
+_CLAMP_FLUX_TOLERANCE = 1e-9
+
+
 def _untracked_warnings(
     untracked_uptake: dict[str, float],
     managed: list[str],
     closed_untracked: list[str],
+    zero_vmax: list[str] | None = None,
 ) -> list[str]:
     """Say plainly when growth was fed by substrates the run does not track (Codex D5).
 
@@ -231,6 +237,12 @@ def _untracked_warnings(
     pool with no concentration and therefore no depletion and no Michaelis term.
     """
     warnings: list[str] = []
+    if zero_vmax:
+        warnings.append(
+            "tracked exchange(s) with vmax == 0 can never be consumed (the model's exchange "
+            f"lower bound is 0 and no --vmax was given): {sorted(zero_vmax)}; their "
+            "concentration is a constant, not a dFBA result"
+        )
     if closed_untracked:
         warnings.append(
             f"closed {len(closed_untracked)} untracked uptake exchanges before integrating so "
@@ -266,6 +278,13 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
         for ex in managed:
             if ex not in vmax:
                 vmax[ex] = abs(model.reactions.get_by_id(ex).lower_bound)
+        # A secretion-only exchange (bounds (0, 1000)) yields vmax 0. Tracking such an exchange
+        # from 0 to record a *product* is fine; tracking it with a positive initial amount
+        # means a substrate the organism can never import, which silently stays constant.
+        zero_vmax = [
+            ex for ex in managed
+            if vmax[ex] <= 0.0 and float(config.initial_concentrations[ex]) > 0.0
+        ]
 
         # D5: optionally close every uptake the run does not track, so the tracked
         # substrate/Km experiment is actually controlled rather than merely instrumented.
@@ -303,7 +322,7 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
                 return DfbaResult(
                     tc, "infeasible", f"FBA status={sol.status} at t={t:.4f}", managed,
                     untracked_uptake,
-                    _untracked_warnings(untracked_uptake, managed, closed_untracked),
+                    _untracked_warnings(untracked_uptake, managed, closed_untracked, zero_vmax),
                 )
             # Record every uptake outside the managed set; these are the substrates that make a
             # Km sweep on the tracked one uninterpretable. This is a diagnostic: a model that
@@ -313,7 +332,7 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
             if mu <= config.growth_floor:                       # 성장 정지 → stalled 종료
                 return DfbaResult(
                     tc, "stalled", None, managed, untracked_uptake,
-                    _untracked_warnings(untracked_uptake, managed, closed_untracked),
+                    _untracked_warnings(untracked_uptake, managed, closed_untracked, zero_vmax),
                 )
             # (3) explicit Euler + non-negativity (농도<0 이면 dt halving)
             step_dt = min(dt, config.t_end - t)
@@ -332,6 +351,10 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
                 fractions = []
                 for ex in managed:
                     flux = float(sol.fluxes[ex])
+                    # Solver noise on a depleted exchange (bound -0.0, flux -1e-12) is not
+                    # consumption; counting it made 0/1e-15 = 0 freeze growth entirely.
+                    if flux >= -_CLAMP_FLUX_TOLERANCE:
+                        continue
                     required = -flux * biomass * step_dt
                     if required > 0.0:
                         fractions.append(max(0.0, min(1.0, conc[ex] / required)))
@@ -361,7 +384,7 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
 
         return DfbaResult(
             tc, "completed", None, managed, untracked_uptake,
-            _untracked_warnings(untracked_uptake, managed, closed_untracked),
+            _untracked_warnings(untracked_uptake, managed, closed_untracked, zero_vmax),
         )
 
 

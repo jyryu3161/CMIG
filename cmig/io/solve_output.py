@@ -218,7 +218,10 @@ def write_solve_output(
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    tmp_parent = out.parent
+    # Stage beside the directory the run *actually* lives in: when --out is a symlink onto
+    # another filesystem (scratch/HPC layouts), staging next to the link and os.replace-ing
+    # across devices fails with EXDEV after the solve has already completed.
+    tmp_parent = out.resolve().parent
     tmp_parent.mkdir(parents=True, exist_ok=True)
     tmp_prefix = f".{out.name}.tmp-"
     manifest_path = out / "manifest.json"

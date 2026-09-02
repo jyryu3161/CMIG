@@ -47,6 +47,7 @@ from cmig.core.workflow_manifest import (
     medium_component,
     workflow_components_for,
 )
+from cmig.io.atomic import atomic_write_text
 
 ENVELOPE_GOLDEN_SCHEMA_VERSION = "1.0"
 #: Ships inside the package (not under `fixtures/`, which is excluded from every distribution) so
@@ -279,8 +280,9 @@ def load_golden(path: Path = ENVELOPE_GOLDEN_PATH) -> dict[str, Any]:
 
 def write_golden(path: Path = ENVELOPE_GOLDEN_PATH) -> dict[str, Any]:
     payload = build_golden_payload()
-    path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
+    atomic_write_text(
+        path,
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n",
     )
     return payload
 

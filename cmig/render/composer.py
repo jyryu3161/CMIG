@@ -13,13 +13,12 @@ from __future__ import annotations
 import csv
 import json
 import math
-import subprocess
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from cmig.render.client import RenderError, rscript_path
+from cmig.render.client import RenderError, rscript_path, run_rscript
 from cmig.render.provenance import sha256_file, write_render_provenance
 from cmig.render.publication import publish_render_artifacts, staged_render_path
 
@@ -155,7 +154,7 @@ class FigureComposer:
                 "--seed", str(spec.seed),
                 "--rlib", str(_RLIB),
             ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            proc = run_rscript(cmd)
             if proc.returncode != 0 or not staged_out.exists():
                 raise RenderError(
                     f"R {spec.kind} 패널 실패 (rc={proc.returncode}): {proc.stderr.strip()[:400]}"

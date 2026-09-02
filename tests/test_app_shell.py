@@ -12,6 +12,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.gui.app import CmigMainWindow, build_main_window  # noqa: E402
@@ -140,6 +141,35 @@ def test_project_explorer_run_double_click_reopens_run(tmp_path):
     w._open_explorer_item(item, 0)
     assert w.tabs.currentWidget() is w.profile_view
     assert w.explorer.topLevelItem(2).childCount() == 1
+
+
+def test_project_explorer_run_without_viewer_keeps_current_run(tmp_path):
+    """Double-clicking a registered search/sweep run must not wipe the community run on screen."""
+    from cmig.core.tidy import empty_bundle
+
+    _app()
+    tidy = tmp_path / "community"
+    empty_bundle().write(tidy)
+    (tidy / "manifest.json").write_text('{"run_hash": "abc1234567890"}\n')
+    search = tmp_path / "search"
+    search.mkdir()
+    (search / "manifest.json").write_text(
+        '{"manifest_scope": "workflow", "kind": "search", "run_hash": "def0987654321"}\n'
+    )
+    w = build_main_window()
+    w.load_run_dir(tidy)
+    assert w.current_manifest == {"run_hash": "abc1234567890"}
+    w._register_run_output(search)
+    runs = w.explorer.topLevelItem(2)
+    item = next(
+        runs.child(i) for i in range(runs.childCount())
+        if runs.child(i).data(0, Qt.ItemDataRole.UserRole) == str(search)
+    )
+    w._open_explorer_item(item, 0)
+    # the community run is still the one on screen, and the status bar says why
+    assert w.current_manifest == {"run_hash": "abc1234567890"}
+    assert "search" in w.statusBar().currentMessage()
+    assert "inspect-run" in w.statusBar().currentMessage()
 
 
 def test_load_host_microbe_bigg_dir_updates_host_tab(tmp_path):

@@ -22,6 +22,36 @@ from pathlib import Path
 from typing import BinaryIO
 
 
+def _read_umask() -> int:
+    """Read the process umask once, at import time.
+
+    ``os.umask`` can only be read by setting it, which is racy once worker threads exist (the
+    GUI runs solves in a thread pool), so it is sampled while the interpreter is still
+    single-threaded and reused for every write.
+    """
+    current = os.umask(0)
+    os.umask(current)
+    return current
+
+
+_UMASK = _read_umask()
+_DEFAULT_FILE_MODE = 0o666 & ~_UMASK
+
+
+def _publish_mode(target: Path) -> int:
+    """File mode an artifact should be published with.
+
+    ``tempfile.mkstemp`` creates the staging file 0600, so every artifact published through this
+    module used to be unreadable by group/others while a plain ``write_text`` beside it (for
+    example ``manifest.json``) honoured the umask. A re-published file keeps the mode it already
+    had; a new one gets the mode a normal ``open(..., "w")`` would have given it.
+    """
+    try:
+        return target.stat().st_mode & 0o777
+    except OSError:
+        return _DEFAULT_FILE_MODE
+
+
 def _sync_directory_best_effort(directory: Path) -> None:
     """Ask POSIX filesystems to persist a completed directory-entry update.
 
@@ -66,10 +96,12 @@ def atomic_write_binary(
     )
     tmp = Path(tmp_name)
     try:
+        mode = _publish_mode(target)
         with os.fdopen(fd, "wb") as handle:
             writer(handle)
             handle.flush()
             os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), mode)
         os.replace(tmp, target)
         _sync_directory_best_effort(target.parent)
     except BaseException:
@@ -112,10 +144,12 @@ def atomic_write_path(
     )
     tmp = Path(tmp_name)
     try:
+        mode = _publish_mode(target)
         os.close(fd)
         writer(tmp)
         with open(tmp, "rb") as handle:
             os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), mode)
         os.replace(tmp, target)
         _sync_directory_best_effort(target.parent)
     except BaseException:
@@ -137,10 +171,12 @@ def atomic_write_text(path: str | Path, text: str, *, encoding: str = "utf-8") -
     )
     tmp = Path(tmp_name)
     try:
+        mode = _publish_mode(target)
         with os.fdopen(fd, "w", encoding=encoding) as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), mode)
         os.replace(tmp, target)
         _sync_directory_best_effort(target.parent)
     except BaseException:

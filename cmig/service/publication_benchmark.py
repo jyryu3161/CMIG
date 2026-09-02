@@ -35,7 +35,8 @@ from cmig.core.workflow_manifest import (
     medium_component,
     write_workflow_manifest,
 )
-from cmig.io.dfba_output import write_dfba_sensitivity
+from cmig.io.atomic import atomic_write_text
+from cmig.io.dfba_output import sensitivity_acceptance, write_dfba_sensitivity
 from cmig.io.model_import import load_cobra_model
 from cmig.io.quality_output import write_model_quality_reports
 from cmig.io.solve_output import (
@@ -101,8 +102,8 @@ def _json_safe(value: Any) -> Any:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    atomic_write_text(
+        path,
         json.dumps(
             _json_safe(payload),
             indent=2,
@@ -110,7 +111,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
             ensure_ascii=True,
             allow_nan=False,
         )
-        + "\n"
+        + "\n",
     )
 
 
@@ -504,12 +505,14 @@ def run_publication_benchmark(config: PublicationBenchmarkConfig) -> Path:
             },
         )
         timings["dfba_seconds"] = time.perf_counter() - started
-        checks["dfba_completed"] = all(row.status == "completed" for row in dfba.rows)
-        checks["dfba_balance_passed"] = all(
-            row.max_concentration_residual <= 1e-9
-            and row.max_biomass_residual <= 1e-9
-            for row in dfba.rows
-        )
+        # The same verdict the writer stamps into dfba_sensitivity.json and the dfba CLI exits
+        # 3 on. Re-deriving pass/fail from completion + residuals alone let a grid fed by
+        # untracked, never-depleting substrates be `publication_ready: true` while the
+        # artifact beside it said `interpretable: false`.
+        dfba_acceptance = sensitivity_acceptance(dfba)
+        checks["dfba_completed"] = bool(dfba_acceptance["all_statuses_completed"])
+        checks["dfba_balance_passed"] = bool(dfba_acceptance["balance_passed"])
+        checks["dfba_interpretable"] = bool(dfba_acceptance["interpretable"])
         dfba_model_path = config.dfba_model
         bundle.emit(
             "dfba", "dfba",
@@ -523,9 +526,7 @@ def run_publication_benchmark(config: PublicationBenchmarkConfig) -> Path:
                 ),
                 "dfba_spec": _dfba_spec_component(config),
             },
-            status="ok" if checks["dfba_completed"] and checks["dfba_balance_passed"] else (
-                "degraded" if checks["dfba_completed"] else "failed"
-            ),
+            status="ok" if checks["dfba_interpretable"] else "failed",
             artifacts=["dfba_sensitivity.json"],
             summary={"n_conditions": len(dfba.rows)},
         )

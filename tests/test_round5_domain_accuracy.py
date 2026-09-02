@@ -215,7 +215,10 @@ def test_d_availability_still_feeds_a_d_only_host(base):
         solver="gurobi",
     )
     assert result.biomass == pytest.approx(10.0)
-    assert result.lumen_uptake == {f"{base}__d": pytest.approx(10.0)}
+    # Published under the caller's raw id (`lac__D`), not the normalized lookup spelling
+    # (`lac__d`): downstream joins (host_impact, member contribution, host-ko-impact --target)
+    # are keyed by the raw MICOM metabolite id.
+    assert result.lumen_uptake == {f"{base}__D": pytest.approx(10.0)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────────

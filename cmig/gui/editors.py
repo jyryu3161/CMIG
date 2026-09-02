@@ -763,6 +763,3 @@ class ModelManagerPanel(QWidget):
             self.exchange_table.setItem(i, 0, read_only_item(ex))
         bio = ", ".join(summary.biomass_reactions) or "(not detected)"
         self.biomass_label.setText(f"Biomass: {bio}")
-
-    def as_summary_dict(self, summary: ModelSummary) -> dict[str, Any]:
-        return summary.as_dict()

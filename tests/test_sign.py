@@ -2,7 +2,7 @@
 
 import pytest
 
-from cmig.core.sign import Label, Scope, convert, cross_feeding_weight
+from cmig.core.sign import Label, Scope, convert
 
 
 @pytest.mark.parametrize(
@@ -32,15 +32,3 @@ def test_zero_flux_has_no_label():
 def test_eps_threshold_treats_small_as_zero():
     r = convert(1e-9, Scope.ENVIRONMENT, eps=1e-6)
     assert r.label is None
-
-
-def test_cross_feeding_weight_is_min():
-    # 분비 8, 흡수 5 → weight = min = 5
-    assert cross_feeding_weight(secretor_raw=8.0, consumer_raw=-5.0) == 5.0
-    # 분비 3, 흡수 9 → weight = min = 3
-    assert cross_feeding_weight(secretor_raw=3.0, consumer_raw=-9.0) == 3.0
-
-
-def test_cross_feeding_requires_secretor_positive_consumer_negative():
-    assert cross_feeding_weight(secretor_raw=-1.0, consumer_raw=-5.0) is None  # 둘 다 흡수
-    assert cross_feeding_weight(secretor_raw=8.0, consumer_raw=2.0) is None     # 둘 다 분비

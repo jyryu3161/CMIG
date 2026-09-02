@@ -63,7 +63,6 @@ I18N: dict[str, dict[str, str]] = {
         "scenarios": "시나리오",
         "runs": "실행 기록",
         "jobs": "런타임 및 작업",
-        "welcome": "프로젝트를 열거나 모델을 가져오세요.",
         "col_job": "작업",
         "col_kind": "종류",
         "col_status": "상태",
@@ -228,6 +227,10 @@ I18N: dict[str, dict[str, str]] = {
         "status_model_import_failed": "모델 가져오기 실패: {error}",
         "status_imported_model": "{model_id} 가져옴; namespace 범위 {coverage:.0f}%",
         "status_run_load_failed": "실행 불러오기 실패: {error}",
+        "status_run_no_viewer": (
+            "이 실행 종류({kind})는 GUI 뷰어가 없습니다: {run_dir} — "
+            "`cmig inspect-run --run-dir` 로 확인하세요"
+        ),
         "status_loaded_run": "실행 불러옴: {run_dir}{suffix}",
         "status_summary_missing": "{kind} 요약 파일 없음: {path}",
         "status_load_failed": "{kind} 불러오기 실패: {error}",
@@ -358,7 +361,6 @@ I18N: dict[str, dict[str, str]] = {
         "scenarios": "Scenarios",
         "runs": "Runs",
         "jobs": "Runtime & Jobs",
-        "welcome": "Open a project or import a model.",
         "col_job": "Job",
         "col_kind": "Kind",
         "col_status": "Status",
@@ -525,6 +527,10 @@ I18N: dict[str, dict[str, str]] = {
         "status_model_import_failed": "Model import failed: {error}",
         "status_imported_model": "Imported {model_id}; namespace coverage {coverage:.0f}%",
         "status_run_load_failed": "Run load failed: {error}",
+        "status_run_no_viewer": (
+            "No GUI viewer for this run kind ({kind}): {run_dir} — "
+            "inspect it with `cmig inspect-run --run-dir`"
+        ),
         "status_loaded_run": "Loaded run: {run_dir}{suffix}",
         "status_summary_missing": "{kind} summary not found: {path}",
         "status_load_failed": "{kind} load failed: {error}",
@@ -816,6 +822,18 @@ class JobsBridge(QObject):
 
     def stop(self) -> None:
         self._timer.stop()
+
+
+def _read_target_summary(run_dir: Path) -> list[dict[str, Any]] | None:
+    """`target_summary.json` beside a tidy bundle (written by `--targets`), or None."""
+    path = run_dir / "target_summary.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, list) else None
 
 
 class CmigMainWindow(QMainWindow):
@@ -1389,6 +1407,20 @@ class CmigMainWindow(QMainWindow):
         if (run_dir / "host_microbe_bigg_summary.json").exists():
             self.load_host_microbe_bigg_dir(run_dir)
             return
+        manifest_path = run_dir / "manifest.json"
+        if manifest_path.exists() and not (run_dir / "nodes.parquet").exists():
+            # A *complete* run of a kind with no viewer here (search / sweep / strain-growth /
+            # gene-KO / minimal-medium are registered in the Project Explorer without a tidy
+            # bundle). Falling through to TidyBundle.read raised, and the failure branch below
+            # then cleared the run that *was* on screen — double-clicking a Search entry wiped
+            # the community run. A directory without a manifest is still a failed load.
+            kind = "unknown"
+            try:
+                kind = str(json.loads(manifest_path.read_text()).get("kind") or kind)
+            except (OSError, ValueError):
+                pass
+            self._show_status("status_run_no_viewer", kind=kind, run_dir=run_dir)
+            return
         try:
             bundle = TidyBundle.read(run_dir)
         except Exception as e:
@@ -1417,6 +1449,7 @@ class CmigMainWindow(QMainWindow):
         policy = namespace.get("policy") if isinstance(namespace, dict) else None
         self.graph_gate_badge.set_recorded_policy(None if policy is None else str(policy))
         self.profile_view.load_bundle(bundle)
+        self.profile_view.load_targets(_read_target_summary(run_dir))
         self.explorer.add_run(run_dir.name, run_dir)
         self.tabs.setCurrentWidget(self.profile_view)
         run_hash = None if self.current_manifest is None else self.current_manifest.get("run_hash")
@@ -2122,6 +2155,15 @@ class CmigMainWindow(QMainWindow):
             ctx.raise_if_cancelled()
             taxonomy = taxonomy_from_model_dir(model_dir, recursive=False)
             if members:
+                discovered = {str(mid) for mid in taxonomy["id"]}
+                unknown = sorted(set(members) - discovered)
+                if unknown:
+                    # A typed member that matches no model file used to be dropped silently,
+                    # so the community that ran differed from the table on screen.
+                    raise RuntimeError(
+                        f"member(s) not found in {model_dir}: {unknown}; discovered "
+                        f"{sorted(discovered)}"
+                    )
                 taxonomy = taxonomy.copy()
                 taxonomy["abundance"] = [
                     members.get(str(mid), taxonomy["abundance"].iloc[i])

@@ -139,7 +139,12 @@ class JobRunner:
             with self._lock:
                 self._jobs[job_id].status = JobStatus.CANCELLED
             return None
-        except Exception as e:  # 실패도 누락 없이 구조화 diagnostic 으로 기록
+        except (Exception, SystemExit) as e:  # 실패도 누락 없이 구조화 diagnostic 으로 기록
+            # SystemExit is included because GUI jobs run `cmig.cli.main.main(argv)` in-process:
+            # an argparse error or an explicit sys.exit() inside a command is a *failed job*, not
+            # a request to stop the executor thread. Catching only Exception left such a job
+            # RUNNING forever, so the tab's Run button never came back and closeEvent waited on
+            # it. KeyboardInterrupt still propagates.
             with self._lock:
                 self._jobs[job_id].status = JobStatus.FAILED
                 self._jobs[job_id].error = Diagnostic.from_exception(e).to_json()

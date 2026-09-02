@@ -70,10 +70,6 @@ __all__ = [
 ]
 
 
-def _interface_of(exchange_id: str) -> HostInterface:
-    """Compatibility wrapper for the historical suffix rule."""
-    return _interface_of_suffix(exchange_id)
-
 
 def nonexchange_boundary_uptake(host: Any) -> list[str]:
     """Boundary reactions outside ``model.exchanges`` that can still supply mass to the host.
@@ -181,6 +177,8 @@ def solve_generic_host(host: Any, *, solver: str = "gurobi") -> HostSolveResult:
                 f.metabolite: -f.flux for f in interface
                 if f.interface == HostInterface.LUMEN.value and f.label == Label.UPTAKE.value
             },
+            # One LP vertex, no objective-fixed FVA: the default label would over-claim.
+            attribution_method="single_fba_point",
         )
 
 
@@ -274,7 +272,7 @@ def solve_host(
             assignment = interface_by_exchange.get(str(reaction.id))
             if assignment is not None:
                 return HostInterface(assignment.interface)
-            return _interface_of(str(reaction.id))
+            return _interface_of_suffix(str(reaction.id))
 
         lumen_boundary = [
             str(r.id) for r in host_boundary

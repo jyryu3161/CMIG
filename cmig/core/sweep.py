@@ -162,6 +162,18 @@ def run_sweep(
             if progress is not None:
                 progress(i + 1, total)
             continue
+        if value is None or not math.isfinite(float(value)):
+            # The objective of a non-optimal solve (NaN/inf) used to be recorded as "ok";
+            # downstream heatmaps and deltas then treated it as a measurement.
+            diag = Diagnostic.from_exception(
+                ValueError(f"solve returned a non-finite {metric}: {value!r}")
+            ).to_json()
+            cache.put(rh, None, "failed", diag)
+            rows.append(SweepRow(cond.condition_id, cond.axis_values, metric, None, rh,
+                                 "failed", diag, cache_hit=False))
+            if progress is not None:
+                progress(i + 1, total)
+            continue
         cache.put(rh, value, "ok", None)
         rows.append(SweepRow(cond.condition_id, cond.axis_values, metric, value, rh,
                              "ok", None, cache_hit=False))

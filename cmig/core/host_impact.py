@@ -8,7 +8,29 @@ Design Ref: §12 (host impact) / cmig-host.design. Plan SC: SC-HI1~HI3.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import TypeVar
+
+from cmig.core.namespace import _normalize_metabolite_id
+
+_V = TypeVar("_V")
+
+
+def _lookup_by_metabolite(mapping: Mapping[str, _V], metabolite: str) -> _V | None:
+    """Exact key first, then the namespace-normalized spelling.
+
+    Host results may carry a metabolite under a different spelling than the microbial
+    secretion dict (`lac__D` vs `lac__d`); an exact-only lookup treated such a metabolite as
+    "not taken up by the host" and reported the whole secretion as unused.
+    """
+    if metabolite in mapping:
+        return mapping[metabolite]
+    wanted = _normalize_metabolite_id(metabolite)
+    for key, value in mapping.items():
+        if _normalize_metabolite_id(str(key)) == wanted:
+            return value
+    return None
 
 
 @dataclass(frozen=True)
@@ -46,12 +68,13 @@ def host_impact(
     for met, secreted in microbial_secretion.items():
         if secreted <= eps:
             continue
-        if met in host_ranges:
-            raw_lower, raw_upper = host_ranges[met]
+        host_range = _lookup_by_metabolite(host_ranges, met)
+        if host_range is not None:
+            raw_lower, raw_upper = host_range
             lower = min(secreted, max(0.0, float(raw_lower)))
             upper = min(secreted, max(lower, float(raw_upper)))
         else:
-            point = min(secreted, abs(host_uptake.get(met, 0.0)))
+            point = min(secreted, abs(_lookup_by_metabolite(host_uptake, met) or 0.0))
             lower = upper = point
         crossing_ranges[met] = (lower, upper)
         unused_ranges[met] = (max(0.0, secreted - upper), max(0.0, secreted - lower))

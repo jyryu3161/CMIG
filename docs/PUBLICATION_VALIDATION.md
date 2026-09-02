@@ -127,9 +127,12 @@ reported numeric result. There is deliberately no frozen expected model objectiv
 growth, search flux, map count, solve time, or dFBA endpoint in this document.
 
 **VERIFIED AGAINST CODE.** `publication-benchmark` does not expose
-`--close-untracked-uptake`. Therefore its bundled dFBA leg cannot establish that a substrate/Km
-experiment is isolated from untracked nutrient supply. `overall_passed` or `publication_ready`
-does not waive that limitation.
+`--close-untracked-uptake`. Its bundled dFBA leg is judged by the same
+`acceptance.interpretable` verdict the `dfba` command exits 3 on (`checks.dfba_interpretable`),
+so a grid whose growth was fed by untracked, never-depleting default-medium substrates makes
+`overall_passed`/`publication_ready` false. Track every substrate the model consumes through
+`--dfba-initial` (for iML1515 on the default medium that includes at least `EX_nh4_e`,
+`EX_pi_e`, `EX_o2_e` alongside glucose), or treat the dFBA leg as non-interpretable and say so.
 
 **VERIFIED AGAINST CODE.** The integrated command also does not expose `--host-objective`.
 Recon3D's integrated host leg therefore uses its shipped `BIOMASS_maintenance` objective and must

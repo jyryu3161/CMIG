@@ -101,7 +101,7 @@ def _sign(delta: float, eps: float) -> int:
 
 
 def interaction_type(
-    mono_a: float, mono_b: float, co_a: float, co_b: float, eps: float = 1e-6
+    mono_a: float, mono_b: float, co_a: float, co_b: float, eps: float = NOISE_FLOOR
 ) -> InteractionType:
     """monoculture vs co-culture growth 변화 → 상호작용 유형 (§10 AN-PAIR)."""
     sa, sb = _sign(co_a - mono_a, eps), _sign(co_b - mono_b, eps)

@@ -62,8 +62,9 @@ EDGES_SCHEMA_V11 = pa.schema([
 
 # A-B15 / B-D6: a cross-feeding weight reads as a measured pairwise transfer, but a steady-state
 # shared pool does not identify donor->recipient attribution — allocate_cross_feeding says so in
-# its docstring and the string appeared in no artifact. These columns put that on the row itself,
-# and carry the FVA interval when --fva ran so a point weight is not mistaken for a determined one.
+# its docstring and the string appeared in no artifact. These columns put that on the row itself.
+# weight_lo/weight_hi are reserved for an FVA interval on direct edges; no product path fills them
+# yet (`--fva` populates profile.fva_lo/fva_hi only), so they are null in every published run.
 _EDGE_IDENTIFIABILITY_FIELDS = [
     ("allocation_method", pa.string()),   # e.g. proportional_shared_pool | direct
     ("identifiable", pa.bool_()),         # False for allocated cross-feeding

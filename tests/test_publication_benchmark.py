@@ -43,7 +43,13 @@ def test_publication_benchmark_writes_auditable_integrated_package(tmp_path):
             dfba_config=DfbaConfig(
                 t_end=0.2,
                 dt=0.1,
-                initial_concentrations={"EX_glc__D_e": 10.0},
+                initial_concentrations={
+                        # Every substrate e_coli_core consumes is tracked: the benchmark's
+                        # dFBA verdict is the writer's `acceptance.interpretable`, which
+                        # fails a grid fed by untracked, never-depleting default-medium
+                        # uptake (nh4/o2/pi).
+                        "EX_glc__D_e": 10.0, "EX_o2_e": 20.0, "EX_nh4_e": 20.0, "EX_pi_e": 20.0,
+                    },
             ),
             dfba_dts=[0.1, 0.05],
             dfba_kms=[0.01],
@@ -63,6 +69,8 @@ def test_publication_benchmark_writes_auditable_integrated_package(tmp_path):
     assert payload["publication_ready"] is True
     assert payload["computational_checks_passed"] is True
     assert all(payload["checks"].values())
+    # the dFBA leg is judged by the writer's own acceptance verdict, not just completion
+    assert payload["checks"]["dfba_interpretable"] is True
     assert len(payload["benchmark_hash"]) == 64
     assert "model_quality/model_quality.json" in payload["artifacts"]
     assert "community/manifest.json" in payload["artifacts"]

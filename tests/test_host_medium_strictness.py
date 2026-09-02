@@ -501,6 +501,10 @@ def test_gene_ko_search_applies_the_requested_medium_to_every_arm(tmp_path, monk
         "--target", "ac",
         "--medium", str(medium),
         "--allow-unknown-medium",
+        # Knocking out the producer's only acetate route on this medium leaves every arm
+        # failed; that is a "failed" run (exit 3) under the documented contract, and this
+        # test is about the medium reaching every arm, not about the screen succeeding.
+        "--allow-failed-run",
         "--out", str(tmp_path / "ko"),
     ])
     assert rc == 0

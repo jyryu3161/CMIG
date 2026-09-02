@@ -760,12 +760,6 @@ class SearchView(QWidget):
         self.refresh_figure_mode()
 
 
-def _float_value(value: object) -> float:
-    if isinstance(value, (int, float, str)):
-        return float(value)
-    return 0.0
-
-
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None

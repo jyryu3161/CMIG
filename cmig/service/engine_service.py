@@ -314,9 +314,11 @@ class EngineService:
             restore_bounds(community, original)
         state = SandboxState.COMMITTED if commit else SandboxState.PREVIEW
         run_hash = None
+        comps = None
         if commit:
-            comps = _run_hash_components(constrained)
-            comps = replace(comps, bounds={reaction_id: [lower, upper]})
+            comps = replace(
+                _run_hash_components(constrained), bounds={reaction_id: [lower, upper]}
+            )
             run_hash = compute_run_hash(comps)
         result = evaluate_sandbox(
             baseline,
@@ -324,10 +326,8 @@ class EngineService:
             state=state,
             run_hash=run_hash,
         )
-        if commit and out_dir is not None:
+        if comps is not None and out_dir is not None:
             from cmig.core.interactions import build_tidy
-            comps = _run_hash_components(constrained)
-            comps = replace(comps, bounds={reaction_id: [lower, upper]})
             write_solve_output(
                 build_tidy(constrained),
                 comps,

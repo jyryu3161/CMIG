@@ -76,6 +76,18 @@ def detect_model_format(path: Path) -> str:
         f"미지원 모델 확장자: {path.name} (지원: .xml/.sbml/.xml.gz·.json·.mat)")
 
 
+def _model_id_from_path(path: Path) -> str:
+    """Fallback model id for a model whose SBML/JSON carries no id.
+
+    ``Path.stem`` strips one suffix only, so ``iML1515.xml.gz`` became ``iML1515.xml``.
+    """
+    name = path.name
+    for suffix in (".gz", ".xml", ".sbml", ".json", ".mat"):
+        if name.lower().endswith(suffix):
+            name = name[: -len(suffix)]
+    return name or path.stem
+
+
 def load_cobra_model(path: str | Path) -> Any:
     """Load a supported Cobra model with extension-based format detection."""
     source = Path(path)
@@ -246,7 +258,7 @@ def import_model(path: str | Path) -> ModelSummary:
             "이 모델의 objective 구조를 읽을 수 없어 growth 보고 가능 여부를 판단할 수 없습니다."
         ) from e
     return ModelSummary(
-        model_id=str(model.id) or p.stem,
+        model_id=str(model.id) or _model_id_from_path(p),
         source_format=fmt,
         source_path=str(p),
         n_reactions=len(model.reactions),

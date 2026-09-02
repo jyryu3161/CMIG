@@ -746,8 +746,9 @@ def test_workflow_manifest_write_failure_keeps_the_previous_manifest(tmp_path):
 
     # Two ways the write can die: part-way through the bytes (disk full at flush) and at the
     # final swap. Neither may touch the previous manifest, and neither may leave a temp file.
-    for target in ("cmig.core.workflow_manifest.os.fsync",
-                   "cmig.core.workflow_manifest.os.replace"):
+    # The manifest now goes through the single atomic writer in cmig.io.atomic.
+    for target in ("cmig.io.atomic.os.fsync",
+                   "cmig.io.atomic.os.replace"):
         with patch(target, side_effect=OSError("[Errno 28] No space left on device")):
             with pytest.raises(OSError):
                 write_workflow_manifest(

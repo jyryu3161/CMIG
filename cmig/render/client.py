@@ -27,6 +27,10 @@ from cmig.render.publication import publish_render_artifacts, staged_render_path
 R_SCRIPT = Path(__file__).resolve().parent.parent / "render_r" / "figure.R"
 _RLIB = Path(__file__).resolve().parents[2] / ".Rlib"
 
+# Upper bound on one Rscript invocation. A hung R (missing graphics device, an interactive renv
+# prompt) used to block the CLI indefinitely; the timeout surfaces as RenderError so the
+# staged render is discarded and the previous public figure set stays intact.
+R_RENDER_TIMEOUT_SECONDS = 600.0
 PROFILE_COLUMNS = ("metabolite", "net_flux", "ui_flux", "label")
 SUPPORTED_FORMATS = frozenset({"svg", "tiff", "pdf", "eps"})
 PROFILE_LABEL_COLORS = {
@@ -122,7 +126,7 @@ class RenderClient:
                 "--dpi", str(spec.dpi), "--title", spec.title, "--seed", str(spec.seed),
                 "--rlib", str(_RLIB),
             ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            proc = run_rscript(cmd)
             if proc.returncode != 0 or not staged_out.exists():
                 err = proc.stderr.strip()[:400]
                 raise RenderError(f"R render 실패 (rc={proc.returncode}): {err}")
@@ -147,9 +151,17 @@ class RenderClient:
     ) -> Path:
         """R 부재 시 matplotlib(plotnine/matplotlib) fallback (§9). render extra 필요."""
         try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
+            from cmig.render.figure_style import (
+                SVG_METADATA,
+                load_matplotlib_pyplot,
+                save_figure_atomic,
+            )
+
+            # Same deterministic rcParams (svg.hashsalt, font stack) as every other matplotlib
+            # figure in CMIG: a raw `fig.savefig` stamped a date and random element ids into
+            # the SVG, so two renders of identical rows had different figure.sha256 although
+            # the provenance sidecar records that hash as the reproducibility fingerprint.
+            plt = load_matplotlib_pyplot()
         except ImportError as e:  # pragma: no cover - env-dependent
             raise RenderError(
                 "Rscript 부재 + matplotlib fallback 미설치 (`uv sync --extra render`)."
@@ -167,7 +179,10 @@ class RenderClient:
         ax.set_xlabel("net exchange flux (+ secretion / - uptake)")
         fig.tight_layout()
         try:
-            fig.savefig(out, format=spec.format)
+            if spec.format == "svg":
+                save_figure_atomic(fig, out, format="svg", metadata=SVG_METADATA)
+            else:
+                save_figure_atomic(fig, out, format=spec.format)
         finally:
             plt.close(fig)
         write_render_provenance(
@@ -178,6 +193,21 @@ class RenderClient:
             input_serialization="canonical-json-v1",
         )
         return out
+
+
+def run_rscript(
+    cmd: list[str], *, timeout: float = R_RENDER_TIMEOUT_SECONDS
+) -> subprocess.CompletedProcess[str]:
+    """Run one Rscript command with a wall-clock bound, mapping a hang to RenderError."""
+    try:
+        return subprocess.run(
+            cmd, capture_output=True, text=True, check=False, timeout=timeout
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RenderError(
+            f"R render timed out after {timeout:g}s ({Path(cmd[1]).name}); "
+            "check that Rscript can run non-interactively with the checked-in .Rlib"
+        ) from e
 
 
 def _profile_label(row: dict[str, Any], *, eps: float = 1e-12) -> str | None:

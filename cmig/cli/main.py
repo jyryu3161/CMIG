@@ -10,6 +10,7 @@ import argparse
 import csv
 import hashlib
 import html
+import io
 import json
 import math
 import random
@@ -1619,12 +1620,15 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
             taxonomy_path = Path(args.taxonomy)
             if not taxonomy_path.exists():
                 raise ValueError(f"taxonomy file not found: {taxonomy_path}")
-            taxonomy = pd.read_csv(taxonomy_path)
+            taxonomy = _read_taxonomy_csv(pd, taxonomy_path)
         else:
             taxonomy = taxonomy_from_model_dir(args.model_dir, recursive=args.recursive)
         missing_cols = {"id", "file"} - set(taxonomy.columns)
         if missing_cols:
             raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
+        if args.taxonomy:
+            # CSV-relative `file` paths resolve against the CSV, as `solve`/`pair` already do.
+            taxonomy = _resolve_taxonomy_model_paths(taxonomy, taxonomy_path)
         host = read_sbml_model(str(host_path))
         _apply_host_objective(host, args.host_objective)
         microbe_medium = load_medium(args.microbe_medium) if args.microbe_medium else None
@@ -1752,7 +1756,7 @@ def _cmd_host_map(args: argparse.Namespace) -> int:
             tax_path = Path(args.taxonomy)
             if not tax_path.exists():
                 raise ValueError(f"taxonomy file not found: {tax_path}")
-            taxonomy = pd.read_csv(tax_path)
+            taxonomy = _read_taxonomy_csv(pd, tax_path)
             tax_dir = tax_path.parent
         else:
             taxonomy = taxonomy_from_model_dir(args.model_dir, recursive=args.recursive)
@@ -1853,30 +1857,32 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
     )
 
     out.mkdir(parents=True, exist_ok=True)
-    with open(out / "host_exchange_map.csv", "w", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=[
-                "metabolite", "microbial_exchange", "secreting_members",
-                "host_exchange", "match_type", "host_can_uptake", "suggestion",
-                "interface", "interface_evidence",
-            ],
-        )
-        writer.writeheader()
-        for e in result.entries:
-            writer.writerow({
-                "metabolite": e.metabolite,
-                "microbial_exchange": e.microbial_exchange,
-                "secreting_members": ";".join(e.secreting_members),
-                "host_exchange": e.host_exchange or "",
-                "match_type": e.match_type,
-                "host_can_uptake": e.host_can_uptake,
-                "suggestion": e.suggestion,
-                # Round 7: evidence-backed side, blank (not guessed) when unclassified.
-                "interface": e.interface or "",
-                "interface_evidence": json.dumps(list(e.interface_evidence))
-                if e.interface_evidence else "",
-            })
+    csv_buffer = io.StringIO()
+    # Buffered so the CSV publishes atomically like its JSON siblings.
+    writer = csv.DictWriter(
+        csv_buffer,
+        fieldnames=[
+            "metabolite", "microbial_exchange", "secreting_members",
+            "host_exchange", "match_type", "host_can_uptake", "suggestion",
+            "interface", "interface_evidence",
+        ],
+    )
+    writer.writeheader()
+    for e in result.entries:
+        writer.writerow({
+            "metabolite": e.metabolite,
+            "microbial_exchange": e.microbial_exchange,
+            "secreting_members": ";".join(e.secreting_members),
+            "host_exchange": e.host_exchange or "",
+            "match_type": e.match_type,
+            "host_can_uptake": e.host_can_uptake,
+            "suggestion": e.suggestion,
+            # Round 7: evidence-backed side, blank (not guessed) when unclassified.
+            "interface": e.interface or "",
+            "interface_evidence": json.dumps(list(e.interface_evidence))
+            if e.interface_evidence else "",
+        })
+    atomic_write_text(out / "host_exchange_map.csv", csv_buffer.getvalue())
     # A-B8: only EXACT id matches go into interface_map. Annotation/normalized matches are
     # computational guesses — round-2 found three D<->L stereoisomer swaps among them
     # (arab__D_e -> EX_arab__L_e, glu__D_e -> EX_glu__L_e, pser__D_e -> EX_pser__L_e), which are
@@ -1901,8 +1907,9 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
         }
         for e in result.entries if e.match_type in HOST_MAP_NEEDS_REVIEW_TYPES
     }
-    with open(out / "host_interface_map.json", "w") as f:
-        json.dump(
+    atomic_write_text(
+        out / "host_interface_map.json",
+        json.dumps(
             {
                 "_comment": "interface_map holds EXACT id matches only and is safe to pass "
                 "through. needs_review holds annotation/normalized guesses: confirm each one and "
@@ -1913,8 +1920,9 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
                 "unmatched": [e.metabolite for e in result.entries
                               if e.match_type == "unmatched"],
             },
-            f, indent=2, sort_keys=True,
-        )
+            indent=2, sort_keys=True,
+        ),
+    )
     summary = {
         "kind": "host_exchange_map",
         "n_microbial_secretions": result.n_microbial_secretions,
@@ -1942,8 +1950,9 @@ def _write_host_map_outputs(result: Any, out: Path) -> list[str]:
         ],
         "warnings": result.warnings,
     }
-    with open(out / "host_map_summary.json", "w") as f:
-        json.dump(summary, f, indent=2, allow_nan=False)
+    atomic_write_text(
+        out / "host_map_summary.json", json.dumps(summary, indent=2, allow_nan=False)
+    )
     return ["host_exchange_map.csv", "host_interface_map.json", "host_map_summary.json"]
 
 
@@ -2001,18 +2010,21 @@ def _cmd_render_figure(args: argparse.Namespace) -> int:
         from cmig.render.composer import PanelSpec, render_panels_from_run
 
         preset = None if args.journal_preset == "default" else args.journal_preset
-        panel_requests: list[Any]
-        if args.title != "External Profile":
-            panel_requests = [
-                PanelSpec(
-                    kind=kind, title=args.title, width_in=args.width,
-                    height_in=args.height, dpi=args.dpi, format=args.format,
-                    seed=args.seed,
-                )
-                for kind in args.panels
-            ]
-        else:
-            panel_requests = list(args.panels)
+        # Always build the spec from the CLI flags: --width/--height/--dpi used to be honoured
+        # only when --title was also given (the bare-string path fell back to PanelSpec's own
+        # geometry), so the same command rendered different figure sizes depending on a title.
+        panel_requests: list[Any] = [
+            PanelSpec(
+                kind=kind,
+                title=args.title if args.title != "External Profile" else kind.capitalize(),
+                width_in=args.width,
+                height_in=args.height,
+                dpi=args.dpi,
+                format=args.format,
+                seed=args.seed,
+            )
+            for kind in args.panels
+        ]
         try:
             written = render_panels_from_run(
                 run_dir, panel_requests, args.out,
@@ -2149,12 +2161,15 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
             taxonomy_path = Path(args.taxonomy)
             if not taxonomy_path.exists():
                 raise ValueError(f"taxonomy file not found: {taxonomy_path}")
-            taxonomy = pd.read_csv(taxonomy_path)
+            taxonomy = _read_taxonomy_csv(pd, taxonomy_path)
         else:
             taxonomy = taxonomy_from_model_dir(args.model_dir, recursive=args.recursive)
         missing_cols = {"id", "file"} - set(taxonomy.columns)
         if missing_cols:
             raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
+        if args.taxonomy:
+            # CSV-relative `file` paths resolve against the CSV, as `solve`/`pair` already do.
+            taxonomy = _resolve_taxonomy_model_paths(taxonomy, taxonomy_path)
         ids = [str(x) for x in taxonomy["id"]]
         candidates = candidate_combinations(ids, args.min_size, args.max_size)
         if not candidates:
@@ -2432,12 +2447,15 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
             taxonomy_path = Path(args.taxonomy)
             if not taxonomy_path.exists():
                 raise ValueError(f"taxonomy file not found: {taxonomy_path}")
-            taxonomy = pd.read_csv(taxonomy_path)
+            taxonomy = _read_taxonomy_csv(pd, taxonomy_path)
         else:
             taxonomy = taxonomy_from_model_dir(args.model_dir, recursive=args.recursive)
         missing_cols = {"id", "file"} - set(taxonomy.columns)
         if missing_cols:
             raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
+        if args.taxonomy:
+            # CSV-relative `file` paths resolve against the CSV, as `solve`/`pair` already do.
+            taxonomy = _resolve_taxonomy_model_paths(taxonomy, taxonomy_path)
         member_ids = [str(x) for x in taxonomy["id"]]
         if args.member not in member_ids:
             raise ValueError(f"--member {args.member!r} not in the pool: {member_ids}")
@@ -2525,7 +2543,8 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
 
                 arms.append(HostArm(
                     label=label, member=args.member, ko_id=ko_id, ko_level=args.ko_level,
-                    run_status="failed", community_status="failed", community_growth=0.0,
+                    run_status="failed", community_status="failed",
+                    community_growth=float("nan"),
                     host_status="failed", host_viable=False,
                     host_objective=float("nan"), target_transfer=float("nan"),
                     diagnostic=str(e),
@@ -2972,12 +2991,15 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             taxonomy_path = Path(args.taxonomy)
             if not taxonomy_path.exists():
                 raise ValueError(f"taxonomy file not found: {taxonomy_path}")
-            taxonomy = pd.read_csv(taxonomy_path)
+            taxonomy = _read_taxonomy_csv(pd, taxonomy_path)
         else:
             taxonomy = taxonomy_from_model_dir(args.model_dir, recursive=args.recursive)
         missing_cols = {"id", "file"} - set(taxonomy.columns)
         if missing_cols:
             raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
+        if args.taxonomy:
+            # CSV-relative `file` paths resolve against the CSV, as `solve`/`pair` already do.
+            taxonomy = _resolve_taxonomy_model_paths(taxonomy, taxonomy_path)
         members = tuple(_parse_csv_strings(args.members, flag="--members"))
         if args.member and args.member not in members:
             raise ValueError("--member must be one of --members")
@@ -3171,6 +3193,7 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             f"  no knockout could be evaluated ({len(rows)} attempted); "
             "gene_ko_rankings.csv has no ranked rows"
         )
+    run_status = _gene_ko_summary_status(rows)
     _emit_workflow_manifest(
         out,
         "gene_ko_search",
@@ -3205,9 +3228,10 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
                 ),
             },
         },
-        status=_worst_status(*[
-            "ok" if row.get("evaluation_status") == "ok" else "degraded" for row in rows
-        ] or ["failed"]),
+        # Same tier as gene_ko_summary.json: a screen in which every knockout arm failed is
+        # "failed" in the manifest too (inspect-run prefers the manifest), and exits 3 unless
+        # --allow-failed-run is passed.
+        status=run_status,
         artifacts=run_artifacts,
         warnings=warnings,
         summary={
@@ -3216,7 +3240,7 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             "n_total": sum(member_totals.values()),
         },
     )
-    return 0
+    return _exit_code_for_status(run_status, args)
 
 
 def _namespace_gate_inputs(args: argparse.Namespace) -> tuple[list[Any], dict[str, Any]]:
@@ -3984,7 +4008,6 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
     """Estimate per-strain growth alone and inside the full community."""
     try:
         import pandas as pd
-        from cobra.io import read_sbml_model
 
         from cmig.core.engine import MicomEngine
         from cmig.core.medium_spec import (
@@ -3998,6 +4021,7 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
         )
         from cmig.core.model_pool import taxonomy_from_model_dir
         from cmig.core.single_model import solve_single_model
+        from cmig.io.model_import import load_cobra_model
     except ImportError:
         print("strain-growth requires the engine stack: uv sync --extra engine", file=sys.stderr)
         return 2
@@ -4046,7 +4070,8 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
             single_effective: dict[str, float] = {}
             row_equal = False
             try:
-                model = read_sbml_model(model_file)
+                # Format-detecting loader: the pool admits .json/.mat as well as SBML.
+                model = load_cobra_model(model_file)
                 if controlled:
                     # community 의 실효 배지를 이 모델이 실제로 가진 exchange 로 번역해 **정확히**
                     # 적용한다(exact=True → 나머지 exchange 는 닫힘). exchange 가 없는 대사체는 이
@@ -4059,7 +4084,7 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
                         exchange_metabolite(ex) for ex in translation.unmatched
                     )
                     single_medium_applied = bool(translation.mapping)
-                elif medium_spec is not None:
+                elif medium_spec is not None and args.single_medium != "model_default":
                     translation = apply_medium_translated(
                         model, medium_spec, strict=not args.allow_unknown_medium
                     )
@@ -4185,20 +4210,21 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
     print(f"strain-growth complete ({len(rows)} members) -> {out}")
     for warning in warnings:
         print(f"  warning: {warning}")
+    run_status = _worst_status(
+        _run_status_from_solve(str(community_result.status)),
+        "ok" if not failed_single else (
+            "failed" if len(failed_single) == len(rows) else "degraded"
+        ),
+        "ok" if (media_matched and not failed_single) else "degraded",
+        "ok" if not objective_suspect else "degraded",
+    )
     _emit_workflow_manifest(
         out,
         "strain_growth",
         lambda: _strain_growth_hash_components(
             args, taxonomy, medium_spec, community_result, community_medium, rows
         ),
-        status=_worst_status(
-            _run_status_from_solve(str(community_result.status)),
-            "ok" if not failed_single else (
-                "failed" if len(failed_single) == len(rows) else "degraded"
-            ),
-            "ok" if (media_matched and not failed_single) else "degraded",
-            "ok" if not objective_suspect else "degraded",
-        ),
+        status=run_status,
         artifacts=run_artifacts,
         warnings=warnings,
         summary={
@@ -4207,7 +4233,9 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
             "single_medium_equals_community_medium": media_matched,
         },
     )
-    return 0
+    # The parser declares --allow-failed-run ("default: exit 3") for this command; a failed
+    # community solve or an all-failed alone leg is not a result and must not exit 0.
+    return _exit_code_for_status(run_status, args)
 
 
 def _cmd_abundance_impact(args: argparse.Namespace) -> int:
@@ -5237,23 +5265,27 @@ def _cmd_dfba(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"dfba failed: {e}", file=sys.stderr)
         return 1
-    run_artifacts = _write_dfba_outputs(
-        result,
-        Path(args.out),
-        model_path=model_path,
-        solver=args.solver,
-        config={
-            "t_end": args.t_end,
-            "dt": args.dt,
-            "initial_biomass": args.initial_biomass,
-            "initial_concentrations": concentrations,
-            "km": args.km,
-            "vmax": vmax,
-            "min_dt": args.min_dt,
-            "growth_floor": args.growth_floor,
-            "default_initial_preset": args.initial_concentrations is None,
-        },
-    )
+    try:
+        run_artifacts = _write_dfba_outputs(
+            result,
+            Path(args.out),
+            model_path=model_path,
+            solver=args.solver,
+            config={
+                "t_end": args.t_end,
+                "dt": args.dt,
+                "initial_biomass": args.initial_biomass,
+                "initial_concentrations": concentrations,
+                "km": args.km,
+                "vmax": vmax,
+                "min_dt": args.min_dt,
+                "growth_floor": args.growth_floor,
+                "default_initial_preset": args.initial_concentrations is None,
+            },
+        )
+    except OSError as e:
+        print(f"dfba failed to write outputs: {e}", file=sys.stderr)
+        return 1
     print(f"dfba complete ({result.status}) -> {args.out}")
     # D5: an untracked-substrate warning invalidates any substrate/Km reading of the run, so it
     # must be impossible to miss.
@@ -5293,7 +5325,9 @@ def _cmd_dfba(args: argparse.Namespace) -> int:
         ),
         artifacts=run_artifacts,
         warnings=list(getattr(result, "warnings", []) or []),
-        summary={"status": result.status, "n_steps": len(getattr(result, "rows", []) or [])},
+        # n_steps follows the sensitivity audit's definition (intervals between timepoints);
+        # DfbaResult carries `timecourse`, so the previous getattr(..., "rows") was always 0.
+        summary={"status": result.status, "n_steps": max(0, len(result.timecourse) - 1)},
     )
     return _exit_code_for_status(_dfba_run_status(str(result.status)), args)
 
@@ -5605,6 +5639,10 @@ def _cmd_search_advanced_fixture(args: argparse.Namespace) -> int:
         if args.strategy == "auto" else
         Strategy(args.strategy)
     )
+    # Only GA has its own search path here; every other selection runs the exhaustive
+    # ranking below, so the summary records what ran rather than what was selected
+    # (it used to claim "mro_mip_greedy" for 21-100 candidates while ranking exhaustively).
+    executed_strategy = strategy if strategy is Strategy.GA else Strategy.EXHAUSTIVE
     engine = MicomEngine()
 
     def score_members(members: tuple[str, ...], spec: TargetSpec) -> float:
@@ -5634,7 +5672,7 @@ def _cmd_search_advanced_fixture(args: argparse.Namespace) -> int:
             for members, score in ga.top_k
         ]
         payload = {
-            "strategy": strategy.value,
+            "strategy": executed_strategy.value,
             "target": targets[0].metabolite,
             "top_ranked": top,
             "ga": {
@@ -5676,7 +5714,7 @@ def _cmd_search_advanced_fixture(args: argparse.Namespace) -> int:
             for i in keep
         ]
     payload = {
-        "strategy": strategy.value,
+        "strategy": executed_strategy.value,
         "targets": [s.metabolite for s in targets],
         "top_ranked": {
             spec.metabolite: [
@@ -5781,12 +5819,14 @@ def _cmd_search(args: argparse.Namespace) -> int:
             tax_path = Path(args.taxonomy)
             if not tax_path.exists():
                 raise ValueError(f"taxonomy file not found: {tax_path}")
-            taxonomy = pd.read_csv(tax_path)
+            taxonomy = _read_taxonomy_csv(pd, tax_path)
         else:
             taxonomy = taxonomy_from_model_dir(args.model_dir, recursive=args.recursive)
         missing_cols = {"id", "file"} - set(taxonomy.columns)
         if missing_cols:
             raise ValueError(f"taxonomy missing required columns: {sorted(missing_cols)}")
+        if args.taxonomy:
+            taxonomy = _resolve_taxonomy_model_paths(taxonomy, tax_path)
         medium_spec = load_medium(args.medium) if args.medium else None
         # multi-target path (§14 다중 타깃). --target-preset scfa 는 문서화된 SCFA 6종으로 확장된다.
         if args.targets or args.target_preset:
@@ -6226,8 +6266,9 @@ def _write_multi_target_outputs(
         + (["pool_diagnostics.csv"] if diagnostics is not None else [])
         + (["search_unevaluated.csv"] if result.unevaluated else [])
     )
-    with open(out / "search_summary.json", "w") as f:
-        json.dump(summary, f, indent=2, allow_nan=False)
+    atomic_write_text(
+        out / "search_summary.json", json.dumps(summary, indent=2, allow_nan=False)
+    )
     _write_multi_target_figure(result, out / "search_plot.svg")
     _prune_stale_workflow_artifacts(out, KNOWN_SEARCH_ARTIFACTS, summary["artifacts"])
     return list(summary["artifacts"])
@@ -8602,7 +8643,11 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     if not tax_path.exists():
         print(f"taxonomy 파일 없음: {tax_path}", file=sys.stderr)
         return 2
-    taxonomy = pd.read_csv(tax_path)
+    try:
+        taxonomy = _read_taxonomy_csv(pd, tax_path)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
     missing_cols = {"id", "file"} - set(taxonomy.columns)
     if missing_cols:
         print(f"taxonomy 필수 컬럼 누락: {sorted(missing_cols)} (필요: id, file)", file=sys.stderr)
@@ -9029,22 +9074,8 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--taxonomy", required=True, help="taxonomy csv (micom Community 입력)")
     sv.add_argument("--medium", default=None, help="medium spec csv/json (생략 시 default medium)")
     _add_exact_medium(sv)
-    sv_namespace = sv.add_mutually_exclusive_group()
-    sv_namespace.add_argument(
-        "--namespace-decisions",
-        default=None,
-        help="namespace decision JSON; unresolved high-confidence mapping 이 있으면 solve 차단",
-    )
-    sv_namespace.add_argument(
-        "--assume-bigg-namespace",
-        action="store_true",
-        help="입력 모델이 이미 BiGG namespace임을 명시적으로 확인(검토 파일 우회 audit)",
-    )
-    sv.add_argument(
-        "--allow-unknown-medium",
-        action="store_true",
-        help="community에 없는 medium exchange를 diagnostic에 기록하고 계속 진행",
-    )
+    _add_namespace_gate_options(sv)
+    _add_allow_unknown_medium(sv)
     sv.add_argument(
         "--allow-failed-run", action="store_true", dest="allow_failed_run",
         help="solve 가 실패해도 exit 0 (산출물은 기록되지만 결과가 아님)",
@@ -9507,11 +9538,7 @@ def build_parser() -> argparse.ArgumentParser:
         "medium onto each member so the comparison is controlled | model_default keeps each "
         "member's native SBML bounds, which reports native capability, NOT an interaction effect",
     )
-    sg.add_argument(
-        "--allow-unknown-medium",
-        action="store_true",
-        help="record medium ids absent from the community and continue",
-    )
+    _add_allow_unknown_medium(sg)
     sg.add_argument(
         "--allow-failed-run", action="store_true", dest="allow_failed_run",
         help="exit 0 even when the scientific solve failed (default: exit 3, so a "
@@ -9538,11 +9565,7 @@ def build_parser() -> argparse.ArgumentParser:
     ai.add_argument("--tradeoff-f", type=float, default=0.5, dest="tradeoff_f")
     ai.add_argument("--medium", default=None, help="optional community medium csv/json")
     _add_exact_medium(ai)
-    ai.add_argument(
-        "--allow-unknown-medium",
-        action="store_true",
-        help="record medium ids absent from the community and continue",
-    )
+    _add_allow_unknown_medium(ai)
     ai.add_argument(
         "--fva", action="store_true",
         help="report the FVA interval of the target exchange at each sweep point, so a jump "
@@ -9948,7 +9971,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--medium", default=None, help="optional medium csv/json")
     _add_exact_medium(sp)
-    sp.add_argument("--allow-unknown-medium", action="store_true")
+    _add_allow_unknown_medium(sp)
     sp.add_argument(
         "--allow-failed-run", action="store_true", dest="allow_failed_run",
         help="exit 0 even when the scientific solve failed (default: exit 3, so a "
@@ -10046,14 +10069,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="comma-separated JSON files {reaction_id: [lo, hi]}",
     )
-    us_namespace = us.add_mutually_exclusive_group()
-    us_namespace.add_argument("--namespace-decisions", default=None)
-    us_namespace.add_argument(
-        "--assume-bigg-namespace",
-        action="store_true",
-        help="입력 모델이 이미 BiGG namespace임을 명시적으로 확인",
-    )
-    us.add_argument("--allow-unknown-medium", action="store_true")
+    _add_namespace_gate_options(us)
+    _add_allow_unknown_medium(us)
     us.add_argument(
         "--allow-failed-run", action="store_true", dest="allow_failed_run",
         help="exit 0 even when every swept condition failed (default: exit 3, so a pipeline "

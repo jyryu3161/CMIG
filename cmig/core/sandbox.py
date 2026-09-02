@@ -22,6 +22,7 @@ from cmig.core.run_store import (  # canonical 정의는 core/run_store (back-co
     RunStore,
     validate_run_hash,
 )
+from cmig.core.sign import NOISE_FLOOR
 
 __all__ = [
     "RunStore", "InMemoryRunStore", "SandboxState", "BoundConstraint",
@@ -91,7 +92,7 @@ def evaluate_sandbox(
     store: RunStore | None = None,
     run_hash: str | None = None,
     micom_version: str | None = None,
-    threshold: float = 1e-6,
+    threshold: float = NOISE_FLOOR,
     fva: dict[str, FVARange] | None = None,
 ) -> SandboxResult:
     """baseline vs constrained(=bound 제약 후 재solve) → SandboxResult.

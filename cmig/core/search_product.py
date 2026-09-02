@@ -1010,6 +1010,15 @@ def _pareto_points_for_members(
             ))
     except Exception as error:  # noqa: BLE001 - per-combo isolation, same as the other passes
         return [_ComboEval(members, "failed", 0.0, {}, {}, str(error), (), FLUX_BASIS_NONE)]
+    if not points:
+        # Every epsilon level came back non-optimal without raising. Returning [] made the
+        # consortium vanish from both the ranking and `unevaluated` while
+        # n_candidates_evaluated still counted it; it is an unevaluable candidate.
+        return [_ComboEval(
+            members, "failed", 0.0, {}, {},
+            _with_medium_note("no epsilon level solved to optimality", medium_note),
+            (), FLUX_BASIS_NONE,
+        )]
     return points
 
 

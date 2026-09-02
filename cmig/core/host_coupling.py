@@ -16,6 +16,7 @@ from cmig.core.boundary import (
     set_supply_limit,
 )
 from cmig.core.host_types import (
+    DEFAULT_BIGG_COUPLING_EXCLUDE,
     BiggHostMicrobeResult,
     HostInterface,
     HostInterfaceMap,
@@ -31,8 +32,6 @@ from cmig.core.host_types import (
     reviewed_interface_entries,
 )
 from cmig.core.sign import Scope, convert
-
-DEFAULT_BIGG_COUPLING_EXCLUDE = frozenset({"h", "h2o", "co2"})
 
 #: Which boundary reactions ``close_unlisted_uptake`` closes to isolate the host. Round 6 (track H)
 #: changed this from `model.exchanges` to every boundary reaction, which **moved published host
@@ -350,6 +349,14 @@ def solve_bigg_host(
         # in, `arab__l` -> `EX_arab__l_e` on the way out), so the resolved id is remembered
         # instead of being computed twice.
         matched: dict[str, str] = {}
+        # normalized id -> the caller's raw id. The caps/ranges below are accumulated under the
+        # normalized (lower-cased, suffix-stripped) id, but `lumen_uptake` and
+        # `lumen_uptake_ranges` are joined downstream (`host_impact`, member contribution,
+        # `host-ko-impact --target`) against the *raw* MICOM metabolite ids of the secretion
+        # dict. Publishing them under the normalized spelling silently dropped every stereo
+        # descriptor metabolite (`lac__D` -> `lac__d`, `glc__D`, every `__L` amino acid) from
+        # microbe_to_host while `host_uptake.csv` listed it under the other spelling.
+        raw_by_normalized: dict[str, str] = {}
         wrong_side_microbial: dict[str, str] = {}
         for raw_metabolite, value in microbial_availability.items():
             metabolite = _normalize_metabolite_id(str(raw_metabolite))
@@ -364,6 +371,7 @@ def solve_bigg_host(
             if reaction_id is not None:
                 microbial_caps[metabolite] = microbial_caps.get(metabolite, 0.0) + flux
                 matched[metabolite] = reaction_id
+                raw_by_normalized.setdefault(metabolite, str(raw_metabolite))
             elif wrong_side is not None:
                 wrong_side_microbial[str(raw_metabolite)] = wrong_side
         if wrong_side_microbial:
@@ -411,7 +419,9 @@ def solve_bigg_host(
                 max(0.0, total_lower - background_caps.get(metabolite, 0.0)),
             )
             upper = min(microbial_cap, total_upper)
-            microbial_ranges[metabolite] = (lower, max(lower, upper))
+            microbial_ranges[raw_by_normalized.get(metabolite, metabolite)] = (
+                lower, max(lower, upper)
+            )
         lumen_uptake = _identified_points(microbial_ranges)
         interface_fluxes: list[InterfaceFlux] = []
         for reaction_id in sorted(exchange_ids):
