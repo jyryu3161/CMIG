@@ -38,6 +38,13 @@ from cmig.render.figure_style import (
     polish_matplotlib_axes as _polish_matplotlib_axes,
 )
 
+#: Tracked destination for `cmig agora2-fetch` when neither --out nor --catalogue says where
+#: the catalogue lives (mirrors data/gems for the human GEMs). Nothing is committed there.
+AGORA2_DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "agora2"
+#: Above this, `agora2-fetch` demands --yes. The whole catalogue is ~70 GB of individual files,
+#: which is a worse route than the publisher's 2.0 GB archive.
+AGORA2_LARGE_FETCH_BYTES = 8 * 1024**3
+
 DEFAULT_DFBA_INITIAL_CONCENTRATIONS = {
     "EX_glc__D_e": 10.0,
     "EX_o2_e": 20.0,
@@ -46,6 +53,32 @@ DEFAULT_DFBA_INITIAL_CONCENTRATIONS = {
 }
 
 GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
+    {
+        "gui_surface": "Models / Fetch AGORA2 Pool",
+        "cli_command": "cmig agora2-list",
+        "purpose": "List and filter the AGORA2 (VMH) reconstruction catalogue without "
+        "downloading any model.",
+        "required_args": [],
+        "common_options": ["--genus", "--match", "--sample", "--one-per-genus", "--refresh"],
+        "key_outputs": ["agora2_catalogue.json"],
+        "example": "uv run cmig agora2-list --match butyr --sample 20 --one-per-genus",
+    },
+    {
+        "gui_surface": "Models / Fetch AGORA2 Pool",
+        "cli_command": "cmig agora2-fetch",
+        "purpose": "Download selected AGORA2 reconstructions into a CMIG model folder, "
+        "repairing the published files' encoding and converting VMH ids to BiGG.",
+        "required_args": ["--out"],
+        "common_options": [
+            "--strain", "--genus", "--match", "--sample", "--one-per-genus", "--all",
+            "--namespace", "--format", "--dry-run",
+        ],
+        "key_outputs": ["agora2_manifest.json", "<strain>.xml"],
+        "example": (
+            "uv run cmig agora2-fetch --genus Roseburia,Faecalibacterium --one-per-genus "
+            "--format json --out models/agora2_pool"
+        ),
+    },
     {
         "gui_surface": "Models / Import Model",
         "cli_command": "cmig model-review",
@@ -8128,6 +8161,247 @@ def _cmd_namespace_suggest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _agora2_catalogue_path(args: argparse.Namespace) -> Path:
+    """Where the cached catalogue lives: --catalogue, else beside --out, else the data dir."""
+    from cmig.io.agora2 import CATALOGUE_FILENAME
+
+    explicit = getattr(args, "catalogue", None)
+    if explicit:
+        return Path(explicit)
+    out = getattr(args, "out", None)
+    if out:
+        return Path(out) / CATALOGUE_FILENAME
+    return AGORA2_DATA_DIR / CATALOGUE_FILENAME
+
+
+def _agora2_selection(args: argparse.Namespace, entries: list[Any]) -> list[Any]:
+    """Apply every selection flag, or return the whole catalogue for --all."""
+    from cmig.io.agora2 import select_entries
+
+    ids: list[str] | None = None
+    strain_arg = getattr(args, "strain", None)
+    raw_ids = _parse_csv_strings(str(strain_arg), flag="--strain") if strain_arg else []
+    strain_file = getattr(args, "strain_file", None)
+    if strain_file:
+        try:
+            lines = Path(strain_file).read_text(encoding="utf-8").splitlines()
+        except OSError as e:
+            raise ValueError(f"--strain-file 를 읽을 수 없음: {e}") from e
+        raw_ids += [
+            line.strip().removesuffix(".xml")
+            for line in lines
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+    if raw_ids:
+        # Preserve the user's order, drop duplicates.
+        ids = list(dict.fromkeys(raw_ids))
+    return select_entries(
+        entries,
+        ids=ids,
+        genera=(
+            _parse_csv_strings(str(genus_arg), flag="--genus")
+            if (genus_arg := getattr(args, "genus", None))
+            else None
+        ),
+        pattern=getattr(args, "match", None),
+        exclude_pattern=getattr(args, "exclude_match", None),
+        sample=getattr(args, "sample", None),
+        seed=getattr(args, "seed", 0),
+        one_per_genus=bool(getattr(args, "one_per_genus", False)),
+        limit=getattr(args, "limit", None),
+    )
+
+
+def _agora2_model_from_record(record: dict[str, Any]) -> Any:
+    """Rebuild a FetchedModel from a manifest record, so a resumed fetch keeps its provenance."""
+    from cmig.io.agora2 import FetchedModel
+
+    fields = FetchedModel.__dataclass_fields__
+    return FetchedModel(**{key: record[key] for key in fields if key in record})
+
+
+def _cmd_agora2_list(args: argparse.Namespace) -> int:
+    """List / filter the AGORA2 catalogue without downloading any reconstruction."""
+    from cmig.io.agora2 import (
+        AGORA2_CITATION,
+        AGORA2_SET_NOTE,
+        Agora2Error,
+        estimated_bytes,
+        human_bytes,
+        load_or_fetch_catalogue,
+    )
+
+    catalogue_path = _agora2_catalogue_path(args)
+    try:
+        entries, fetched = load_or_fetch_catalogue(catalogue_path, refresh=args.refresh)
+        selected = _agora2_selection(args, entries)
+    except (Agora2Error, ValueError) as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+    if args.format == "json":
+        payload = {
+            "catalogue": str(catalogue_path),
+            "catalogue_refreshed": fetched,
+            "n_catalogue": len(entries),
+            "n_selected": len(selected),
+            "estimated_download_bytes": estimated_bytes(selected),
+            "citation": AGORA2_CITATION,
+            "set_note": AGORA2_SET_NOTE,
+            "models": [
+                {"id": e.id, "file": e.file, "genus": e.genus, "species": e.species,
+                 "published_size": e.published_size, "url": e.url}
+                for e in selected
+            ],
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True))
+        return 0
+
+    print(f"catalogue: {catalogue_path} ({'fetched' if fetched else 'cached'}, "
+          f"{len(entries)} reconstructions)")
+    print(f"selected:  {len(selected)}  (~{human_bytes(estimated_bytes(selected))} to download)")
+    for entry in selected:
+        print(f"  {entry.id:<58s} {entry.published_size:>6s}")
+    if not selected:
+        print("  (no reconstruction matched the filters)")
+    return 0
+
+
+def _cmd_agora2_fetch(args: argparse.Namespace) -> int:
+    """Download selected AGORA2 reconstructions into a CMIG-usable model folder."""
+    from cmig.io.agora2 import (
+        AGORA2_ARCHIVE_URLS,
+        AGORA2_CITATION,
+        AGORA2_LICENSE_NOTE,
+        AGORA2_SET_NOTE,
+        Agora2Error,
+        FetchedModel,
+        estimated_bytes,
+        fetch_model,
+        human_bytes,
+        load_or_fetch_catalogue,
+        read_manifest,
+        write_manifest,
+    )
+
+    out = Path(args.out)
+    catalogue_path = _agora2_catalogue_path(args)
+    try:
+        entries, _fetched = load_or_fetch_catalogue(catalogue_path, refresh=args.refresh)
+        selected = _agora2_selection(args, entries)
+    except (Agora2Error, ValueError) as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    if not selected:
+        print(
+            "no reconstruction matched the selection; pass --strain/--genus/--match/--sample "
+            "or --all (see `cmig agora2-list`)",
+            file=sys.stderr,
+        )
+        return 2
+    narrowed = any(
+        getattr(args, name, None)
+        for name in ("strain", "strain_file", "genus", "match", "exclude_match", "sample",
+                     "limit")
+    ) or bool(getattr(args, "one_per_genus", False))
+    if not narrowed and not args.fetch_all:
+        print(
+            f"refusing to fetch the whole catalogue ({len(selected)} reconstructions) without "
+            "--all; narrow it with --strain/--genus/--match/--sample first "
+            "(`cmig agora2-list` shows what matches)",
+            file=sys.stderr,
+        )
+        return 2
+
+    total = estimated_bytes(selected)
+    print(f"AGORA2 {len(selected)} reconstruction(s), ~{human_bytes(total)} "
+          f"-> {out}  [namespace={args.namespace} format={args.format}]")
+    if args.namespace == "vmh":
+        print(
+            "  note: VMH ids (EX_but(e)) are kept; CMIG's namespace gate scores these at 0% "
+            "coverage and blocks them. Use --namespace bigg for a pool you intend to solve.",
+            file=sys.stderr,
+        )
+    # A whole-catalogue fetch is ~70 GB of individual files; the archive is the sane bulk route.
+    if total > AGORA2_LARGE_FETCH_BYTES and not args.yes:
+        print(
+            f"  refusing a {human_bytes(total)} fetch without --yes.\n"
+            f"  For the complete set prefer the publisher's archive "
+            f"({AGORA2_ARCHIVE_URLS['sbml_fixed']}, 2.0 GB, and it is the 2024 fixed rebuild), "
+            "then point --model-dir at the extracted folder.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.dry_run:
+        for entry in selected:
+            print(f"  would fetch {entry.id:<58s} {entry.published_size:>6s}  {entry.url}")
+        return 0
+
+    previous = {
+        str(record.get("id")): record
+        for record in (read_manifest(out).get("models") or [])
+        if isinstance(record, dict)
+    }
+    fetched_models: list[FetchedModel] = []
+    failures: list[str] = []
+    for index, entry in enumerate(selected, start=1):
+        suffix = ".json" if args.format == "json" else ".xml"
+        target = out / f"{entry.id}{suffix}"
+        record = previous.get(entry.id)
+        if (
+            not args.overwrite
+            and target.exists()
+            and record is not None
+            and record.get("namespace") == args.namespace
+            and record.get("format") == args.format
+        ):
+            print(f"  [{index}/{len(selected)}] {entry.id}: already fetched, skipping")
+            fetched_models.append(_agora2_model_from_record(record))
+            continue
+        print(f"  [{index}/{len(selected)}] {entry.id} ...", flush=True)
+        try:
+            fetched_models.append(fetch_model(
+                entry, out,
+                namespace=args.namespace,
+                file_format=args.format,
+                repair_encoding=not args.no_repair_encoding,
+            ))
+        except Agora2Error as e:
+            # One unreadable reconstruction must not lose the rest of a long fetch; it is
+            # named here and excluded from the manifest, so the pool never silently contains it.
+            failures.append(f"{entry.id}: {e}")
+            print(f"      FAILED: {e}", file=sys.stderr)
+
+    if fetched_models:
+        manifest_path = write_manifest(
+            fetched_models, out,
+            namespace=args.namespace,
+            file_format=args.format,
+            repair_encoding=not args.no_repair_encoding,
+        )
+        repaired = sum(1 for m in fetched_models if m.encoding_repairs > 0)
+        print(f"\nwrote {len(fetched_models)} model(s) -> {out}")
+        print(f"  provenance: {manifest_path}")
+        print(f"  encoding repairs applied to {repaired}/{len(fetched_models)} file(s) "
+              "(published SBML declares UTF-8 but carries Latin-1 bytes)")
+        print(f"  cite: {AGORA2_CITATION}")
+        print(f"  {AGORA2_LICENSE_NOTE}")
+        print(f"  {AGORA2_SET_NOTE}")
+        if args.namespace == "bigg":
+            print(
+                "\nnext: uv run cmig search --model-dir " + str(out) +
+                " --target but --min-size 3 --max-size 3 --assume-bigg-namespace "
+                "--medium <diet.csv> --exact-medium --out runs/but3"
+            )
+    if failures:
+        print(f"\n{len(failures)} reconstruction(s) failed and are NOT in the manifest:",
+              file=sys.stderr)
+        for failure in failures:
+            print(f"  {failure}", file=sys.stderr)
+        return 1 if fetched_models else 3
+    return 0
+
+
 def _cmd_model_review(args: argparse.Namespace) -> int:
     """User-provided GEM import review + namespace audit payload."""
     try:
@@ -9047,6 +9321,107 @@ def _add_namespace_gate_options(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="explicitly confirm that model exchange ids already use the BiGG namespace",
     )
+
+
+def _add_agora2_selection_options(parser: argparse.ArgumentParser) -> None:
+    """Selection flags shared by `agora2-list` and `agora2-fetch` (conjunctive)."""
+    parser.add_argument(
+        "--strain", default=None,
+        help="comma-separated strain ids exactly as `agora2-list` prints them "
+        "(e.g. Faecalibacterium_prausnitzii_A2_165); an unknown id is exit 2",
+    )
+    parser.add_argument(
+        "--strain-file", default=None, dest="strain_file",
+        help="file with one strain id per line ('#' comments ignored)",
+    )
+    parser.add_argument(
+        "--genus", default=None,
+        help="comma-separated genera, e.g. Roseburia,Faecalibacterium",
+    )
+    parser.add_argument(
+        "--match", default=None,
+        help="case-insensitive regular expression matched against the strain id",
+    )
+    parser.add_argument(
+        "--exclude-match", default=None, dest="exclude_match",
+        help="drop ids matching this regular expression; 'uncultured_|_ERR[0-9]' keeps named "
+        "isolates instead of metagenome-assembled bins",
+    )
+    parser.add_argument(
+        "--one-per-genus", action="store_true", dest="one_per_genus",
+        help="keep only the first strain of each genus BEFORE sampling; without it a random "
+        "sample is dominated by the over-represented genera (999 of 7302 are Escherichia)",
+    )
+    parser.add_argument(
+        "--sample", type=int, default=None,
+        help="draw this many models from the filtered set (deterministic, see --seed)",
+    )
+    parser.add_argument("--seed", type=int, default=0, help="sampling seed (default 0)")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="keep at most this many, after every other filter"
+    )
+    parser.add_argument(
+        "--all", action="store_true", dest="fetch_all",
+        help="no selection filter: the whole catalogue (see --yes; ~70 GB as individual files)",
+    )
+    parser.add_argument(
+        "--catalogue", default=None,
+        help="catalogue JSON path (default: <out>/agora2_catalogue.json, else data/agora2/)",
+    )
+    parser.add_argument(
+        "--refresh", action="store_true",
+        help="re-download the publisher's directory index instead of using the cached catalogue",
+    )
+
+
+def _add_agora2_parsers(sub: Any) -> None:
+    """`agora2-list` / `agora2-fetch` — the only CMIG commands that reach the network."""
+    listing = sub.add_parser(
+        "agora2-list",
+        help="list/filter the AGORA2 (VMH) reconstruction catalogue; downloads no model",
+    )
+    _add_agora2_selection_options(listing)
+    listing.add_argument("--format", default="text", choices=["text", "json"])
+    listing.add_argument(
+        "--out", default=None,
+        help="only used to locate a catalogue cache written by a previous agora2-fetch",
+    )
+    listing.set_defaults(func=_cmd_agora2_list)
+
+    fetch = sub.add_parser(
+        "agora2-fetch",
+        help="download selected AGORA2 reconstructions into a CMIG model folder",
+    )
+    _add_agora2_selection_options(fetch)
+    fetch.add_argument("--out", required=True, help="destination model folder")
+    fetch.add_argument(
+        "--namespace", default="bigg", choices=["bigg", "vmh"],
+        help="bigg (default) rewrites VMH compartment notation (EX_but(e) -> EX_but_e) so the "
+        "pool passes CMIG's namespace gate | vmh keeps the published ids, which the gate blocks",
+    )
+    fetch.add_argument(
+        "--format", default="sbml", choices=["sbml", "json"],
+        help="sbml (default, as published) | json — cobra JSON is ~12x smaller and ~7x faster to "
+        "load, which dominates a combination search that rebuilds the community per candidate",
+    )
+    fetch.add_argument(
+        "--no-repair-encoding", action="store_true", dest="no_repair_encoding",
+        help="do NOT transcode the stray Latin-1 bytes in the published SBML; roughly half the "
+        "catalogue then fails to parse at all (the repair is recorded per model either way)",
+    )
+    fetch.add_argument(
+        "--overwrite", action="store_true",
+        help="re-download models already recorded in the destination manifest",
+    )
+    fetch.add_argument(
+        "--dry-run", action="store_true", dest="dry_run",
+        help="print what would be fetched and exit 0",
+    )
+    fetch.add_argument(
+        "--yes", action="store_true",
+        help="confirm a fetch larger than 8 GB",
+    )
+    fetch.set_defaults(func=_cmd_agora2_fetch)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -10025,6 +10400,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ss.add_argument("--out", default=None, help="산출 디렉터리(생략 시 stdout)")
     ss.set_defaults(func=_cmd_stats_sweep)
+    _add_agora2_parsers(sub)
     ns = sub.add_parser("namespace-suggest", help="model exchange namespace decision 초안 생성")
     ns.add_argument("--model", required=True, help="SBML/JSON/MAT model path")
     ns.add_argument("--known-targets", default=None, help="known target metabolite id 목록(txt)")

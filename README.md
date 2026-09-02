@@ -7,9 +7,10 @@ layer around model-pool search, host-microbe coupling, namespace checks,
 reproducible manifests, tidy outputs, diagnostics, and publication-oriented
 figures.
 
-The workflow is intentionally local-file based: CMIG does not download or
-curate external model catalogues. Prepare your microbial SBML/JSON/MAT models,
-then load them through the GUI or CLI.
+The workflow is intentionally local-file based: CMIG curates and redistributes
+no model catalogue. Prepare your microbial SBML/JSON/MAT models and load them
+through the GUI or CLI, or let `cmig agora2-fetch` pull user-selected AGORA2
+reconstructions from the publisher's server with a recorded provenance manifest.
 
 ## Requirements
 
@@ -65,6 +66,11 @@ Representative runs (all write a run directory with a reproducibility
 manifest; check any run with `uv run cmig inspect-run --run-dir <dir>`):
 
 ```bash
+# Fetch a model pool from AGORA2 (the only command that reaches the network)
+uv run cmig agora2-list --genus Roseburia --limit 5
+uv run cmig agora2-fetch --genus Roseburia,Faecalibacterium --one-per-genus \
+  --format json --out models/agora2_pool
+
 # Solve a community from a taxonomy CSV on a defined medium
 uv run cmig solve --taxonomy tax.csv \
   --medium medium_presets/gut_overlay_agora_western.csv \

@@ -5,6 +5,38 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Added — AGORA2 model fetcher
+
+- **`cmig agora2-list` / `cmig agora2-fetch`** (`cmig/io/agora2.py`) — the first CMIG commands
+  that reach the network, and only ever the publisher's own file server (any other URL is
+  refused). They fetch **user-selected** AGORA2 reconstructions on demand and write an
+  `agora2_manifest.json` recording the source URL, the bytes as served (`source_sha256`), the
+  bytes on disk, and every transformation applied. CMIG still curates and redistributes no
+  catalogue.
+  - Selection is conjunctive: `--strain`/`--strain-file`, `--genus`, `--match`/`--exclude-match`,
+    `--one-per-genus`, `--sample N --seed S`, `--limit`, `--all`, plus `--dry-run`. `--all` and
+    any fetch above 8 GB require `--yes`; the whole catalogue is ~70 GB as individual files, so
+    the message points at the publisher's 2.0 GB archive instead.
+  - **Encoding repair (on by default).** The published SBML declares UTF-8 but carries stray
+    Latin-1 bytes in species names, so libsbml rejects the document outright and cobra reports
+    "No SBML model detected in file". Measured: 3 of a 20-model pool, 5-9 bytes each. Only the
+    offending bytes are transcoded, and each is recorded.
+  - **VMH → BiGG namespace conversion (`--namespace bigg`, default).** Two conventions differ:
+    compartments (`EX_but(e)`, `but[e]`) and isomer separators (`glc_D`, `ala_L`, `26dap_M`).
+    Both are rewritten, collision-checked and fail-closed; no metabolite-identity mapping is
+    involved. Unconverted AGORA2 models score **0 % on CMIG's namespace gate and are blocked**,
+    and converting only the compartment half fails quietly: over the 645 exchange metabolites of
+    a 20-strain pool, matches against the 144 BiGG ids in CMIG's gut media rise 93 → 122 once
+    the isomer separator is rewritten too — the 29 recovered include D-glucose and every amino
+    acid, without which a defined medium leaves the community at zero growth. `--namespace vmh`
+    keeps the published ids and says plainly that the gate will block them.
+  - **`--format json`** re-serialises through cobra JSON: measured 14.0 MB → 1.16 MB and
+    1.72 s → 0.26 s per load, which dominates a combination search that rebuilds the community
+    once per candidate.
+  - The manifest records that individual reconstructions are the 2023-03-23 annotated set (the
+    2024-07-04 "fixed" rebuild is archive-only), the AGORA2 citation, and that CMIG asserts no
+    licence for the reconstructions.
+
 Round-10 codebase review (2026-09-02): four parallel read-only reviews (CLI, analysis core,
 engine/host/dynamics/provenance, io/service/render/GUI), every confirmed finding fixed and pinned
 by a regression test (`tests/test_round10_review_fixes.py` plus targeted additions).

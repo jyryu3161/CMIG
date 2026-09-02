@@ -155,6 +155,57 @@ Two caveats worth knowing when driving CMIG from the skill:
 
 ## Typical CLI Workflows
 
+### 0. Fetch an AGORA2 model pool
+
+`agora2-list` / `agora2-fetch` are the **only** CMIG commands that reach the
+network, and they only ever reach the publisher's own file server
+(`https://www.vmh.life/files/reconstructions/AGORA2/`; anything else is refused).
+Nothing is redistributed with CMIG and nothing is written into the repository.
+
+```bash
+# What is in the catalogue? (7,302 reconstructions; nothing is downloaded)
+uv run cmig agora2-list --match "^Roseburia" --limit 5
+
+# A 20-genus pool of named isolates, as cobra JSON
+uv run cmig agora2-fetch \
+  --genus Faecalibacterium,Roseburia,Eubacterium,Anaerostipes,Coprococcus,Butyrivibrio \
+  --exclude-match "uncultured_|_ERR[0-9]|_sp_" \
+  --one-per-genus --format json \
+  --out models/agora2_pool
+```
+
+Selection flags are conjunctive: `--strain` / `--strain-file` (exact ids),
+`--genus`, `--match` and `--exclude-match` (regular expressions),
+`--one-per-genus`, `--sample N --seed S`, `--limit`. `--all` takes the whole
+catalogue and `--dry-run` prints the plan without downloading. A fetch above
+8 GB additionally requires `--yes`.
+
+**Three published-file facts the command handles for you**, each measured against
+version 2.01 on 2026-09-02 and recorded per model in `agora2_manifest.json`:
+
+| Fact | What CMIG does |
+| --- | --- |
+| The SBML declares UTF-8 but carries stray Latin-1 bytes in species names, so libsbml rejects the whole document and cobra reports "No SBML model detected in file" | transcodes only those bytes and records each one (`--no-repair-encoding` opts out); 3 of a 20-model pool needed it |
+| Ids are VMH-style in two ways: compartments (`EX_but(e)`, `but[e]`) and isomer separators (`glc_D`, `ala_L`, `26dap_M`) | `--namespace bigg` (default) rewrites both to `EX_but_e`, `but_e`, `glc__D`; collision-checked, no identity mapping. `--namespace vmh` keeps the published ids, which **CMIG's namespace gate scores at 0 % coverage and blocks** |
+| Files are 4-28 MB each (~70 GB for the whole catalogue), mostly RDF annotation | `--format json` re-serialises as cobra JSON. Measured on `Eubacterium_rectale_ATCC_33656`: 14.0 MB → 1.16 MB, 1.72 s → 0.26 s per load. A combination search rebuilds the community once per candidate, so this ratio is most of its runtime |
+
+Converting only the compartment half is not enough and fails quietly: measured
+over the 645 distinct exchange metabolites of a 20-strain pool against the 144
+BiGG ids in CMIG's shipped gut media, matches rise from 93 to 122 once the
+isomer separator is rewritten as well. The 29 recovered include D-glucose and
+every amino acid, so without it a defined medium applies almost no carbon source
+and the community solves at zero growth.
+
+Individual reconstructions are the **annotated SBML set uploaded 2023-03-23**.
+The 2024-07-04 `sbml_files_fixed` rebuild is published only as one 2.0 GB
+archive, so a per-strain fetch cannot serve it; download and extract that
+archive yourself if you need it, then point `--model-dir` at the folder.
+
+CMIG asserts no licence for these reconstructions. Check the terms at
+<https://www.vmh.life/> before redistribution or commercial use, and cite
+Heinken *et al.*, *Nat Biotechnol* 2023 (`10.1038/s41587-022-01628-0`) for any
+result — the citation is in every manifest.
+
 ### 1. Review a user-provided model
 
 ```bash
@@ -229,6 +280,41 @@ abundance, and the target LP enforces a community-level growth floor rather than
 a minimum growth rate for every member. A reported 3-member winner can therefore
 contain a member with negligible growth or contribution; use a separate
 abundance/member-viability analysis if that distinction matters.
+
+#### Two-step prescreen: rank singletons, then combine the survivors
+
+There is no `--prescreen` flag; the prescreen is two ordinary runs, which keeps
+each one separately inspectable and separately hashed. Size 1 is a valid search,
+so the first run *is* the per-species capability test:
+
+```bash
+# 1. Rank every pool member alone. Members whose model has no EX_<target>_m at
+#    all land in search_unevaluated.csv with status "missing", not in the ranking.
+uv run cmig search --model-dir models/agora2_pool \
+  --target but --min-size 1 --max-size 1 --strategy exhaustive --top-k 100 \
+  --medium diet.csv --exact-medium --allow-failed-run --out runs/but_singletons
+
+# 2. Build a taxonomy CSV of the survivors you want to combine, then search it.
+uv run cmig search --taxonomy runs/pool_shortlist.csv \
+  --target but --min-size 3 --max-size 3 --strategy exhaustive --top-k 20 \
+  --medium diet.csv --exact-medium --out runs/but_3of12
+```
+
+This is a **heuristic, and it has a known blind spot**: the prescreen ranks each
+organism on what it can make *alone*, so a member that produces none of the
+target but feeds the producer — the lactate and acetate cross-feeding that makes
+`Bifidobacterium` + `Anaerostipes` a butyrate pair — scores zero and is dropped
+before it can ever appear in a winning consortium. Carry suspected cross-feeders
+into step 2 explicitly rather than taking the top *k* by target flux alone, and
+say in the write-up that the search space was pruned. When the conclusion depends
+on the winner being *the* optimum, run step 2 exhaustively over the unpruned pool
+instead, or use the GA and report several seeds.
+
+Sizing the choice: C(20,3) = 1140 candidates, above the default
+`--exhaustive-max` of 100, so `--strategy auto` silently switches to GA. Pass
+`--strategy exhaustive` (or raise `--exhaustive-max`) when you want a certified
+optimum, and remember each candidate re-reads every member model from disk —
+which is why `--format json` on `agora2-fetch` matters.
 
 Useful outputs:
 
@@ -920,9 +1006,13 @@ line. Edge width in the interaction figures uses the same community basis.
 
 ## Scope And Limitations
 
-- CMIG expects users to provide their own GEM files.
-- CMIG does not automatically download AGORA, VMH, Recon, Human-GEM, or BiGG
-  model collections.
+- CMIG expects users to provide their own GEM files. The one exception is
+  `agora2-fetch`, which downloads **user-selected** AGORA2 reconstructions from
+  the publisher's server on demand and records their provenance; it curates
+  nothing and redistributes nothing.
+- CMIG does not automatically download VMH, Recon, Human-GEM, or BiGG model
+  collections (`scripts/download_human_gems.py` fetches the two human GEMs on
+  demand under the same rule).
 - Host-microbe coupling maps authoritative metabolite annotations where available,
   but publication use still requires review of the generated interface map.
 - dFBA currently supports well-mixed single-model simulations. Full spatial
