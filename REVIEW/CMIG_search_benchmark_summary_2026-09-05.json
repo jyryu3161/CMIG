@@ -1,0 +1,699 @@
+{
+  "date": "2026-09-05",
+  "search_policy": "consortium_search_v2",
+  "ga_policy": "set_ga_v2",
+  "note": "Local small-oracle benchmark, not an end-to-end GA speedup or universal quality claim.",
+  "results": {
+    "additive": {
+      "policy": "set_search_benchmark_v1",
+      "oracle_candidates": 1140,
+      "oracle_seconds": 0.00041758298175409436,
+      "optimum": 57,
+      "budget": 100,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "ga_configs": {
+        "ga": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": null,
+          "local_search_fraction": 0,
+          "preserve_common": false
+        },
+        "restart": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": 3,
+          "local_search_fraction": 0,
+          "preserve_common": false
+        },
+        "local_swap": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": null,
+          "local_search_fraction": 0.3,
+          "preserve_common": true
+        }
+      },
+      "timing_scope": "oracle replay; Python-only search peak memory",
+      "top_k_policy": "recall of all oracle solutions tied at the top-k threshold",
+      "summary": [
+        {
+          "method": "random",
+          "optimum_hit_rate": 0,
+          "mean_regret": 4.3,
+          "mean_top_k_recall": 0.07272727272727272,
+          "mean_top_k_jaccard_across_seeds": 0.03248862897985705,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "ga",
+          "optimum_hit_rate": 0.6,
+          "mean_regret": 0.6,
+          "mean_top_k_recall": 0.5636363636363636,
+          "mean_top_k_jaccard_across_seeds": 0.31014275255761325,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "restart",
+          "optimum_hit_rate": 0.6,
+          "mean_regret": 0.6,
+          "mean_top_k_recall": 0.5636363636363636,
+          "mean_top_k_jaccard_across_seeds": 0.31159518538259506,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "local_swap",
+          "optimum_hit_rate": 0.8,
+          "mean_regret": 0.4,
+          "mean_top_k_recall": 0.6,
+          "mean_top_k_jaccard_across_seeds": 0.3282331226087676,
+          "all_budgets_filled": true
+        }
+      ],
+      "input_identity": null
+    },
+    "hidden_synergy": {
+      "policy": "set_search_benchmark_v1",
+      "oracle_candidates": 1140,
+      "oracle_seconds": 0.0004964160034433007,
+      "optimum": 206,
+      "budget": 100,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "ga_configs": {
+        "ga": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": null,
+          "local_search_fraction": 0,
+          "preserve_common": false
+        },
+        "restart": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": 3,
+          "local_search_fraction": 0,
+          "preserve_common": false
+        },
+        "local_swap": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": null,
+          "local_search_fraction": 0.3,
+          "preserve_common": true
+        }
+      },
+      "timing_scope": "oracle replay; Python-only search peak memory",
+      "top_k_policy": "recall of all oracle solutions tied at the top-k threshold",
+      "summary": [
+        {
+          "method": "random",
+          "optimum_hit_rate": 0.1,
+          "mean_regret": 138.1,
+          "mean_top_k_recall": 0.075,
+          "mean_top_k_jaccard_across_seeds": 0.03131903833658219,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "ga",
+          "optimum_hit_rate": 0,
+          "mean_regret": 149.6,
+          "mean_top_k_recall": 0.5166666666666667,
+          "mean_top_k_jaccard_across_seeds": 0.31014275255761325,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "restart",
+          "optimum_hit_rate": 0,
+          "mean_regret": 149.6,
+          "mean_top_k_recall": 0.5166666666666667,
+          "mean_top_k_jaccard_across_seeds": 0.31159518538259506,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "local_swap",
+          "optimum_hit_rate": 0,
+          "mean_regret": 149.4,
+          "mean_top_k_recall": 0.55,
+          "mean_top_k_jaccard_across_seeds": 0.3282331226087676,
+          "all_budgets_filled": true
+        }
+      ],
+      "input_identity": null
+    },
+    "sparse_synergy": {
+      "policy": "set_search_benchmark_v1",
+      "oracle_candidates": 1140,
+      "oracle_seconds": 0.00023612502263858914,
+      "optimum": 1,
+      "budget": 100,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "ga_configs": {
+        "ga": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": null,
+          "local_search_fraction": 0,
+          "preserve_common": false
+        },
+        "restart": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": 3,
+          "local_search_fraction": 0,
+          "preserve_common": false
+        },
+        "local_swap": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": null,
+          "local_search_fraction": 0.3,
+          "preserve_common": true
+        }
+      },
+      "timing_scope": "oracle replay; Python-only search peak memory",
+      "top_k_policy": "recall of all oracle solutions tied at the top-k threshold",
+      "summary": [
+        {
+          "method": "random",
+          "optimum_hit_rate": 0.1,
+          "mean_regret": 0.9,
+          "mean_top_k_recall": 0.08771929824561403,
+          "mean_top_k_jaccard_across_seeds": 0.03918510874135229,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "ga",
+          "optimum_hit_rate": 0.1,
+          "mean_regret": 0.9,
+          "mean_top_k_recall": 0.08771929824561403,
+          "mean_top_k_jaccard_across_seeds": 0.022482131254061077,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "restart",
+          "optimum_hit_rate": 0.1,
+          "mean_regret": 0.9,
+          "mean_top_k_recall": 0.08771929824561403,
+          "mean_top_k_jaccard_across_seeds": 0.026120857699805065,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "local_swap",
+          "optimum_hit_rate": 0,
+          "mean_regret": 1,
+          "mean_top_k_recall": 0.08771929824561403,
+          "mean_top_k_jaccard_across_seeds": 0.03352826510721248,
+          "all_budgets_filled": true
+        }
+      ],
+      "input_identity": null
+    },
+    "competition": {
+      "policy": "set_search_benchmark_v1",
+      "oracle_candidates": 1140,
+      "oracle_seconds": 0.0005743750371038914,
+      "optimum": 55,
+      "budget": 100,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "ga_configs": {
+        "ga": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": null,
+          "local_search_fraction": 0,
+          "preserve_common": false
+        },
+        "restart": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": 3,
+          "local_search_fraction": 0,
+          "preserve_common": false
+        },
+        "local_swap": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": null,
+          "local_search_fraction": 0.3,
+          "preserve_common": true
+        }
+      },
+      "timing_scope": "oracle replay; Python-only search peak memory",
+      "top_k_policy": "recall of all oracle solutions tied at the top-k threshold",
+      "summary": [
+        {
+          "method": "random",
+          "optimum_hit_rate": 0.1,
+          "mean_regret": 2.5,
+          "mean_top_k_recall": 0.09000000000000001,
+          "mean_top_k_jaccard_across_seeds": 0.03716699155295646,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "ga",
+          "optimum_hit_rate": 0.5,
+          "mean_regret": 0.5,
+          "mean_top_k_recall": 0.56,
+          "mean_top_k_jaccard_across_seeds": 0.2822389474608257,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "restart",
+          "optimum_hit_rate": 0.5,
+          "mean_regret": 0.6,
+          "mean_top_k_recall": 0.56,
+          "mean_top_k_jaccard_across_seeds": 0.27436714376858856,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "local_swap",
+          "optimum_hit_rate": 0.6,
+          "mean_regret": 0.4,
+          "mean_top_k_recall": 0.53,
+          "mean_top_k_jaccard_across_seeds": 0.26670078192266017,
+          "all_budgets_filled": true
+        }
+      ],
+      "input_identity": null
+    },
+    "infeasible_region": {
+      "policy": "set_search_benchmark_v1",
+      "oracle_candidates": 1140,
+      "oracle_seconds": 0.0002018750528804958,
+      "optimum": 40,
+      "budget": 100,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "ga_configs": {
+        "ga": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": null,
+          "local_search_fraction": 0,
+          "preserve_common": false
+        },
+        "restart": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": 3,
+          "local_search_fraction": 0,
+          "preserve_common": false
+        },
+        "local_swap": {
+          "pop_size": 25,
+          "generations": 1000,
+          "min_size": 3,
+          "max_size": 3,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 100,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": null,
+          "local_search_fraction": 0.3,
+          "preserve_common": true
+        }
+      },
+      "timing_scope": "oracle replay; Python-only search peak memory",
+      "top_k_policy": "recall of all oracle solutions tied at the top-k threshold",
+      "summary": [
+        {
+          "method": "random",
+          "optimum_hit_rate": 0,
+          "mean_regret": 5.4,
+          "mean_top_k_recall": 0.075,
+          "mean_top_k_jaccard_across_seeds": 0.03290142567748347,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "ga",
+          "optimum_hit_rate": 0.3,
+          "mean_regret": 2.2,
+          "mean_top_k_recall": 0.26666666666666666,
+          "mean_top_k_jaccard_across_seeds": 0.10516039974244308,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "restart",
+          "optimum_hit_rate": 0.3,
+          "mean_regret": 2.2,
+          "mean_top_k_recall": 0.24166666666666667,
+          "mean_top_k_jaccard_across_seeds": 0.10485926564357936,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "local_swap",
+          "optimum_hit_rate": 0.7,
+          "mean_regret": 0.4,
+          "mean_top_k_recall": 0.5,
+          "mean_top_k_jaccard_across_seeds": 0.23512917537685338,
+          "all_budgets_filled": true
+        }
+      ],
+      "input_identity": null
+    },
+    "gem_pool": {
+      "policy": "set_search_benchmark_v1",
+      "oracle_candidates": 10,
+      "oracle_seconds": 92.51892887498252,
+      "optimum": 27.748505610590712,
+      "budget": 5,
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "ga_configs": {
+        "ga": {
+          "pop_size": 3,
+          "generations": 1000,
+          "min_size": 2,
+          "max_size": 2,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 5,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": null,
+          "local_search_fraction": 0,
+          "preserve_common": false
+        },
+        "restart": {
+          "pop_size": 3,
+          "generations": 1000,
+          "min_size": 2,
+          "max_size": 2,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 5,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": 3,
+          "local_search_fraction": 0,
+          "preserve_common": false
+        },
+        "local_swap": {
+          "pop_size": 3,
+          "generations": 1000,
+          "min_size": 2,
+          "max_size": 2,
+          "mutation_rate": 0.2,
+          "tournament_k": 3,
+          "elitism": 2,
+          "seed": 0,
+          "immigrant_fraction": 0.1,
+          "max_evaluations": 5,
+          "patience": null,
+          "tie_tolerance": 1e-9,
+          "restart_after": null,
+          "local_search_fraction": 0.3,
+          "preserve_common": true
+        }
+      },
+      "timing_scope": "oracle replay; Python-only search peak memory",
+      "top_k_policy": "recall of all oracle solutions tied at the top-k threshold",
+      "summary": [
+        {
+          "method": "random",
+          "optimum_hit_rate": 0.4,
+          "mean_regret": 3.7973414494248723,
+          "mean_top_k_recall": 0.5222222222222223,
+          "mean_top_k_jaccard_across_seeds": 0.33818342151675485,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "ga",
+          "optimum_hit_rate": 0.6,
+          "mean_regret": 1.5154254586931928,
+          "mean_top_k_recall": 0.4888888888888889,
+          "mean_top_k_jaccard_across_seeds": 0.31040564373897706,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "restart",
+          "optimum_hit_rate": 0.6,
+          "mean_regret": 1.5154254586931928,
+          "mean_top_k_recall": 0.4888888888888889,
+          "mean_top_k_jaccard_across_seeds": 0.31040564373897706,
+          "all_budgets_filled": true
+        },
+        {
+          "method": "local_swap",
+          "optimum_hit_rate": 0.6,
+          "mean_regret": 1.5154254586931928,
+          "mean_top_k_recall": 0.4888888888888889,
+          "mean_top_k_jaccard_across_seeds": 0.31040564373897706,
+          "all_budgets_filled": true
+        }
+      ],
+      "input_identity": {
+        "policy": "consortium_search_v2",
+        "ga_policy": "set_ga_v2",
+        "config": {
+          "target": "ac",
+          "direction": "max_secretion",
+          "min_size": 2,
+          "max_size": 2,
+          "strategy": "auto",
+          "n_samples": 100,
+          "seed": 0,
+          "top_k": 10,
+          "growth_fraction": 0.5,
+          "solver": "gurobi",
+          "robustness_fva": false,
+          "exhaustive_max": 100,
+          "ga_config": null,
+          "growth_policy": {
+            "min_member_growth": 0,
+            "min_community_growth": 0
+          },
+          "validation_top": 0
+        },
+        "models": "sha256:4cee02be171dcd7cf85b578638522ce4d308277cad4ccbe5eed110636d6d2aaa",
+        "medium": null,
+        "medium_mode": null,
+        "strict_medium": true,
+        "versions": {
+          "cmig": "0.3.0",
+          "cobra": "0.31.1",
+          "micom": "0.39.0",
+          "optlang": "1.9.0",
+          "gurobipy": "12.0.3",
+          "osqp": "1.1.1",
+          "pandas": "2.3.3",
+          "pyarrow": "24.0.0"
+        }
+      }
+    }
+  }
+}

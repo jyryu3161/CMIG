@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -467,6 +468,69 @@ class SearchView(QWidget):
         controls.addWidget(QLabel("Figure"))
         controls.addWidget(self.figure_mode_combo)
         controls.addWidget(self.export_figure_btn)
+        settings = QHBoxLayout()
+        self.medium_input = QLineEdit("")
+        self.medium_input.setPlaceholderText("Defined medium CSV/JSON (blank: model default)")
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 2_000_000_000)
+        self.ga_budget_spin = QSpinBox()
+        self.ga_budget_spin.setRange(0, 10_000_000)
+        self.ga_budget_spin.setSpecialValueText("Generation limit only")
+        self.ga_budget_spin.setValue(500)
+        self.workers_spin = QSpinBox()
+        self.workers_spin.setRange(1, 32)
+        self.growth_fraction_spin = QDoubleSpinBox()
+        self.growth_fraction_spin.setRange(0.001, 1.0)
+        self.growth_fraction_spin.setDecimals(3)
+        self.growth_fraction_spin.setValue(0.5)
+        self.min_member_growth_spin = QDoubleSpinBox()
+        self.min_member_growth_spin.setRange(0, 100)
+        self.min_member_growth_spin.setDecimals(5)
+        for label, widget in (("Medium", self.medium_input), ("Seed", self.seed_spin),
+                              ("GA budget", self.ga_budget_spin), ("Workers", self.workers_spin),
+                              ("Growth fraction", self.growth_fraction_spin),
+                              ("Member growth ≥", self.min_member_growth_spin)):
+            settings.addWidget(QLabel(label))
+            settings.addWidget(widget)
+        advanced = QHBoxLayout()
+        self.direction_combo = QComboBox()
+        self.direction_combo.addItems([
+            "max_secretion", "min_secretion", "max_uptake", "min_uptake",
+        ])
+        self.multi_metric_combo = QComboBox()
+        self.multi_metric_combo.addItems([
+            "carbon_equivalent", "raw_sum", "normalized_weighted", "pareto",
+        ])
+        self.target_scales_input = QLineEdit("")
+        self.target_scales_input.setPlaceholderText("Fixed scales for normalized GA: ac=10,but=5")
+        self.checkpoint_input = QLineEdit("")
+        self.checkpoint_input.setPlaceholderText("Checkpoint JSON path")
+        self.resume_check = QCheckBox("Resume")
+        self.cancel_btn = QPushButton("Cancel search")
+        self.cancel_btn.setEnabled(False)
+        for label, advanced_widget in (("Direction", self.direction_combo),
+                              ("Multi-target metric", self.multi_metric_combo),
+                              ("References", self.target_scales_input),
+                              ("Checkpoint", self.checkpoint_input)):
+            advanced.addWidget(QLabel(label))
+            advanced.addWidget(advanced_widget)
+        advanced.addWidget(self.resume_check)
+        advanced.addWidget(self.cancel_btn)
+        limits = QHBoxLayout()
+        self.validation_top_spin = QSpinBox()
+        self.validation_top_spin.setRange(0, 100)
+        self.validation_top_spin.setSpecialValueText("Off")
+        self.min_community_growth_spin = QDoubleSpinBox()
+        self.min_community_growth_spin.setRange(0, 1000)
+        self.min_community_growth_spin.setDecimals(6)
+        self.solve_timeout_spin = QSpinBox()
+        self.solve_timeout_spin.setRange(0, 86400)
+        self.solve_timeout_spin.setSpecialValueText("No limit")
+        for label, limit_widget in (("Validate top (extra solves)", self.validation_top_spin),
+                                    ("Community growth ≥", self.min_community_growth_spin),
+                                    ("Per-solve timeout (s)", self.solve_timeout_spin)):
+            limits.addWidget(QLabel(label))
+            limits.addWidget(limit_widget)
         ko_row = QHBoxLayout()
         self.ko_members_input = QLineEdit("")
         self.ko_members_input.setPlaceholderText("Fixed combo for KO, e.g. iHN637,iSFV_1184")
@@ -525,6 +589,9 @@ class SearchView(QWidget):
         layout.addWidget(self.title)
         layout.addLayout(pool_row)
         layout.addLayout(controls)
+        layout.addLayout(settings)
+        layout.addLayout(advanced)
+        layout.addLayout(limits)
         layout.addLayout(ko_row)
         layout.addLayout(growth_row)
         layout.addWidget(self.status)
@@ -541,6 +608,9 @@ class SearchView(QWidget):
             self.ko_genes_input,
             self.growth_member_input,
             self.abundance_fractions_input,
+            self.medium_input,
+            self.target_scales_input,
+            self.checkpoint_input,
         ):
             line_edit.textChanged.connect(self.invalidate_results)
         for spin in (
@@ -548,16 +618,30 @@ class SearchView(QWidget):
             self.max_size_spin,
             self.top_k_spin,
             self.ko_max_genes_spin,
+            self.seed_spin,
+            self.ga_budget_spin,
+            self.workers_spin,
+            self.growth_fraction_spin,
+            self.min_member_growth_spin,
+            self.min_community_growth_spin,
+            self.validation_top_spin,
+            self.solve_timeout_spin,
         ):
             spin.valueChanged.connect(self.invalidate_results)
         self.strategy_combo.currentTextChanged.connect(self.invalidate_results)
         self.robustness_check.toggled.connect(self.invalidate_results)
+        self.direction_combo.currentTextChanged.connect(self.invalidate_results)
+        self.multi_metric_combo.currentTextChanged.connect(self.invalidate_results)
+        self.resume_check.toggled.connect(self.invalidate_results)
 
     #: which inputs actually determine each Search-tab workflow's answer. Used to tell the
     #: user when an arriving result was computed for a request they have since edited —
     #: scoped per workflow so an irrelevant edit never raises a false alarm.
     REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
-        "search": ("pool", "target", "min_size", "max_size", "strategy", "top_k", "fva"),
+        "search": ("pool", "target", "min_size", "max_size", "strategy", "top_k", "fva",
+                   "medium", "seed", "ga_budget", "workers", "growth_fraction",
+                   "min_member_growth", "direction", "multi_metric", "target_scales",
+                   "checkpoint", "resume", "min_community_growth", "validate_top", "timeout"),
         "gene_ko": ("pool", "target", "ko_members", "ko_member", "ko_genes", "max_genes", "top_k"),
         "strain_growth": ("pool",),
         "abundance_impact": ("pool", "target", "growth_member", "fractions"),
@@ -580,6 +664,20 @@ class SearchView(QWidget):
             "max_genes": str(self.ko_max_genes_spin.value()),
             "growth_member": self.growth_member_input.text().strip(),
             "fractions": self.abundance_fractions_input.text().strip(),
+            "medium": self.medium_input.text().strip(),
+            "seed": str(self.seed_spin.value()),
+            "ga_budget": str(self.ga_budget_spin.value()),
+            "workers": str(self.workers_spin.value()),
+            "growth_fraction": str(self.growth_fraction_spin.value()),
+            "min_member_growth": str(self.min_member_growth_spin.value()),
+            "direction": self.direction_combo.currentText(),
+            "multi_metric": self.multi_metric_combo.currentText(),
+            "target_scales": self.target_scales_input.text().strip(),
+            "checkpoint": self.checkpoint_input.text().strip(),
+            "resume": str(self.resume_check.isChecked()),
+            "min_community_growth": str(self.min_community_growth_spin.value()),
+            "validate_top": str(self.validation_top_spin.value()),
+            "timeout": str(self.solve_timeout_spin.value()),
         }
         return {k: snapshot[k] for k in self.REQUEST_FIELDS.get(kind, ())}
 
@@ -691,7 +789,7 @@ class SearchView(QWidget):
             # Never a bare count: the CLI's warning text is the scientific caveat itself.
             status_text += f" · warnings: {len(warning_list)} — {warning_list[0]}"
         ranked = summary.get("top_ranked", {})
-        rows: list[tuple[str, str, float | None, float | None, float | None, str, str]] = []
+        rows: list[tuple[str, str, float | None, float | str | None, float | None, str, str]] = []
         diagnostics: list[object] = []
         if isinstance(ranked, dict):
             groups = [
@@ -706,8 +804,15 @@ class SearchView(QWidget):
                 if not isinstance(item, dict):
                     continue
                 members = item.get("members", [])
-                score = _optional_float(item.get("score"))
-                target_flux = _optional_float(item.get("target_flux"))
+                score = _optional_float(item.get("score", item.get("weighted_score")))
+                target_flux: float | str | None = _optional_float(item.get("target_flux"))
+                fluxes = item.get("target_fluxes")
+                if isinstance(fluxes, dict):
+                    target = ", ".join(str(key) for key in fluxes)
+                    target_flux = ", ".join(
+                        f"{key}={float(value):.4g}" if isinstance(value, (int, float))
+                        else f"{key}=—" for key, value in fluxes.items()
+                    )
                 growth = _optional_float(item.get("community_growth"))
                 aux = item.get("aux_text")
                 aux_text = _fva_range_text(item) if aux is None else str(aux)
@@ -753,7 +858,8 @@ class SearchView(QWidget):
                     item_widget.setToolTip(tooltip)
                 self.table.setItem(r, c, item_widget)
         pareto = summary.get("pareto_frontier")
-        pareto_count = len(pareto) if isinstance(pareto, list) else 0
+        pareto_count = (len(pareto) if isinstance(pareto, list)
+                        else int(str(summary.get("n_pareto_points", 0))))
         self.pareto_label.setText(
             "" if not pareto_count else f"Pareto frontier candidates: {pareto_count}"
         )

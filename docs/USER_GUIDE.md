@@ -314,19 +314,44 @@ uv run cmig search \
 ```
 
 `--strategy auto` is exhaustive only while the number of combinations is at
-most `--exhaustive-max` (default 100), then switches to GA for single-target
+most `--exhaustive-max` (default 100), then switches to GA for single- or multi-target
 search. GA is non-exhaustive: it does not certify a global optimum. Run several
 recorded seeds when the scientific conclusion depends on the winner, and inspect
 `ga_metadata` in `search_summary.json` for the effective configuration, stopping
-reason, evaluation count, and generation history. The `--ga-*` controls are
-single-target options; multi-target search remains exhaustive-only and treats
-`--exhaustive-max` as a hard guard rather than a GA switch.
+reason, evaluation count, and generation history. Approximate multi-target search
+uses a joint feasible LP, not a vector assembled from independent target maxima.
+For `normalized_weighted` GA/random, supply fixed `--target-scales ac=20,but=10`;
+otherwise choose `raw_sum`, `carbon_equivalent`, or `pareto`. Observed ranges must
+not change the fitness scale while the GA is running.
 
 Each unique fitness evaluation builds and solves a MICOM community, so wall time
 is governed mainly by `--ga-max-evaluations`, not by the cheap genetic operators.
 Benchmark a modest budget first and then increase it if several seeds have not
-stabilized. The fitness cache is currently in-memory and execution is serial, so
-an interrupted run does not resume from a checkpoint.
+stabilized. A multi-target evaluation can require several LPs; the budget counts
+unique **consortia**, not individual solver calls. The full successful/failed
+evaluation ledger is saved in `search_evaluations.json`, not only the top-k.
+
+`--checkpoint runs/search.checkpoint.json` saves completed evaluations, RNG state,
+population, generation and stopping state. Keep it **outside** `--out`. Repeat the
+same command with `--resume` to continue. Changed models, abundance, medium,
+scientific settings, solver settings or policy versions are rejected. The same
+environment reproduces the uninterrupted evaluation order; timing telemetry is
+not deterministic. Checkpoints are JSON, never pickled solver objects.
+
+`--workers 2 --solver-threads 1` uses two independent solver processes and merges
+results in submission order. Each process needs its own solver resources and
+model memory. Parallelism may be slower on tiny pools. `--solve-timeout 60` limits
+each solver call; cancellation stops before the next candidate/batch, while an
+already running call/batch may finish. Completed checkpoints survive cancellation;
+the previous published run remains intact. Output publication is staged, protected
+by an exclusive lock and rolled back on failure. A force-killed process can leave
+a `.lock`; only remove it after confirming that no writer is active.
+
+`search_profile.json` separates community build, medium, growth-baseline, target-LP
+and FVA timings/call counts. Timers overlap; do not add them as independent wall
+time. Preflight, publication and post-validation are outside these search totals.
+Canonical JSON model caches are disposable and never modify source SBML/JSON/MAT
+files. Plain `.sbml` and uppercase extensions work through the same engine path.
 
 The medium is part of the scientific question. Omitting `--medium` uses MICOM's
 default medium, which can be permissive and produce a different winner. Prefer a
@@ -337,10 +362,55 @@ reported dropped exchanges.
 An exact size constrains membership count, not ecological participation. With
 `--model-dir`, CMIG creates equal nominal abundances for the selected models; a
 user taxonomy retains its supplied abundance values. The GA does not evolve
-abundance, and the target LP enforces a community-level growth floor rather than
-a minimum growth rate for every member. A reported 3-member winner can therefore
-contain a member with negligible growth or contribution; use a separate
-abundance/member-viability analysis if that distinction matters.
+abundance. By default the target LP enforces only a community-level growth floor.
+Use `--min-member-growth 0.001` and optionally `--min-community-growth 0.01` to
+impose absolute growth floors in addition to `--growth-fraction`. These settings
+also apply to robustness FVA. Invalid abundances are rejected; a candidate whose
+actual MICOM taxa differ from the requested membership is a failed evaluation,
+not a smaller community reported as an exact-k result. JSON results record
+`effective_members`, `member_growth` and `abundances` from the target solution.
+
+`--validate-top 3` adds a separately budgeted second-stage analysis of up to three
+distinct reported consortia: a fresh baseline, leave-one-out, monocultures, 0.5×/2×
+medium uptake limits and 0.5×/2× each member's relative abundance. Results and the
+best **tested** abundance are written to `search_validation.json` and checkpointed.
+Removing/reweighting a member renormalises abundance, and the relative growth
+floor is recomputed for each scenario. Score changes are sensitivities, not causal
+contributions or proof of a global abundance optimum. Multi-target comparisons
+use fresh joint weighted solutions at the same fixed scales, not arbitrary
+different points from the Pareto archive.
+
+The GUI Search panel exposes medium (exact application), seed, evaluation budget,
+workers, target direction, multi-target metric/references, growth floors, timeout,
+checkpoint/resume, optional top validation and cancellation. Its CLI adapter uses
+the same `SearchRequest`/`SearchService` and provenance/output writer as the CLI.
+
+#### Compare GA policies before changing defaults
+
+Generation histories include member coverage/entropy, mean Jaccard distance
+(all pairs up to 2,048, otherwise a deterministic sample), feasible fraction,
+new-evaluation fraction and size counts. They are also saved in
+`search_ga_history.csv`. Parent ties use seeded random choice, not member names.
+Variable-size GA initialisation is size-uniform; random search samples uniformly
+over combinations. Use exact cardinality for the cleanest like-for-like comparison.
+
+`--ga-restart-after`, `--ga-local-search-fraction` and `--ga-preserve-common` are
+opt-in experimental policies, not claimed universal improvements. Reproducible
+multi-seed comparisons against exact oracles are available as:
+
+```bash
+uv run python scripts/benchmark_search.py --pool-size 20 --size 3 --budget 100 \
+  --seeds 0,1,2,3,4,5,6,7,8,9 --out runs/search_synthetic_benchmark.json
+uv run python scripts/benchmark_search.py --model-dir models --target ac \
+  --size 2 --budget 5 --seeds 0,1,2,3,4,5,6,7,8,9 --out runs/search_gem_benchmark.json
+```
+
+The harness includes additive, hidden/sparse synergy, competition and infeasible
+landscapes, or an actual GEM pool/medium. It reports optimum hit rate, regret,
+tie-inclusive top-k recall, feasibility, cross-seed overlap, Python peak memory
+and timing. It constructs a small exact oracle once, then replays it: reported
+search time is **algorithm overhead**, not end-to-end GEM throughput; oracle
+construction is timed separately. No prescreen silently removes donor strains.
 
 #### Two-step prescreen: rank singletons, then combine the survivors
 
@@ -405,39 +475,24 @@ Use `--multi-metric pareto` for multi-target trade-off structure.
 
 | Metric | Meaning | Use for | Collapses onto a vertex? |
 | ------ | ------- | ------- | ----------------------- |
-| `normalized_weighted` (default) | dimensionless min-max over *this run's* candidate set | never a "total" claim; the scores are **not comparable across runs** | **yes** |
+| `normalized_weighted` (default) | dimensionless, unclipped affine score | fixed references, or pool-dependent capability ranges for exhaustive search | **yes** |
 | `carbon_equivalent` | mmol C gDW⁻¹ h⁻¹ — each target weighted by its carbon number | "most carbon routed to SCFA"; absolute and run-comparable | **yes** |
 | `raw_sum` | plain molar sum | only when a molar sum is genuinely wanted; it adds C2 and C4 acids as equals | **yes** |
-| `pareto` | the **non-dominated trade-off set**, via an epsilon-constraint sweep in absolute units | **"which community is best for total SCFA"** | no |
+| `pareto` | sampled non-dominated feasible trade-offs, including objective extremes | compare alternatives without declaring a single best community | several constrained solutions |
 
-All three scalar metrics are linear objectives, so the vertex collapse is a property
-of the scalarisation, not of the weighting — different weights only change *which*
-vertex you land on. `carbon_equivalent` fixes the units problem, not the specialist
-problem.
+All scalar metrics have linear objectives and admit a vertex optimum; a vertex
+**need not** be a single-metabolite specialist. Different weights can select
+different jointly feasible flux distributions. These are different trade-offs,
+not contradictory claims about production capability. In particular, flux zero
+in one weighted solution does not imply that the community cannot make that
+metabolite. `carbon_equivalent` supplies explicit units, not a guarantee of balance.
 
-**A linear weighted sum is optimised at a vertex of the achievable set, so it
-systematically favours a single-metabolite specialist over a balanced producer.**
-Over the five bundled models, `--target-preset scfa` with the default metric
-ranked `iHN637+iSFV_1184` first with `ac=0, but=0, lac__D=17.44, lac__L=0, ppa=0,
-succ=0` — and all nine ranked candidates had `ac=0, but=0, ppa=0, succ=0`. The
-whole "total SCFA" ranking was decided by D-lactate alone.
-
-The same pair, same pool, same medium, reported under each metric:
-
-| metric | ac | but | lac__D | lac__L | ppa | succ |
-| ------ | -- | --- | ------ | ------ | --- | ---- |
-| `normalized_weighted` | 0 | 0 | **17.44** | 0 | 0 | 0 |
-| `carbon_equivalent` | **8.19** | 0 | 0 | 0 | 0 | **10.41** |
-| `pareto` rank 1 | **27.75** | 0 | 0 | 0 | 0 | 0 |
-
-`normalized_weighted` says this community makes lactate and no succinate;
-`carbon_equivalent` says succinate and no lactate. Those are contradictory claims
-about one community on one medium, differing only in the weighting — and the default
-metric reports **zero acetate for the pool's largest acetate producer** (27.75).
-`carbon_equivalent` returned `but=0, lac__D=0, lac__L=0, ppa=0` for all nine of its
-ranked candidates, so it is not an escape from the collapse either. CMIG emits a
-warning about this itself; do not report any scalarised winner as "the best
-total-SCFA community".
+Normalized reporting uses exactly the affine objective optimized by the LP,
+including its constant offset, without clipping to [0,1]. Values outside [0,1]
+are possible. A zero-width capability range uses scale 1. Fixed reference runs
+use offset zero and the user-provided positive scale. Only compare normalized
+runs with identical scales, weights and physical units; exhaustive observed-range
+scores remain pool-dependent. The ranges are included in `search_summary.json`.
 
 If you specifically need a single absolute, run-comparable number,
 `--multi-metric carbon_equivalent` is the one to use — while remembering it is still
@@ -454,19 +509,25 @@ uv run cmig search \
 ```
 
 `pareto` takes a different code path from the scalar metrics: an
-epsilon-constraint sweep over every consortium, whose non-dominated subset is
+epsilon-constraint sweep over evaluated consortia, whose non-dominated subset is
 computed in N dimensions and reported in absolute units
-(`solution_semantics: epsilon_constrained_lp_non_dominated_set`). It works for any
-number of targets, and it is markedly slower than the scalar metrics because it
-solves an LP per consortium per epsilon level.
+(`solution_semantics: joint_feasible_lp_vectors`). Every target gets an extreme
+solution and independent slices controlled by `--pareto-resolution` (default 5).
+Physical secretion/uptake bounds are separate from direction-adjusted epsilon
+bounds, including mixed minimization/maximization objectives. The full sampled
+archive is saved as `search_pareto_archive.json`; `--top-k` only limits display.
+This is **not** a complete continuous Pareto frontier, even with exhaustive
+consortium enumeration. Pareto GA uses feasible-solution front rank and crowding
+for community selection; scalar patience is disabled and budgets/generation caps
+remain active. The method is not a claim of standard NSGA-II equivalence.
 
 Two things to carry into the write-up:
 
 - **Front members are not totally ordered.** In `pareto` mode `rank` is a
   *reporting order* (weighted sum), not a claim that rank 1 is best. Present the
   frontier and let the reader choose the trade-off.
-- The run reports how many front points are themselves single-metabolite
-  specialists, so you can say how much genuine trade-off the pool actually offers.
+- Missing interior points or unvisited consortia may change the frontier. Inspect
+  the full archive and repeat seeds/resolutions before drawing a biological conclusion.
 
 Note a separate use of the same word: when you use a **scalar** metric, the
 rankings table also carries a `pareto` boolean column. Since round 9 it is real
@@ -1121,4 +1182,3 @@ line. Edge width in the interaction figures uses the same community basis.
 - `scripts/`: release/distribution audits and the gut-media builder.
 - `medium_presets/`: medium definitions, mirrored source data (`sources/`) and provenance.
 - `docs/`: design and project-management notes.
-

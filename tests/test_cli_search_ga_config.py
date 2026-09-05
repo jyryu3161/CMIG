@@ -54,6 +54,7 @@ def test_search_parser_builds_complete_ga_config_and_manifest_policy():
     search_spec = cli._single_target_search_spec(args, result, config)
 
     assert search_spec == {
+        **cli._search_policy_settings(args),
         "min_size": 3,
         "max_size": 3,
         "strategy_requested": "ga",
@@ -111,13 +112,7 @@ def test_manifest_omits_ga_knobs_when_the_resolved_strategy_does_not_use_ga():
     json.dumps(random_policy, allow_nan=False)
 
 
-def test_multi_target_rejects_single_target_only_search_modes_before_solving():
-    with pytest.raises(ValueError, match="exhaustive-only"):
-        cli._run_multi_target_search(
-            SimpleNamespace(strategy="ga", robustness_fva=False),
-            object(),
-            None,
-        )
+def test_multi_target_rejects_single_target_only_fva_before_solving():
     with pytest.raises(ValueError, match="single-target"):
         cli._run_multi_target_search(
             SimpleNamespace(strategy="auto", robustness_fva=True),

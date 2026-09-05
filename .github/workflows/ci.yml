@@ -64,6 +64,12 @@ jobs:
           tests/test_model_quality.py
           tests/test_workflow_manifest.py
           tests/test_workflow_envelope_golden.py
+          tests/test_search_ga.py
+          tests/test_search_execution.py
+          tests/test_search_benchmark.py
+          tests/test_search_product_ga_scaling.py
+          tests/test_cli_search_ga_config.py
+          tests/test_run_transaction.py
 
   package:
     name: Build and inspect distributions

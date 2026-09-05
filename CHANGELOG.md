@@ -5,7 +5,37 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
-(nothing yet)
+### Fixed — consortium search correctness
+
+- Reject invalid abundances and requested/effective MICOM membership mismatches.
+- Separate secretion/uptake domains from epsilon utility bounds, including mixed
+  minimization objectives; unify non-viable growth checks across target solvers.
+- Match normalized reported scores to the actual unclipped affine LP objective.
+- Replace name-biased GA parent/survival ties with seeded choices; version the
+  changed semantics as `consortium_search_v2` / `set_ga_v2` in search provenance.
+- Build `.sbml` and uppercase-format sources through disposable canonical model
+  caches; preserve source files. Publish complete search runs with locks/staging
+  and rollback instead of mixing partial outputs with earlier runs.
+
+### Added — recoverable and inspectable search
+
+- Shared search requests/service, model/solver preflight, cancellation/progress,
+  strict-JSON checkpoints, identity-checked resume, isolated deterministic solver
+  workers, per-call timeouts, phase timings and all-evaluation ledgers.
+- GA diversity histories, opt-in partial restart/local mutation/common-member
+  crossover, equal-budget multi-seed synthetic/GEM benchmark harness and CI gates.
+- Budgeted multi-target GA/random with fixed fitness scales; feasible-solution
+  front/crowding selection, objective extremes, independent epsilon slices and a
+  complete **sampled** archive separate from displayed top-k.
+- Member/community growth floors, same-optimum member growth/abundance reporting,
+  and optional checkpointed top-candidate leave-one-out, monoculture, medium and
+  abundance sensitivity analyses. Additional validation solves have a separate budget.
+- GUI controls for medium, seed, budget, workers, direction, multi-target metric,
+  reference scales, growth floors, timeout, validation, checkpoint/resume and cancel.
+
+Existing solve goldens and core release version are unchanged; changed search
+results must be distinguished by the new search/GA policy fields. Approximate
+search, sampled Pareto fronts and local abundance trials do not certify global optima.
 
 ## [0.3.0] - 2026-09-02
 

@@ -537,15 +537,23 @@ def test_community_invalid_abundance_reports_instead_of_raising(tmp_path):
 # --------------------------------------------------------------------------------------
 
 
-def test_multi_target_text_is_rejected_not_truncated(tmp_path):
-    """P0/P2: `ac,but` silently became an acetate-only experiment."""
+def test_multi_target_text_is_forwarded_without_truncation(tmp_path, monkeypatch):
+    """The multi-target GUI must preserve the complete scientific request."""
+    from cmig.cli import main as cli
+
+    captured = []
+    monkeypatch.setattr(cli, "main", lambda argv: captured.extend(argv) or 2)
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
     w.search_view.model_dir_input.setText(str(tmp_path))
     w.search_view.targets_input.setText("ac,but")
-    assert w.run_search_fixture() == ""
-    assert "single metabolite" in w.search_view.status.text().lower()
+    jid = w.run_search_fixture()
+    assert jid
+    with pytest.raises(RuntimeError):
+        runner.result(jid, timeout=10)
+    assert captured[captured.index("--targets") + 1] == "ac,but"
+    assert "--target" not in captured
     runner.shutdown()
 
 

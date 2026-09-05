@@ -1012,6 +1012,7 @@ class CmigMainWindow(QMainWindow):
         self.sandbox_view.commit_btn.clicked.connect(self._run_sandbox_commit)
         self.search_view.browse_pool_btn.clicked.connect(self._browse_search_model_dir)
         self.search_view.run_btn.clicked.connect(self.run_search_fixture)
+        self.search_view.cancel_btn.clicked.connect(self.cancel_search)
         self.search_view.run_ko_btn.clicked.connect(self.run_gene_ko_search)
         self.search_view.run_growth_btn.clicked.connect(self.run_strain_growth_report)
         self.search_view.run_abundance_btn.clicked.connect(self.run_abundance_impact)
@@ -1621,15 +1622,23 @@ class CmigMainWindow(QMainWindow):
         self._show_status("status_fixture_failed", diagnostic=outcome.diagnostic)
         return False
 
+    def cancel_search(self) -> None:
+        for job_id in self._search_jobs:
+            self.runner.cancel(job_id)
+        self.search_view.status.setText("Cancellation requested; active solves will finish.")
+
     def run_search_fixture(self) -> str:
         """Run user model-pool search from the Search tab."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        target, target_error = _single_target(self.search_view.targets_input.text())
-        if target_error:
-            self.search_view.status.setText(target_error)
+        requested = self.search_view.request_fields("search")
+        targets = [value.strip() for value in requested["target"].split(",") if value.strip()]
+        if not targets or len(set(targets)) != len(targets):
+            self.search_view.status.setText(
+                "Enter one or more unique target IDs separated by commas.")
             return ""
+        target = ",".join(targets)
         model_dir = self.search_view.model_dir_input.text().strip()
         strategy = self.search_view.strategy_combo.currentText()
         min_size = str(self.search_view.min_size_spin.value())
@@ -1647,7 +1656,7 @@ class CmigMainWindow(QMainWindow):
                 "search",
                 "--model-dir",
                 model_dir,
-                "--target",
+                "--targets" if len(targets) > 1 else "--target",
                 target,
                 "--strategy",
                 strategy,
@@ -1660,9 +1669,41 @@ class CmigMainWindow(QMainWindow):
             ]
             if robustness_fva:
                 argv.append("--robustness-fva")
+            argv.extend(["--seed", requested["seed"], "--workers", requested["workers"],
+                         "--growth-fraction", requested["growth_fraction"],
+                         "--min-member-growth", requested["min_member_growth"],
+                         "--min-community-growth", requested["min_community_growth"],
+                         "--validate-top", requested["validate_top"],
+                         "--direction", requested["direction"],
+                         "--multi-metric", requested["multi_metric"]])
+            if requested["medium"]:
+                argv.extend(["--medium", requested["medium"], "--exact-medium"])
+            if int(requested["ga_budget"]):
+                argv.extend(["--ga-max-evaluations", requested["ga_budget"]])
+            if int(requested["timeout"]):
+                argv.extend(["--solve-timeout", requested["timeout"]])
+            if requested["target_scales"]:
+                argv.extend(["--target-scales", requested["target_scales"]])
+            if requested["checkpoint"]:
+                argv.extend(["--checkpoint", requested["checkpoint"]])
+            if requested["resume"] == "True":
+                argv.append("--resume")
             argv.extend(["--out", str(out_dir)])
             output_name = "search_summary.json"
-            rc = main(argv)
+            from cmig.core.search_execution import SearchControl
+            from cmig.service.search_service import search_control
+
+            control = SearchControl(
+                checkpoint=Path(requested["checkpoint"]).resolve()
+                if requested["checkpoint"] else None,
+                resume=requested["resume"] == "True", workers=int(requested["workers"]),
+                cancelled=lambda: ctx.cancelled, progress=ctx.report_progress,
+                solve_timeout=float(requested["timeout"]) or None,
+            )
+            with search_control(control):
+                rc = main(argv)
+            if rc == 130:
+                ctx.raise_if_cancelled()
             if rc != 0:
                 raise RuntimeError(f"search failed with rc={rc}")
             _finish_after_artifacts(ctx)
@@ -1675,6 +1716,7 @@ class CmigMainWindow(QMainWindow):
         jid = self.submit_job("search_fixture", _job)
         self._search_jobs[jid] = (out_dir, self.search_view.request_fields("search"))
         self.search_view.run_btn.setEnabled(False)
+        self.search_view.cancel_btn.setEnabled(True)
         self.search_view.status.setText(f"search started: {jid}")
         return jid
 
@@ -2598,6 +2640,7 @@ class CmigMainWindow(QMainWindow):
                     request_note=self.search_view.superseded_note(requested, "search"),
                 )
                 self.search_view.run_btn.setEnabled(True)
+                self.search_view.cancel_btn.setEnabled(False)
                 self.tabs.setCurrentWidget(self.search_view)
                 self._register_run_output(out_dir)
                 self._show_status(
@@ -2609,6 +2652,7 @@ class CmigMainWindow(QMainWindow):
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._search_jobs.pop(jid, None)
                 self.search_view.run_btn.setEnabled(True)
+                self.search_view.cancel_btn.setEnabled(False)
                 self.search_view.status.setText(f"search {job.status.value}: {job.error or jid}")
         for jid, out_dir in list(self._host_microbe_jobs.items()):
             job = self.runner.poll(jid)

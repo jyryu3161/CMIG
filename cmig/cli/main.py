@@ -5803,6 +5803,9 @@ def _ga_config_from_search_args(args: argparse.Namespace) -> Any:
         seed=args.seed,
         max_evaluations=args.ga_max_evaluations,
         patience=args.ga_patience,
+        restart_after=getattr(args, "ga_restart_after", None),
+        local_search_fraction=getattr(args, "ga_local_search_fraction", 0.0),
+        preserve_common=getattr(args, "ga_preserve_common", False),
     )
 
 
@@ -5835,6 +5838,7 @@ def _single_target_search_spec(
         "exhaustive_max": config.exhaustive_max,
         "top_k": args.top_k,
         "robustness_fva": bool(args.robustness_fva),
+        **_search_policy_settings(args),
     }
     if result.strategy == "random":
         payload.update({
@@ -5849,7 +5853,87 @@ def _single_target_search_spec(
     return payload
 
 
+def _search_policy_settings(args: argparse.Namespace) -> dict[str, Any]:
+    from cmig.core.search_constraints import SEARCH_POLICY_VERSION
+    from cmig.core.search_ga import GA_POLICY_VERSION
+
+    return {
+        "search_policy": SEARCH_POLICY_VERSION, "ga_policy": GA_POLICY_VERSION,
+        "min_member_growth": getattr(args, "min_member_growth", 0.0),
+        "min_community_growth": getattr(args, "min_community_growth", 0.0),
+        "solver_threads": getattr(args, "solver_threads", 1),
+        "solve_timeout": getattr(args, "solve_timeout", None),
+        "ga_restart_after": getattr(args, "ga_restart_after", None),
+        "ga_local_search_fraction": getattr(args, "ga_local_search_fraction", 0.0),
+        "ga_preserve_common": getattr(args, "ga_preserve_common", False),
+        "validation_top": getattr(args, "validate_top", 0),
+    }
+
+
+def _search_growth_policy(args: argparse.Namespace) -> Any:
+    from cmig.core.search_constraints import GrowthPolicy
+
+    return GrowthPolicy(getattr(args, "min_member_growth", 0.0),
+                        getattr(args, "min_community_growth", 0.0))
+
+
 def _cmd_search(args: argparse.Namespace) -> int:
+    from copy import copy
+
+    from cmig.core.search_execution import SearchCancelled, SearchControl
+    from cmig.io.run_transaction import staged_run
+    from cmig.service.search_service import current_search_control, search_control
+
+    class DiscardRun(Exception):
+        pass
+
+    requested_out = Path(args.out).resolve()
+    checkpoint = Path(args.checkpoint).resolve() if getattr(args, "checkpoint", None) else None
+    if checkpoint is not None and (
+        checkpoint == requested_out or requested_out in checkpoint.parents
+    ):
+        print("checkpoint must be outside the published run directory", file=sys.stderr)
+        return 2
+    control = current_search_control() or SearchControl(
+        checkpoint=checkpoint, resume=getattr(args, "resume", False),
+        workers=getattr(args, "workers", 1), solver_threads=getattr(args, "solver_threads", 1),
+        solve_timeout=getattr(args, "solve_timeout", None),
+    )
+    if control.checkpoint is not None:
+        control.checkpoint = control.checkpoint.resolve()
+        if control.checkpoint == requested_out or requested_out in control.checkpoint.parents:
+            print("checkpoint must be outside the published run directory", file=sys.stderr)
+            return 2
+    rc = 2
+    try:
+        with search_control(control), staged_run(
+            requested_out, artifacts=KNOWN_SEARCH_ARTIFACTS | {"manifest.json"},
+        ) as stage:
+            stage_args = copy(args)
+            stage_args.out = str(stage)
+            stage_args.display_out = str(requested_out)
+            (stage / "manifest.json").unlink(missing_ok=True)
+            rc = _cmd_search_impl(stage_args)
+            if rc not in (0, EXIT_ANALYSIS_FAILED):
+                raise DiscardRun()
+            if not (stage / "manifest.json").is_file():
+                raise ValueError("search manifest was not written; previous run preserved")
+            manifest = json.loads((stage / "manifest.json").read_text())
+            verified = _verify_result_digest(stage, manifest)
+            if verified is None or not verified["match"] or verified["missing_artifacts"]:
+                raise ValueError("search artifact verification failed; previous run preserved")
+    except DiscardRun:
+        return rc
+    except SearchCancelled as error:
+        print(str(error), file=sys.stderr)
+        return 130
+    except (ValueError, OSError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    return rc
+
+
+def _cmd_search_impl(args: argparse.Namespace) -> int:
     """User model-pool search for target metabolite production."""
     try:
         import pandas as pd
@@ -5858,7 +5942,8 @@ def _cmd_search(args: argparse.Namespace) -> int:
         from cmig.core.medium_spec import load_medium
         from cmig.core.model_pool import diagnose_model_pool, taxonomy_from_model_dir
         from cmig.core.search import Direction
-        from cmig.core.search_product import SearchConfig, search_model_pool
+        from cmig.core.search_product import SearchConfig
+        from cmig.service.search_service import SearchRequest, SearchService
     except ImportError:
         print("search requires the engine stack: uv sync --extra engine", file=sys.stderr)
         return 2
@@ -5897,13 +5982,12 @@ def _cmd_search(args: argparse.Namespace) -> int:
             robustness_fva=args.robustness_fva,
             exhaustive_max=args.exhaustive_max,
             ga_config=ga_config,
+            growth_policy=_search_growth_policy(args),
+            validation_top=getattr(args, "validate_top", 0),
         )
-        result = search_model_pool(
-            MicomEngine(),
-            taxonomy,
-            config,
-            medium_spec=medium_spec,
-            strict_medium=not args.allow_unknown_medium,
+        result = SearchService().run(
+            SearchRequest(taxonomy, config, medium_spec, not args.allow_unknown_medium),
+            engine=MicomEngine(),
         )
         out = Path(args.out)
         run_artifacts = _write_search_outputs(result, taxonomy, diagnostics, out)
@@ -5913,7 +5997,8 @@ def _cmd_search(args: argparse.Namespace) -> int:
     except OSError as e:
         print(f"failed to write search outputs: {e}", file=sys.stderr)
         return 2
-    print(f"search complete ({result.strategy}, target={result.target}) -> {out}")
+    display_out = getattr(args, "display_out", out)
+    print(f"search complete ({result.strategy}, target={result.target}) -> {display_out}")
     print(
         f"  evaluated: {result.n_candidates_evaluated}/{result.n_candidates_total}"
         f" | ranked: {len(result.ranks)} | unevaluable: {len(result.unevaluated)}"
@@ -6000,9 +6085,8 @@ def _resolve_target_carbon_numbers(
 
     Returns ``(carbon_number_by_target, source_model_by_target)``.
     """
-    from cobra.io import read_sbml_model
-
     from cmig.core.targets import parse_carbon_number
+    from cmig.io.model_import import load_cobra_model
 
     remaining = set(targets)
     carbon: dict[str, int] = {}
@@ -6011,7 +6095,7 @@ def _resolve_target_carbon_numbers(
         if not remaining:
             break
         try:
-            model = read_sbml_model(str(record["file"]))
+            model = load_cobra_model(str(record["file"]))
         except Exception:  # noqa: BLE001 - 읽을 수 없는 모델은 다음 후보로 넘어간다
             continue
         by_id = {str(m.id): m for m in model.metabolites}
@@ -6041,10 +6125,6 @@ def _resolve_target_carbon_numbers(
 
 def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spec: Any) -> int:
     """Multi-target model-pool search (§14). Raises ValueError on bad args (caught by caller)."""
-    if args.strategy not in {"auto", "exhaustive"}:
-        raise ValueError(
-            "multi-target search is exhaustive-only; --strategy must be auto or exhaustive"
-        )
     if args.robustness_fva:
         raise ValueError(
             "--robustness-fva is currently available only for single-target search"
@@ -6052,8 +6132,9 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
     from cmig.core.engine import MicomEngine
     from cmig.core.model_pool import diagnose_model_pool
     from cmig.core.search import Direction
-    from cmig.core.search_product import MultiTargetConfig, search_model_pool_multi
+    from cmig.core.search_product import MultiTargetConfig
     from cmig.core.targets import preset_targets
+    from cmig.service.search_service import SearchRequest, SearchService
 
     if args.targets and args.target_preset:
         raise ValueError("provide either --targets or --target-preset, not both")
@@ -6109,10 +6190,19 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
         top_k=args.top_k,
         metric=args.multi_metric,
         exhaustive_max=args.exhaustive_max,
+        strategy=args.strategy,
+        n_samples=args.n_samples,
+        seed=args.seed,
+        ga_config=_ga_config_from_search_args(args),
+        growth_policy=_search_growth_policy(args),
+        reference_scales=_parse_key_float_map(args.target_scales, flag="--target-scales")
+        if getattr(args, "target_scales", None) else {},
+        pareto_resolution=getattr(args, "pareto_resolution", 5),
+        validation_top=getattr(args, "validate_top", 0),
     )
-    result = search_model_pool_multi(
-        MicomEngine(), taxonomy, config,
-        medium_spec=medium_spec, strict_medium=not args.allow_unknown_medium,
+    result = SearchService().run(
+        SearchRequest(taxonomy, config, medium_spec, not args.allow_unknown_medium),
+        engine=MicomEngine(),
     )
     out = Path(args.out)
     run_artifacts = _write_multi_target_outputs(
@@ -6125,7 +6215,8 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
         carbon_numbers=carbon_numbers,
         carbon_sources=carbon_sources,
     )
-    print(f"multi-target search complete (targets={','.join(targets)}) -> {out}")
+    display_out = getattr(args, "display_out", out)
+    print(f"multi-target search complete (targets={','.join(targets)}) -> {display_out}")
     print(f"  metric: {result.metric} [{result.score_unit}]")
     print(
         f"  evaluated: {result.n_candidates_evaluated}/{result.n_candidates_total}"
@@ -6136,8 +6227,9 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
     if result.ranks:
         best = result.ranks[0]
         flux_str = ", ".join(f"{m}={best.target_fluxes.get(m, 0.0):.4g}" for m in targets)
+        label = "front example" if result.metric == "pareto" else "best"
         print(
-            f"  best: {'+'.join(best.members)} score={best.weighted_score:.4g} "
+            f"  {label}: {'+'.join(best.members)} score={best.weighted_score:.4g} "
             f"pareto={best.pareto} ({flux_str})"
         )
         if best.missing_targets:
@@ -6172,6 +6264,10 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
                 "top_k": args.top_k,
                 "seed": args.seed,
                 "exhaustive_max": config.exhaustive_max,
+                "reference_scales": config.reference_scales,
+                "pareto_resolution": config.pareto_resolution,
+                "ga_config": _ga_config_payload(config.ga_config),
+                **_search_policy_settings(args),
             },
         ),
         status=_worst_status(
@@ -6211,6 +6307,7 @@ def _write_multi_target_outputs(
     carbon_sources: dict[str, str] | None = None,
 ) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
+    extra_artifacts = _write_search_evaluation_outputs(result, out)
     taxonomy.to_csv(out / "pool_taxonomy.csv", index=False)
     # D9: `cmig workflows` advertises pool_diagnostics.csv and figures for `cmig search`; the
     # multi-target path emitted neither.
@@ -6274,7 +6371,10 @@ def _write_multi_target_outputs(
         "carbon_number_sources": carbon_sources or {},
         "strategy": result.strategy,
         "normalizer": result.normalizer,
+        "normalization_ranges": getattr(result, "normalization_ranges", {}),
         "solution_semantics": result.solution_semantics,
+        "ga_metadata": _finite_json_tree(getattr(result, "ga_metadata", None)),
+        "n_pareto_points": len(getattr(result, "pareto_archive", [])),
         "n_pool_members": result.n_pool_members,
         "n_candidates_total": result.n_candidates_total,
         "n_candidates_evaluated": result.n_candidates_evaluated,
@@ -6297,6 +6397,11 @@ def _write_multi_target_outputs(
                 "rank": r.rank,
                 "members": list(r.members),
                 "weighted_score": _finite_or_none(r.weighted_score),
+                "effective_members": list(getattr(r, "effective_members", ())),
+                "member_growth": getattr(r, "member_growth", {}),
+                "abundances": getattr(r, "abundances", {}),
+                "n_active_members": sum(value > 1e-6
+                                        for value in getattr(r, "member_growth", {}).values()),
                 "pareto": r.pareto,
                 "community_growth": _finite_or_none(r.community_growth),
                 "status": r.status,
@@ -6315,6 +6420,7 @@ def _write_multi_target_outputs(
          "search_plot.svg", "search_plot.tiff"]
         + (["pool_diagnostics.csv"] if diagnostics is not None else [])
         + (["search_unevaluated.csv"] if result.unevaluated else [])
+        + extra_artifacts
     )
     atomic_write_text(
         out / "search_summary.json", json.dumps(summary, indent=2, allow_nan=False)
@@ -6855,6 +6961,11 @@ def _write_pool_diagnostics_csv(diagnostics: list[Any], path: Path) -> None:
 # into the same --out must not leave the previous run's copy behind to contradict it. Mirrors
 # io.solve_output.KNOWN_SOLVE_ARTIFACTS and uses the same helper.
 KNOWN_SEARCH_ARTIFACTS = frozenset({
+    "search_evaluations.json",
+    "search_pareto_archive.json",
+    "search_ga_history.csv",
+    "search_validation.json",
+    "search_profile.json",
     "pool_taxonomy.csv",
     "pool_diagnostics.csv",
     "search_rankings.csv",
@@ -6886,10 +6997,52 @@ def _prune_stale_workflow_artifacts(
         print(f"  removed stale artifact(s) from a previous run: {', '.join(removed)}")
 
 
+def _write_search_evaluation_outputs(result: Any, out: Path) -> list[str]:
+    from dataclasses import asdict, is_dataclass
+
+    from cmig.core.search_constraints import SEARCH_POLICY_VERSION
+
+    artifacts = []
+    profile = getattr(result, "profile", None)
+    if profile:
+        atomic_write_text(out / "search_profile.json",
+                          json.dumps(profile, indent=2, allow_nan=False) + "\n")
+        artifacts.append("search_profile.json")
+    groups = [("search_evaluations.json", getattr(result, "evaluations", []))]
+    if hasattr(result, "pareto_archive"):
+        groups.append(("search_pareto_archive.json", result.pareto_archive))
+    for name, rows in groups:
+        payload = {
+            "policy": SEARCH_POLICY_VERSION,
+            "rows": [_finite_json_tree(asdict(row)
+                     if is_dataclass(row) and not isinstance(row, type) else vars(row))
+                     for row in rows],
+        }
+        atomic_write_text(out / name, json.dumps(payload, indent=2, allow_nan=False) + "\n")
+        artifacts.append(name)
+    report = getattr(result, "validation_report", None)
+    if report:
+        atomic_write_text(out / "search_validation.json",
+                          json.dumps(_finite_json_tree(report), indent=2, allow_nan=False) + "\n")
+        artifacts.append("search_validation.json")
+    metadata = getattr(result, "ga_metadata", None)
+    if metadata and metadata.get("history"):
+        import io
+
+        buffer = io.StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=list(metadata["history"][0]))
+        writer.writeheader()
+        writer.writerows(metadata["history"])
+        atomic_write_text(out / "search_ga_history.csv", buffer.getvalue())
+        artifacts.append("search_ga_history.csv")
+    return artifacts
+
+
 def _write_search_outputs(
     result: Any, taxonomy: Any, diagnostics: list[Any], out: Path
 ) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
+    extra_artifacts = _write_search_evaluation_outputs(result, out)
     taxonomy.to_csv(out / "pool_taxonomy.csv", index=False)
     _write_pool_diagnostics_csv(diagnostics, out / "pool_diagnostics.csv")
     ranking_path = out / "search_rankings.csv"
@@ -7004,6 +7157,7 @@ def _write_search_outputs(
                 "members": list(row.members),
                 "status": row.status,
                 "diagnostic": row.diagnostic,
+                "effective_members": list(getattr(row, "effective_members", ())),
             }
             for row in result.unevaluated
         ],
@@ -7033,6 +7187,11 @@ def _write_search_outputs(
                 "robustness_status": row.robustness_status,
                 "status": row.status,
                 "diagnostic": row.diagnostic,
+                "effective_members": list(getattr(row, "effective_members", ())),
+                "member_growth": getattr(row, "member_growth", {}),
+                "abundances": getattr(row, "abundances", {}),
+                "n_active_members": sum(value > 1e-6 for value in
+                                        getattr(row, "member_growth", {}).values()),
             }
             for row in result.ranks
         ],
@@ -7047,7 +7206,7 @@ def _write_search_outputs(
             "search_scatter.svg",
             "search_scatter.tiff",
             "search_summary.json",
-        ] + (["search_unevaluated.csv"] if result.unevaluated else []),
+        ] + (["search_unevaluated.csv"] if result.unevaluated else []) + extra_artifacts,
     }
     atomic_write_text(
         out / "search_summary.json",
@@ -10416,12 +10575,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="normalized_weighted",
         dest="multi_metric",
         choices=["normalized_weighted", "carbon_equivalent", "raw_sum", "pareto"],
-        help="multi-target score: normalized_weighted (dimensionless min-max over the candidate "
-        "set, not comparable across runs) | carbon_equivalent (weight each target by its carbon "
+        help="multi-target score: normalized_weighted (unclipped affine scales; approximate "
+        "search needs --target-scales) | carbon_equivalent (weight each target by its carbon "
         "number from the model formula -> mmol C gDW^-1 h^-1) | raw_sum (mmol gDW^-1 h^-1, "
         "ignores that C2 and C4 acids differ) | pareto (epsilon-constraint sweep reporting the "
-        "NON-DOMINATED trade-off set instead of one scalarised winner; the scalarised metrics "
-        "are optimised at a vertex and therefore favour a single-metabolite specialist)",
+        "sampled NON-DOMINATED trade-off archive, not a complete continuous front)",
     )
     sp.add_argument(
         "--target-weights",
@@ -10452,7 +10610,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=100,
         dest="exhaustive_max",
         help="maximum combination count evaluated exhaustively by --strategy auto; above this "
-        "threshold single-target search uses GA",
+        "threshold search uses GA (normalized multi-target GA requires fixed references)",
     )
     sp.add_argument(
         "--n-samples",
@@ -10463,7 +10621,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--seed", type=int, default=0)
     sp.add_argument("--top-k", type=int, default=10, dest="top_k")
-    ga_options = sp.add_argument_group("single-target GA options")
+    ga_options = sp.add_argument_group("GA options")
     ga_options.add_argument(
         "--ga-pop-size",
         type=int,
@@ -10521,6 +10679,28 @@ def build_parser() -> argparse.ArgumentParser:
         dest="ga_patience",
         help="optional early stop after this many generations without improvement",
     )
+    ga_options.add_argument("--ga-restart-after", type=int, default=None,
+                            help="optional partial population restart after stagnant generations")
+    ga_options.add_argument("--ga-local-search-fraction", type=float, default=0.0,
+                            help="fraction of children sampled by a swap around the current best")
+    ga_options.add_argument("--ga-preserve-common", action="store_true",
+                            help="experimental crossover retaining members shared by both parents")
+    sp.add_argument("--checkpoint", default=None, help="checkpoint JSON outside --out")
+    sp.add_argument("--resume", action="store_true",
+                    help="resume an identical checkpointed request")
+    sp.add_argument("--workers", type=int, default=1, help="independent solver processes")
+    sp.add_argument("--solver-threads", type=int, default=1, help="solver threads per worker")
+    sp.add_argument("--validate-top", type=int, default=0,
+                    help="extra top-combo analyses: leave-one-out, monoculture, "
+                         "medium and abundance")
+    sp.add_argument("--solve-timeout", type=float, default=None, help="seconds per solver call")
+    sp.add_argument("--min-member-growth", type=float, default=0.0, help="each member growth floor")
+    sp.add_argument("--min-community-growth", type=float, default=0.0,
+                    help="absolute community growth floor, in addition to --growth-fraction")
+    sp.add_argument("--target-scales", default=None,
+                    help="fixed positive references, e.g. ac=10,but=5; required for normalized GA")
+    sp.add_argument("--pareto-resolution", type=int, default=5,
+                    help="number of subdivisions per independent epsilon slice (>=2)")
     sp.add_argument(
         "--robustness-fva",
         action="store_true",

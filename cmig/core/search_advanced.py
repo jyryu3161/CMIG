@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from cmig.core.search import RankedConsortium, TargetSpec
+from cmig.core.search_constraints import GrowthPolicy, apply_member_growth
+from cmig.core.search_profile import timed
 
 
 class Normalizer(enum.Enum):
@@ -147,8 +149,10 @@ class RobustnessResult:
     diagnostic: str | None = None
 
 
+@timed("fva")
 def robustness_fva(
     community: Any, spec: TargetSpec, *, growth_fraction: float = 0.5, solver: str = "gurobi",
+    growth_policy: GrowthPolicy | None = None,
 ) -> RobustnessResult:
     """robustness = target exchange 의 FVA 범위(growth ≥ f·μ_c* 하). 좁을수록 robust.
 
@@ -159,8 +163,21 @@ def robustness_fva(
     if ex_id not in {r.id for r in community.reactions}:
         return RobustnessResult(ex_id, 0.0, 0.0, 0.0, "missing", f"target 부재: {ex_id}")
     try:
-        ranges = community_fva(
-            community, reactions=[ex_id], fraction_of_optimum=growth_fraction, solver=solver)
+        if growth_policy is None or growth_policy == GrowthPolicy():
+            ranges = community_fva(
+                community, reactions=[ex_id], fraction_of_optimum=growth_fraction, solver=solver)
+        else:
+            growth_policy.validate()
+            with community:
+                apply_member_growth(community, growth_policy)
+                community.add_cons_vars([community.problem.Constraint(
+                    community.objective.expression, lb=growth_policy.min_community_growth,
+                    name="cmig_fva_absolute_growth_floor",
+                )])
+                ranges = community_fva(
+                    community, reactions=[ex_id], fraction_of_optimum=growth_fraction,
+                    solver=solver,
+                )
     except (FVAUnavailableError, FVAInfeasibleError) as e:
         return RobustnessResult(ex_id, 0.0, 0.0, 0.0, "failed", str(e))
     rng = ranges[ex_id]

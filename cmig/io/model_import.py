@@ -98,6 +98,13 @@ def load_cobra_model(path: str | Path) -> Any:
         raise ModelImportError("cobra 미설치 (`uv sync --extra engine`).") from e
     try:
         if fmt == "sbml":
+            if source.suffix.lower() == ".gz" and source.suffix != ".gz":
+                # libSBML's compression dispatch is case-sensitive even though
+                # CMIG's supported-format detection is not.
+                import gzip
+
+                with gzip.open(source, "rt", encoding="utf-8") as handle:
+                    return cobra.io.read_sbml_model(handle)
             return cobra.io.read_sbml_model(str(source))
         if fmt == "json":
             return cobra.io.load_json_model(str(source))

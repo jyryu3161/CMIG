@@ -149,6 +149,8 @@ class MicomEngine:
 
     def __init__(self) -> None:
         self._micom: Any = None
+        self._model_files: Any = None
+        self.cache_models = False
 
     def _load(self) -> Any:
         if self._micom is None:
@@ -169,6 +171,11 @@ class MicomEngine:
         """taxonomy(DataFrame) → micom Community. solver 매핑 적용 (F1: gurobi/osqp 만)."""
         _require_allowed_solver(cmig_solver)        # 라이브러리 레벨 강제(임의 solver 우회 차단)
         micom = self._load()
+        from cmig.io.model_cache import ModelFileCache
+
+        if self._model_files is None:
+            self._model_files = ModelFileCache()
+        taxonomy = self._model_files.prepare(taxonomy, all_models=self.cache_models)
         return micom.Community(taxonomy, solver=SOLVER_MAP[cmig_solver], progress=False)
 
     @staticmethod

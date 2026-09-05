@@ -8,14 +8,18 @@ GA approximation for larger candidate spaces.
 from __future__ import annotations
 
 import itertools
+import json
 import math
 import random
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from typing import Any, Literal, cast
 
 from cmig.core.search import Direction, TargetSpec, score_target_result, target_max_solve
+from cmig.core.search_constraints import GrowthPolicy, actual_members, validate_taxonomy
+from cmig.core.search_execution import SearchControl
 from cmig.core.search_ga import GAConfig
+from cmig.core.search_profile import profile_evaluation, timed
 
 SearchStrategy = Literal["auto", "exhaustive", "random", "ga"]
 
@@ -35,6 +39,8 @@ class SearchConfig:
     robustness_fva: bool = False
     exhaustive_max: int = 100
     ga_config: GAConfig | None = None
+    growth_policy: GrowthPolicy = field(default_factory=GrowthPolicy)
+    validation_top: int = 0
 
 
 @dataclass(frozen=True)
@@ -49,6 +55,11 @@ class PoolRank:
     robustness_fva_lo: float | None = None
     robustness_fva_hi: float | None = None
     robustness_status: str | None = None
+    effective_members: tuple[str, ...] = ()
+    member_growth: dict[str, float] = field(default_factory=dict)
+    abundances: dict[str, float] = field(default_factory=dict)
+    timings: dict[str, float] = field(default_factory=dict, compare=False)
+    medium_note: str | None = None
 
     @property
     def robustness_width(self) -> float | None:
@@ -72,6 +83,9 @@ class PoolSearchResult:
     # 이 목록은 절단과 무관하게 항상 완전하다.
     unevaluated: list[PoolRank] = field(default_factory=list)
     ga_metadata: dict[str, Any] | None = None
+    evaluations: list[PoolRank] = field(default_factory=list)
+    validation_report: dict[str, Any] = field(default_factory=dict)
+    profile: dict[str, Any] = field(default_factory=dict, compare=False)
 
     @property
     def n_candidates_ranked(self) -> int:
@@ -196,6 +210,7 @@ def _ranking_degeneracy_warnings(
 
 
 def _validate_config(config: SearchConfig) -> None:
+    config.growth_policy.validate()
     if config.min_size <= 0:
         raise ValueError("--min-size must be > 0")
     if config.max_size < config.min_size:
@@ -329,6 +344,7 @@ UNAPPLIED_MEDIUM_PREFIX = "requested medium exchanges not applied (no counterpar
 MERGED_MEDIUM_PREFIX = "medium was MERGED onto the model's default, not applied exactly"
 
 
+@timed("medium")
 def _apply_search_medium(
     community: Any,
     medium_spec: Any | None,
@@ -368,6 +384,7 @@ def _with_medium_note(diagnostic: str | None, note: str | None) -> str | None:
     return note if not diagnostic else f"{note}; {diagnostic}"
 
 
+@profile_evaluation
 def _evaluate_members(
     engine: Any,
     taxonomy: Any,
@@ -380,11 +397,15 @@ def _evaluate_members(
     strict_medium: bool = True,
     robustness_fva: bool = False,
     medium_notes: set[str] | None = None,
+    growth_policy: GrowthPolicy | None = None,
 ) -> PoolRank:
     sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
     medium_note: str | None = None
+    effective: tuple[str, ...] = ()
     try:
         community = engine.build_community(sub, cmig_solver=solver)
+        effective = tuple(sorted(str(x) for x in getattr(community, "taxa", members)))
+        actual_members(community, members)
         medium_note = _apply_search_medium(
             community, medium_spec, strict_medium=strict_medium, notes=medium_notes
         )
@@ -393,6 +414,8 @@ def _evaluate_members(
             spec,
             growth_fraction=growth_fraction,
             solver=solver,
+            **cast(dict[str, Any],
+                   {"growth_policy": growth_policy} if growth_policy is not None else {}),
         )
         fva_lo = fva_hi = None
         fva_status = None
@@ -404,6 +427,8 @@ def _evaluate_members(
                 spec,
                 growth_fraction=growth_fraction,
                 solver=solver,
+                **cast(dict[str, Any], {"growth_policy": growth_policy}
+                       if growth_policy is not None else {}),
             )
             fva_status = fva.status
             if fva.status == "ok":
@@ -420,6 +445,10 @@ def _evaluate_members(
             robustness_fva_lo=fva_lo,
             robustness_fva_hi=fva_hi,
             robustness_status=fva_status,
+            effective_members=effective,
+            member_growth=getattr(result, "member_growth", {}),
+            abundances=getattr(result, "abundances", {}),
+            medium_note=medium_note,
         )
     except Exception as error:  # noqa: BLE001 - isolate one failed consortium
         return PoolRank(
@@ -430,9 +459,12 @@ def _evaluate_members(
             community_growth=0.0,
             status="failed",
             diagnostic=_with_medium_note(str(error), medium_note),
+            effective_members=effective,
+            medium_note=medium_note,
         )
 
 
+@profile_evaluation
 def _add_robustness_fva(
     engine: Any,
     taxonomy: Any,
@@ -444,11 +476,13 @@ def _add_robustness_fva(
     medium_spec: Any | None,
     strict_medium: bool,
     medium_notes: set[str] | None = None,
+    growth_policy: GrowthPolicy | None = None,
 ) -> PoolRank:
     """Attach FVA to one final ranked row without repeating the target-max solve."""
     sub = taxonomy[taxonomy["id"].astype(str).isin(row.members)].copy()
     try:
         community = engine.build_community(sub, cmig_solver=solver)
+        actual_members(community, row.members)
         _apply_search_medium(
             community,
             medium_spec,
@@ -462,6 +496,8 @@ def _add_robustness_fva(
             spec,
             growth_fraction=growth_fraction,
             solver=solver,
+            **cast(dict[str, Any], {"growth_policy": growth_policy}
+                   if growth_policy is not None else {}),
         )
         robustness_note = None
         if fva.status != "ok":
@@ -519,9 +555,25 @@ def search_model_pool(
     *,
     medium_spec: Any | None = None,
     strict_medium: bool = True,
+    control: SearchControl | None = None,
+    _batch_evaluate: Callable[[list[tuple[str, ...]]], list[PoolRank]] | None = None,
 ) -> PoolSearchResult:
     """Rank model-pool combinations for a target metabolite."""
     _validate_config(config)
+    validate_taxonomy(taxonomy)
+    if control is not None and control.workers > 1 and _batch_evaluate is None:
+        from cmig.service.search_service import SearchRequest, search_workers
+
+        request = SearchRequest(taxonomy, config, medium_spec, strict_medium)
+        with search_workers(request, control) as batch:
+            return search_model_pool(
+                engine, taxonomy, config, medium_spec=medium_spec, strict_medium=strict_medium,
+                control=control, _batch_evaluate=batch,
+            )
+    if control is not None:
+        from cmig.service.search_service import ConfiguredEngine
+
+        engine = ConfiguredEngine(engine, control.solver_threads, control.solve_timeout)
     ids = [str(x) for x in taxonomy["id"]]
     if len(set(ids)) != len(ids):
         raise ValueError("taxonomy id values must be unique")
@@ -539,11 +591,33 @@ def search_model_pool(
     warnings: list[str] = []
     medium_notes: set[str] = set()
     cache: dict[tuple[str, ...], PoolRank] = {}
+    if control is not None:
+        for genome, record in control.records.items():
+            raw = dict(record)
+            raw["members"] = genome
+            raw["effective_members"] = tuple(raw.get("effective_members", ()))
+            raw["score"] = -math.inf if raw["score"] is None else raw["score"]
+            cache[genome] = PoolRank(**raw)
+            note = cache[genome].medium_note
+            if note:
+                medium_notes.add(note)
     ga_metadata: dict[str, Any] | None = None
+
+    def remember(row: PoolRank) -> PoolRank:
+        cache[row.members] = row
+        if row.medium_note:
+            medium_notes.add(row.medium_note)
+        if control is not None:
+            control.records[row.members] = _json_safe(asdict(row))
+            control.save()
+            control.report(len(cache), n_candidates_total)
+        return row
 
     def evaluate(members: tuple[str, ...]) -> PoolRank:
         if members not in cache:
-            cache[members] = _evaluate_members(
+            if control is not None:
+                control.check()
+            remember(_evaluate_members(
                 engine,
                 taxonomy,
                 members,
@@ -555,14 +629,29 @@ def search_model_pool(
                 # FVA is deliberately deferred until the final top-k is known.
                 robustness_fva=False,
                 medium_notes=medium_notes,
-            )
+                **cast(dict[str, Any], {"growth_policy": config.growth_policy}
+                       if config.growth_policy != GrowthPolicy() else {}),
+            ))
         return cache[members]
 
+    def evaluate_batch(genomes: list[tuple[str, ...]]) -> list[float]:
+        missing = [genome for genome in genomes if genome not in cache]
+        if _batch_evaluate is not None and missing:
+            for row in _batch_evaluate(missing):
+                remember(row)
+        return [evaluate(genome).score for genome in genomes]
+
+    def evaluate_all(genomes: Iterator[tuple[str, ...]]) -> None:
+        width = control.workers if control is not None else 1
+        while batch := list(itertools.islice(genomes, width)):
+            if control is not None:
+                control.check()
+            evaluate_batch(batch)
+
     if strategy == "exhaustive":
-        for members in _iter_candidate_combinations(
+        evaluate_all(_iter_candidate_combinations(
             ids, config.min_size, config.max_size
-        ):
-            evaluate(members)
+        ))
     elif strategy == "random":
         selected = sample_candidate_combinations(
             ids,
@@ -571,8 +660,7 @@ def search_model_pool(
             n_samples=config.n_samples,
             seed=config.seed,
         )
-        for members in selected:
-            evaluate(members)
+        evaluate_all(iter(selected))
         if len(selected) < n_candidates_total:
             warnings.append("random sampling evaluated a subset; global optimum is not guaranteed")
     elif strategy == "ga":
@@ -592,6 +680,14 @@ def search_model_pool(
             lambda genome: evaluate(tuple(genome)).score,
             normalized_ga_config,
             top_k=config.top_k,
+            **cast(dict[str, Any], {
+                "checkpoint_state": control.algorithm_state,
+                "on_checkpoint": control.save_algorithm,
+                "cancel_check": control.check,
+                "on_progress": control.report,
+                "batch_fitness_fn": evaluate_batch,
+                "batch_size": control.workers,
+            } if control is not None else {}),
         )
         warnings.append(ga.warning)
         ga_metadata = _ga_metadata(normalized_ga_config, ga)
@@ -626,8 +722,21 @@ def search_model_pool(
 
     ranked = [_renumber(row, i + 1) for i, row in enumerate(solved[: config.top_k])]
     if config.robustness_fva:
-        ranked = [
-            _add_robustness_fva(
+        robust_rows = []
+        for row in ranked:
+            if control is not None:
+                control.check()
+            auxiliary_key = "robustness:" + json.dumps(row.members)
+            if control is not None and auxiliary_key in control.validation_records:
+                stored = control.validation_records[auxiliary_key]
+                restored = PoolRank(**{**stored, "members": tuple(stored["members"]),
+                                       "effective_members": tuple(stored["effective_members"])})
+                robust_rows.append(restored)
+                continue
+            if row.robustness_status is not None:
+                robust_rows.append(row)
+                continue
+            updated = _add_robustness_fva(
                 engine,
                 taxonomy,
                 row,
@@ -637,9 +746,14 @@ def search_model_pool(
                 medium_spec=medium_spec,
                 strict_medium=strict_medium,
                 medium_notes=medium_notes,
+                **cast(dict[str, Any], {"growth_policy": config.growth_policy}
+                       if config.growth_policy != GrowthPolicy() else {}),
             )
-            for row in ranked
-        ]
+            robust_rows.append(updated)
+            if control is not None:
+                control.validation_records[auxiliary_key] = _json_safe(asdict(updated))
+                control.save()
+        ranked = robust_rows
         robustness_failed = [
             row for row in ranked if row.robustness_status not in (None, "ok")
         ]
@@ -667,13 +781,14 @@ def search_model_pool(
         warnings=warnings,
         unevaluated=unevaluated,
         ga_metadata=ga_metadata,
+        evaluations=evaluated,
     )
 
 
 # ── Multi-target search (§14 다중 타깃) ─────────────────────────────────────────
 # Users can rank model-pool combinations against several targets at once, combined
-# by a weighted sum of per-target scores normalized into [0,1] over the observed
-# range, plus an N-dimensional Pareto non-dominated flag.
+# by a weighted sum of affine-normalized or absolute-unit scores, plus an
+# N-dimensional Pareto non-dominated flag.
 
 
 MultiTargetMetric = Literal[
@@ -686,7 +801,7 @@ PARETO_EPSILON_GRID: tuple[float, ...] = (0.0, 0.05, 0.15, 0.3, 0.5)
 
 # 점수의 단위 — 무차원 정규화 점수와 실제 flux 합을 같은 칸에 담지 않기 위해 결과에 기록한다.
 MULTI_METRIC_UNITS: dict[str, str] = {
-    "normalized_weighted": "dimensionless (weighted min-max over the candidate set)",
+    "normalized_weighted": "dimensionless (affine fixed scale; unclipped)",
     "carbon_equivalent": "mmol C gDW^-1 h^-1",
     "raw_sum": "mmol gDW^-1 h^-1",
     # F6 (round 5): the pareto path never resolves carbon numbers — `carbon_numbers` is empty and
@@ -699,15 +814,13 @@ MULTI_METRIC_UNITS: dict[str, str] = {
     ),
 }
 
-# S1's deepest limit. Maximising a weighted sum over a polytope lands on a vertex, so a carbon-
-# weighted objective concentrates on whichever acid has the best carbon-per-substrate yield and
-# reports every other target as exactly 0. That is a property of weighted-sum LP, not degeneracy:
-# no weight vector avoids it, because every weight vector still selects a vertex.
+# A linear objective admits a vertex optimum; a vertex need not be a specialist.
+# One weighted solution cannot stand in for the whole achievable trade-off set.
 SCALARISATION_WARNING = (
-    "a weighted-sum objective is optimised at a vertex of the feasible set, so this ranking "
-    "systematically favours a single-metabolite specialist over a balanced producer — the "
-    "winner's 'total' can be one metabolite and zero of the others. Use --multi-metric pareto "
-    "for the non-dominated trade-off set instead of one scalarised winner"
+    "a weighted-sum objective can be optimised at a vertex of the feasible set, which may "
+    "select a single-metabolite specialist (but not every vertex is a specialist). Zero flux "
+    "in this solution does not prove zero production capability. Use --multi-metric pareto "
+    "for a sampled non-dominated trade-off set instead of one scalarised winner"
 )
 
 # flux 열의 출처 표시 (B3): 하나의 joint LP 해인지, 표적별 독립 해(동시 달성 불가)인지.
@@ -728,6 +841,14 @@ class MultiTargetConfig:
     top_k: int = 10
     exhaustive_max: int = 100
     metric: MultiTargetMetric = "normalized_weighted"
+    growth_policy: GrowthPolicy = field(default_factory=GrowthPolicy)
+    strategy: SearchStrategy = "exhaustive"
+    n_samples: int = 100
+    seed: int = 0
+    ga_config: GAConfig | None = None
+    reference_scales: dict[str, float] = field(default_factory=dict)
+    pareto_resolution: int = 5
+    validation_top: int = 0
 
 
 @dataclass(frozen=True)
@@ -745,6 +866,10 @@ class MultiTargetRank:
     missing_targets: tuple[str, ...] = ()
     # B3: flux 열이 한 해에서 온 것인지(joint) 표적별 독립 해인지(동시 달성 불가) 표시.
     flux_basis: str = FLUX_BASIS_JOINT
+    effective_members: tuple[str, ...] = ()
+    member_growth: dict[str, float] = field(default_factory=dict)
+    abundances: dict[str, float] = field(default_factory=dict)
+    timings: dict[str, float] = field(default_factory=dict, compare=False)
 
 
 @dataclass(frozen=True)
@@ -765,6 +890,12 @@ class MultiTargetSearchResult:
     score_unit: str = MULTI_METRIC_UNITS["normalized_weighted"]
     # P0-C: 평가 불가 후보 — rank 를 갖지 않고 top_ranked 에 들어가지 않는다.
     unevaluated: list[MultiTargetRank] = field(default_factory=list)
+    pareto_archive: list[MultiTargetRank] = field(default_factory=list)
+    evaluations: list[MultiTargetRank] = field(default_factory=list)
+    ga_metadata: dict[str, Any] | None = None
+    normalization_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
+    validation_report: dict[str, Any] = field(default_factory=dict)
+    profile: dict[str, Any] = field(default_factory=dict, compare=False)
 
 
 @dataclass(frozen=True)
@@ -777,6 +908,11 @@ class _ComboEval:
     diagnostic: str | None = None
     missing_targets: tuple[str, ...] = ()
     flux_basis: str = FLUX_BASIS_CAPABILITY
+    effective_members: tuple[str, ...] = ()
+    member_growth: dict[str, float] = field(default_factory=dict)
+    abundances: dict[str, float] = field(default_factory=dict)
+    timings: dict[str, float] = field(default_factory=dict, compare=False)
+    medium_note: str | None = None
 
 
 def _signed_raw(result: Any, spec: TargetSpec) -> float:
@@ -836,8 +972,14 @@ def rank_multi_target(
         if metric == "normalized_weighted":
             for m in mets:
                 lo, hi = ranges[m]
-                contributions[m] = normalize_score(
-                    e.signed.get(m, 0.0), observed_min=lo, observed_max=hi).value
+                if normalization_ranges is not None:
+                    # The same affine function as the LP: clipping would change
+                    # which feasible flux vector maximises the reported score.
+                    scale = _joint_lp_scales(metric, ranges)[m]
+                    contributions[m] = (e.signed.get(m, 0.0) - lo) / scale
+                else:
+                    contributions[m] = normalize_score(
+                        e.signed.get(m, 0.0), observed_min=lo, observed_max=hi).value
             score = weighted_multi_target(contributions, specs)
         else:
             # 실제 단위 유지: 기여도 = weight(=carbon number 등) × direction 보정 flux.
@@ -846,9 +988,12 @@ def rank_multi_target(
             score = sum(contributions.values())
         rows.append(MultiTargetRank(
             0, e.members, score, e.fluxes, contributions, e.community_growth, "optimal",
-            False, None, e.missing_targets, e.flux_basis))
+            False, e.diagnostic, e.missing_targets, e.flux_basis))
 
-    ok_idx = [i for i, row in enumerate(rows) if row.status == "optimal"]
+    rows = [replace(row, effective_members=e.effective_members,
+                    member_growth=e.member_growth, abundances=e.abundances, timings=e.timings)
+            for row, e in zip(rows, evals, strict=True)]
+    ok_idx = [i for i, row in enumerate(rows) if is_evaluable(row.status, row.weighted_score)]
     points = [tuple(evals[i].signed[metabolite] for metabolite in mets) for i in ok_idx]
     keep = {ok_idx[k] for k in pareto_frontier_nd(points)}
     rows = [replace(row, pareto=(i in keep)) for i, row in enumerate(rows)]
@@ -868,10 +1013,12 @@ def rank_multi_target(
     return ranked + unevaluated, normalizer
 
 
+@profile_evaluation
 def _evaluate_members_multi(
     engine: Any, taxonomy: Any, members: tuple[str, ...], specs: list[TargetSpec], *,
     growth_fraction: float, solver: str, medium_spec: Any | None, strict_medium: bool,
     medium_notes: set[str] | None = None,
+    growth_policy: GrowthPolicy | None = None,
 ) -> _ComboEval:
     """Per-target capability pass. Fluxes come from independent solves — NOT simultaneous.
 
@@ -880,11 +1027,25 @@ def _evaluate_members_multi(
     non-optimal LP (infeasible / baseline failure / solver error) disqualifies the consortium.
     """
     sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
+    effective: tuple[str, ...] = ()
+    medium_note: str | None = None
     try:
         community = engine.build_community(sub, cmig_solver=solver)
+        effective = tuple(sorted(str(x) for x in getattr(community, "taxa", members)))
+        actual_members(community, members)
         medium_note = _apply_search_medium(
             community, medium_spec, strict_medium=strict_medium, notes=medium_notes
         )
+        from cmig.core.search import _community_growth_star
+        from cmig.core.search_constraints import apply_member_growth
+
+        baseline: dict[str, Any] = {}
+        if hasattr(community, "optimize"):
+            with community:
+                apply_member_growth(community, growth_policy or GrowthPolicy())
+                baseline["mu_community"] = _community_growth_star(community)
+        if growth_policy is not None:
+            baseline["growth_policy"] = growth_policy
         fluxes: dict[str, float] = {}
         signed: dict[str, float] = {}
         status = "optimal"
@@ -893,7 +1054,7 @@ def _evaluate_members_multi(
         missing: list[str] = []
         for spec in specs:
             res = target_max_solve(
-                community, spec, growth_fraction=growth_fraction, solver=solver)
+                community, spec, growth_fraction=growth_fraction, solver=solver, **baseline)
             if res.status == "missing":
                 # exchange 부재 = 이 대사체를 만들 수 없음 → 0 기여, consortium 은 계속 평가된다.
                 missing.append(spec.metabolite)
@@ -912,9 +1073,11 @@ def _evaluate_members_multi(
         return _ComboEval(
             members, status, growth, fluxes, signed, _with_medium_note(diag, medium_note),
             tuple(sorted(missing)), FLUX_BASIS_CAPABILITY,
+            effective_members=effective, medium_note=medium_note,
         )
     except Exception as e:  # noqa: BLE001 - per-combo isolation
-        return _ComboEval(members, "failed", 0.0, {}, {}, str(e), (), FLUX_BASIS_NONE)
+        return _ComboEval(members, "failed", 0.0, {}, {}, str(e), (), FLUX_BASIS_NONE,
+                          effective_members=effective, medium_note=medium_note)
 
 
 def _capability_ranges(
@@ -946,19 +1109,25 @@ def _joint_lp_scales(
     }
 
 
+@profile_evaluation
 def _evaluate_members_multi_joint(
     engine: Any, taxonomy: Any, members: tuple[str, ...], specs: list[TargetSpec], *,
     normalization_ranges: dict[str, tuple[float, float]], growth_fraction: float,
     solver: str, medium_spec: Any | None, strict_medium: bool,
     metric: MultiTargetMetric = "normalized_weighted",
     medium_notes: set[str] | None = None,
+    growth_policy: GrowthPolicy | None = None,
 ) -> _ComboEval:
     """Evaluate one consortium with a single jointly feasible weighted LP solution."""
     from cmig.core.search import joint_target_solve
 
     sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
+    effective: tuple[str, ...] = ()
+    medium_note: str | None = None
     try:
         community = engine.build_community(sub, cmig_solver=solver)
+        effective = tuple(sorted(str(x) for x in getattr(community, "taxa", members)))
+        actual_members(community, members)
         medium_note = _apply_search_medium(
             community, medium_spec, strict_medium=strict_medium, notes=medium_notes
         )
@@ -969,6 +1138,8 @@ def _evaluate_members_multi_joint(
             normalization_scales=scales,
             growth_fraction=growth_fraction,
             solver=solver,
+            **cast(dict[str, Any],
+                   {"growth_policy": growth_policy} if growth_policy is not None else {}),
         )
         return _ComboEval(
             members,
@@ -979,53 +1150,111 @@ def _evaluate_members_multi_joint(
             _with_medium_note(result.diagnostic, medium_note),
             result.missing_targets,
             FLUX_BASIS_JOINT if result.status == "optimal" else FLUX_BASIS_NONE,
+            effective,
+            getattr(result, "member_growth", {}), getattr(result, "abundances", {}),
+            medium_note=medium_note,
         )
     except Exception as e:  # noqa: BLE001 - per-combo isolation
-        return _ComboEval(members, "failed", 0.0, {}, {}, str(e), (), FLUX_BASIS_NONE)
+        return _ComboEval(members, "failed", 0.0, {}, {}, str(e), (), FLUX_BASIS_NONE,
+                          effective_members=effective, medium_note=medium_note)
 
 
+@profile_evaluation
 def _pareto_points_for_members(
     engine: Any, taxonomy: Any, members: tuple[str, ...], specs: list[TargetSpec], *,
     capability: dict[str, float], growth_fraction: float, solver: str,
     medium_spec: Any | None, strict_medium: bool,
     epsilon_grid: tuple[float, ...] = PARETO_EPSILON_GRID,
     medium_notes: set[str] | None = None,
+    growth_policy: GrowthPolicy | None = None,
+    resolution: int = 5,
 ) -> list[_ComboEval]:
-    """Trace one consortium's trade-off surface with an epsilon-constraint sweep.
+    """Sample objective extremes and independent signed epsilon slices.
 
-    Each epsilon level forces every target to at least that fraction of its own achievable
-    maximum, which removes the single-metabolite vertices from the feasible set and makes the
-    optimiser return a genuinely mixed flux vector. Infeasible levels are simply dropped — an
-    epsilon that cannot be met is information about the trade-off, not an error.
+    Infeasible slices are omitted. Duplicate vectors (to eight decimals) are
+    retained once per consortium. These feasible samples do not certify the
+    complete internal trade-off front.
     """
     from cmig.core.search import epsilon_constrained_solve
 
     sub_taxonomy = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
     points: list[_ComboEval] = []
+    seen_vectors: set[tuple[float, ...]] = set()
     try:
         community = engine.build_community(sub_taxonomy, cmig_solver=solver)
+        actual_members(community, members)
         medium_note = _apply_search_medium(
             community, medium_spec, strict_medium=strict_medium, notes=medium_notes
         )
+        from cmig.core.search import _community_growth_star
+        from cmig.core.search_constraints import apply_member_growth
+
+        baseline: dict[str, Any] = {}
+        if hasattr(community, "optimize"):
+            with community:
+                apply_member_growth(community, growth_policy or GrowthPolicy())
+                baseline["mu_community"] = _community_growth_star(community)
+        if growth_policy is not None:
+            baseline["growth_policy"] = growth_policy
+        # Every objective gets its own extreme, then independent epsilon slices.
+        # O(targets^2 * resolution), avoiding an exponential full Cartesian grid.
+        policies: list[tuple[list[TargetSpec], dict[str, float], str]] = [(specs, {}, "weighted")]
+        relaxed: dict[str, float] = {}
+        for spec in specs:
+            if spec.direction in (Direction.MIN_SECRETION, Direction.MIN_UPTAKE):
+                opposite = replace(spec, direction=(Direction.MAX_SECRETION
+                    if spec.direction == Direction.MIN_SECRETION else Direction.MAX_UPTAKE))
+                limit = target_max_solve(
+                    community, opposite, growth_fraction=growth_fraction, solver=solver,
+                    **baseline,
+                )
+                if limit.status == "optimal":
+                    relaxed[spec.metabolite] = -abs(limit.target_flux)
+        for primary in specs:
+            objective_specs = [replace(spec, weight=float(spec is primary)) for spec in specs]
+            policies.append((objective_specs, {}, f"extreme={primary.metabolite}"))
+            for other in specs:
+                if other is primary:
+                    continue
+                best = capability.get(other.metabolite, 0.0)
+                # Min objectives have a nonpositive utility. Use the magnitude
+                # of their opposite-direction capability as the relaxed end.
+                for step in range(1, resolution):
+                    fraction = step / resolution
+                    low = relaxed.get(other.metabolite, 0.0)
+                    bound = low + (best - low) * fraction
+                    policies.append((objective_specs, {other.metabolite: bound},
+                                     f"primary={primary.metabolite};{other.metabolite}>={bound:g}"))
+        # Preserve balanced slices too, but never impose a zero bound on omitted
+        # minimisation targets (zero is their best value, not a neutral constraint).
         for epsilon in epsilon_grid:
-            floors = {
-                spec.metabolite: epsilon * max(0.0, capability.get(spec.metabolite, 0.0))
-                for spec in specs
-            }
+            floors = {spec.metabolite: epsilon * capability.get(spec.metabolite, 0.0)
+                      for spec in specs if spec.direction in (
+                          Direction.MAX_SECRETION, Direction.MAX_UPTAKE)}
+            policies.append((specs, floors, f"epsilon={epsilon:g}"))
+        for objective_specs, floors, label in policies:
             result = epsilon_constrained_solve(
-                community, specs, floors,
+                community, objective_specs, floors,
                 normalization_scales=dict.fromkeys(
                     (spec.metabolite for spec in specs), 1.0
                 ),
                 growth_fraction=growth_fraction, solver=solver,
+                **baseline,
             )
             if result.status != "optimal":
                 continue
+            vector = tuple(round(result.signed_values[spec.metabolite], 8) for spec in specs)
+            if vector in seen_vectors:
+                continue
+            seen_vectors.add(vector)
             points.append(_ComboEval(
                 members, "optimal", result.community_growth,
                 dict(result.target_fluxes), dict(result.signed_values),
-                _with_medium_note(f"epsilon={epsilon:g}", medium_note),
+                _with_medium_note(label, medium_note),
                 result.missing_targets, FLUX_BASIS_JOINT,
+                tuple(sorted(str(x) for x in getattr(community, "taxa", members))),
+                getattr(result, "member_growth", {}), getattr(result, "abundances", {}),
+                medium_note=medium_note,
             ))
     except Exception as error:  # noqa: BLE001 - per-combo isolation, same as the other passes
         return [_ComboEval(members, "failed", 0.0, {}, {}, str(error), (), FLUX_BASIS_NONE)]
@@ -1044,8 +1273,19 @@ def _pareto_points_for_members(
 def search_model_pool_multi(
     engine: Any, taxonomy: Any, config: MultiTargetConfig, *,
     medium_spec: Any | None = None, strict_medium: bool = True,
+    control: SearchControl | None = None,
 ) -> MultiTargetSearchResult:
     """Rank model-pool combinations against multiple targets (weighted-normalized + Pareto)."""
+    validate_taxonomy(taxonomy)
+    config.growth_policy.validate()
+    if (config.strategy != "exhaustive" or control is not None or config.reference_scales
+            or config.growth_policy != GrowthPolicy() or config.pareto_resolution != 5):
+        from cmig.core.search_multi import run_multi_search
+
+        return run_multi_search(
+            engine, taxonomy, config, medium_spec=medium_spec,
+            strict_medium=strict_medium, control=control,
+        )
     if len(config.targets) < 2:
         raise ValueError("multi-target search needs >= 2 targets; use single --target otherwise")
     if config.min_size <= 0 or config.max_size < config.min_size:
@@ -1143,6 +1383,8 @@ def search_model_pool_multi(
         metric=config.metric,
         score_unit=MULTI_METRIC_UNITS[config.metric],
         unevaluated=unevaluated,
+        evaluations=all_rows,
+        pareto_archive=[row for row in ranked if row.pareto],
     )
 
 
@@ -1175,6 +1417,9 @@ def _pareto_search(
             growth_fraction=config.growth_fraction, solver=config.solver,
             medium_spec=medium_spec, strict_medium=strict_medium,
             medium_notes=medium_notes,
+            **cast(dict[str, Any], {"growth_policy": config.growth_policy}
+                   if config.growth_policy != GrowthPolicy() else {}),
+            resolution=config.pareto_resolution,
         )
         if found and all(point.status != "optimal" for point in found):
             unevaluated.extend(found)
@@ -1214,7 +1459,8 @@ def _pareto_search(
     )
     warnings.append(
         f"pareto mode: {len(ranked)} non-dominated points across {len(candidates)} consortia and "
-        f"{len(PARETO_EPSILON_GRID)} epsilon levels. Front members are NOT totally ordered — "
+        "sampled epsilon slices and objective extremes; this is a Pareto approximation, "
+        "not a complete continuous front. Front members are NOT totally ordered — "
         "rank here is a reporting order (weighted sum), not a claim that rank 1 is best. "
         f"{n_specialists} of {len(ranked)} front points are single-metabolite specialists"
     )
@@ -1235,6 +1481,8 @@ def _pareto_search(
         metric="pareto",
         score_unit=MULTI_METRIC_UNITS["pareto"],
         unevaluated=unevaluated_ranks(unevaluated, metabolites),
+        pareto_archive=ranked,
+        evaluations=ranked + unevaluated_ranks(unevaluated, metabolites),
     )
 
 
@@ -1290,9 +1538,15 @@ def _multi_target_warnings(
             "contribute flux 0 rather than disqualifying the combination: "
             + ", ".join(f"{'+'.join(r.members)}({','.join(r.missing_targets)})" for r in partial)
         )
-    if config.metric == "normalized_weighted":
+    if config.metric == "normalized_weighted" and config.reference_scales:
         warnings.append(
-            "normalized_weighted scores are min-max normalized over this candidate set; they "
+            "normalized_weighted uses fixed reference scales without clipping; "
+            "compare only runs using identical scales, weights and physical units"
+        )
+    elif config.metric == "normalized_weighted":
+        warnings.append(
+            "normalized_weighted uses affine capability-range scales without clipping; scores "
+            "can fall outside [0,1]. With observed ranges from this candidate set, they "
             "are dimensionless and NOT comparable across runs — use --multi-metric "
             "carbon_equivalent for an absolute, run-comparable total"
         )
