@@ -18,6 +18,9 @@ No solver required.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -318,6 +321,140 @@ def test_golden_verify_envelope_exits_zero_on_a_clean_tree(capsys):
     assert "Workflow-envelope serialization gate" in out
     for kind in WORKFLOW_HASH_COMPONENTS:
         assert f"[OK ] {kind}" in out
+
+
+def _run_strict_cp1252_cli(command, setup=""):
+    """Exercise actual CLI streams with Windows' legacy encoding and strict errors."""
+    script = (
+        "import sys\n"
+        "sys.stdout.reconfigure(encoding='cp1252', errors='strict')\n"
+        "sys.stderr.reconfigure(encoding='cp1252', errors='strict')\n"
+        f"{setup}\n"
+        "from cmig.cli.main import main\n"
+        f"raise SystemExit(main({command!r}))\n"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        encoding="cp1252",
+        errors="strict",
+        check=False,
+    )
+
+
+def _assert_no_encoding_failure(result):
+    assert "Traceback" not in result.stderr
+    assert "UnicodeEncodeError" not in result.stderr
+    assert result.stdout.isascii()
+    assert result.stderr.isascii()
+
+
+def test_golden_verify_envelope_real_cli_is_cp1252_safe():
+    result = _run_strict_cp1252_cli(["golden", "verify-envelope"])
+    assert result.returncode == 0
+    assert "Workflow-envelope serialization gate" in result.stdout
+    assert "[OK ] dfba" in result.stdout
+    assert "[OK ] float normalization probe (NaN / +/-inf" in result.stdout
+    assert "envelope serialization unchanged" in result.stdout
+    assert result.stderr == ""
+    _assert_no_encoding_failure(result)
+
+
+def test_golden_verify_envelope_drift_diagnostics_are_cp1252_safe():
+    setup = r'''
+import cmig.core.workflow_envelope_golden as envelope
+envelope.verify_envelope_golden = lambda: {
+    "checked": [],
+    "drifted": [{
+        "kind": "dfba", "reason": "serialization changed",
+        "golden_hash": "0" * 64, "actual_hash": "1" * 64,
+        "difference": "first difference at character 4: golden \u2026 actual",
+    }],
+    "removed": ["retired"],
+    "float_normalization_probe_ok": False,
+    "float_normalization_probe": {
+        "golden_hash": "2" * 64, "actual_hash": "3" * 64,
+        "difference": "probe \u2026 changed",
+    },
+    "uncovered": [],
+    "ok": False,
+}
+'''
+    result = _run_strict_cp1252_cli(["golden", "verify-envelope"], setup)
+    assert result.returncode == 2
+    assert "[DRIFT] kind 'dfba': serialization changed" in result.stdout
+    assert "golden ... actual" in result.stdout
+    assert "kind 'retired': no longer declared - every published" in result.stdout
+    assert "float normalization (NaN / +/-inf" in result.stdout
+    assert "[DRIFT] float normalization probe" in result.stdout
+    assert "workflow-envelope drift" in result.stderr
+    assert REBLESS_COMMAND in result.stderr
+    _assert_no_encoding_failure(result)
+
+
+def test_golden_verify_envelope_uncovered_kind_warns_without_failing_in_cp1252():
+    setup = r'''
+import cmig.core.workflow_envelope_golden as envelope
+envelope.verify_envelope_golden = lambda: {
+    "checked": ["dfba"], "drifted": [], "removed": [],
+    "float_normalization_probe_ok": True, "float_normalization_probe": {},
+    "uncovered": ["new_kind"], "ok": True,
+}
+'''
+    result = _run_strict_cp1252_cli(["golden", "verify-envelope"], setup)
+    assert result.returncode == 0
+    assert "[NEW] new_kind - not yet covered" in result.stdout
+    assert REBLESS_COMMAND in result.stdout
+    assert "envelope serialization unchanged for 1 workflow kinds" in result.stdout
+    assert result.stderr == ""
+    _assert_no_encoding_failure(result)
+
+
+@pytest.mark.parametrize("matches, expected_rc", [(True, 0), (False, 2)])
+def test_golden_verify_version_and_hash_messages_are_cp1252_safe(matches, expected_rc):
+    report = {
+        "osqp": {
+            "ok": matches,
+            "hash_ok": matches,
+            "recorded": "0.39.0",
+            "installed": "0.39.0" if matches else "0.40.0",
+            "published_run_hash": "a" * 64,
+            "recomputed_run_hash": "b" * 64,
+        }
+    }
+    setup = (
+        "import types\n"
+        "stub = types.ModuleType('cmig.golden_fixture')\n"
+        f"stub.verify_golden_versions = lambda: {report!r}\n"
+        "sys.modules['cmig.golden_fixture'] = stub"
+    )
+    result = _run_strict_cp1252_cli(["golden", "verify"], setup)
+    assert result.returncode == expected_rc
+    assert "MICOM-version + run_hash golden regression" in result.stdout
+    assert "run_hash aaaaaaaaaaaaaaaa..." in result.stdout
+    if matches:
+        assert "[OK ] osqp" in result.stdout
+        assert "all golden versions and published run_hashes match" in result.stdout
+        assert result.stderr == ""
+    else:
+        assert "[MISMATCH] osqp" in result.stdout
+        assert "[MOVED] run_hash" in result.stdout
+        assert "recomputed bbbbbbbbbbbbbbbb..." in result.stdout
+        assert "golden mismatch" in result.stderr
+        assert "python -m cmig.golden_fixture" in result.stderr
+    _assert_no_encoding_failure(result)
+
+
+def test_golden_verify_missing_engine_instruction_is_cp1252_safe():
+    result = _run_strict_cp1252_cli(
+        ["golden", "verify"], "sys.modules['cmig.golden_fixture'] = None"
+    )
+    assert result.returncode == 2
+    assert "golden verify requires the engine stack" in result.stderr
+    assert "uv sync --extra engine" in result.stderr
+    _assert_no_encoding_failure(result)
 
 
 @pytest.mark.parametrize("kind", sorted(WORKFLOW_HASH_COMPONENTS))

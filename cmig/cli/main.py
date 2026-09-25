@@ -1452,7 +1452,7 @@ def _cmd_golden_verify(_: argparse.Namespace) -> int:
     try:
         from cmig.golden_fixture import verify_golden_versions
     except ImportError:  # pragma: no cover
-        print("golden verify 는 엔진 stack 필요: uv sync --extra engine", file=sys.stderr)
+        print("golden verify requires the engine stack: uv sync --extra engine", file=sys.stderr)
         return 2
     report = verify_golden_versions()
     all_ok = True
@@ -1464,15 +1464,17 @@ def _cmd_golden_verify(_: argparse.Namespace) -> int:
         # R5-P3: the hash is the thing the fixture exists to protect, so it is gated and shown.
         published = str(r["published_run_hash"] or "-")
         hash_mark = "OK " if r["hash_ok"] else "MOVED"
-        print(f"      [{hash_mark}] run_hash {published[:16]}…")
+        print(f"      [{hash_mark}] run_hash {published[:16]}...")
         if not r["hash_ok"]:
-            print(f"            recomputed {str(r['recomputed_run_hash'])[:16]}…")
+            print(f"            recomputed {str(r['recomputed_run_hash'])[:16]}...")
     if not all_ok:
         print(
-            "→ golden 재캡처/재검증 필요 (python -m cmig.golden_fixture)", file=sys.stderr
+            "-> golden mismatch: recapture and verify with "
+            "python -m cmig.golden_fixture",
+            file=sys.stderr,
         )
         return 2
-    print("→ 모든 golden 이 설치 MICOM 버전·published run_hash 와 일치 (승격 가능)")
+    print("-> all golden versions and published run_hashes match the installed MICOM stack")
     return 0
 
 
@@ -1494,21 +1496,26 @@ def _cmd_golden_verify_envelope(_: argparse.Namespace) -> int:
     for kind in report["checked"]:
         print(f"  [OK ] {kind}")
     for line in _report_lines(report):
+        line = (
+            line.replace("\u2026", "...")
+            .replace("\u2014", "-")
+            .replace("\u00b1", "+/-")
+        )
         print(line.replace("  kind ", "  [DRIFT] kind ", 1) if line.startswith("  kind ") else line)
     probe = "OK " if report["float_normalization_probe_ok"] else "DRIFT"
-    print(f"  [{probe}] float normalization probe (NaN / ±inf / -0.0 / rounding floor)")
+    print(f"  [{probe}] float normalization probe (NaN / +/-inf / -0.0 / rounding floor)")
     for kind in report["uncovered"]:
         # Not a failure by design: adding a kind must not break a build that left the envelope
         # alone. It is still shown, because an unblessed kind is an unprotected kind.
-        print(f"  [NEW] {kind} — not yet covered; re-bless to protect it ({REBLESS_COMMAND})")
+        print(f"  [NEW] {kind} - not yet covered; re-bless to protect it ({REBLESS_COMMAND})")
     if not report["ok"]:
         print(
-            "→ workflow-envelope drift: published workflow run_hashes no longer reproduce. "
+            "-> workflow-envelope drift: published workflow run_hashes no longer reproduce. "
             f"Re-bless deliberately with `{REBLESS_COMMAND}`.",
             file=sys.stderr,
         )
         return 2
-    print(f"→ envelope serialization unchanged for {len(report['checked'])} workflow kinds")
+    print(f"-> envelope serialization unchanged for {len(report['checked'])} workflow kinds")
     return 0
 
 
