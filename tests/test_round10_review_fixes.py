@@ -81,12 +81,17 @@ def test_host_impact_joins_stereo_metabolites_across_spellings() -> None:
     host = SimpleNamespace(
         viable=True, biomass=1.0,
         lumen_uptake={"lac__d": 5.0},
-        lumen_uptake_ranges={"lac__d": (5.0, 5.0)},
+        lumen_uptake_ranges={"lac__d": (5.0, 5.0), "but": (0.0, 0.0)},
     )
     impact = host_impact({"lac__D": 5.0, "but": 1.0}, host)
     assert impact.microbe_to_host == {"lac__D": 5.0}
     assert impact.unused_secretion == {"but": 1.0}
     assert impact.microbe_to_host_ranges["lac__D"] == (5.0, 5.0)
+    del host.lumen_uptake_ranges["but"]
+    without_evidence = host_impact({"lac__D": 5.0, "but": 1.0}, host)
+    assert "but" not in without_evidence.microbe_to_host
+    assert "but" not in without_evidence.microbe_to_host_ranges
+    assert "but" not in without_evidence.unused_secretion
 
 
 # ── core/sweep: a non-finite metric is a failed condition ────────────────────────────────────

@@ -55,6 +55,10 @@ from cmig.io.atomic import atomic_write_text
 #: writer and again in the reader's whitelist) is what makes it reach `inspect-run`.
 NON_HASHED_PROVENANCE_MARKERS: dict[str, str] = {
     "medium_policy": MEDIUM_POLICY,
+    "exchange_readout_policy": "physical_stoichiometry_topology_v2",
+    "host_transfer_policy": "identified_interval_nullable_v2",
+    "statistics_policy": "degenerate_null_diagnostic_v2",
+    "pareto_sampling_policy": "attempt_ledger_v2",
     "boundary_isolation_policy": BOUNDARY_ISOLATION_POLICY,
     # Host isolation moved from `model.exchanges` to every boundary uptake, which took Recon3D's
     # `host-microbe-bigg` host objective from 368.010247546 to 0.0 under a bit-identical

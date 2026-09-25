@@ -9,6 +9,7 @@ No solver is required for the medium/namespace units — plain cobra Models only
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,7 +30,10 @@ def _model(name: str, exchanges: dict[str, float]) -> cobra.Model:
     model = cobra.Model(name)
     reactions = []
     for exchange_id, open_uptake in exchanges.items():
-        metabolite = cobra.Metabolite(exchange_id.removeprefix("EX_"), compartment="e")
+        compartment = "m" if exchange_id.endswith("_m") else "e"
+        metabolite = cobra.Metabolite(
+            exchange_id.removeprefix("EX_"), compartment=compartment
+        )
         reaction = cobra.Reaction(exchange_id)
         reaction.add_metabolites({metabolite: -1})
         reaction.bounds = (-open_uptake, 1000.0)
@@ -259,11 +263,13 @@ def test_pfba_fallback_is_not_reported_as_pfba():
         growth_rate = 0.5
 
     engine = MicomEngine()
+    engine._micom = SimpleNamespace(__version__="0.39.0")
+    community = SimpleNamespace(exchanges=[], reactions=[], boundary=[])
     pfba = engine._solve_result_from_solution(
-        _Solution(), cmig_solver="gurobi", flux_normalization="pfba"
+        _Solution(), community=community, cmig_solver="gurobi", flux_normalization="pfba"
     )
     fba = engine._solve_result_from_solution(
-        _Solution(), cmig_solver="gurobi", flux_normalization="fba"
+        _Solution(), community=community, cmig_solver="gurobi", flux_normalization="fba"
     )
     assert pfba.flux_report_status == "full"
     assert fba.flux_report_status == "fba_non_parsimonious"
@@ -560,6 +566,7 @@ def test_search_is_silent_when_the_whole_medium_was_applied():
         model, MediumSpec(uptake={"EX_ac_m": 7.0}), strict_medium=True, notes=notes
     ) is None
     assert notes == set()
+    assert model.reactions.EX_ac_m.lower_bound == pytest.approx(-7.0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────────

@@ -273,7 +273,9 @@ def test_an_all_failed_sweep_can_be_waived_explicitly(sweep_fixture):
 
 def _bigg_result(*, host_status: str, community_status: str = "optimal", biomass: float = 0.0):
     from cmig.core.host import BiggHostMicrobeResult, HostSolveResult
+    from cmig.core.host_impact import HostImpact
 
+    optimal = host_status == "optimal" and community_status == "optimal"
     host = HostSolveResult(
         host_status == "optimal", host_status, biomass, [], {},
         None if host_status == "optimal" else '{"code": "infeasible"}',
@@ -281,12 +283,17 @@ def _bigg_result(*, host_status: str, community_status: str = "optimal", biomass
     return BiggHostMicrobeResult(
         community_status=community_status,
         community_growth=0.9,
-        microbial_secretion={},
+        microbial_secretion={"ac": 1.2} if optimal else {},
         member_secretion={},
-        matched_exchanges={},
+        matched_exchanges={"ac": "EX_ac_e"} if optimal else {},
         unmatched_metabolites=[],
         host_result=host,
-        impact=SimpleNamespace(microbe_to_host={"ac": 1.2} if host_status == "optimal" else {}),
+        impact=HostImpact(
+            microbe_to_host={"ac": 1.2} if optimal else {},
+            microbe_to_host_ranges={"ac": (1.2, 1.2)} if optimal else {},
+            host_viable=optimal,
+            host_biomass=biomass,
+        ),
         warnings=[] if host_status == "optimal" else [
             f"host solve was not optimal (status={host_status}); the reported host objective "
             "is not a result"

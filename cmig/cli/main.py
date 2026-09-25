@@ -27,6 +27,7 @@ from cmig.core.targets import TARGET_PRESETS
 from cmig.io.atomic import atomic_write_text
 from cmig.io.gem_paths import default_human_gem_path
 from cmig.render.figure_style import (
+    FONT_STACK,
     SVG_METADATA,
     save_figure_atomic,
     save_publication_tiff,
@@ -2283,15 +2284,23 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                     _run_status_from_solve(community_status),
                     _run_status_from_solve(host_status),
                 )
+                if evaluation_status == "ok" and not math.isfinite(
+                    float(result.host_result.biomass)
+                ):
+                    evaluation_status = "unevaluable"
                 if evaluation_status == "ok":
                     host_objective = float(result.host_result.biomass)
-                    target_transfer = float(result.impact.microbe_to_host.get(args.target, 0.0))
+                    from cmig.core.host_ko_impact import arm_from_coupling
+
+                    readout = arm_from_coupling(result, label="candidate", target=args.target)
+                    target_transfer = readout.target_transfer
+                    score: float | None
                     if args.metric == "objective_value":
                         score = host_objective
                     elif args.metric == "target_transfer":
                         score = target_transfer
                     else:
-                        score = _weighted_host_search_score(
+                        score = None if target_transfer is None else _weighted_host_search_score(
                             host_objective,
                             target_transfer,
                             host_weight=args.host_weight,
@@ -2299,7 +2308,11 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                             host_reference=args.host_reference,
                             target_reference=args.target_reference,
                         )
-                    diagnostic = None
+                    diagnostic = readout.target_reason if score is None else None
+                    target_range = readout.target_transfer_range
+                    target_state = readout.target_identifiability
+                    if score is None:
+                        evaluation_status = "unevaluable"
                 else:
                     # Nothing was measured, so nothing is published: NaN renders blank in the CSV
                     # and null in the JSON rather than as a host that gained nothing.
@@ -2308,6 +2321,8 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                         f"not evaluated: community solve status={community_status}, host solve "
                         f"status={host_status}; the host objective is not a result"
                     )
+                    target_range = None
+                    target_state = "unavailable"
                 rows.append({
                     "members": members,
                     "evaluation_status": evaluation_status,
@@ -2317,13 +2332,19 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                     "host_viable": result.host_result.viable,
                     "target": args.target,
                     "target_transfer": target_transfer,
+                    "target_transfer_range": target_range,
+                    "target_identifiability": target_state,
                     "community_growth": (
                         float(result.community_growth)
                         if _run_status_from_solve(community_status) == "ok"
                         else float("nan")
                     ),
                     "community_status": community_status,
-                    "warnings": result.warnings,
+                    "warnings": list(result.warnings) + (
+                        [readout.target_reason]
+                        if evaluation_status in {"ok", "unevaluable"} and readout.target_reason
+                        else []
+                    ),
                     "diagnostic": diagnostic,
                 })
             except Exception as e:
@@ -2338,6 +2359,8 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                     "host_viable": False,
                     "target": args.target,
                     "target_transfer": float("nan"),
+                    "target_transfer_range": None,
+                    "target_identifiability": "unavailable",
                     "community_growth": float("nan"),
                     "community_status": "failed",
                     "warnings": [],
@@ -2350,6 +2373,15 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         ranked_rows.sort(key=lambda row: (-float(row["score"]), tuple(row["members"])))
         unevaluated_rows.sort(key=lambda row: tuple(row["members"]))
         search_warnings: list[str] = []
+        ambiguous_count = sum(
+            row["target_identifiability"] != "identified"
+            and row["host_status"] == "optimal" for row in rows
+        )
+        if ambiguous_count:
+            search_warnings.append(
+                f"{ambiguous_count} candidates have ambiguous or unavailable target transfer; "
+                "objective values remain available but transfer-based scores are excluded"
+            )
         if unapplied_medium:
             from cmig.core.host_coupling import MEDIUM_DROPPED_PREFIX
 
@@ -2411,7 +2443,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         print(
             f"  best: {'+'.join(best['members'])} score={float(best['score']):.4g} "
             f"host_objective={float(best['host_objective_value']):.4g} "
-            f"target_transfer={float(best['target_transfer']):.4g}"
+            f"target_transfer={_fmt_number(best['target_transfer'])}"
         )
     for warning in search_warnings:
         print(f"  warning: {warning}")
@@ -2444,6 +2476,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         status=_worst_status(
             "ok" if ranked_rows else "failed",
             "degraded" if unevaluated_rows else "ok",
+            "degraded" if ambiguous_count else "ok",
             "degraded" if unapplied_medium else "ok",
         ),
         artifacts=run_artifacts,
@@ -2458,6 +2491,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         _worst_status(
             "ok" if ranked_rows else "failed",
             "degraded" if unevaluated_rows else "ok",
+            "degraded" if ambiguous_count else "ok",
             "degraded" if unapplied_medium else "ok",
         ),
         args,
@@ -2596,7 +2630,7 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
                     run_status="failed", community_status="failed",
                     community_growth=float("nan"),
                     host_status="failed", host_viable=False,
-                    host_objective=float("nan"), target_transfer=float("nan"),
+                    host_objective=float("nan"), target_transfer=None,
                     diagnostic=str(e),
                 ))
         # The dropped ids are a property of the shared setup, so they are stated once at the run
@@ -2725,6 +2759,8 @@ def _write_host_ko_impact_outputs(result: Any, out: Path) -> list[str]:
                 "arm", "member", "ko_id", "ko_level", "comparable",
                 "host_objective", "delta_host_objective", "relative_host_objective",
                 "target_transfer", "delta_target_transfer",
+                "target_transfer_lo", "target_transfer_hi", "target_identifiability",
+                "delta_target_transfer_lo", "delta_target_transfer_hi", "target_comparable",
                 "community_growth", "community_status", "host_status", "diagnostic",
             ],
         )
@@ -2738,6 +2774,11 @@ def _write_host_ko_impact_outputs(result: Any, out: Path) -> list[str]:
             "delta_host_objective": "", "relative_host_objective": "",
             "target_transfer": _csv_float_or_blank(base.target_transfer),
             "delta_target_transfer": "",
+            "target_transfer_lo": _csv_interval_endpoint(base.target_transfer_range, 0),
+            "target_transfer_hi": _csv_interval_endpoint(base.target_transfer_range, 1),
+            "target_identifiability": base.target_identifiability,
+            "delta_target_transfer_lo": "", "delta_target_transfer_hi": "",
+            "target_comparable": "",
             "community_growth": _csv_float_or_blank(base.community_growth),
             "community_status": base.community_status,
             "host_status": base.host_status,
@@ -2757,6 +2798,16 @@ def _write_host_ko_impact_outputs(result: Any, out: Path) -> list[str]:
                 "relative_host_objective": _csv_float_or_blank(delta.relative_host_objective),
                 "target_transfer": _csv_float_or_blank(arm.target_transfer),
                 "delta_target_transfer": _csv_float_or_blank(delta.delta_target_transfer),
+                "target_transfer_lo": _csv_interval_endpoint(arm.target_transfer_range, 0),
+                "target_transfer_hi": _csv_interval_endpoint(arm.target_transfer_range, 1),
+                "target_identifiability": arm.target_identifiability,
+                "delta_target_transfer_lo": _csv_interval_endpoint(
+                    delta.delta_target_transfer_range, 0
+                ),
+                "delta_target_transfer_hi": _csv_interval_endpoint(
+                    delta.delta_target_transfer_range, 1
+                ),
+                "target_comparable": delta.target_comparable,
                 "community_growth": _csv_float_or_blank(arm.community_growth),
                 "community_status": delta.community_status,
                 "host_status": delta.host_status,
@@ -2773,6 +2824,10 @@ def _write_host_ko_impact_outputs(result: Any, out: Path) -> list[str]:
             "host_status": result.baseline.host_status,
             "host_viable": result.baseline.host_viable,
             "target_transfer": _finite_or_none(result.baseline.target_transfer),
+            "target_transfer_range": result.baseline.target_transfer_range,
+            "target_identifiability": result.baseline.target_identifiability,
+            "target_reason": result.baseline.target_reason,
+            "microbe_to_host_ranges": result.baseline.microbe_to_host_ranges,
             "community_growth": _finite_or_none(result.baseline.community_growth),
             "community_status": result.baseline.community_status,
             "matched_exchanges": result.baseline.matched_exchanges,
@@ -2788,6 +2843,12 @@ def _write_host_ko_impact_outputs(result: Any, out: Path) -> list[str]:
                 "delta_host_objective": d.delta_host_objective,
                 "relative_host_objective": d.relative_host_objective,
                 "delta_target_transfer": d.delta_target_transfer,
+                "target_comparable": d.target_comparable,
+                "delta_target_transfer_range": d.delta_target_transfer_range,
+                "delta_microbe_to_host_ranges": d.delta_microbe_to_host_ranges,
+                "metabolite_identifiability": d.metabolite_identifiability,
+                "target_transfer": by_label[d.label].target_transfer,
+                "target_transfer_range": by_label[d.label].target_transfer_range,
                 "delta_microbe_to_host": d.delta_microbe_to_host,
                 "host_status": d.host_status,
                 "community_status": d.community_status,
@@ -4665,6 +4726,10 @@ def _csv_float_or_blank(value: Any) -> str:
     return "" if number is None else _finite_csv(number)
 
 
+def _csv_interval_endpoint(value: tuple[float, float] | None, index: int) -> str:
+    return "" if value is None else _csv_float_or_blank(value[index])
+
+
 def _write_strain_growth_outputs(
     rows: list[dict[str, Any]],
     out: Path,
@@ -4960,6 +5025,7 @@ def _write_host_search_bigg_outputs(
                 "host_viable",
                 "target",
                 "target_transfer",
+                "target_transfer_lo", "target_transfer_hi", "target_identifiability",
                 "community_growth",
                 "community_status",
                 "warnings",
@@ -4977,7 +5043,10 @@ def _write_host_search_bigg_outputs(
                 "host_status": row["host_status"],
                 "host_viable": row["host_viable"],
                 "target": row["target"],
-                "target_transfer": _finite_csv(float(row["target_transfer"])),
+                "target_transfer": _csv_float_or_blank(row["target_transfer"]),
+                "target_transfer_lo": _csv_interval_endpoint(row.get("target_transfer_range"), 0),
+                "target_transfer_hi": _csv_interval_endpoint(row.get("target_transfer_range"), 1),
+                "target_identifiability": row.get("target_identifiability", "unavailable"),
                 "community_growth": _finite_csv(float(row["community_growth"])),
                 "community_status": row["community_status"],
                 "warnings": ";".join(str(x) for x in row["warnings"]),
@@ -4987,7 +5056,11 @@ def _write_host_search_bigg_outputs(
     if unevaluated:
         with open(out / "host_search_unevaluated.csv", "w", newline="") as f:
             unevaluated_writer = csv.DictWriter(
-                f, fieldnames=["members", "evaluation_status", "diagnostic"]
+                f, fieldnames=[
+                    "members", "evaluation_status", "diagnostic", "host_objective_value",
+                    "target_transfer", "target_transfer_lo", "target_transfer_hi",
+                    "target_identifiability",
+                ]
             )
             unevaluated_writer.writeheader()
             for row in unevaluated:
@@ -4995,6 +5068,15 @@ def _write_host_search_bigg_outputs(
                     "members": "+".join(row["members"]),
                     "evaluation_status": row["evaluation_status"],
                     "diagnostic": row["diagnostic"] or "",
+                    "host_objective_value": _csv_float_or_blank(row["host_objective_value"]),
+                    "target_transfer": _csv_float_or_blank(row["target_transfer"]),
+                    "target_transfer_lo": _csv_interval_endpoint(
+                        row.get("target_transfer_range"), 0
+                    ),
+                    "target_transfer_hi": _csv_interval_endpoint(
+                        row.get("target_transfer_range"), 1
+                    ),
+                    "target_identifiability": row.get("target_identifiability", "unavailable"),
                 })
     payload = {
         # B6: 최상위 status 는 최악의 하위 상태에서 파생된다 — 일부 후보가 평가되지 않았다면 "ok" 가
@@ -5002,6 +5084,11 @@ def _write_host_search_bigg_outputs(
         "status": _worst_status(
             "ok" if n_candidates_evaluated else "failed",
             "degraded" if n_candidates_failed else "ok",
+            "degraded" if any(
+                row.get("target_identifiability") != "identified"
+                and row.get("host_status") == "optimal"
+                for row in [*rows, *unevaluated]
+            ) else "ok",
         ),
         "metric": metric,
         "target": target,
@@ -5014,6 +5101,10 @@ def _write_host_search_bigg_outputs(
                 "members": list(row["members"]),
                 "evaluation_status": row["evaluation_status"],
                 "diagnostic": row["diagnostic"],
+                "host_objective_value": _finite_or_none(row["host_objective_value"]),
+                "target_transfer": _finite_or_none(row["target_transfer"]),
+                "target_transfer_range": row.get("target_transfer_range"),
+                "target_identifiability": row.get("target_identifiability", "unavailable"),
             }
             for row in unevaluated
         ],
@@ -5028,7 +5119,9 @@ def _write_host_search_bigg_outputs(
                 "host_status": row["host_status"],
                 "host_viable": row["host_viable"],
                 "target": row["target"],
-                "target_transfer": _finite_or_none(float(row["target_transfer"])),
+                "target_transfer": _finite_or_none(row["target_transfer"]),
+                "target_transfer_range": row.get("target_transfer_range"),
+                "target_identifiability": row.get("target_identifiability", "unavailable"),
                 "community_growth": _finite_or_none(float(row["community_growth"])),
                 "community_status": row["community_status"],
                 "warnings": row["warnings"],
@@ -5057,6 +5150,7 @@ def _write_host_search_bigg_outputs(
 
 
 def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> list[str]:
+    from cmig.core.host_impact import identified_transfer_point
     from cmig.core.interaction_figures import (
         contribution_rows,
         host_microbe_interaction_rows,
@@ -5107,8 +5201,19 @@ def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> l
             f, fieldnames=["metabolite", "transfer_flux", "minimum", "maximum", "identifiable"]
         )
         writer.writeheader()
+        transfer_solved = (
+            str(result.community_status) == "optimal"
+            and str(result.host_result.status) == "optimal"
+            and math.isfinite(float(result.host_result.biomass))
+        )
         for metabolite, bounds in sorted(result.impact.microbe_to_host_ranges.items()):
-            point = result.impact.microbe_to_host.get(metabolite)
+            point = (
+                identified_transfer_point(
+                    result.impact.microbe_to_host,
+                    result.impact.microbe_to_host_ranges,
+                    metabolite,
+                ) if transfer_solved else None
+            )
             writer.writerow({
                 "metabolite": metabolite,
                 "transfer_flux": "" if point is None else _finite_csv(float(point)),
@@ -6273,6 +6378,7 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
         status=_worst_status(
             "ok" if result.ranks else "failed",
             "degraded" if result.unevaluated else "ok",
+            "degraded" if "partial" in result.candidate_sampling_status.values() else "ok",
         ),
         artifacts=run_artifacts,
         warnings=list(result.warnings),
@@ -6284,12 +6390,17 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
             "best_score": (
                 _finite_or_none(result.ranks[0].weighted_score) if result.ranks else None
             ),
+            "n_pareto_attempts": len(result.pareto_attempts),
+            "n_pareto_failed_attempts": sum(
+                a["outcome"] in {"timeout", "error"} for a in result.pareto_attempts
+            ),
         },
     )
     return _exit_code_for_status(
         _worst_status(
             "ok" if result.ranks else "failed",
             "degraded" if result.unevaluated else "ok",
+            "degraded" if "partial" in result.candidate_sampling_status.values() else "ok",
         ),
         args,
     )
@@ -6319,7 +6430,7 @@ def _write_multi_target_outputs(
         + [f"flux_{t}" for t in targets]
         + [f"score_{t}" for t in targets]
         # B3: flux 열이 한 해에서 온 것인지(joint) 표적별 독립 해인지 반드시 함께 읽혀야 한다.
-        + ["flux_basis", "missing_targets", "diagnostic"]
+        + ["flux_basis", "missing_targets", "diagnostic", "sampling_status"]
     )
     def _multi_record(row: Any) -> dict[str, Any]:
         record: dict[str, Any] = {
@@ -6332,6 +6443,7 @@ def _write_multi_target_outputs(
             "flux_basis": row.flux_basis,
             "missing_targets": ";".join(row.missing_targets),
             "diagnostic": row.diagnostic or "",
+            "sampling_status": row.sampling_status,
         }
         for t in targets:
             record[f"flux_{t}"] = _finite_csv(row.target_fluxes.get(t, float("nan")))
@@ -6357,6 +6469,7 @@ def _write_multi_target_outputs(
         "status": _worst_status(
             "ok" if ranked_rows else "failed",
             "degraded" if result.unevaluated else "ok",
+            "degraded" if "partial" in result.candidate_sampling_status.values() else "ok",
         ),
         "targets": targets,
         "target_preset": target_preset,
@@ -6375,6 +6488,14 @@ def _write_multi_target_outputs(
         "solution_semantics": result.solution_semantics,
         "ga_metadata": _finite_json_tree(getattr(result, "ga_metadata", None)),
         "n_pareto_points": len(getattr(result, "pareto_archive", [])),
+        "n_pareto_attempts": len(result.pareto_attempts),
+        "n_pareto_resolved_attempts": sum(
+            a["outcome"] in {"optimal", "infeasible"} for a in result.pareto_attempts
+        ),
+        "n_pareto_failed_attempts": sum(
+            a["outcome"] in {"timeout", "error"} for a in result.pareto_attempts
+        ),
+        "candidate_sampling_status": result.candidate_sampling_status,
         "n_pool_members": result.n_pool_members,
         "n_candidates_total": result.n_candidates_total,
         "n_candidates_evaluated": result.n_candidates_evaluated,
@@ -6389,6 +6510,7 @@ def _write_multi_target_outputs(
                 "missing_targets": list(r.missing_targets),
                 "flux_basis": r.flux_basis,
                 "diagnostic": r.diagnostic,
+                "sampling_status": r.sampling_status,
             }
             for r in result.unevaluated
         ],
@@ -6410,22 +6532,26 @@ def _write_multi_target_outputs(
                 "missing_targets": list(r.missing_targets),
                 "flux_basis": r.flux_basis,
                 "diagnostic": r.diagnostic,
+                "sampling_status": r.sampling_status,
             }
             for r in result.ranks
         ],
         "warnings": result.warnings,
     }
+    figure_artifacts: list[str] = []
+    if result.ranks:
+        _write_multi_target_figure(result, out / "search_plot.svg")
+        figure_artifacts = ["search_plot.svg", "search_plot.tiff"]
     summary["artifacts"] = sorted(
-        ["pool_taxonomy.csv", "search_rankings.csv", "search_summary.json",
-         "search_plot.svg", "search_plot.tiff"]
+        ["pool_taxonomy.csv", "search_rankings.csv", "search_summary.json"]
         + (["pool_diagnostics.csv"] if diagnostics is not None else [])
         + (["search_unevaluated.csv"] if result.unevaluated else [])
+        + figure_artifacts
         + extra_artifacts
     )
     atomic_write_text(
         out / "search_summary.json", json.dumps(summary, indent=2, allow_nan=False)
     )
-    _write_multi_target_figure(result, out / "search_plot.svg")
     _prune_stale_workflow_artifacts(out, KNOWN_SEARCH_ARTIFACTS, summary["artifacts"])
     return list(summary["artifacts"])
 
@@ -6896,8 +7022,8 @@ def _worst_status(*statuses: str) -> str:
     return _STATUS_SEVERITY[worst]
 
 
-def _finite_or_none(value: float) -> float | None:
-    return value if math.isfinite(value) else None
+def _finite_or_none(value: float | None) -> float | None:
+    return value if value is not None and math.isfinite(value) else None
 
 
 def _finite_json_tree(value: Any) -> Any:
@@ -7018,6 +7144,9 @@ def _write_search_evaluation_outputs(result: Any, out: Path) -> list[str]:
                      if is_dataclass(row) and not isinstance(row, type) else vars(row))
                      for row in rows],
         }
+        if name == "search_evaluations.json" and getattr(result, "metric", None) == "pareto":
+            payload["pareto_attempts"] = _finite_json_tree(result.pareto_attempts)
+            payload["candidate_sampling_status"] = result.candidate_sampling_status
         atomic_write_text(out / name, json.dumps(payload, indent=2, allow_nan=False) + "\n")
         artifacts.append(name)
     report = getattr(result, "validation_report", None)
@@ -7300,6 +7429,7 @@ def _write_dfba_outputs(
         "managed_exchanges": result.managed_exchanges,
         # D5: what the run actually ate outside the tracked set, and why that matters.
         "untracked_uptake": result.untracked_uptake,
+        "untracked_uptake_basis": result.untracked_uptake_basis,
         "n_untracked_uptake": len(result.untracked_uptake),
         "warnings": list(result.warnings),
         "n_timepoints": len(result.timecourse),
@@ -7385,6 +7515,7 @@ def _write_community_dfba_outputs(
         "members": list(result.members),
         "managed_exchanges": list(result.managed_exchanges),
         "untracked_uptake": dict(result.untracked_uptake),
+        "untracked_uptake_basis": dict(result.untracked_uptake_basis),
         "warnings": list(result.warnings),
         "limitations": list(result.limitations),
         "acceptance": asdict(result.acceptance),
@@ -7959,42 +8090,161 @@ def _write_gene_ko_figures(
 
 
 def _write_multi_target_figure(result: Any, svg_path: Path) -> None:
-    """Stacked per-target contribution bars for a multi-target search (D9).
+    """Draw signed target contributions and the recorded total for each ranked solution."""
+    from matplotlib.font_manager import FontProperties, findfont
 
-    Stacked rather than a single total, because the headline finding of the SCFA work is that a
-    weighted-sum optimum concentrates on ONE acid — a single total bar would hide exactly that.
-    """
     plt = _load_matplotlib_pyplot()
-    rows = [row for row in result.ranks[:10] if math.isfinite(row.weighted_score)]
+    rows = result.ranks[:10]
     if not rows:
         return
     targets = list(result.targets)
-    labels = ["+".join(row.members) for row in rows]
-    height = max(3.6, 0.5 * len(rows) + 1.9)
-    fig, ax = plt.subplots(figsize=(8.4, height), dpi=300)
-    positions = list(range(len(rows)))
-    left = [0.0] * len(rows)
-    for index, target in enumerate(targets):
-        widths = [max(0.0, float(row.target_scores.get(target, 0.0))) for row in rows]
-        ax.barh(
-            positions, widths, left=left, height=0.62,
-            color=OKABE_ITO[index % len(OKABE_ITO)], label=target,
-        )
-        left = [a + b for a, b in zip(left, widths, strict=True)]
-    ax.set_yticks(positions)
-    ax.set_yticklabels(labels)
-    ax.invert_yaxis()
-    ax.set_xlabel(f"Score contribution per target ({result.score_unit})")
-    ax.set_title(
-        f"Multi-target search: {', '.join(targets)} [{result.metric}]", loc="left", pad=10
-    )
-    ax.legend(
-        loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False, fontsize=9,
-        title="target",
-    )
-    _polish_matplotlib_axes(ax, grid_axis="x")
-    _save_screening_figure(fig, svg_path, svg_path.with_suffix(".tiff"))
-    plt.close(fig)
+    if not targets or len(set(targets)) != len(targets):
+        raise ValueError("multi-target figure requires distinct target names")
+    contributions: list[list[float]] = []
+    scores: list[float] = []
+    for row in rows:
+        try:
+            score = float(row.weighted_score)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"rank {row.rank} has no finite recorded score") from exc
+        if row.status != "optimal" or not math.isfinite(score):
+            raise ValueError(f"cannot plot non-optimal or nonfinite rank {row.rank}")
+        if not isinstance(row.target_scores, dict):
+            raise ValueError(f"rank {row.rank} has no target contribution map")
+        missing = [target for target in targets if target not in row.target_scores]
+        if missing:
+            raise ValueError(f"rank {row.rank} has no contribution for {missing}")
+        try:
+            values = [float(row.target_scores[target]) for target in targets]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"rank {row.rank} has a nonnumeric target contribution") from exc
+        if result.metric == "normalized_weighted":
+            if not isinstance(result.weights, dict) or any(
+                target not in result.weights for target in targets
+            ):
+                raise ValueError("normalized figure requires every recorded target weight")
+            try:
+                values = [
+                    value * float(result.weights[target])
+                    for target, value in zip(targets, values, strict=True)
+                ]
+            except (TypeError, ValueError) as exc:
+                raise ValueError("normalized figure has a nonnumeric target weight") from exc
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError(f"rank {row.rank} has a nonfinite target contribution")
+        if not math.isclose(sum(values), score, rel_tol=1e-8, abs_tol=1e-8):
+            raise ValueError(f"rank {row.rank} contributions disagree with its recorded score")
+        contributions.append(values)
+        scores.append(score)
+
+    # A single installed family keeps Agg's wrapping and QtSvg's final-file
+    # metrics aligned. QtSvg reads matplotlib's CSS family list as one family.
+    font_file = findfont(FontProperties(family=list(FONT_STACK)))
+    font_family = FontProperties(fname=font_file).get_name()
+    height = max(4.4, 0.53 * len(rows) + 2.7)
+    fig = plt.figure(figsize=(10.4, height), dpi=300)
+    try:
+        with plt.rc_context({"font.family": [font_family]}):
+            fig.canvas.draw()
+            renderer = fig.canvas.get_renderer()
+
+            def measured_width(value: str, size: float) -> float:
+                artist = fig.text(0, 0, value, fontsize=size)
+                width = artist.get_window_extent(renderer).width
+                artist.remove()
+                return float(width)
+
+            def wrap(value: str, max_px: float, size: float) -> str:
+                lines: list[str] = []
+                current = ""
+                for word in value.split():
+                    candidate = f"{current} {word}" if current else word
+                    if measured_width(candidate, size) <= max_px:
+                        current = candidate
+                        continue
+                    if current:
+                        lines.append(current)
+                        current = ""
+                    for char in word:
+                        if current and measured_width(current + char, size) > max_px:
+                            lines.append(current)
+                            current = ""
+                        current += char
+                if current:
+                    lines.append(current)
+                return "\n".join(lines)
+
+            caption = (
+                f"Targets: {', '.join(targets)}. Score unit: {result.score_unit}. "
+                f"Normalizer: {result.normalizer}."
+            )
+            if result.metric == "normalized_weighted":
+                caption += " Bars include each target's recorded weight."
+            if result.metric == "pareto":
+                caption += (
+                    " Pareto rank is report order on the sampled front,"
+                    " not a best-point claim."
+                )
+            caption_text = wrap(caption, fig.bbox.width * 0.92, 8.5)
+            caption_lines = caption_text.count("\n") + 1
+            caption_height_in = 0.17 * caption_lines + 0.18
+            ax_bottom = (caption_height_in + 0.62) / height
+            ax = fig.add_axes((0.23, ax_bottom, 0.51, 0.89 - ax_bottom))
+            positions = list(range(len(rows)))
+            negatives = [0.0] * len(rows)
+            positives = [0.0] * len(rows)
+            for index, target in enumerate(targets):
+                values = [row_values[index] for row_values in contributions]
+                bases = [
+                    positives[i] if value >= 0 else negatives[i]
+                    for i, value in enumerate(values)
+                ]
+                ax.barh(
+                    positions, values, left=bases, height=0.62,
+                    color=OKABE_ITO[index % len(OKABE_ITO)],
+                    label=wrap(target, fig.bbox.width * 0.19, 9),
+                )
+                for i, value in enumerate(values):
+                    if value >= 0:
+                        positives[i] += value
+                    else:
+                        negatives[i] += value
+            ax.scatter(scores, positions, marker="D", s=30, color="#222222", zorder=5,
+                       label="Signed total")
+            span = max(max(positives) - min(negatives), 1.0)
+            ax.set_xlim(min(negatives) - 0.16 * span, max(positives) + 0.29 * span)
+            for position, score in zip(positions, scores, strict=True):
+                ax.annotate(f"{score:.6g}", (score, position), xytext=(6, 0),
+                            textcoords="offset points", va="center", fontsize=8)
+            labels = [wrap("+".join(row.members), fig.bbox.width * 0.18, 9)
+                      for row in rows]
+            ax.set_yticks(positions, labels=labels)
+            ax.invert_yaxis()
+            ax.axvline(0, color="#333333", linewidth=0.9)
+            ax.set_xlabel("Signed score contribution")
+            fig.text(0.04, 0.96, f"Multi-target search · {result.metric}",
+                     fontsize=13, va="top")
+            fig.text(0.04, 0.035, caption_text, fontsize=8.5, va="bottom")
+            legend = ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0),
+                               frameon=False, fontsize=9, title="Target / marker")
+            _polish_matplotlib_axes(ax, grid_axis="x")
+            fig.canvas.draw()
+            renderer = fig.canvas.get_renderer()
+            bounds = fig.bbox
+            texts = [*fig.texts, ax.xaxis.label, *ax.get_xticklabels(),
+                     *ax.get_yticklabels(), *ax.texts, *legend.get_texts(),
+                     legend.get_title()]
+            for artist in texts:
+                extent = artist.get_window_extent(renderer)
+                if (extent.x0 < bounds.x0 - 2 or extent.y0 < bounds.y0 - 2
+                        or extent.x1 > bounds.x1 + 2 or extent.y1 > bounds.y1 + 2):
+                    raise ValueError(
+                        f"multi-target figure text overflows canvas: {artist.get_text()!r}"
+                    )
+            save_figure_atomic(fig, svg_path, format="svg", metadata=SVG_METADATA)
+            save_publication_tiff(fig, svg_path.with_suffix(".tiff"))
+    finally:
+        plt.close(fig)
 
 
 def _write_search_tiff(result: Any, path: Path) -> None:
@@ -8215,7 +8465,10 @@ def _cmd_stats_demo(args: argparse.Namespace) -> int:
         "scope": "synthetic_demo_values_not_experimental_evidence",
         "summary": [s.__dict__ for s in distribution_summary(groups)],
         "test": test.__dict__,
-        "fdr_qvalues": fdr_correct([test.pvalue], method=args.fdr_method),
+        "fdr_qvalues": (
+            fdr_correct([test.pvalue], method=args.fdr_method)
+            if test.pvalue is not None else []
+        ),
         "warnings": stats_warnings(groups),
     }
     _write_json_or_print(payload, args.out, "stats_summary.json")
@@ -8281,7 +8534,8 @@ def _cmd_stats_sweep(args: argparse.Namespace) -> int:
             "effect_size": result.effect_size,
             "effect_name": result.effect_name,
         }
-        inference_status = "completed"
+        inference_status = result.status
+        test["reason"] = result.reason
     payload = {
         "metric": args.metric,
         "group_axis": args.group_axis,
@@ -8299,7 +8553,7 @@ def _cmd_stats_sweep(args: argparse.Namespace) -> int:
         ),
         "source": str(sweep_path),
     }
-    _write_json_or_print(payload, args.out, "stats_sweep_summary.json")
+    _write_json_or_print(_finite_json_tree(payload), args.out, "stats_sweep_summary.json")
     return 0
 
 

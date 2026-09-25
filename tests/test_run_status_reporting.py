@@ -13,6 +13,8 @@ from __future__ import annotations
 import csv
 import json
 
+import pytest
+
 from cmig.cli.main import (
     _inspect_run_dir,
     _resolve_run_status,
@@ -31,7 +33,9 @@ def _row(members: tuple[str, ...], *, ok: bool, score: float) -> dict[str, objec
         "host_status": "optimal" if ok else "failed",
         "host_viable": ok,
         "target": "ac",
-        "target_transfer": 0.0,
+        "target_transfer": 0.0 if ok else None,
+        "target_transfer_range": (0.0, 0.0) if ok else None,
+        "target_identifiability": "identified" if ok else "unavailable",
         "community_growth": 0.4 if ok else 0.0,
         "community_status": "optimal" if ok else "failed",
         "warnings": [],
@@ -66,6 +70,8 @@ def test_failed_candidate_is_not_ranked_as_zero(tmp_path):
     assert all(row["evaluation_status"] == "ok" for row in summary["top_ranked"])
     # 실패 후보는 분리된 블록에만 존재한다.
     assert [tuple(r["members"]) for r in summary["unevaluated"]] == [("A", "B")]
+    assert summary["unevaluated"][0]["target_transfer"] is None
+    assert summary["unevaluated"][0]["target_identifiability"] == "unavailable"
     assert summary["n_candidates_failed"] == 1
     assert summary["n_candidates_evaluated"] == 2
     assert summary["warnings"], "실패 후보가 있으면 최상위 warnings 가 비어 있을 수 없다"
@@ -84,6 +90,27 @@ def test_all_ok_stays_ok_and_writes_no_unevaluated_file(tmp_path):
     assert summary["unevaluated"] == []
     assert not (tmp_path / "host_search_unevaluated.csv").exists()
     assert "host_search_unevaluated.csv" not in summary["artifacts"]
+
+
+@pytest.mark.parametrize(
+    ("state", "interval"),
+    [("ambiguous", (0.0, 1.0)), ("unavailable", None)],
+)
+def test_objective_only_unknown_transfer_stays_ranked_but_degraded(tmp_path, state, interval):
+    row = _row(("A",), ok=True, score=1.0)
+    row.update(
+        target_transfer=None,
+        target_transfer_range=interval,
+        target_identifiability=state,
+    )
+    summary = _write(tmp_path, [row], [], [])
+    assert summary["status"] == "degraded"
+    assert summary["n_candidates_evaluated"] == 1
+    assert summary["top_ranked"][0]["score"] == 1.0
+    assert summary["top_ranked"][0]["target_transfer"] is None
+    assert summary["top_ranked"][0]["target_transfer_range"] == (
+        [0.0, 1.0] if interval is not None else None
+    )
 
 
 def test_no_evaluable_candidate_is_failed(tmp_path):

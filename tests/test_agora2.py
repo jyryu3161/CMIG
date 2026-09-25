@@ -333,6 +333,27 @@ def test_fetch_model_vmh_namespace_keeps_the_published_ids(tmp_path: Path) -> No
     assert repair_utf8(payload)[0] == written
 
 
+def test_fetch_model_vmh_sbml_without_fchmod(tmp_path: Path, monkeypatch) -> None:
+    """Direct publisher bytes still publish on platforms without descriptor chmod."""
+    import cmig.io.atomic as atomic
+
+    entry = CatalogueEntry("safe", "safe.xml", "1M", "")
+    payload = _sbml_bytes_with_latin1(_vmh_model())
+    target = tmp_path / "safe.xml"
+    target.write_bytes(b"previous model")
+    monkeypatch.delattr(atomic.os, "fchmod", raising=False)
+
+    record = fetch_model(
+        entry, tmp_path, namespace="vmh", file_format="sbml",
+        fetcher=lambda _url: payload,
+    )
+
+    published = repair_utf8(payload)[0]
+    assert target.read_bytes() == published
+    assert record.bytes == len(published)
+    assert [path.name for path in tmp_path.iterdir()] == [target.name]
+
+
 def test_fetch_model_rejects_an_unknown_namespace_or_format(tmp_path: Path) -> None:
     entry = _entries()[1]
     with pytest.raises(Agora2Error, match="unknown namespace"):
@@ -342,11 +363,211 @@ def test_fetch_model_rejects_an_unknown_namespace_or_format(tmp_path: Path) -> N
 
 
 def test_fetch_model_refuses_a_url_outside_the_publisher(tmp_path: Path) -> None:
-    rogue = CatalogueEntry(id="x", file="x.xml", published_size="1M", published_modified="")
-    object.__setattr__(rogue, "file", "../../../etc/passwd")
-    # The real fetcher is the one that enforces the prefix; use it rather than the injected one.
-    with pytest.raises(Agora2Error, match="unexpected location|download failed"):
-        fetch_model(rogue, tmp_path, fetcher=None)
+    calls: list[str] = []
+    for filename in ("../../../etc/passwd", "../../../../etc/passwd", "..%2fsecret.xml"):
+        rogue = CatalogueEntry("x", filename, "1M", "")
+        with pytest.raises(Agora2Error, match="unsafe AGORA2 filename"):
+            fetch_model(rogue, tmp_path, fetcher=lambda url: calls.append(url) or b"")
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "bad_id", ["../escaped", "/absolute", r"..\escaped", "C:drive", "x%2fy", "x\x85y"]
+)
+def test_fetch_model_rejects_unsafe_id_before_fetch(tmp_path: Path, bad_id: str) -> None:
+    victim = tmp_path / "escaped.xml"
+    victim.write_bytes(b"original user data")
+    calls: list[str] = []
+    entry = CatalogueEntry(bad_id, "safe.xml", "1M", "")
+    with pytest.raises(Agora2Error, match="unsafe AGORA2 id"):
+        fetch_model(
+            entry, tmp_path / "out", namespace="vmh", file_format="sbml",
+            fetcher=lambda url: calls.append(url) or b"<sbml/>",
+        )
+    assert calls == []
+    assert victim.read_bytes() == b"original user data"
+
+
+def test_cached_catalogue_rejects_unsafe_entries(tmp_path: Path) -> None:
+    path = tmp_path / "catalogue.json"
+    path.write_text(json.dumps({"models": [{"id": "../escaped", "file": "safe.xml"}]}))
+    with pytest.raises(Agora2Error, match="unsafe AGORA2 id"):
+        read_catalogue(path)
+    path.write_text(json.dumps({"models": [{"id": "safe", "file": r"..\bad.xml"}]}))
+    with pytest.raises(Agora2Error, match="unsafe AGORA2 filename"):
+        read_catalogue(path)
+
+
+@pytest.mark.parametrize("file_format", ["sbml", "json"])
+def test_existing_symlink_target_is_rejected_without_fetch(
+    tmp_path: Path, file_format: str
+) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    victim = tmp_path / "victim.xml"
+    victim.write_bytes(b"keep me")
+    suffix = ".json" if file_format == "json" else ".xml"
+    (out / f"safe{suffix}").symlink_to(victim)
+    entry = CatalogueEntry("safe", "safe.xml", "1M", "")
+    with pytest.raises(Agora2Error, match="unsafe AGORA2 output"):
+        fetch_model(entry, out, namespace="vmh", file_format=file_format,
+                    fetcher=lambda _: b"<sbml/>")
+    assert victim.read_bytes() == b"keep me"
+
+
+def test_repaired_model_staging_never_uses_predictable_entry_name(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    victim = tmp_path / "victim.xml"
+    victim.write_bytes(b"keep me")
+    (out / ".safe.agora2-staging.xml").symlink_to(victim)
+    entry = CatalogueEntry("safe", "safe.xml", "1M", "")
+    with pytest.raises(Agora2Error, match="still does not parse"):
+        fetch_model(entry, out, namespace="bigg", file_format="json", fetcher=lambda _: b"invalid")
+    assert victim.read_bytes() == b"keep me"
+
+
+def test_failed_conversion_preserves_existing_output(tmp_path: Path) -> None:
+    entry = CatalogueEntry("safe", "safe.xml", "1M", "")
+    target = tmp_path / "safe.json"
+    target.write_bytes(b"previous good model")
+    with pytest.raises(Agora2Error, match="still does not parse"):
+        fetch_model(entry, tmp_path, namespace="bigg", file_format="json",
+                    fetcher=lambda _: b"invalid")
+    assert target.read_bytes() == b"previous good model"
+
+
+def test_publisher_url_guard_rejects_bad_routes_before_transport(monkeypatch) -> None:
+    import cmig.io.agora2 as agora2
+
+    opened: list[str] = []
+    class FakeOpener:
+        def open(self, request, *, timeout):
+            opened.append(request.full_url)
+            raise AssertionError("transport should not run")
+
+    monkeypatch.setattr(agora2.urllib.request, "build_opener", lambda *_: FakeOpener())
+    bad_urls = [
+        f"{AGORA2_INDIVIDUAL_URL}/../../../../etc/passwd",
+        f"{AGORA2_INDIVIDUAL_URL}/safe%2f..%2fsecret.xml",
+        "https://www.vmh.life:443/files/reconstructions/AGORA2/version2.01/sbml_files/individual_reconstructions/safe.xml",
+        "https://evil.test/files/reconstructions/AGORA2/version2.01/sbml_files/individual_reconstructions/safe.xml",
+    ]
+    for url in bad_urls:
+        with pytest.raises(Agora2Error):
+            agora2._open_url(url, timeout=1)
+    assert opened == []
+
+
+def test_redirect_targets_are_checked_before_following() -> None:
+    from urllib.request import Request
+
+    import cmig.io.agora2 as agora2
+
+    source = Request(f"{AGORA2_INDIVIDUAL_URL}/safe.xml")
+    handler = agora2._GuardedRedirectHandler()
+    allowed = handler.redirect_request(source, None, 302, "Found", {}, "other.xml")
+    assert allowed is not None and allowed.full_url == f"{AGORA2_INDIVIDUAL_URL}/other.xml"
+    for target in (
+        "https://evil.test/other.xml",
+        "http://www.vmh.life/other.xml",
+        "../../../../etc/passwd",
+        "other%2f..%2fsecret.xml",
+    ):
+        with pytest.raises(Agora2Error):
+            handler.redirect_request(source, None, 302, "Found", {}, target)
+
+
+def test_effective_url_is_recorded_and_checked_offline(monkeypatch, tmp_path: Path) -> None:
+    import cmig.io.agora2 as agora2
+
+    entry = CatalogueEntry("safe", "safe.xml", "1M", "")
+    redirected = f"{AGORA2_INDIVIDUAL_URL}/other.xml"
+
+    class FakeResponse:
+        def __init__(self, final_url: str) -> None:
+            self.final_url = final_url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def geturl(self) -> str:
+            return self.final_url
+
+        def read(self) -> bytes:
+            return b"<sbml/>"
+
+    class FakeOpener:
+        final_url = redirected
+
+        def open(self, request, *, timeout):
+            assert request.full_url == entry.url
+            return FakeResponse(self.final_url)
+
+    opener = FakeOpener()
+    monkeypatch.setattr(agora2.urllib.request, "build_opener", lambda *_: opener)
+    record = fetch_model(entry, tmp_path, namespace="vmh", fetcher=agora2.default_fetcher())
+    assert record.source_url == entry.url
+    assert record.effective_url == redirected
+    opener.final_url = "https://evil.test/other.xml"
+    with pytest.raises(Agora2Error, match="unexpected location"):
+        fetch_model(entry, tmp_path, namespace="vmh", fetcher=agora2.default_fetcher())
+    assert (tmp_path / "safe.xml").read_bytes() == b"<sbml/>"
+
+
+def test_redirect_handler_never_transmits_to_rejected_target(monkeypatch) -> None:
+    from email.message import Message
+    from io import BytesIO
+    from urllib.request import HTTPSHandler
+    from urllib.response import addinfourl
+
+    import cmig.io.agora2 as agora2
+
+    source = f"{AGORA2_INDIVIDUAL_URL}/safe.xml"
+    requested: list[str] = []
+    redirects: dict[str, str] = {}
+
+    class OfflineHTTPS(HTTPSHandler):
+        def https_open(self, request):
+            requested.append(request.full_url)
+            headers = Message()
+            location = redirects.get(request.full_url)
+            if location is None:
+                response = addinfourl(BytesIO(b"<sbml/>"), headers, request.full_url, 200)
+                response.msg = "OK"
+            else:
+                headers["Location"] = location
+                response = addinfourl(BytesIO(b""), headers, request.full_url, 302)
+                response.msg = "Found"
+            return response
+
+    original_builder = agora2.urllib.request.build_opener
+    monkeypatch.setattr(
+        agora2.urllib.request, "build_opener",
+        lambda *handlers: original_builder(OfflineHTTPS(), *handlers),
+    )
+    redirects[source] = "other.xml"
+    body = agora2._open_url(source, timeout=1)
+    assert body == b"<sbml/>"
+    assert body.effective_url == f"{AGORA2_INDIVIDUAL_URL}/other.xml"
+    assert requested == [source, f"{AGORA2_INDIVIDUAL_URL}/other.xml"]
+
+    for target in ("https://evil.test/other.xml", "http://www.vmh.life/other.xml",
+                   "../../../../etc/passwd", "other%2f..%2fsecret.xml"):
+        requested.clear()
+        redirects[source] = target
+        with pytest.raises(Agora2Error):
+            agora2._open_url(source, timeout=1)
+        assert requested == [source]
+
+    requested.clear()
+    redirects[source] = "safe.xml"
+    with pytest.raises(Agora2Error, match="download failed"):
+        agora2._open_url(source, timeout=1)
+    assert requested and set(requested) == {source}
 
 
 def test_manifest_records_the_repair_and_conversion_that_were_applied() -> None:

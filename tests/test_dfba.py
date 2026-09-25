@@ -75,7 +75,13 @@ def test_dfba_emergency_clamp_scales_growth_with_substrate(monkeypatch):
     monkeypatch.setattr(dfba, "_growth_of", lambda model, sol: 2.0)
 
     class _Reaction:
+        id = "EX_s"
         lower_bound = -1000.0
+        upper_bound = 1000.0
+        metabolite = type("Metabolite", (), {"id": "s_e", "compartment": "e"})()
+        metabolites = {metabolite: -1.0}
+        reactants = [metabolite]
+        products = []
 
     class _Reactions:
         def __init__(self) -> None:
@@ -135,7 +141,13 @@ def test_dfba_emergency_clamp_does_not_overshoot_t_end(monkeypatch):
     monkeypatch.setattr(dfba, "_growth_of", lambda model, sol: 2.0)
 
     class _Reaction:
+        id = "EX_s"
         lower_bound = -1000.0
+        upper_bound = 1000.0
+        metabolite = type("Metabolite", (), {"id": "s_e", "compartment": "e"})()
+        metabolites = {metabolite: -1.0}
+        reactants = [metabolite]
+        products = []
 
     class _Reactions:
         def __init__(self) -> None:

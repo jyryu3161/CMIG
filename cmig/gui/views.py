@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTableWidget,
     QTabWidget,
@@ -69,6 +70,11 @@ def _finite_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return converted if math.isfinite(converted) else None
+
+
+def _number_text(value: Any, spec: str = ".3g") -> str:
+    number = _finite_float(value)
+    return "unknown" if number is None else format(number, spec)
 
 
 def _tidy_version_tuple(value: Any) -> tuple[int, int]:
@@ -1197,7 +1203,14 @@ class DfbaSpatialView(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setMinimumSize(0, 0)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        self.scroll_area.setWidget(content)
+        outer.addWidget(self.scroll_area)
         self.title = QLabel("Dynamics")
 
         model_row = QHBoxLayout()
@@ -1388,15 +1401,15 @@ class DfbaSpatialView(QWidget):
         the status cell is flagged rather than reading plain `completed`.
         """
         final_conc = payload.get("final_concentrations", {})
-        readout = ", ".join(f"{k}={float(v):.3g}" for k, v in dict(final_conc).items())
+        readout = ", ".join(f"{k}={_number_text(v)}" for k, v in dict(final_conc).items())
         warnings = [str(w) for w in (payload.get("warnings") or [])]
         n_untracked = payload.get("n_untracked_uptake")
         status = str(payload.get("status", ""))
         self._set_single_row(
             "dFBA",
             f"{status} ⚠ see warnings" if warnings else status,
-            float(payload.get("final_t", 0.0)),
-            f"biomass={float(payload.get('final_biomass', 0.0)):.3g}"
+            _finite_float(payload.get("final_t")),
+            f"biomass={_number_text(payload.get('final_biomass'))}"
             + (f"; {readout}" if readout else ""),
         )
         untracked_note = (
@@ -1417,9 +1430,9 @@ class DfbaSpatialView(QWidget):
         self._set_single_row(
             "Spatial",
             f"{status} ⚠ see warnings" if warnings else status,
-            float(payload.get("final_t", 0.0)),
-            f"range={float(payload.get('final_min', 0.0)):.3g}.."
-            f"{float(payload.get('final_max', 0.0)):.3g}",
+            _finite_float(payload.get("final_t")),
+            "range=" + _number_text(payload.get("final_min"))
+            + ".." + _number_text(payload.get("final_max")),
         )
         self.status.setText(
             f"Spatial preview loaded: {run_dir}"
@@ -1436,9 +1449,11 @@ class DfbaSpatialView(QWidget):
         self.warning_label.setText("⚠ " + "\n⚠ ".join(warnings))
         self.warning_label.setVisible(True)
 
-    def _set_single_row(self, run_type: str, status: str, final_t: float, readout: str) -> None:
+    def _set_single_row(
+        self, run_type: str, status: str, final_t: float | None, readout: str
+    ) -> None:
         self.table.setRowCount(1)
-        values = [run_type, status, f"{final_t:.4g}", readout]
+        values = [run_type, status, "unknown" if final_t is None else f"{final_t:.4g}", readout]
         for idx, value in enumerate(values):
             self.table.setItem(0, idx, read_only_item(value))
 

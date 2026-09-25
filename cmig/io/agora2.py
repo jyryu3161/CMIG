@@ -39,9 +39,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
+import tempfile
+import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field
@@ -49,7 +53,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from cmig.io.atomic import atomic_write_text
+from cmig.io.atomic import atomic_write_bytes, atomic_write_text
 
 #: Catalogue/version this module targets. A different version directory has a different file set,
 #: so the version is recorded in every manifest rather than assumed.
@@ -62,8 +66,8 @@ AGORA2_ARCHIVE_URLS = {
     "annotated_sbml_all": f"{AGORA2_BASE_URL}/sbml_files/zipped/AGORA2_annotatedSBML_all.zip",
     "sbml_fixed": f"{AGORA2_BASE_URL}/sbml_files_fixed/zipped/AGORA2_models/AGORA2_SBML.zip",
 }
-#: Every fetch is refused unless its URL starts with this. A typo in a flag must not turn CMIG
-#: into a general-purpose downloader (same guard as scripts/download_human_gems.py).
+#: Historical public prefix, retained for callers. Fetch validation uses parsed URL components
+#: and exact AGORA2 routes so dot segments and redirects cannot evade the publisher boundary.
 ALLOWED_URL_PREFIX = "https://www.vmh.life/files/reconstructions/AGORA2/"
 AGORA2_CITATION = (
     "Heinken A, Hertel J, Acharya G, Ravcheev DA, Nyga M, Okpala OE, Hogan M, Magnúsdóttir S, "
@@ -173,6 +177,7 @@ class FetchedModel:
     n_exchanges: int | None = None
     objective_reactions: list[str] = field(default_factory=list)
     conversion: dict[str, Any] | None = None
+    effective_url: str | None = None
 
 
 def _utcnow() -> str:
@@ -183,17 +188,95 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _open_url(url: str, *, timeout: float) -> bytes:
-    """Fetch ``url`` after checking it against :data:`ALLOWED_URL_PREFIX`."""
-    if not url.startswith(ALLOWED_URL_PREFIX):
-        raise Agora2Error(f"refusing to fetch from an unexpected location: {url}")
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+def _plain_basename(value: str, *, label: str) -> None:
+    if (
+        not value
+        or value in {".", ".."}
+        or any(char in value for char in "/\\?#%:")
+        or any(unicodedata.category(char) == "Cc" for char in value)
+    ):
+        raise Agora2Error(f"unsafe AGORA2 {label}: {value!r}")
+
+
+def _validate_entry(entry: CatalogueEntry) -> None:
+    _plain_basename(entry.id, label="id")
+    _plain_basename(entry.file, label="filename")
+    if not entry.file.endswith(".xml") or len(entry.file) <= len(".xml"):
+        raise Agora2Error(f"AGORA2 model filename must end in .xml: {entry.file!r}")
+
+
+def _validate_publisher_url(url: str) -> None:
+    """Require an exact publisher origin and one of the supported AGORA2 resources."""
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        parts = urllib.parse.urlsplit(url)
+        port = parts.port
+    except ValueError as error:
+        raise Agora2Error(f"invalid AGORA2 publisher URL: {url!r}") from error
+    if (
+        parts.scheme != "https"
+        or parts.hostname != "www.vmh.life"
+        or port is not None
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+        or "\\" in url
+        or "%" in parts.path
+        or any(unicodedata.category(char) == "Cc" for char in url)
+    ):
+        raise Agora2Error(f"refusing to fetch from an unexpected location: {url}")
+    path = parts.path
+    if any(segment in {".", ".."} for segment in path.split("/")):
+        raise Agora2Error(f"refusing AGORA2 URL dot segment: {url}")
+    index_path = urllib.parse.urlsplit(f"{AGORA2_INDIVIDUAL_URL}/").path
+    model_dir = index_path.rstrip("/") + "/"
+    model_file = path[len(model_dir):] if path.startswith(model_dir) else ""
+    allowed_model = bool(model_file and "/" not in model_file)
+    if allowed_model:
+        try:
+            _plain_basename(model_file, label="URL filename")
+        except Agora2Error:
+            allowed_model = False
+        else:
+            allowed_model = model_file.endswith(".xml")
+    allowed_archive = url in AGORA2_ARCHIVE_URLS.values()
+    if path != index_path and not allowed_model and not allowed_archive:
+        raise Agora2Error(f"refusing to fetch from an unexpected location: {url}")
+
+
+class _FetchedBytes(bytes):
+    """Bytes with the effective publisher URL; ordinary callers still receive bytes."""
+
+    effective_url: str
+
+    def __new__(cls, data: bytes, effective_url: str) -> _FetchedBytes:
+        result = super().__new__(cls, data)
+        result.effective_url = effective_url
+        return result
+
+
+class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(  # type: ignore[no-untyped-def]
+        self, req, fp, code, msg, headers, newurl
+    ):
+        target = urllib.parse.urljoin(req.full_url, newurl)
+        _validate_publisher_url(target)
+        return super().redirect_request(req, fp, code, msg, headers, target)
+
+
+def _open_url(url: str, *, timeout: float) -> bytes:
+    """Fetch an allowed publisher URL, validating each redirect before it is followed."""
+    _validate_publisher_url(url)
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    opener = urllib.request.build_opener(_GuardedRedirectHandler())
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            effective_url = response.geturl()
+            _validate_publisher_url(effective_url)
             data: bytes = response.read()
+            return _FetchedBytes(data, effective_url)
     except (urllib.error.URLError, OSError, TimeoutError) as error:
         raise Agora2Error(f"download failed for {url}: {type(error).__name__}: {error}") from error
-    return data
 
 
 #: Injection seam: tests and offline callers pass their own fetcher.
@@ -227,6 +310,8 @@ def parse_catalogue(html: str) -> list[CatalogueEntry]:
             "AGORA2 directory index contained no .xml entries — the published index format has "
             f"changed, or the response was an error page ({AGORA2_INDIVIDUAL_URL})"
         )
+    for entry in entries:
+        _validate_entry(entry)
     return sorted(entries, key=lambda entry: entry.id)
 
 
@@ -255,6 +340,8 @@ def catalogue_payload(entries: Sequence[CatalogueEntry]) -> dict[str, Any]:
 
 
 def write_catalogue(entries: Sequence[CatalogueEntry], path: str | Path) -> Path:
+    for entry in entries:
+        _validate_entry(entry)
     return atomic_write_text(
         path,
         json.dumps(catalogue_payload(entries), indent=2, sort_keys=True, ensure_ascii=True) + "\n",
@@ -268,18 +355,25 @@ def read_catalogue(path: str | Path) -> list[CatalogueEntry]:
         payload = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise Agora2Error(f"cannot read AGORA2 catalogue {source}: {error}") from error
-    models = payload.get("models")
+    models = payload.get("models") if isinstance(payload, dict) else None
     if not isinstance(models, list) or not models:
         raise Agora2Error(f"AGORA2 catalogue {source} holds no models")
-    return [
-        CatalogueEntry(
-            id=str(record["id"]),
-            file=str(record["file"]),
+    entries: list[CatalogueEntry] = []
+    for record in models:
+        if (
+            not isinstance(record, dict)
+            or not isinstance(record.get("id"), str)
+            or not isinstance(record.get("file"), str)
+        ):
+            raise Agora2Error(f"AGORA2 catalogue {source} has a malformed model entry")
+        entry = CatalogueEntry(
+            id=record["id"], file=record["file"],
             published_size=str(record.get("published_size", "")),
             published_modified=str(record.get("published_modified", "")),
         )
-        for record in models
-    ]
+        _validate_entry(entry)
+        entries.append(entry)
+    return entries
 
 
 def load_or_fetch_catalogue(
@@ -540,25 +634,34 @@ def fetch_model(
         raise Agora2Error(f"unknown namespace {namespace!r} (expected 'bigg' or 'vmh')")
     if file_format not in {"sbml", "json"}:
         raise Agora2Error(f"unknown format {file_format!r} (expected 'sbml' or 'json')")
+    _validate_entry(entry)
+    _validate_publisher_url(entry.url)
+
+    destination = Path(out_dir).resolve()
+    suffix = ".json" if file_format == "json" else ".xml"
+    target = destination / f"{entry.id}{suffix}"
+    if target.is_symlink() or not target.resolve().is_relative_to(destination):
+        raise Agora2Error(f"unsafe AGORA2 output destination: {target}")
 
     fetch = fetcher or default_fetcher()
     raw = fetch(entry.url)
+    effective_url = getattr(raw, "effective_url", entry.url)
+    _validate_publisher_url(effective_url)
     source_sha = sha256_bytes(raw)
     body, repairs = (repair_utf8(raw) if repair_encoding else (raw, []))
 
-    destination = Path(out_dir)
     destination.mkdir(parents=True, exist_ok=True)
-    suffix = ".json" if file_format == "json" else ".xml"
-    target = destination / f"{entry.id}{suffix}"
+    if target.is_symlink() or not target.resolve().is_relative_to(destination):
+        raise Agora2Error(f"unsafe AGORA2 output destination: {target}")
 
     if namespace == "vmh" and file_format == "sbml":
         # Nothing to reparse: the repaired bytes are the artifact.
-        target.write_bytes(body)
+        atomic_write_bytes(target, body)
         return FetchedModel(
             id=entry.id, file=target.name, source_url=entry.url, source_sha256=source_sha,
             source_bytes=len(raw), sha256=sha256_bytes(body), bytes=len(body),
             encoding_repairs=len(repairs), repaired_bytes=repairs,
-            namespace=namespace, format=file_format,
+            namespace=namespace, format=file_format, effective_url=effective_url,
         )
 
     model = _load_repaired_model(body, entry, destination)
@@ -579,7 +682,7 @@ def fetch_model(
         n_reactions=len(model.reactions), n_metabolites=len(model.metabolites),
         n_genes=len(model.genes), n_exchanges=len(model.exchanges),
         objective_reactions=sorted(str(r.id) for r in linear_reaction_coefficients(model)),
-        conversion=None if conversion is None else asdict(conversion),
+        conversion=None if conversion is None else asdict(conversion), effective_url=effective_url,
     )
 
 
@@ -591,7 +694,9 @@ def _load_repaired_model(body: bytes, entry: CatalogueEntry, workdir: Path) -> A
         raise Agora2Error(
             "reading AGORA2 SBML needs the engine stack: uv sync --extra engine"
         ) from error
-    staging = workdir / f".{entry.id}.agora2-staging.xml"
+    fd, staging_name = tempfile.mkstemp(dir=workdir, prefix=".agora2-", suffix=".xml")
+    os.close(fd)
+    staging = Path(staging_name)
     try:
         staging.write_bytes(body)
         return cobra.io.read_sbml_model(str(staging))

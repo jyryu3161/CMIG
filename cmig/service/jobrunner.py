@@ -40,6 +40,14 @@ class JobFailed(RuntimeError):
     """Raised by result() when a job finished in FAILED state."""
 
 
+class ArtifactJobFailure(RuntimeError):
+    """A failed scientific job whose published diagnostics remain available."""
+
+    def __init__(self, message: str, artifacts: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.artifacts = artifacts
+
+
 @dataclass
 class JobContext:
     """job fn 에 주입 — 취소 확인·진행률 보고 채널."""
@@ -148,6 +156,8 @@ class JobRunner:
             with self._lock:
                 self._jobs[job_id].status = JobStatus.FAILED
                 self._jobs[job_id].error = Diagnostic.from_exception(e).to_json()
+                if isinstance(e, ArtifactJobFailure):
+                    self._jobs[job_id].result = e.artifacts
             return None
         with self._lock:
             self._jobs[job_id].status = JobStatus.DONE

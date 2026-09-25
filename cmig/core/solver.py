@@ -34,8 +34,11 @@ class SolverCapability:
     lp: bool
     qp: bool
     milp: bool
-    available: bool          # 라이브러리 import/라이선스 가용
+    available: bool  # 라이브러리 import/라이선스 가용
     experimental: frozenset[ProblemClass] = frozenset()
+    package_installed: bool = False
+    interface_available: bool = False
+    unavailable_reason: str | None = None
 
     def supports(self, problem: ProblemClass) -> bool:
         return self.available and {"LP": self.lp, "QP": self.qp, "MILP": self.milp}[problem]
@@ -52,7 +55,17 @@ class SolverBackend(Protocol):
 
 def _importable(module: str) -> bool:
     import importlib.util
+
     return importlib.util.find_spec(module) is not None
+
+
+def _cobra_interface_available(name: str) -> bool:
+    """Probe the adapter COBRA can select; a native solver wheel is insufficient."""
+    try:
+        from cobra.util.solver import solvers
+    except ImportError:
+        return False
+    return name in solvers
 
 
 class GurobiBackend:
@@ -61,8 +74,19 @@ class GurobiBackend:
     name: SolverName = "gurobi"
 
     def capability(self) -> SolverCapability:
+        installed = _importable("gurobipy")
+        adapter = _cobra_interface_available("gurobi")
         return SolverCapability(
-            name="gurobi", lp=True, qp=True, milp=True, available=_importable("gurobipy")
+            name="gurobi",
+            lp=True,
+            qp=True,
+            milp=True,
+            available=installed and adapter,
+            package_installed=installed,
+            interface_available=adapter,
+            unavailable_reason=None
+            if installed and adapter
+            else "Gurobi package or COBRA interface missing",
         )
 
 
@@ -72,9 +96,20 @@ class HighsBackend:
     name: SolverName = "highs"
 
     def capability(self) -> SolverCapability:
+        installed = _importable("highspy")
+        adapter = _cobra_interface_available("highs")
         return SolverCapability(
-            name="highs", lp=True, qp=False, milp=True,
-            available=_importable("highspy"), experimental=frozenset({"QP"}),
+            name="highs",
+            lp=True,
+            qp=False,
+            milp=True,
+            available=installed and adapter,
+            experimental=frozenset({"QP"}),
+            package_installed=installed,
+            interface_available=adapter,
+            unavailable_reason=None
+            if installed and adapter
+            else "HiGHS package or COBRA/optlang interface missing",
         )
 
 
@@ -84,9 +119,19 @@ class OsqpBackend:
     name: SolverName = "osqp"
 
     def capability(self) -> SolverCapability:
+        installed = _importable("osqp") and _importable("highspy")
+        adapter = _cobra_interface_available("osqp")
         return SolverCapability(
-            name="osqp", lp=True, qp=True, milp=False,
-            available=_importable("osqp") and _importable("highspy"),
+            name="osqp",
+            lp=True,
+            qp=True,
+            milp=False,
+            available=installed and adapter,
+            package_installed=installed,
+            interface_available=adapter,
+            unavailable_reason=None
+            if installed and adapter
+            else "OSQP package or COBRA/optlang interface missing",
         )
 
 

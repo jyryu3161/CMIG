@@ -438,8 +438,9 @@ def test_host_ko_impact_degrades_when_the_medium_was_only_partly_applied():
         return HostArm(
             label=label, member=None, ko_id=None, ko_level=None, run_status="ok",
             community_status="optimal", community_growth=0.4, host_status="optimal",
-            host_viable=True, host_objective=objective, target_transfer=1.0,
-            matched_exchanges={"ac": "EX_ac_e"},
+                host_viable=True, host_objective=objective, target_transfer=1.0,
+                matched_exchanges={"ac": "EX_ac_e"},
+                target_transfer_range=(1.0, 1.0), target_identifiability="identified",
         )
 
     baseline = _arm("baseline", 2.0)

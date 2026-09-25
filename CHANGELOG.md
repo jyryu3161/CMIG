@@ -5,6 +5,41 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-25 audit remediation
+
+- Preserve nullable host transfer points and conservative transfer intervals
+  when the optimal host objective leaves target transfer ambiguous. JSON uses
+  `null`, CSV uses a blank point with range/reason columns; a measured zero
+  stays zero. Host objective changes can remain available when target changes
+  cannot be identified.
+- Record Pareto solve attempts separately from valid points. A later timeout or
+  error preserves prior feasible points, marks candidate sampling partial and
+  degrades the run; resolved infeasible slices remain distinct. The Pareto
+  checkpoint policy identity changes, so old checkpoints require a new path.
+  The sampled front remains a report-order trade-off set.
+- Correct physical exchange amount conversion for standalone dFBA and host
+  coupling, including reversed and non-unit one-metabolite exchanges. Resolve
+  renamed community exchanges from topology, reject ambiguous aliases and
+  reject non-unit community inputs that MICOM 0.39 cannot conserve. The
+  version-specific MICOM pool/member adapter remains a documented limitation.
+- Draw signed multi-target contributions on both sides of zero and mark the
+  stored total in saved SVG/TIFF. Normalized bars include recorded target
+  weights while stored pre-weight target scores remain unchanged. Wrap long
+  unit, normalizer and Pareto text within the figure canvas; Pareto rank is
+  labelled as reporting order.
+- Scope GUI Search settings to their workflow, expose complete warning and
+  scientific detail, preserve failed-run diagnostics, and distinguish artifact
+  integrity from summary readback validity. Figure choices follow available
+  run artifacts; missing previews cannot be exported. Installed GUI medium
+  presets retain their source and row provenance.
+- Check solver package and COBRA/optlang adapter availability separately.
+  Native HiGHS is not a selectable CLI solver; Gurobi licensing still requires
+  an actual solve, and OSQP community provenance remains approximate.
+
+These corrections do not establish publication validity for a particular GEM,
+host map, medium or biological interpretation. Version and golden contracts
+remain unchanged.
+
 ### Fixed — consortium search correctness
 
 - Reject invalid abundances and requested/effective MICOM membership mismatches.

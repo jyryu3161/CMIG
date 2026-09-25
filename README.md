@@ -62,6 +62,10 @@ uv sync --extra engine --extra gui --extra render --extra stats
 uv run cmig version && uv run cmig solvers
 ```
 
+The GUI Medium Editor includes the repository's medium presets and their row provenance in
+installed wheels. The CLI `medium_presets/...` example below uses a source checkout; for an
+installed CLI, supply a path to your own medium CSV or export a GUI preset to a chosen path.
+
 ## Quick start
 
 ```bash
@@ -83,7 +87,7 @@ developer workflow are in **[docs/USAGE.md](docs/USAGE.md)**.
 | --- | --- |
 | [docs/USAGE.md](docs/USAGE.md) | Installation, GUI, CLI, medium semantics, development |
 | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | Reference manual: full workflow catalogue, automation contract, output schemas, scope and limitations |
-| [docs/cmig_hands_on_tutorial.html](docs/cmig_hands_on_tutorial.html) | Tutorial with real commands, real outputs and GUI screenshots |
+| [Hands-on tutorial](https://github.com/jyryu3161/CMIG/blob/main/docs/cmig_hands_on_tutorial.html) | Tutorial with real commands, real outputs and GUI screenshots |
 | [docs/PUBLICATION_VALIDATION.md](docs/PUBLICATION_VALIDATION.md) | Validation protocol to re-run before publishing results |
 | [CHANGELOG.md](CHANGELOG.md) | Release history, including breaking contract changes |
 

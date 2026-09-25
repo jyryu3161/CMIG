@@ -78,8 +78,7 @@ class ClusteringConfig:
     def __post_init__(self) -> None:
         if self.method not in CLUSTERING_METHODS:
             raise ValueError(
-                "clustering.method must be one of "
-                f"{list(CLUSTERING_METHODS)}; got {self.method!r}"
+                f"clustering.method must be one of {list(CLUSTERING_METHODS)}; got {self.method!r}"
             )
         _positive_int(self.k, field_name="clustering.k")
 
@@ -206,7 +205,10 @@ ClusterConfig = ClusteringConfig
 
 
 def groups_from_sweep_rows(
-    rows: Sequence[Mapping[str, object]], *, metric: str, group_axis: str,
+    rows: Sequence[Mapping[str, object]],
+    *,
+    metric: str,
+    group_axis: str,
     replicate_column: str | None = None,
     replicate_aggregate: str = "mean",
 ) -> dict[str, list[float]]:
@@ -241,9 +243,7 @@ def groups_from_sweep_rows(
             replicate = run_id
         else:
             if replicate_column not in r or r.get(replicate_column) in {None, ""}:
-                raise ValueError(
-                    f"independent replicate column missing/empty: {replicate_column}"
-                )
+                raise ValueError(f"independent replicate column missing/empty: {replicate_column}")
             replicate = str(r[replicate_column])
         buckets.setdefault((group, replicate), []).append(value)
 
@@ -283,76 +283,156 @@ def distribution_summary(groups: Mapping[str, Sequence[float]]) -> list[GroupSum
             q1, q3 = float(np.percentile(vals, 25)), float(np.percentile(vals, 75))
         else:
             q1 = q3 = vals[0]
-        out.append(GroupSummary(
-            group=g, n=n, median=float(statistics.median(vals)), iqr=q3 - q1,
-            mean=float(statistics.fmean(vals)),
-            sd=float(statistics.stdev(vals)) if n > 1 else float("nan"),
-        ))
+        out.append(
+            GroupSummary(
+                group=g,
+                n=n,
+                median=float(statistics.median(vals)),
+                iqr=q3 - q1,
+                mean=float(statistics.fmean(vals)),
+                sd=float(statistics.stdev(vals)) if n > 1 else float("nan"),
+            )
+        )
     return out
 
 
-def cliffs_delta(a: Sequence[float], b: Sequence[float]) -> float:
+def cliffs_delta(a: Sequence[float], b: Sequence[float]) -> float | None:
     """Cliff's δ ∈ [-1,1] — robust effect size(비모수). δ = (#a>b − #a<b)/(na·nb)."""
     na, nb = len(a), len(b)
     if na == 0 or nb == 0:
-        return 0.0
+        return None
+    if not all(math.isfinite(float(x)) for x in (*a, *b)):
+        return None
     gt = sum(1 for x in a for y in b if x > y)
     lt = sum(1 for x in a for y in b if x < y)
     return (gt - lt) / (na * nb)
 
 
-def cohens_d(a: Sequence[float], b: Sequence[float]) -> float:
+def cohens_d(a: Sequence[float], b: Sequence[float]) -> float | None:
     """Cohen's d — 정규·등분산 가정 effect size(pooled sd)."""
     na, nb = len(a), len(b)
     if na < 2 or nb < 2:
-        return 0.0
+        return None
+    if not all(math.isfinite(float(x)) for x in (*a, *b)):
+        return None
     ma, mb = statistics.fmean(a), statistics.fmean(b)
     va, vb = statistics.variance(a), statistics.variance(b)
     pooled = (((na - 1) * va + (nb - 1) * vb) / (na + nb - 2)) ** 0.5
-    return 0.0 if pooled == 0 else (ma - mb) / pooled
+    return None if pooled == 0 else (ma - mb) / pooled
 
 
 @dataclass(frozen=True)
 class TestResult:
     test: str
-    statistic: float
-    pvalue: float
-    effect_size: float
+    statistic: float | None
+    pvalue: float | None
+    effect_size: float | None
     effect_name: str
+    status: str = "completed"
+    reason: str | None = None
+
+
+def _finite_stat(value: object) -> float | None:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def two_group_test(
-    a: Sequence[float], b: Sequence[float], *, parametric: bool = False,
+    a: Sequence[float],
+    b: Sequence[float],
+    *,
+    parametric: bool = False,
 ) -> TestResult:
     """2그룹 검정 — 기본 Mann-Whitney U + Cliff's δ(robust); parametric → Welch t + Cohen's d."""
     from scipy import stats
+
+    if not a or not b or not all(math.isfinite(float(x)) for x in (*a, *b)):
+        return TestResult(
+            "welch_t" if parametric else "mann_whitney_u",
+            None,
+            None,
+            None,
+            "cohens_d" if parametric else "cliffs_delta",
+            "unavailable",
+            "empty group or nonfinite input",
+        )
     if parametric:
         res = stats.ttest_ind(a, b, equal_var=False)
-        return TestResult("welch_t", float(res.statistic), float(res.pvalue),
-                          cohens_d(a, b), "cohens_d")
+        statistic, pvalue, effect = (
+            _finite_stat(res.statistic),
+            _finite_stat(res.pvalue),
+            cohens_d(a, b),
+        )
+        reason = (
+            "insufficient sample"
+            if min(len(a), len(b)) < 2
+            else "zero pooled variance"
+            if effect is None
+            else "degenerate Welch statistic"
+            if statistic is None or pvalue is None
+            else None
+        )
+        return TestResult(
+            "welch_t",
+            statistic,
+            pvalue,
+            effect,
+            "cohens_d",
+            "degenerate" if reason else "completed",
+            reason,
+        )
     res = stats.mannwhitneyu(a, b, alternative="two-sided")
-    return TestResult("mann_whitney_u", float(res.statistic), float(res.pvalue),
-                      cliffs_delta(a, b), "cliffs_delta")
+    statistic, pvalue = _finite_stat(res.statistic), _finite_stat(res.pvalue)
+    return TestResult(
+        "mann_whitney_u",
+        statistic,
+        pvalue,
+        cliffs_delta(a, b),
+        "cliffs_delta",
+        "completed" if statistic is not None and pvalue is not None else "degenerate",
+        None if statistic is not None and pvalue is not None else "nonfinite test result",
+    )
 
 
 def multi_group_test(
-    groups: Mapping[str, Sequence[float]], *, parametric: bool = False,
+    groups: Mapping[str, Sequence[float]],
+    *,
+    parametric: bool = False,
 ) -> TestResult:
     """다그룹 검정 — 기본 Kruskal-Wallis(robust); parametric → one-way ANOVA. effect size nan."""
     from scipy import stats
+
     samples = [list(groups[g]) for g in sorted(groups)]
-    if parametric:
-        res = stats.f_oneway(*samples)
-        return TestResult("one_way_anova", float(res.statistic), float(res.pvalue),
-                          float("nan"), "none")
-    res = stats.kruskal(*samples)
-    return TestResult("kruskal_wallis", float(res.statistic), float(res.pvalue),
-                      float("nan"), "none")
+    name = "one_way_anova" if parametric else "kruskal_wallis"
+    if len(samples) < 2 or any(not sample for sample in samples):
+        return TestResult(name, None, None, None, "none", "unavailable",
+                          "at least two nonempty groups required")
+    if any(not math.isfinite(float(x)) for sample in samples for x in sample):
+        return TestResult(name, None, None, None, "none", "unavailable", "nonfinite input")
+    try:
+        res = stats.f_oneway(*samples) if parametric else stats.kruskal(*samples)
+    except ValueError as error:
+        return TestResult(name, None, None, None, "none", "degenerate", str(error))
+    statistic, pvalue = _finite_stat(res.statistic), _finite_stat(res.pvalue)
+    return TestResult(
+        name,
+        statistic,
+        pvalue,
+        None,
+        "none",
+        "effect_unavailable" if statistic is not None and pvalue is not None else "degenerate",
+        "effect size not defined for this test" if statistic is not None and pvalue is not None
+        else "nonfinite test result",
+    )
 
 
 def fdr_correct(pvalues: Sequence[float], *, method: str = "fdr_bh") -> list[float]:
     """BH(fdr_bh)/BY(fdr_by) FDR 보정 — statsmodels multipletests. 보정 p-value 반환."""
     from statsmodels.stats.multitest import multipletests
+
     if method not in FDR_METHODS:
         raise ValueError(f"FDR method must be one of {list(FDR_METHODS)}; got {method!r}")
     checked: list[float] = []
@@ -368,8 +448,7 @@ def fdr_correct(pvalues: Sequence[float], *, method: str = "fdr_bh") -> list[flo
 
 
 def prepare_volcano_data(
-    results: Mapping[str, TestResult | Mapping[str, object]]
-    | Sequence[Mapping[str, object]],
+    results: Mapping[str, TestResult | Mapping[str, object]] | Sequence[Mapping[str, object]],
     *,
     fdr_method: str = "fdr_bh",
     feature_column: str = "feature",
@@ -386,19 +465,21 @@ def prepare_volcano_data(
         items: Sequence[tuple[object, object]] = list(results.items())
         for feature, result in items:
             if isinstance(result, TestResult):
-                prepared.append({
-                    feature_column: feature,
-                    "test": result.test,
-                    "effect_size": result.effect_size,
+                prepared.append(
+                    {
+                        feature_column: feature,
+                        "test": result.test,
+                        "effect_size": result.effect_size,
                     "effect_name": result.effect_name,
                     "pvalue": result.pvalue,
-                })
+                    "status": result.status,
+                    "reason": result.reason,
+                    }
+                )
             elif isinstance(result, Mapping):
                 prepared.append({feature_column: feature, **dict(result)})
             else:
-                raise ValueError(
-                    "volcano results mapping values must be TestResult or mappings"
-                )
+                raise ValueError("volcano results mapping values must be TestResult or mappings")
     else:
         prepared = [dict(row) for row in results]
 
@@ -417,6 +498,7 @@ def prepare_volcano_data(
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(
                 f"volcano feature {feature!r} requires numeric effect_size and pvalue"
+                f" (reason={row.get('reason') or 'unavailable input'})"
             ) from error
         if not math.isfinite(effect_size):
             raise ValueError(f"volcano effect_size must be finite for feature {feature!r}")
@@ -439,9 +521,7 @@ def prepare_volcano_data(
     for row, qvalue in zip(validated, adjusted, strict=True):
         out = dict(row)
         out["adjusted_pvalue"] = qvalue
-        out["neg_log10_adjusted_pvalue"] = (
-            float("inf") if qvalue == 0.0 else -math.log10(qvalue)
-        )
+        out["neg_log10_adjusted_pvalue"] = float("inf") if qvalue == 0.0 else -math.log10(qvalue)
         out["fdr_method"] = fdr_method
         output.append(out)
     return output
@@ -454,13 +534,15 @@ volcano_data = prepare_volcano_data
 def normality_pvalue(x: Sequence[float]) -> float:
     """Shapiro-Wilk 정규성 검정 p-value(작을수록 비정규). n<3 → nan."""
     from scipy import stats
+
     if len(x) < 3:
         return float("nan")
     return float(stats.shapiro(x).pvalue)
 
 
 def stats_warnings(
-    groups: Mapping[str, Sequence[float]], *,
+    groups: Mapping[str, Sequence[float]],
+    *,
     min_n: int = 3,
     independent_replicates: bool = False,
 ) -> list[str]:
@@ -477,6 +559,6 @@ def stats_warnings(
         )
     for g in sorted(groups):
         p = normality_pvalue(groups[g])
-        if p == p and p < 0.05:                       # 비정규 → robust 권고
+        if p == p and p < 0.05:  # 비정규 → robust 권고
             warns.append(f"그룹 '{g}' 비정규(Shapiro p={p:.3g}) — robust(Cliff's δ/MWU) 권고")
     return warns

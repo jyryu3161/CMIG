@@ -12,6 +12,7 @@ import csv
 import io
 import tempfile
 from collections.abc import Mapping
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,7 @@ from cmig.io.model_import import ModelSummary
 _NUTRIENT_ROLE = "nutrient"
 _POOL_CLOSURE_ROLE = "pool_closure"
 _ROW_ROLES = frozenset({_NUTRIENT_ROLE, _POOL_CLOSURE_ROLE})
+_RESOURCE_PRESET_PREFIX = "cmig-preset:"
 
 
 def _editor_text(strings: Mapping[str, str], key: str, fallback: str) -> str:
@@ -68,8 +70,9 @@ class MediumEditor(QWidget):
         self.preset_dir = (
             Path(preset_dir)
             if preset_dir is not None
-            else Path(__file__).resolve().parents[2] / "medium_presets"
+            else Path(__file__).resolve().parents[1] / "resources" / "medium_presets"
         )
+        self._use_packaged_presets = preset_dir is None
         self.current_preset: Path | None = None
         self._has_row_roles = False
         layout = QVBoxLayout(self)
@@ -340,7 +343,16 @@ class MediumEditor(QWidget):
         self.preset_combo.addItem(
             _editor_text(self.strings, "medium_choose_preset", "Choose a preset…"), None
         )
-        if self.preset_dir.is_dir():
+        if self._use_packaged_presets:
+            packaged = resources.files("cmig.resources").joinpath("medium_presets")
+            for item in sorted(packaged.iterdir(), key=lambda entry: entry.name):
+                if (
+                    item.is_file()
+                    and item.name.endswith(".csv")
+                    and item.name != "provenance_rows.csv"
+                ):
+                    self.preset_combo.addItem(item.name, _RESOURCE_PRESET_PREFIX + item.name)
+        elif self.preset_dir.is_dir():
             for path in sorted(self.preset_dir.glob("*.csv")):
                 if path.name == "provenance_rows.csv":
                     continue
@@ -363,7 +375,19 @@ class MediumEditor(QWidget):
             )
             return False
         try:
-            self.load_preset(Path(str(selected)))
+            value = str(selected)
+            if value.startswith(_RESOURCE_PRESET_PREFIX):
+                name = value[len(_RESOURCE_PRESET_PREFIX):]
+                if Path(name).name != name or not name.endswith(".csv"):
+                    raise ValueError(f"invalid packaged preset name: {name!r}")
+                resource_dir = resources.files("cmig.resources").joinpath("medium_presets")
+                resource = resource_dir.joinpath(name)
+                with resources.as_file(resource) as path:
+                    self.load_preset(path)
+                # A zip-imported resource may have been extracted only for the above context.
+                self.current_preset = resource.resolve() if isinstance(resource, Path) else None
+            else:
+                self.load_preset(Path(value))
         except (OSError, ValueError) as error:
             self.status.setText(
                 _editor_text(

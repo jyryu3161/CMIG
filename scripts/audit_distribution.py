@@ -131,6 +131,39 @@ def audit_archive(archive: Path) -> None:
         sample = "\n  - ".join(violations[:20])
         raise ValueError(f"{archive} failed distribution audit:\n  - {sample}")
 
+    relative_names = {
+        "/".join(_strip_sdist_root(_safe_parts(member.name)))
+        for member in members
+    }
+    if kind == "wheel" and "cmig/gui/editors.py" in relative_names:
+        required = {
+            "cmig/resources/medium_presets/gut_overlay_agora_western.csv",
+            "cmig/resources/medium_presets/provenance_rows.csv",
+            "cmig/resources/medium_presets/PROVENANCE_gut_media.md",
+        }
+        missing = required - relative_names
+        if missing:
+            raise ValueError(f"wheel is missing installed medium resources: {sorted(missing)}")
+    if kind == "sdist" and "README.md" in relative_names:
+        with tarfile.open(archive, mode="r:gz") as handle:
+            readme_member = next(
+                member for member in handle.getmembers()
+                if "/".join(_strip_sdist_root(_safe_parts(member.name))) == "README.md"
+            )
+            content = handle.extractfile(readme_member)
+            if content is None:
+                raise ValueError(f"sdist README is unreadable: {archive}")
+            readme = content.read().decode("utf-8")
+        missing_links = []
+        for href in re.findall(r"\]\(([^)]+)\)", readme):
+            if "://" in href or href.startswith(("#", "mailto:")):
+                continue
+            target = href.split("#", 1)[0]
+            if target and target not in relative_names:
+                missing_links.append(target)
+        if missing_links:
+            raise ValueError(f"sdist README has missing local links: {missing_links}")
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)

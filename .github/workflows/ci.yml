@@ -39,24 +39,24 @@ jobs:
       - name: Verify lock and sync typed stack
         run: |
           uv lock --check
-          uv sync --extra engine --extra render --extra stats
+          uv sync --extra engine --extra gui --extra render --extra stats
       # Round-9 release guard: every public version surface (pyproject, package,
       # CITATION, zenodo, marketplace plugin, uv.lock) must agree; on a vX.Y.Z tag
       # it additionally requires the finalized changelog heading and release date.
       - name: Release version alignment
-        run: uv run python scripts/check_release_versions.py
+        run: uv run --no-sync python scripts/check_release_versions.py
       - name: Ruff
-        run: uv run ruff check .
+        run: uv run --no-sync ruff check .
       - name: Strict mypy
-        run: uv run mypy cmig
+        run: uv run --no-sync mypy cmig
       # Workflow-hash analogue of the SC-5 golden gate. Needs no solver and no license, so it runs
       # on every matrix leg: a change to the workflow-envelope serialization silently rewrites
       # every published workflow run_hash, and nothing else would catch it.
       - name: Workflow-envelope serialization gate
-        run: uv run cmig golden verify-envelope
+        run: uv run --no-sync cmig golden verify-envelope
       - name: License-free deterministic core tests
         run: >-
-          uv run pytest -q
+          uv run --no-sync pytest -q
           tests/test_sign.py
           tests/test_namespace_gate.py
           tests/test_run_hash.py

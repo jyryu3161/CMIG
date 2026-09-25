@@ -27,7 +27,10 @@ Contents:
 | Figures (optional) | R 4.3.2 with the checked-in `renv.lock` for the R backend; matplotlib is the automatic fallback |
 
 CMIG pins `micom==0.39.0`, because the community solver version is part of every
-reproducibility record.
+reproducibility record. Capability reporting requires both a solver package and
+its COBRA/optlang adapter; a Gurobi license is checked by an actual solve.
+Native HiGHS is not a selectable analysis solver in the CLI. OSQP community
+output is an approximate QP result and does not provide full member fluxes.
 
 ## Installation
 
@@ -68,9 +71,20 @@ uv run cmig gui --lang ko    # Korean interface
 Less common tools — community builder, medium editor, parameter sweep,
 constraint sandbox and scenario compare — sit behind **Show Advanced Tools**.
 
-The interface is a shell over the command line: every run it launches is an
-ordinary CLI run that writes an ordinary manifest, so anything started in the
-GUI can be inspected, re-run or scripted afterwards, and vice versa.
+The analysis buttons launch CLI workflows and record run artifacts. Check the
+selected workflow's summary and manifest before reusing a result: GUI readback
+supports the run types and artifacts implemented by that view, rather than every
+CLI artifact in every tab. Search settings apply by workflow: for example,
+cooperative tradeoff belongs to Strain Growth and Ratio, while Search uses its
+target direction, growth floors, budget and multi-target controls. Changing a
+setting used by the displayed workflow invalidates its result.
+
+Search offers only figures present in the loaded run. Single-target runs can
+provide Ranking and Scatter; multi-target runs provide Ranking. A missing or
+unreadable file clears the preview and disables export. The status bar separates
+the scientific outcome from artifact integrity; **Integrity details** explains
+verified, mismatch, not-recorded and invalid/unreadable readback states. A
+failed scientific run may still provide diagnostic artifacts.
 
 ## Command line
 
@@ -147,6 +161,18 @@ for anything you intend to report, and run `cmig medium-gap` first if a solve
 comes back at zero growth — it names the nutrients the diet is missing and
 distinguishes them from model-internal reactions a diet file cannot supply.
 
+Medium limits are COBRA reaction-flux bounds. In single-model dFBA and host
+coupling, depletion and physical uptake readouts account for the exchange's
+stoichiometric coefficient. MICOM 0.39 cannot safely assemble community inputs
+with non-unit exchange coefficients, so CMIG rejects those models before a
+community solve. Renamed unit-coefficient exchanges are resolved from model
+topology; ambiguous nutrient aliases are rejected.
+
+The GUI's gut medium presets are packaged with installed CMIG and retain row
+roles and provenance. Paths such as `medium_presets/...` in these CLI examples
+refer to this source checkout; from another working directory, pass an explicit
+path to a medium file.
+
 ## Reading a run back
 
 ```bash
@@ -160,6 +186,18 @@ so a disagreement between a summary and its manifest is visible instead of
 silently resolved. `unknown` is a real answer and must never be read as a pass.
 The full status vocabulary and its guarantees are in
 [USER_GUIDE.md](USER_GUIDE.md#exit-codes).
+
+For host transfer, a blank CSV point or JSON `null` can mean that an optimal
+host objective leaves transfer unidentifiable. Read the accompanying transfer
+range and reason before comparing or ranking it; zero is a measured value.
+Pareto summaries count all recorded LP attempts: both baselines, each independent
+target capability, every sampled slice and any minimization auxiliary. The
+ordinary two-target run has 20 total attempts, of which 16 are sampling slices.
+Resolved counts include optimal and infeasible outcomes; failed counts include
+timeout and error outcomes. Other recorded outcomes can belong to neither count.
+A partial candidate may retain valid points, while its run is degraded. The sampled
+front's rank is report order, and the signed ranking figure shows positive and
+negative target contributions with a separately marked total.
 
 ## Worked example: a butyrate-producing consortium
 

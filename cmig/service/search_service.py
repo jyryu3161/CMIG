@@ -54,7 +54,9 @@ def search_identity(request: SearchRequest) -> dict[str, Any]:
         config["direction"] = config["direction"].value
     if "directions" in config:
         config["directions"] = {key: value.value for key, value in config["directions"].items()}
-    return {
+    from cmig.core.search_product import MultiTargetConfig
+
+    identity = {
         "policy": SEARCH_POLICY_VERSION,
         "ga_policy": GA_POLICY_VERSION,
         "config": config,
@@ -66,6 +68,9 @@ def search_identity(request: SearchRequest) -> dict[str, Any]:
         "strict_medium": request.strict_medium,
         "versions": runtime_versions(),
     }
+    if isinstance(request.config, MultiTargetConfig) and request.config.metric == "pareto":
+        identity["pareto_evaluation_policy"] = "attempt_ledger_v3"
+    return identity
 
 
 class SearchService:

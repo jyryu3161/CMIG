@@ -615,7 +615,7 @@ def test_search_figure_export_copies_selected_svg(monkeypatch, tmp_path):
     # Round-5 P2 / verifier V-1: the export is keyed to the run the Search table is
     # *displaying*, so that an invalidated result cannot be exported after the user has been
     # told it was discarded. `current_run_dir` is what a real completed run sets.
-    w.search_view.current_run_dir = run_dir
+    w.search_view.load_summary({"strategy": "exhaustive", "top_ranked": []}, run_dir=run_dir)
     w.current_search_dir = run_dir
     w.search_view.figure_mode_combo.setCurrentText("Scatter")
     monkeypatch.setattr(

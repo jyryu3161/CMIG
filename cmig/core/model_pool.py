@@ -136,13 +136,6 @@ def diagnose_model_pool(taxonomy: Any, target_metabolite: str) -> list[PoolModel
         objective_structure_warning,
     )
 
-    def exchange_metabolite(exchange_id: str) -> str:
-        name = exchange_id[3:] if exchange_id.startswith("EX_") else exchange_id
-        for suffix in ("_e", "_m", "_lumen", "_blood"):
-            if name.endswith(suffix):
-                return name[: -len(suffix)]
-        return name
-
     diagnostics: list[PoolModelDiagnostic] = []
     for record in taxonomy.to_dict("records"):
         member_id = str(record["id"])
@@ -153,7 +146,7 @@ def diagnose_model_pool(taxonomy: Any, target_metabolite: str) -> list[PoolModel
             matching = tuple(
                 sorted(
                     ex for ex in summary.exchanges
-                    if exchange_metabolite(ex) == target_metabolite
+                    if summary.exchange_metabolites.get(ex) == target_metabolite
                 )
             )
             warnings: list[str] = []

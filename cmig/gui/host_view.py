@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QStackedWidget,
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from cmig.core.host_impact import identified_transfer_point
 from cmig.gui.builder import make_read_only, read_only_item
 
 _IFACE_COLOR = {"lumen": "#2c7fb8", "blood": "#d95f0e", "bigg_external": "#2b8cbe"}
@@ -42,7 +45,14 @@ class HostImpactView(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setMinimumSize(0, 0)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        self.scroll_area.setWidget(content)
+        outer.addWidget(self.scroll_area)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(6)
         self.title = QLabel("Host-Microbe Interaction")
@@ -58,9 +68,13 @@ class HostImpactView(QWidget):
         file_row.addWidget(QLabel("Input"))
         file_row.addWidget(self.host_path_input)
         file_row.addWidget(self.browse_host_btn)
-        file_row.addWidget(self.host_objective_input)
-        file_row.addWidget(self.model_dir_input)
-        file_row.addWidget(self.browse_model_dir_btn)
+        objective_row = QHBoxLayout()
+        objective_row.addWidget(QLabel("Host objective"))
+        objective_row.addWidget(self.host_objective_input)
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("Microbial models"))
+        model_row.addWidget(self.model_dir_input)
+        model_row.addWidget(self.browse_model_dir_btn)
         medium_row = QHBoxLayout()
         self.host_medium_input = QLineEdit("")
         self.host_medium_input.setPlaceholderText("Host medium CSV/JSON")
@@ -71,12 +85,17 @@ class HostImpactView(QWidget):
         self.out_dir_input = QLineEdit("")
         self.out_dir_input.setPlaceholderText("Output folder")
         self.browse_out_dir_btn = QPushButton("Output")
+        medium_row.addWidget(QLabel("Host medium"))
         medium_row.addWidget(self.host_medium_input)
         medium_row.addWidget(self.browse_host_medium_btn)
-        medium_row.addWidget(self.microbe_medium_input)
-        medium_row.addWidget(self.browse_microbe_medium_btn)
-        medium_row.addWidget(self.out_dir_input)
-        medium_row.addWidget(self.browse_out_dir_btn)
+        microbe_medium_row = QHBoxLayout()
+        microbe_medium_row.addWidget(QLabel("Microbe medium"))
+        microbe_medium_row.addWidget(self.microbe_medium_input)
+        microbe_medium_row.addWidget(self.browse_microbe_medium_btn)
+        output_row = QHBoxLayout()
+        output_row.addWidget(QLabel("Output"))
+        output_row.addWidget(self.out_dir_input)
+        output_row.addWidget(self.browse_out_dir_btn)
         run_row = QHBoxLayout()
         self.tradeoff_spin = QDoubleSpinBox()
         self.tradeoff_spin.setRange(0.01, 1.0)
@@ -121,15 +140,21 @@ class HostImpactView(QWidget):
         run_row.addWidget(self.microbial_biomass_spin)
         run_row.addWidget(QLabel("host gDW"))
         run_row.addWidget(self.host_biomass_spin)
-        run_row.addWidget(self.biomass_basis_kind_combo)
-        run_row.addWidget(self.biomass_basis_source_input)
-        run_row.addWidget(self.recursive_check)
-        run_row.addWidget(self.keep_host_uptake_check)
-        run_row.addWidget(self.include_currency_check)
-        run_row.addWidget(self.allow_unknown_medium_check)
         run_row.addStretch(1)
-        run_row.addWidget(self.run_btn)
-        run_row.addWidget(self.run_search_btn)
+        basis_row = QHBoxLayout()
+        basis_row.addWidget(QLabel("Biomass basis"))
+        basis_row.addWidget(self.biomass_basis_kind_combo)
+        basis_row.addWidget(self.biomass_basis_source_input)
+        policy_row = QHBoxLayout()
+        policy_row.addWidget(self.recursive_check)
+        policy_row.addWidget(self.keep_host_uptake_check)
+        policy_row.addWidget(self.include_currency_check)
+        policy_row.addWidget(self.allow_unknown_medium_check)
+        policy_row.addStretch(1)
+        run_buttons_row = QHBoxLayout()
+        run_buttons_row.addWidget(self.run_btn)
+        run_buttons_row.addWidget(self.run_search_btn)
+        run_buttons_row.addStretch(1)
         search_row = QHBoxLayout()
         self.search_target_input = QLineEdit("ac")
         self.search_target_input.setPlaceholderText("Target transferred metabolite")
@@ -161,6 +186,8 @@ class HostImpactView(QWidget):
         figure_row.addStretch(1)
         self.viability_label = QLabel("")
         self.run_status = QLabel("")
+        self.run_status.setWordWrap(True)
+        self.run_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         # 2-interface flux 표
         self.iface_table = QTableWidget(0, 4)
         self.iface_table.setHorizontalHeaderLabels(
@@ -199,13 +226,24 @@ class HostImpactView(QWidget):
         for w in (self.viability_label, self.iface_table, self.cross_label, self.cross_table):
             tables_layout.addWidget(w)
         splitter = QSplitter()
+        tables.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        self.figure_stack.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
+        )
         splitter.addWidget(tables)
         splitter.addWidget(self.figure_stack)
         splitter.setSizes([450, 760])
         layout.addWidget(self.title)
         layout.addLayout(file_row)
+        layout.addLayout(objective_row)
+        layout.addLayout(model_row)
         layout.addLayout(medium_row)
+        layout.addLayout(microbe_medium_row)
+        layout.addLayout(output_row)
         layout.addLayout(run_row)
+        layout.addLayout(basis_row)
+        layout.addLayout(policy_row)
+        layout.addLayout(run_buttons_row)
         layout.addLayout(search_row)
         layout.addLayout(figure_row)
         layout.addWidget(self.run_status)
@@ -320,8 +358,10 @@ class HostImpactView(QWidget):
     def load_host_result(self, host_result: Any) -> None:
         """HostSolveResult → viability + 2-interface flux 표(interface/sign 색)."""
         if host_result.viable:
+            biomass = host_result.biomass
+            biomass_text = "unknown" if biomass is None else f"{biomass:.4g}"
             self.viability_label.setText(
-                f"viable · host biomass = {host_result.biomass:.4g}")
+                f"viable · host biomass = {biomass_text}")
             self.viability_label.setStyleSheet("color: #31a354;")
         else:
             self.viability_label.setText(
@@ -339,13 +379,28 @@ class HostImpactView(QWidget):
                     item.setForeground(QColor(_LABEL_COLOR[f.label]))
                 self.iface_table.setItem(i, c, item)
 
-    def load_impact(self, impact: Any) -> None:
+    def load_impact(self, impact: Any, *, solved: bool | None = True) -> None:
         """HostImpact → microbe→host cross-feeding 표."""
-        items = sorted(impact.microbe_to_host.items())
+        points = impact.microbe_to_host
+        ranges = getattr(impact, "microbe_to_host_ranges", {})
+        ambiguous = set(getattr(impact, "ambiguous_metabolites", []))
+        items = sorted(set(points) | set(ranges) | ambiguous)
         self.cross_table.setRowCount(len(items))
-        for i, (met, flux) in enumerate(items):
+        for i, met in enumerate(items):
+            flux = identified_transfer_point(points, ranges, met) if solved is not False else None
+            if solved is None and met not in points:
+                flux = None  # Legacy status-free readback needs an explicit point assertion.
             self.cross_table.setItem(i, 0, read_only_item(met))
-            self.cross_table.setItem(i, 1, read_only_item(f"{flux:.4g}"))
+            label = "unknown" if flux is None else f"{flux:.4g}"
+            interval = ranges.get(met)
+            if flux is None and isinstance(interval, (list, tuple)) and len(interval) == 2:
+                label += f" [{interval[0]}, {interval[1]}]"
+            item = read_only_item(label)
+            if flux is not None:
+                item.setToolTip("Identifiability: identified")
+            elif met in ambiguous:
+                item.setToolTip("Identifiability: ambiguous")
+            self.cross_table.setItem(i, 1, item)
 
     def load_bigg_summary(self, payload: dict[str, Any], *, run_dir: Path | None = None) -> None:
         """Load parsed `host_microbe_bigg_summary.json` into tables and network."""
@@ -354,7 +409,27 @@ class HostImpactView(QWidget):
             "Loaded host-microbe result"
             + ("" if self.current_run_dir is None else f": {self.current_run_dir}")
             + _warning_suffix(payload)
+            + (f" · target identifiability: {payload['target_identifiability']}"
+               if "target_identifiability" in payload else "")
+            + ("\n" + "\n".join(str(w) for w in payload.get("warnings", []))
+               if isinstance(payload.get("warnings"), list) and payload["warnings"] else "")
         )
+        ranges = payload.get("microbe_to_host_ranges")
+        states = payload.get("metabolite_identifiability")
+        for row in range(self.cross_table.rowCount()):
+            key_item = self.cross_table.item(row, 0)
+            value_item = self.cross_table.item(row, 1)
+            if key_item is None or value_item is None:
+                continue
+            interval = ranges.get(key_item.text()) if isinstance(ranges, dict) else None
+            if (
+                value_item.text() == "unknown"
+                and isinstance(interval, list)
+                and len(interval) == 2
+            ):
+                value_item.setText(f"unknown [{interval[0]}, {interval[1]}]")
+            if isinstance(states, dict) and key_item.text() in states:
+                value_item.setToolTip(f"Identifiability: {states[key_item.text()]}")
         self.network_payload = host_microbe_network_payload(
             payload,
             include_currency_metabolites=self.show_currency_metabolites,
@@ -368,22 +443,10 @@ def host_microbe_network_payload(
     summary: dict[str, Any], *, include_currency_metabolites: bool = False
 ) -> dict[str, Any]:
     """Build a Cytoscape payload for one-way BiGG host-microbe transfers."""
-    microbial = {
-        str(met): float(value)
-        for met, value in dict(summary.get("microbial_secretion", {})).items()
-    }
-    host_uptake = {
-        str(met): float(value)
-        for met, value in dict(summary.get("host", {}).get("lumen_uptake", {})).items()
-    }
-    transfer = {
-        str(met): float(value)
-        for met, value in dict(summary.get("microbe_to_host", {})).items()
-    }
-    unused = {
-        str(met): float(value)
-        for met, value in dict(summary.get("unused_secretion", {})).items()
-    }
+    microbial = _known_fluxes(summary.get("microbial_secretion", {}))
+    host_uptake = _known_fluxes(summary.get("host", {}).get("lumen_uptake", {}))
+    transfer = _known_fluxes(summary.get("microbe_to_host", {}))
+    unused = _known_fluxes(summary.get("unused_secretion", {}))
     visible_microbial = {
         met: flux
         for met, flux in microbial.items()
@@ -465,6 +528,13 @@ def host_microbe_network_payload(
             {"symbol": "->", "meaning": "microbe-to-host transfer"},
         ],
     }
+
+
+def _known_fluxes(values: Any) -> dict[str, float]:
+    """An unknown host transfer is absent from graph edges, never a fabricated zero."""
+    if not isinstance(values, dict):
+        raise ValueError("host flux collection must be an object")
+    return {str(met): float(value) for met, value in values.items() if value is not None}
 
 
 def _host_network_stylesheet() -> list[dict[str, Any]]:

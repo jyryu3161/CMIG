@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, runtime_checkable
+from pathlib import Path
+from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 from cmig.core.diagnostics import DiagnosticCode, diagnostic_from_parts
 
@@ -85,6 +86,11 @@ class SolveResult:
     warnings: list[str] = field(default_factory=list)
     # manifest 가 실제 flux 정규화를 사실대로 기록하도록 solve 결과가 스스로 들고 다닌다.
     flux_normalization_method: str = "pfba"
+    # Actual supplying boundary amounts from the same MICOM solution. Each member reaction
+    # remains on its member-biomass basis; environmental reactions use community biomass.
+    boundary_supply: dict[str, float] = field(default_factory=dict)
+    boundary_supply_basis: dict[str, str] = field(default_factory=dict)
+    boundary_supply_complete: bool = False
 
 
 @runtime_checkable
@@ -151,6 +157,7 @@ class MicomEngine:
         self._micom: Any = None
         self._model_files: Any = None
         self.cache_models = False
+        self._validated_exchange_files: set[tuple[str, int, int]] = set()
 
     def _load(self) -> Any:
         if self._micom is None:
@@ -172,6 +179,28 @@ class MicomEngine:
         _require_allowed_solver(cmig_solver)        # 라이브러리 레벨 강제(임의 solver 우회 차단)
         micom = self._load()
         from cmig.io.model_cache import ModelFileCache
+
+        # MICOM 0.39 constructs member-pool coefficients as +/- abundance, discarding an
+        # arbitrary original exchange magnitude. Reject such inputs before a solve can claim
+        # a physically balanced community; never rewrite source GEMs or MICOM internals.
+        if "file" in getattr(taxonomy, "columns", ()):
+            from cmig.core.exchange import exchange_identity
+            from cmig.io.model_import import load_cobra_model
+
+            for filename in sorted(set(str(value) for value in cast(Any, taxonomy)["file"])):
+                file_stat = Path(filename).stat()
+                validation_key = (filename, file_stat.st_size, file_stat.st_mtime_ns)
+                if validation_key in self._validated_exchange_files:
+                    continue
+                model = load_cobra_model(filename)
+                for reaction in model.exchanges:
+                    identity = exchange_identity(reaction)
+                    if not math.isclose(abs(identity.coefficient), 1.0, abs_tol=1e-12):
+                        raise ValueError(
+                            f"MICOM 0.39 cannot preserve non-unit input exchange stoichiometry: "
+                            f"{filename}: {reaction.id} coefficient={identity.coefficient}"
+                        )
+                self._validated_exchange_files.add(validation_key)
 
         if self._model_files is None:
             self._model_files = ModelFileCache()
@@ -236,6 +265,7 @@ class MicomEngine:
         try:
             return self._solve_result_from_solution(
                 sol,
+                community=community,
                 cmig_solver=cmig_solver,
                 flux_normalization=flux_normalization,
                 solve_warnings=solve_warnings,
@@ -252,6 +282,7 @@ class MicomEngine:
         self,
         sol: Any,
         *,
+        community: Any,
         cmig_solver: str,
         flux_normalization: str = "pfba",
         solve_warnings: list[str] | None = None,
@@ -275,22 +306,82 @@ class MicomEngine:
         }
         missing = [m for m in member_ids if m not in members_df.index]
 
-        # external profile: medium 행, EX_*_m 컬럼 (net 환경 exchange).
+        from cmig.core.exchange import exchange_identity
+
+        if self.micom_version != "0.39.0":
+            raise ValueError("MICOM topology readout requires pinned micom==0.39.0")
+        # MICOM 0.39 global_id/community_id and pool coefficients are the supported shape
+        # adapter. The flux table is per-member biomass; divide the pool coefficient by the
+        # actual abundance before returning a per-member amount. Tidy weights it once.
         external: dict[str, float] = {}
         if "medium" in fluxes.index:
-            for col in fluxes.columns:
-                if col.startswith("EX_") and col.endswith("_m"):
-                    v = float(fluxes.loc["medium", col])
-                    external[_met_from_exchange(col, "_m")] = v
+            for reaction in community.exchanges:
+                identity = exchange_identity(reaction)
+                key = str(getattr(reaction, "global_id", reaction.id))
+                if key not in fluxes.columns:
+                    raise ValueError(f"MICOM flux table omitted environmental reaction {key}")
+                v = float(fluxes.loc["medium", key])
+                if not math.isfinite(v):
+                    raise ValueError(f"MICOM flux table has nonfinite environmental flux {key}")
+                external[identity.metabolite] = (
+                    external.get(identity.metabolite, 0.0) + identity.signed_environment(v)
+                )
 
         # per-member exchange: 각 taxon 행, EX_*_e 컬럼 (멤버↔pool).
         member_exchange: dict[str, dict[str, float]] = {}
-        for m in member_ids:
-            row: dict[str, float] = {}
-            for col in fluxes.columns:
-                if col.startswith("EX_") and col.endswith("_e"):
-                    row[_met_from_exchange(col, "_e")] = float(fluxes.loc[m, col])
-            member_exchange[m] = row
+        member_exchange = {m: {} for m in member_ids}
+        for reaction in community.reactions:
+            member = str(getattr(reaction, "community_id", ""))
+            if member not in member_exchange or reaction in community.exchanges:
+                continue
+            pool = [(met, float(c)) for met, c in reaction.metabolites.items()
+                    if str(getattr(met, "compartment", "")) == "m"]
+            if not pool:
+                continue
+            if len(pool) != 1 or len(reaction.metabolites) != 2:
+                raise ValueError(f"unsupported MICOM member-pool exchange topology: {reaction.id}")
+            met, coefficient = pool[0]
+            if not math.isfinite(coefficient) or coefficient == 0:
+                raise ValueError(f"invalid MICOM pool coefficient: {reaction.id}")
+            key = str(getattr(reaction, "global_id", ""))
+            if not key or key not in fluxes.columns:
+                raise ValueError(f"MICOM flux table omitted member exchange {reaction.id} ({key})")
+            value = float(fluxes.loc[member, key])
+            if not math.isfinite(value):
+                raise ValueError(f"MICOM flux table has nonfinite member exchange {reaction.id}")
+            abundance = abundances.get(member)
+            if abundance is None or not math.isfinite(abundance) or abundance <= 0:
+                raise ValueError(f"MICOM member abundance unavailable for {member}")
+            met_id = str(met.id)
+            if not met_id.endswith("_m"):
+                raise ValueError(f"MICOM shared-pool identity unresolved: {reaction.id}: {met_id}")
+            nutrient = met_id[:-2]
+            row = member_exchange[member]
+            row[nutrient] = row.get(nutrient, 0.0) + coefficient * value / abundance
+
+        from cmig.core.boundary import boundary_reactions, is_pseudo_supply
+
+        boundary_supply: dict[str, float] = {}
+        boundary_supply_basis: dict[str, str] = {}
+        for reaction in boundary_reactions(community):
+            if is_pseudo_supply(reaction):
+                continue
+            identity = exchange_identity(reaction)
+            member = str(getattr(reaction, "community_id", "medium"))
+            key = str(getattr(reaction, "global_id", reaction.id))
+            if member not in fluxes.index or key not in fluxes.columns:
+                raise ValueError(
+                    f"MICOM flux table omitted boundary flux {reaction.id} ({member}, {key})"
+                )
+            value = float(fluxes.loc[member, key])
+            if not math.isfinite(value):
+                raise ValueError(f"MICOM boundary flux is nonfinite: {reaction.id}")
+            rate = identity.uptake(value)
+            if rate > 1e-9:
+                boundary_supply[str(reaction.id)] = rate
+                boundary_supply_basis[str(reaction.id)] = (
+                    "community_biomass" if member == "medium" else f"member_biomass:{member}"
+                )
 
         # solver 분리 기록 (§4.2 [SOLVER-SPLIT]).
         growth_solver, flux_solver, flux_report = _solver_split(cmig_solver)
@@ -334,4 +425,7 @@ class MicomEngine:
             members=member_ids,
             warnings=list(solve_warnings or []),
             flux_normalization_method=flux_normalization,
+            boundary_supply=boundary_supply,
+            boundary_supply_basis=boundary_supply_basis,
+            boundary_supply_complete=True,
         )

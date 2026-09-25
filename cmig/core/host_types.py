@@ -598,10 +598,16 @@ def _uptake_fva_ranges(
         fraction_of_optimum=1.0,
     )
     ranges: dict[str, tuple[float, float]] = {}
+    from cmig.core.exchange import exchange_identity
+
     for reaction_id in sorted(exchange_ids):
         minimum = float(table.loc[reaction_id, "minimum"])
         maximum = float(table.loc[reaction_id, "maximum"])
-        ranges[reaction_id] = (max(0.0, -maximum), max(0.0, -minimum))
+        if not math.isfinite(minimum) or not math.isfinite(maximum):
+            raise ValueError(f"nonfinite objective-fixed FVA interval for {reaction_id}")
+        ranges[reaction_id] = exchange_identity(
+            model.reactions.get_by_id(reaction_id)
+        ).uptake_range(minimum, maximum)
     return ranges
 
 
@@ -616,17 +622,9 @@ def _identified_points(
 
 
 def _reaction_metabolite_id(host: Any, exchange_id: str) -> str:
-    try:
-        reaction = host.reactions.get_by_id(exchange_id)
-    except (AttributeError, KeyError):
-        return _met_from_host_exchange(exchange_id)
-    metabolite = _sole_metabolite(reaction)
-    if metabolite is None:
-        return _met_from_host_exchange(exchange_id)
-    value = str(metabolite.id)
-    compartment = str(getattr(metabolite, "compartment", "") or "")
-    suffix = f"_{compartment}" if compartment else ""
-    return value[: -len(suffix)] if suffix and value.endswith(suffix) else value
+    from cmig.core.exchange import exchange_identity
+
+    return exchange_identity(host.reactions.get_by_id(exchange_id)).metabolite
 
 
 def classify_host_exchanges(
@@ -664,6 +662,10 @@ def classify_host_exchanges(
         assignment = assignments.get(exchange_id)
         if assignment is None:
             continue
+        if host is not None:
+            from cmig.core.exchange import exchange_identity
+
+            flux = exchange_identity(host.reactions.get_by_id(exchange_id)).signed_environment(flux)
         signed = convert(flux, Scope.ENVIRONMENT)
         out.append(InterfaceFlux(
             exchange_id=exchange_id,

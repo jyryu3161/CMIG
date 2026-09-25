@@ -52,6 +52,13 @@ def _publish_mode(target: Path) -> int:
         return _DEFAULT_FILE_MODE
 
 
+def _set_descriptor_mode_if_supported(fd: int, mode: int) -> None:
+    """Keep POSIX file modes; Windows has no ``os.fchmod`` descriptor API."""
+    fchmod = getattr(os, "fchmod", None)
+    if fchmod is not None:
+        fchmod(fd, mode)
+
+
 def _sync_directory_best_effort(directory: Path) -> None:
     """Ask POSIX filesystems to persist a completed directory-entry update.
 
@@ -101,7 +108,7 @@ def atomic_write_binary(
             writer(handle)
             handle.flush()
             os.fsync(handle.fileno())
-            os.fchmod(handle.fileno(), mode)
+            _set_descriptor_mode_if_supported(handle.fileno(), mode)
         os.replace(tmp, target)
         _sync_directory_best_effort(target.parent)
     except BaseException:
@@ -149,7 +156,7 @@ def atomic_write_path(
         writer(tmp)
         with open(tmp, "rb") as handle:
             os.fsync(handle.fileno())
-            os.fchmod(handle.fileno(), mode)
+            _set_descriptor_mode_if_supported(handle.fileno(), mode)
         os.replace(tmp, target)
         _sync_directory_best_effort(target.parent)
     except BaseException:
@@ -176,7 +183,7 @@ def atomic_write_text(path: str | Path, text: str, *, encoding: str = "utf-8") -
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-            os.fchmod(handle.fileno(), mode)
+            _set_descriptor_mode_if_supported(handle.fileno(), mode)
         os.replace(tmp, target)
         _sync_directory_best_effort(target.parent)
     except BaseException:

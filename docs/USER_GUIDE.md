@@ -17,8 +17,9 @@ Contents:
 
 ## CLI For LLM Agents And Automation
 
-Every working GUI analysis surface has a matching CLI workflow. Agents should
-start by reading the machine-readable workflow map:
+The workflow map lists CLI routes for GUI analysis actions; it is a routing aid,
+not a guarantee that every CLI artifact can be reopened in every GUI view.
+Agents should start by reading it:
 
 ```bash
 uv run cmig workflows --format json
@@ -39,7 +40,8 @@ uv run cmig inspect-run --run-dir runs/search_butyrate --format json
 `host_microbe_bigg_summary.json`, `dfba_summary.json`, `spatial_summary.json`,
 and `manifest.json`, then reports the workflow kind, status, `run_hash`,
 `result_digest`, `artifact_integrity`, summary keys, and artifacts. This is the
-CLI counterpart to opening a run in the GUI Profile/Open Run view.
+CLI inspector for a run. GUI views read back their supported summaries and
+artifacts; an unsupported or malformed run is not a valid loaded view.
 
 ### Exit codes
 
@@ -93,13 +95,18 @@ Its payload (`schema_version 1.2`) reports `status` together with
 - **`run_hash` certifies the INPUTS.** Identical inputs give an identical hash. It
   does not certify the answer — the medium fix below changed published numbers
   under identical hashes by design.
-- **`result_digest` certifies the ANSWER**: it fingerprints the artifact bytes the
-  run wrote, including figures. `inspect-run` recomputes it and reports
+- **`result_digest` checks declared result artifacts**: it fingerprints the bytes
+  listed in that workflow's manifest, including declared figures. `inspect-run`
+  recomputes it and reports
   `artifact_integrity`. A mismatch flips `status` to `failed` and exits `3`.
 
 `result_digest` comes from the workflow manifest (13 workflow kinds).
 `cmig solve` writes the legacy solve manifest and therefore has no
 `result_digest` — `not recorded` on a fresh solve is expected.
+An integrity match establishes byte agreement with that manifest; it does not
+validate scientific interpretation or every unlisted file. GUI readback also
+checks that the selected summary has a usable schema, and reports unreadable
+readback separately from a matching digest.
 
 When the environment changes, run **both** gates:
 
@@ -382,8 +389,17 @@ different points from the Pareto archive.
 
 The GUI Search panel exposes medium (exact application), seed, evaluation budget,
 workers, target direction, multi-target metric/references, growth floors, timeout,
-checkpoint/resume, optional top validation and cancellation. Its CLI adapter uses
-the same `SearchRequest`/`SearchService` and provenance/output writer as the CLI.
+checkpoint/resume, optional top validation and cancellation for the main Search
+workflow. Strain Growth and Ratio use cooperative tradeoff; they do not inherit
+the main Search direction and growth controls. The active workflow's settings
+are frozen when launched, and later relevant edits invalidate or mark the
+displayed result as superseded. Search uses the CLI service and output writer.
+The GUI lists only supported figure files present for that loaded run, clears
+an absent or unreadable preview, and disables export for it. Its status bar
+keeps scientific outcome separate from artifact integrity; the details control
+shows the digest check or a readback error. A successful byte check cannot
+turn a malformed summary into a valid view. A failed job can still be opened
+for its diagnostic summary when its readback is valid.
 
 #### Compare GA policies before changing defaults
 
@@ -516,6 +532,22 @@ solution and independent slices controlled by `--pareto-resolution` (default 5).
 Physical secretion/uptake bounds are separate from direction-adjusted epsilon
 bounds, including mixed minimization/maximization objectives. The full sampled
 archive is saved as `search_pareto_archive.json`; `--top-k` only limits display.
+`search_evaluations.json` records individual baseline, capability, extreme and
+epsilon LP attempts separately from feasible points, including solver outcome
+and diagnostic. Per-target capability optima are separate LP solutions; their
+componentwise vector is not one jointly feasible achieved point.
+`search_summary.json` reports total attempted, resolved and failed LP counts
+plus candidate sampling states. The total includes both baselines, each
+independent target capability, every sampled slice and any minimization
+auxiliary; an ordinary two-target run has 20 attempts, including 16 sampling
+slices. Resolved means `optimal` or `infeasible`; failed means `timeout` or
+`error`. Other recorded outcomes can be in the total without entering either
+counter. An optimal point may remain usable after a later timeout or error; its
+candidate is `partial` and the run is `degraded`. An infeasible slice is a
+resolved attempt, while a candidate with no valid point is excluded from
+ranking. Pareto checkpoint histories under the earlier `attempt_ledger_v2`
+policy are incompatible even if they contain a ledger; start a new checkpoint
+path for the `attempt_ledger_v3` evaluation policy.
 This is **not** a complete continuous Pareto frontier, even with exhaustive
 consortium enumeration. Pareto GA uses feasible-solution front rank and crowding
 for community selection; scalar patience is disabled and budgets/generation caps
@@ -537,6 +569,16 @@ rows are `False`). It describes dominance among the one displayed joint vector
 per consortium — the `--multi-metric pareto` **mode** additionally performs the
 epsilon-constraint sweep and reports a larger trade-off set.
 
+The saved multi-target Ranking figure stacks positive contributions to the
+right of zero and negative contributions to the left. Its diamond marks the
+recorded signed total, not the sum of absolute bar lengths. The caption carries
+the full score unit and normalizer. For `normalized_weighted`, plotted bars
+include each target weight while `target_scores` retains its recorded
+pre-weight normalized value. A Pareto figure keeps report order and its
+caption says the score does not rank the sampled front. Single-target runs can
+also write Scatter; multi-target runs write Ranking only. GUI figure choices
+follow files actually present in the loaded run.
+
 Multi-target search writes a different artifact set from single-target search:
 `pool_taxonomy.csv`, `search_rankings.csv`, `search_summary.json`,
 `search_plot.svg`, `search_plot.tiff`, `pool_diagnostics.csv`, and
@@ -546,9 +588,9 @@ Multi-target search writes a different artifact set from single-target search:
 Read `search_unevaluated.csv` before the ranking: unevaluable candidates get no
 rank and are excluded from `top_ranked`, so absence from the ranking does not mean
 a low score. A common cause appears in the **`flux_basis`** column as
-`per_target_capability_not_simultaneous` — the combination can make each target
-individually but not all at once. (`diagnostic` holds the solver message beside it,
-and `missing_targets` names the target that failed.)
+`per_target_capability_not_simultaneous` — independent target optima must not be
+read as one achieved joint vector. The `diagnostic` field holds the solver
+message, and `missing_targets` names targets without an exchange.
 
 Note also that **`status: degraded` is the normal outcome** whenever any candidate is
 unevaluable — the measured `--target-preset scfa` run reported `degraded` purely
@@ -756,8 +798,18 @@ units. It requires explicit positive weights and `--host-reference` plus
 `--target-reference`, and ranks the resulting dimensionless normalized score.
 Use `target_transfer` or `objective_value` when no defensible reference scales
 exist. Check each row's `evaluation_status` and the summary's
-`n_candidates_failed`: a non-optimal host LP is published as NaN rather than a
-ranked `0.0`, and `host_search_unevaluated.csv` holds the excluded candidates.
+`n_candidates_failed`: a non-optimal host LP is excluded from ranking, with
+unavailable numeric fields blank in CSV or `null` in JSON rather than a
+ranked `0.0`. `host_search_unevaluated.csv` holds those candidates.
+
+Even with an optimal host objective, the requested target transfer can vary
+among alternative optima. In that case its point is JSON `null` or a blank CSV
+cell; consult `target_transfer_range`, identifiability and reason fields. A
+measured zero remains `0`. A transfer or weighted ranking needs an identified
+point, while an objective-value ranking can retain the optimal objective with
+an unknown transfer. A valid objective delta in `host-ko-impact` can coexist
+with an unknown target delta; its marginal transfer interval is conservative
+and does not claim a jointly feasible paired delta.
 
 ### 5b. Measure a microbial knockout's effect on the host
 
@@ -993,7 +1045,8 @@ and reviewed results are recorded in `docs/PUBLICATION_VALIDATION.md`.
 ## Medium Files
 
 Medium files are CSV (`exchange_id,uptake_limit`) or JSON, with `uptake_limit >= 0`
-an unsigned magnitude in **mmol gDW-1 h-1** applied as `lower_bound = -uptake_limit`.
+an unsigned magnitude in **mmol gDW-1 h-1** applied as a COBRA reaction-flux
+bound for the verified exchange orientation.
 Pass them with `--medium`, `--host-medium`, or `--microbe-medium` depending on the
 workflow.
 
@@ -1014,6 +1067,18 @@ hashed beside the medium checksum under workflow-manifest schema 1.2), so a merg
 and an exact run of the same file can never be confused. The default without the flag
 remains the overlay described above.
 
+Medium bounds retain COBRA reaction-flux units. Standalone dFBA and host
+coupling convert an exchange's signed reaction flux to physical metabolite
+amount for depletion, host availability and reported transfer, including
+reverse-oriented and non-unit one-metabolite exchanges. MICOM 0.39 community
+assembly uses version-specific pool/member identifiers and abundance-weighted
+coefficients; it cannot preserve arbitrary non-unit input exchange coefficients.
+CMIG rejects those community inputs before solving, while verified unit or
+reverse-unit exchanges remain supported. A renamed exchange is matched by
+metabolite topology, and ambiguous aliases or unmatched nutrients are errors.
+This MICOM adapter dependency is version-checked; it is not a documented stable
+MICOM public API.
+
 Presets live in `medium_presets/`. Prefer the literature-grounded gut overlays, which
 all name oxygen explicitly and carry a background-closure block:
 `gut_overlay_agora_western.csv` and `gut_overlay_agora_high_fiber.csv` (AGORA
@@ -1025,6 +1090,9 @@ per-model exchange coverage and the fibre-coverage limitation are recorded in
 `medium_presets/PROVENANCE_gut_media.md`; each row's origin is in
 `medium_presets/provenance_rows.csv`. Regenerate with
 `python -m scripts.build_gut_media`.
+The GUI loads copies of these presets and provenance from the installed package;
+the source-checkout CLI paths shown here are working-directory-relative and
+should be replaced with explicit file paths outside this repository.
 
 Since round 8, every generated gut-overlay row also carries a `row_role`
 annotation (`nutrient` or `pool_closure`; loaders ignore extra columns). The
@@ -1089,12 +1157,18 @@ Two further rules:
 CMIG records solver choice and flux provenance in run outputs so cached or
 published results can be interpreted correctly.
 
-`uv run cmig solvers` also reports `highs` as available, but no command's
-`--solver` accepts it: the choices are `{gurobi, osqp}` for `solve`, `dfba`,
+`uv run cmig solvers` reports package presence and COBRA/optlang interface
+availability separately. Installing `highspy` alone does not make native HiGHS
+available, and no command's `--solver` accepts it: the choices are
+`{gurobi, osqp}` for `solve`, `dfba`,
 `dfba-sensitivity` and `sandbox-fixture`, and `{gurobi}` only for `search`,
 `strain-growth`, `abundance-impact`, `gene-ko-search`, `model-quality`,
 `publication-benchmark` and the host workflows. Availability in the matrix is not
 selectability.
+Gurobi package/adapter availability does not establish a valid license; run a
+small solve to verify that prerequisite. OSQP community results are labelled
+approximate and do not provide the full member flux vector required by the
+Gurobi-only paths.
 
 ## Reading `edges.parquet`
 
@@ -1137,9 +1211,10 @@ line. Edge width in the interaction figures uses the same community basis.
   demand under the same rule).
 - Host-microbe coupling maps authoritative metabolite annotations where available,
   but publication use still requires review of the generated interface map.
-- dFBA currently supports well-mixed single-model simulations. Full spatial
-  community dFBA with biomass propagation, extracellular reactions, and
-  evolution-like COMETS modules is out of scope for the current CMIG engine.
+- dFBA supports well-mixed single-model and experimental well-mixed community
+  simulations through `dfba-community`. Death/washout and full spatial
+  community dFBA with per-cell FBA or evolution-like COMETS modules remain out
+  of scope.
 - `spatial-preview` models diffusion/source/sink media design only; it does not
   solve FBA on every grid cell.
 - The GUI has been tested in offscreen mode; final manual desktop QA may still
@@ -1161,13 +1236,12 @@ line. Edge width in the interaction figures uses the same community basis.
   `--multi-metric pareto` mode share one dominance implementation but keep their
   distinct solve semantics (displayed vectors vs epsilon sweep).
 - Atomic writes (staged same-directory tempfile + fsync + `os.replace`, with
-  best-effort parent-directory sync on POSIX) cover text artifacts and, since
-  round 8, every Parquet writer and every matplotlib figure writer. Atomicity is
-  per file: a crash between the files of a multi-file set can still leave a
-  mixed set.
-- Well-mixed community dFBA (`cmig.core.dfba_community.run_community_dfba`) is a
-  library-level prototype: Gurobi-only (it needs full member-level pFBA fluxes),
-  death/washout not modeled, no CLI surface yet.
+  best-effort parent-directory sync on POSIX) cover CMIG's atomic text,
+  Parquet and matplotlib writers. Search uses a separate guarded run-level
+  transaction. Do not infer whole-directory atomicity for every other workflow
+  from a per-file writer or from a matching result digest.
+- Well-mixed community dFBA is exposed as `cmig dfba-community`: Gurobi-only
+  (it needs full member-level pFBA fluxes), with death/washout not modeled.
 
 ## Repository Layout
 

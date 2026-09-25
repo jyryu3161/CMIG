@@ -13,7 +13,6 @@ from cmig.core.boundary import (
     boundary_reactions,
     close_boundary_supply,
     mass_supplying_boundary,
-    set_supply_limit,
 )
 from cmig.core.host_types import (
     DEFAULT_BIGG_COUPLING_EXCLUDE,
@@ -26,7 +25,6 @@ from cmig.core.host_types import (
     _bigg_exchange_id,
     _coupling_scale,
     _identified_points,
-    _met_from_bigg_exchange,
     _uptake_fva_ranges,
     classify_host_interfaces,
     reviewed_interface_entries,
@@ -219,10 +217,6 @@ def solve_bigg_host(
                 tuple(item.as_dict() for item in assignment.evidence),
             )
 
-        host_exchange_to_metabolite = {
-            exchange_id: metabolite
-            for metabolite, exchange_id in normalized_interface.items()
-        }
         # Round 6 (track B, instance 2 / R6-CC-9): this used to iterate `host.exchanges`, which
         # excludes sinks and demands. On Recon3D that left 95 boundary reactions at
         # `lower_bound = -1000` — unbounded intracellular mass sources — and the published host
@@ -382,7 +376,10 @@ def solve_bigg_host(
         for reaction_id, availability in exchange_availability.items():
             # Same arithmetic as before for a `met -->` exchange; correct (upper_bound) for a
             # boundary reaction written the other way round, which the old line inverted.
-            set_supply_limit(host.reactions.get_by_id(reaction_id), availability)
+            from cmig.core.exchange import exchange_identity
+
+            reaction = host.reactions.get_by_id(reaction_id)
+            exchange_identity(reaction).set_physical_uptake_limit(reaction, availability)
         if close_unlisted_uptake and isolation_record is not None:
             isolation_record["n_open_suppliers"] = len(exchange_availability)
 
@@ -409,10 +406,19 @@ def solve_bigg_host(
             float(coefficient) * fluxes.get(reaction.id, 0.0)
             for reaction, coefficient in coefficients.items()
         )
-        total_ranges = _uptake_fva_ranges(host, sorted(set(matched.values())))
+        try:
+            total_ranges = _uptake_fva_ranges(host, sorted(set(matched.values())))
+        except Exception as error:  # noqa: BLE001 - preserve the already optimal objective
+            total_ranges = {}
+            isolation_warnings.append(
+                f"objective-fixed host uptake FVA unavailable: {type(error).__name__}: {error}; "
+                "target transfer cannot be point identified"
+            )
         microbial_ranges: dict[str, tuple[float, float]] = {}
         for metabolite, reaction_id in sorted(matched.items()):
-            total_lower, total_upper = total_ranges.get(reaction_id, (0.0, 0.0))
+            if reaction_id not in total_ranges:
+                continue
+            total_lower, total_upper = total_ranges[reaction_id]
             microbial_cap = microbial_caps.get(metabolite, 0.0)
             lower = min(
                 microbial_cap,
@@ -426,13 +432,15 @@ def solve_bigg_host(
         interface_fluxes: list[InterfaceFlux] = []
         for reaction_id in sorted(exchange_ids):
             flux = fluxes.get(reaction_id, 0.0)
-            signed = convert(flux, Scope.ENVIRONMENT)
+            from cmig.core.exchange import exchange_identity
+
+            physical_flux = exchange_identity(
+                host.reactions.get_by_id(reaction_id)
+            ).signed_environment(flux)
+            signed = convert(physical_flux, Scope.ENVIRONMENT)
             if signed.label is None:
                 continue
-            metabolite = host_exchange_to_metabolite.get(
-                reaction_id,
-                _met_from_bigg_exchange(reaction_id, suffix=exchange_suffix),
-            )
+            metabolite = exchange_identity(host.reactions.get_by_id(reaction_id)).metabolite
             reviewed_for_exchange = reviewed_by_exchange.get(reaction_id)
             assignment = inferred_by_exchange.get(reaction_id)
             if reviewed_for_exchange is not None and reviewed_for_exchange.interface is None:
@@ -451,7 +459,7 @@ def solve_bigg_host(
                     exchange_id=reaction_id,
                     interface=interface,
                     metabolite=metabolite,
-                    flux=flux,
+                    flux=physical_flux,
                     label=signed.label.value,
                     evidence=evidence,
                 )

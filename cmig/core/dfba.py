@@ -130,6 +130,11 @@ class DfbaResult:
     untracked_uptake: dict[str, float] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
+    @property
+    def untracked_uptake_basis(self) -> dict[str, str]:
+        """Every standalone boundary rate uses this model's biomass denominator."""
+        return dict.fromkeys(self.untracked_uptake, "model_biomass")
+
 
 @dataclass(frozen=True)
 class DfbaBalanceAudit:
@@ -272,12 +277,24 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
         from cmig.core.single_model import set_model_solver
         set_model_solver(model, solver)
 
+        if config.close_untracked_uptake and not _exposes_exchanges(model):
+            raise ValueError(
+                "--close-untracked-uptake needs a model exposing .boundary; "
+                "this model does not, so untracked uptake cannot be closed"
+            )
+
         managed = list(config.initial_concentrations)
-        # vmax 기본 = 모델 exchange |lower_bound| (정의된 최대 흡수율)
+        from cmig.core.boundary import supply_capacity
+        from cmig.core.exchange import exchange_identity
+
+        identities = {ex: exchange_identity(model.reactions.get_by_id(ex)) for ex in managed}
+        # Configured vmax and concentrations are physical metabolite amounts; model medium
+        # and boundary bounds remain raw reaction-flux magnitudes.
         vmax = dict(config.vmax) if config.vmax else {}
         for ex in managed:
             if ex not in vmax:
-                vmax[ex] = abs(model.reactions.get_by_id(ex).lower_bound)
+                reaction = model.reactions.get_by_id(ex)
+                vmax[ex] = supply_capacity(reaction) * abs(identities[ex].coefficient)
         # A secretion-only exchange (bounds (0, 1000)) yields vmax 0. Tracking such an exchange
         # from 0 to record a *product* is fine; tracking it with a positive initial amount
         # means a substrate the organism can never import, which silently stays constant.
@@ -290,12 +307,6 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
         # substrate/Km experiment is actually controlled rather than merely instrumented.
         closed_untracked: list[str] = []
         if config.close_untracked_uptake:
-            if not _exposes_exchanges(model):
-                # Silently not closing them would report a controlled experiment that never was.
-                raise ValueError(
-                    "--close-untracked-uptake needs a model exposing .boundary; "
-                    "this model does not, so untracked uptake cannot be closed"
-                )
             from cmig.core.boundary import close_boundary_supply
 
             # Against `model.boundary`, so a sink or demand cannot feed the run behind the
@@ -315,7 +326,7 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
             for ex in managed:
                 s = max(conc[ex], 0.0)
                 uptake = vmax[ex] * s / (config.km + s) if s > 0 else 0.0
-                model.reactions.get_by_id(ex).lower_bound = -uptake
+                identities[ex].set_physical_uptake_limit(model.reactions.get_by_id(ex), uptake)
             # (2) FBA
             sol = model.optimize()
             if sol.status != "optimal":
@@ -337,9 +348,14 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
             # (3) explicit Euler + non-negativity (농도<0 이면 dt halving)
             step_dt = min(dt, config.t_end - t)
             growth_scale = 1.0
+            physical_flux = {
+                ex: identities[ex].signed_environment(float(sol.fluxes[ex]))
+                for ex in managed
+            }
             while step_dt >= config.min_dt:
                 new_conc = {
-                    ex: conc[ex] + float(sol.fluxes[ex]) * biomass * step_dt for ex in managed
+                    ex: conc[ex] + physical_flux[ex] * biomass * step_dt
+                    for ex in managed
                 }
                 if all(v >= -1e-9 for v in new_conc.values()):  # non-negativity OK
                     break
@@ -350,7 +366,7 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
                 step_dt = min(config.min_dt, config.t_end - t)
                 fractions = []
                 for ex in managed:
-                    flux = float(sol.fluxes[ex])
+                    flux = physical_flux[ex]
                     # Solver noise on a depleted exchange (bound -0.0, flux -1e-12) is not
                     # consumption; counting it made 0/1e-15 = 0 freeze growth entirely.
                     if flux >= -_CLAMP_FLUX_TOLERANCE:
@@ -360,14 +376,13 @@ def simulate_dfba(model: Any, config: DfbaConfig, *, solver: str = "gurobi") -> 
                         fractions.append(max(0.0, min(1.0, conc[ex] / required)))
                 growth_scale = min(fractions) if fractions else 1.0
                 new_conc = {
-                    ex: max(conc[ex] + float(sol.fluxes[ex]) * biomass * step_dt * growth_scale,
-                            0.0)
+                    ex: max(conc[ex] + physical_flux[ex] * biomass * step_dt * growth_scale, 0.0)
                     for ex in managed
                 }
             conc = {ex: max(v, 0.0) for ex, v in new_conc.items()}
             effective_mu = mu * growth_scale
             effective_fluxes = {
-                ex: float(sol.fluxes[ex]) * growth_scale for ex in managed
+                ex: physical_flux[ex] * growth_scale for ex in managed
             }
             biomass = biomass + effective_mu * biomass * step_dt
             t += step_dt

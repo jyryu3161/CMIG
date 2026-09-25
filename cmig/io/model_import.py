@@ -10,7 +10,7 @@ exchange/biomass 탐지 + reaction/metabolite/gene 카운트 → Model Manager �
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,7 @@ class ModelSummary:
     n_genes: int
     exchanges: list[str]
     biomass_reactions: list[str]
+    exchange_metabolites: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -38,6 +39,7 @@ class ModelSummary:
             "source_path": self.source_path, "n_reactions": self.n_reactions,
             "n_metabolites": self.n_metabolites, "n_genes": self.n_genes,
             "n_exchanges": len(self.exchanges),
+            "exchange_metabolites": dict(self.exchange_metabolites),
             # A-B9: this counts objective TERMS. Kept under the old key for compatibility, but
             # the honest name is emitted alongside it and a >1 count carries a warning.
             "n_biomass": len(self.biomass_reactions),
@@ -257,6 +259,15 @@ def import_model(path: str | Path) -> ModelSummary:
     fmt = detect_model_format(p)
     model = load_cobra_model(p)
     exchanges = sorted(str(r.id) for r in model.exchanges)
+    from cmig.core.exchange import exchange_identity
+
+    try:
+        exchange_metabolites = {
+            str(reaction.id): exchange_identity(reaction).metabolite
+            for reaction in model.exchanges
+        }
+    except ValueError as error:
+        raise ModelImportError(f"invalid model exchange identity ({p.name}): {error}") from error
     try:
         biomass_reactions = _biomass_reactions(model)
     except Exception as e:                       # noqa: BLE001 - optlang/cobra expose open sets
@@ -273,6 +284,7 @@ def import_model(path: str | Path) -> ModelSummary:
         n_genes=len(model.genes),
         exchanges=exchanges,
         biomass_reactions=biomass_reactions,
+        exchange_metabolites=exchange_metabolites,
     )
 
 
@@ -282,6 +294,8 @@ def exchange_metabolite_ids(summary: ModelSummary) -> list[str]:
     `EX_ac_e` → `ac`, `EX_glc__D_m` → `glc__D`처럼 흔한 exchange prefix/suffix를 제거한다.
     """
     out: list[str] = []
+    if summary.exchange_metabolites:
+        return sorted(set(summary.exchange_metabolites.values()))
     suffixes = ("_e", "_m", "_lumen", "_blood")
     for ex in summary.exchanges:
         name = ex[3:] if ex.startswith("EX_") else ex

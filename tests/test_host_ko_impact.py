@@ -51,8 +51,12 @@ def _arm(
         host_viable=host_objective > 0,
         host_objective=host_objective,
         target_transfer=transfer,
-        microbe_to_host=dict(microbe_to_host or {}),
+        # These pure arithmetic fixtures explicitly assert structural zeros; production sparse
+        # point maps never infer them from a missing key.
+        microbe_to_host={"etoh": 0.0, "ac": 0.0, **(microbe_to_host or {})},
         matched_exchanges=dict(matched if matched is not None else {"etoh": "EX_etoh_lumen"}),
+        target_transfer_range=(transfer, transfer),
+        target_identifiability="identified",
     )
 
 

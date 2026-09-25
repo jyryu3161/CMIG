@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Release-version alignment guard (docs/release-drafts/0.2.0-version-alignment.md).
 
-Standard library only. Reads every public version surface, prints each
+Reads every public version surface, prints each
 source/value pair, and fails when they disagree. On a ``vX.Y.Z`` tag (pass the
 tag as argv[1] or set GITHUB_REF_NAME) it additionally requires the tag, every
 metadata value, and the finalized changelog heading to equal ``X.Y.Z`` and a
@@ -16,20 +16,23 @@ import re
 import sys
 from pathlib import Path
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def _pyproject_version() -> str:
-    data = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     return str(data["project"]["version"])
 
 
 def _package_version() -> str:
     # cmig/__init__.py must stay importable without solver/GUI extras; read the
     # literal instead of importing to keep this guard dependency-free.
-    text = (ROOT / "cmig" / "__init__.py").read_text()
+    text = (ROOT / "cmig" / "__init__.py").read_text(encoding="utf-8")
     match = re.search(r'^__version__\s*=\s*"([^"]+)"', text, re.MULTILINE)
     if not match:
         raise SystemExit("cmig/__init__.py: __version__ literal not found")
@@ -39,7 +42,7 @@ def _package_version() -> str:
 def _citation() -> tuple[str, str | None]:
     version = None
     released = None
-    for line in (ROOT / "CITATION.cff").read_text().splitlines():
+    for line in (ROOT / "CITATION.cff").read_text(encoding="utf-8").splitlines():
         if line.startswith("version:"):
             version = line.split(":", 1)[1].strip().strip('"')
         elif line.startswith("date-released:"):
@@ -50,7 +53,7 @@ def _citation() -> tuple[str, str | None]:
 
 
 def _zenodo_version() -> str:
-    data = json.loads((ROOT / ".zenodo.json").read_text())
+    data = json.loads((ROOT / ".zenodo.json").read_text(encoding="utf-8"))
     version = data.get("version")
     if not version:
         raise SystemExit(".zenodo.json: top-level version missing")
@@ -58,12 +61,12 @@ def _zenodo_version() -> str:
 
 
 def _marketplace_version() -> str:
-    data = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
+    data = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
     return str(data["metadata"]["version"])
 
 
 def _lock_version() -> str:
-    data = tomllib.loads((ROOT / "uv.lock").read_text())
+    data = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
     for package in data.get("package", []):
         if package.get("name") == "cmig":
             return str(package["version"])
@@ -73,7 +76,7 @@ def _lock_version() -> str:
 def _changelog_heading_version() -> str | None:
     """First finalized release heading. An empty `[Unreleased]` section above it is
     standard Keep-a-Changelog structure and is skipped, not treated as unfinalized."""
-    for line in (ROOT / "CHANGELOG.md").read_text().splitlines():
+    for line in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").splitlines():
         match = re.match(r"## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}", line)
         if match:
             return match.group(1)
@@ -99,7 +102,7 @@ def main() -> int:
 
     if re.fullmatch(r"v\d+\.\d+\.\d+", tag):
         release = tag[1:]
-        print(f"  tag {tag} → release build checks for {release}")
+        print(f"  tag {tag} -> release build checks for {release}")
         if distinct != [release]:
             print(f"tag {tag} does not match metadata {distinct}", file=sys.stderr)
             ok = False

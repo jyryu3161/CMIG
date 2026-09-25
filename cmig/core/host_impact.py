@@ -8,6 +8,7 @@ Design Ref: §12 (host impact) / cmig-host.design. Plan SC: SC-HI1~HI3.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TypeVar
@@ -31,6 +32,37 @@ def _lookup_by_metabolite(mapping: Mapping[str, _V], metabolite: str) -> _V | No
         if _normalize_metabolite_id(str(key)) == wanted:
             return value
     return None
+
+
+def identified_transfer_point(
+    points: Mapping[str, float | None],
+    ranges: Mapping[str, tuple[float, float] | list[float]],
+    metabolite: str,
+) -> float | None:
+    """Read a point only from a finite collapsed interval or an unopposed legacy point.
+
+    Positive-only transfer maps omit measured zero. A present broad or invalid interval
+    takes precedence over a point assertion, because it cannot identify one value.
+    """
+    interval = _lookup_by_metabolite(ranges, metabolite)
+    if interval is not None:
+        try:
+            if len(interval) != 2:
+                return None
+            low, high = float(interval[0]), float(interval[1])
+        except (TypeError, ValueError, IndexError):
+            return None
+        if not (math.isfinite(low) and math.isfinite(high) and 0 <= high - low <= 1e-6):
+            return None
+        return (low + high) / 2.0
+    point = _lookup_by_metabolite(points, metabolite)
+    if point is None:
+        return None
+    try:
+        value = float(point)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 @dataclass(frozen=True)
@@ -74,7 +106,11 @@ def host_impact(
             lower = min(secreted, max(0.0, float(raw_lower)))
             upper = min(secreted, max(lower, float(raw_upper)))
         else:
-            point = min(secreted, abs(_lookup_by_metabolite(host_uptake, met) or 0.0))
+            uptake = _lookup_by_metabolite(host_uptake, met)
+            if uptake is None:
+                # Sparse positive-only uptake data is not evidence for a zero transfer.
+                continue
+            point = min(secreted, abs(uptake))
             lower = upper = point
         crossing_ranges[met] = (lower, upper)
         unused_ranges[met] = (max(0.0, secreted - upper), max(0.0, secreted - lower))

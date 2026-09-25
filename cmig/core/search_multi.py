@@ -24,6 +24,7 @@ from cmig.core.search_product import (
     _iter_candidate_combinations,
     _json_safe,
     _multi_target_warnings,
+    _pareto_attempt_summary,
     _pareto_points_for_members,
     choose_strategy,
     count_candidate_combinations,
@@ -372,6 +373,13 @@ def run_multi_search(
             "sampled Pareto approximation with objective extremes; not a complete "
             "continuous front. rank is reporting order, not a best-producer claim"
         )
+    attempts, states = (
+        _pareto_attempt_summary(capabilities, cache) if config.metric == "pareto" else ([], {})
+    )
+    if any(state == "partial" for state in states.values()):
+        warnings.append(
+            "Pareto sampling is partial; retained feasible points exclude unresolved slices"
+        )
     return MultiTargetSearchResult(
         targets=config.targets,
         target_exchanges={spec.metabolite: spec.exchange_id() for spec in specs},
@@ -392,4 +400,6 @@ def run_multi_search(
         evaluations=all_rows,
         ga_metadata=metadata,
         normalization_ranges=ranges,
+        pareto_attempts=attempts,
+        candidate_sampling_status=states,
     )

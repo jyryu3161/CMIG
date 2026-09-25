@@ -260,9 +260,17 @@ def model_exchange_index(model: object) -> dict[str, str]:
     ``model.medium`` lists only currently-open uptakes, so it cannot be used to decide whether a
     nutrient is offerable; a closed exchange can still be opened by a medium.
     """
+    from cmig.core.exchange import exchange_identity
+
     index: dict[str, str] = {}
     for reaction in getattr(model, "exchanges", []):
-        index.setdefault(exchange_metabolite(str(reaction.id)), str(reaction.id))
+        identity = exchange_identity(reaction)
+        previous = index.setdefault(identity.metabolite, str(reaction.id))
+        if previous != str(reaction.id):
+            raise ValueError(
+                f"ambiguous exchange index for {identity.metabolite}: "
+                f"{sorted([previous, str(reaction.id)])}"
+            )
     return index
 
 
@@ -317,12 +325,31 @@ def translate_medium_for_model(model: object, spec: MediumSpec) -> MediumTransla
     limits are a contradictory input and are refused — never silently resolved in favour of one.
     """
     spec.validate()
-    index = model_exchange_index(model)
+    from cmig.core.exchange import exchange_identity
+
+    candidates: dict[str, list[str]] = {}
+    by_id: dict[str, str] = {}
+    for reaction in getattr(model, "exchanges", []):
+        identity = exchange_identity(reaction)
+        candidates.setdefault(identity.metabolite, []).append(identity.reaction_id)
+        by_id[identity.reaction_id] = identity.metabolite
     mapping: dict[str, str] = {}
     requested: dict[str, dict[str, float]] = {}
     unmatched: list[str] = []
     for source_exchange, limit in spec.uptake.items():
-        target = index.get(exchange_metabolite(str(source_exchange)))
+        source = str(source_exchange)
+        nutrient = by_id.get(source, exchange_metabolite(source))
+        matches = candidates.get(nutrient, [])
+        if source in matches:
+            target = source
+        elif len(matches) == 1:
+            target = matches[0]
+        elif len(matches) > 1:
+            raise ValueError(
+                f"ambiguous medium exchange {source!r} for {nutrient}: {sorted(matches)}"
+            )
+        else:
+            target = None
         if target is None:
             unmatched.append(str(source_exchange))
             continue
@@ -359,10 +386,17 @@ def effective_medium_by_metabolite(model: object) -> dict[str, float]:
     Namespace-free, so a community (`_m`) and a member model (`_e`) become directly comparable.
     """
     medium = dict(getattr(model, "medium", {}) or {})
-    return {
-        exchange_metabolite(str(exchange)): float(limit)
-        for exchange, limit in medium.items()
-    }
+    from cmig.core.exchange import exchange_identity
+
+    by_id = {str(reaction.id): exchange_identity(reaction).metabolite
+             for reaction in getattr(model, "exchanges", [])}
+    result: dict[str, float] = {}
+    for exchange, limit in medium.items():
+        nutrient = by_id.get(str(exchange))
+        if nutrient is None:
+            raise ValueError(f"effective medium exchange missing from model: {exchange}")
+        result[nutrient] = result.get(nutrient, 0.0) + float(limit)
+    return result
 
 
 def apply_medium_translated(

@@ -116,9 +116,15 @@ def _optimize_target(community: Any) -> Any:
 
 
 @timed("baseline")
-def _community_growth_star(community: Any) -> float:
+def _community_growth_star(
+    community: Any, *, on_solution: Any = None, on_start: Any = None
+) -> float:
     """μ_c* = 최대 community growth. target-max growth floor 의 기준값."""
+    if on_start is not None:
+        on_start()
     sol = community.optimize()
+    if on_solution is not None:
+        on_solution(sol)
     if sol is None:
         raise ValueError("community maximum-growth solve returned no solution")
     if str(sol.status) != "optimal":
@@ -510,6 +516,10 @@ def rank_consortia(
     """
     import itertools
 
+    from cmig.core.search_constraints import actual_members, validate_taxonomy
+
+    validate_taxonomy(taxonomy)
+
     ids = [str(x) for x in taxonomy["id"]]
     candidates: list[tuple[str, ...]] = []
     for k in sizes:
@@ -523,6 +533,7 @@ def rank_consortia(
     for members in candidates:
         sub = taxonomy[taxonomy["id"].isin(members)].copy()
         community = engine.build_community(sub, cmig_solver=solver)
+        actual_members(community, members)
         res = target_max_solve(community, spec, growth_fraction=growth_fraction, solver=solver)
         ranked.append(RankedConsortium(
             members=members, score=score_target_result(res, spec),

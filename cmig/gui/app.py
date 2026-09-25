@@ -14,18 +14,23 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import shutil
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from PySide6.QtCore import QObject, QStandardPaths, Qt, QTimer
+from PySide6.QtCore import QEventLoop, QObject, QStandardPaths, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
     QHeaderView,
+    QLabel,
     QMainWindow,
+    QMessageBox,
+    QPushButton,
     QSplitter,
     QStackedWidget,
     QTableWidget,
@@ -43,6 +48,7 @@ from cmig.gui.builder import (
     SearchView,
     make_read_only,
     read_only_item,
+    validate_search_summary,
 )
 from cmig.gui.editors import MediumEditor, ModelManagerPanel
 from cmig.gui.graph_view import GateBadge, InteractionGraphView
@@ -696,6 +702,57 @@ def _finish_after_artifacts(ctx: Any) -> None:
     ctx.report_progress(1, 1)
 
 
+def _failed_search_artifacts(out_dir: Path, rc: int) -> dict[str, Any]:
+    """Keep a CLI failure's scientific ledger and directory with the failed job."""
+    summary_path = out_dir / "search_summary.json"
+    summary: dict[str, Any] = {}
+    if summary_path.is_file():
+        try:
+            loaded = json.loads(summary_path.read_text())
+            if isinstance(loaded, dict):
+                summary = loaded
+        except (OSError, ValueError):
+            pass
+    # A nonzero CLI outcome cannot become a scientific success even if a partial
+    # summary was written before the command failed.
+    summary["status"] = "failed"
+    summary.setdefault("top_ranked", [])
+    summary["cli_exit_code"] = rc
+    summary["output_dir"] = str(out_dir)
+    if rc == 2 and not summary.get("warnings"):
+        summary["warnings"] = [
+            "Invalid Search request (CLI exit 2). Check the model pool, target, medium "
+            "file, membership bounds and selected options; the exact output directory "
+            "is shown below."
+        ]
+    return summary
+
+
+def _search_input_diagnostic(model_dir: str, medium: str) -> str | None:
+    """Keep known CLI input errors when a failed transaction publishes no artifacts."""
+    try:
+        from cmig.core.model_pool import discover_model_files
+
+        discover_model_files(model_dir)
+    except (OSError, ValueError) as exc:
+        return str(exc)
+    if medium and not Path(medium).is_file():
+        return f"medium file not found: {medium}"
+    return None
+
+
+_SEARCH_CONDITION_KEYS = (
+    "solution_semantics", "metric", "directions", "weights",
+    "normalization_ranges", "ga_metadata", "effective_request", "effective_conditions",
+    "growth_fraction", "min_member_growth", "min_community_growth", "seed",
+    "target_scales", "ga_max_evaluations",
+)
+
+
+def _with_search_conditions(summary: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    return {**summary, **{key: source[key] for key in _SEARCH_CONDITION_KEYS if key in source}}
+
+
 def _search_temp_root() -> Path:
     """Return an OS-managed temp root for GUI search outputs."""
     candidates: list[Path] = []
@@ -785,7 +842,14 @@ class RuntimeJobsPanel(QTableWidget):
             if jid in cancelling and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
                 status = "cancelling (solver still running)"
             for col, text in enumerate([job.job_id, job.kind, status, progress]):
-                self.setItem(row, col, read_only_item(text))
+                item = read_only_item(text)
+                if job.error:
+                    item.setToolTip(job.error)
+                if isinstance(job.result, dict) and job.result.get("output_dir"):
+                    item.setToolTip(
+                        f"{job.error or status}\nOutput: {job.result['output_dir']}"
+                    )
+                self.setItem(row, col, item)
 
     def selected_job_id(self) -> str | None:
         row = self.currentRow()
@@ -934,6 +998,15 @@ class CmigMainWindow(QMainWindow):
         splitter.setSizes([200, 600, 250])
         self.setCentralWidget(splitter)
         self.statusBar().showMessage(self.tr_map["ready"])
+        self.integrity_label = QLabel("Integrity: no run loaded")
+        self.integrity_label.setToolTip("Artifact integrity is checked against the run manifest.")
+        self.statusBar().addPermanentWidget(self.integrity_label)
+        self._integrity_detail = "No run loaded."
+        self.integrity_details_btn = QPushButton("Integrity details")
+        self.integrity_details_btn.clicked.connect(
+            lambda: QMessageBox.information(self, "Artifact integrity", self._integrity_detail)
+        )
+        self.statusBar().addPermanentWidget(self.integrity_details_btn)
         self._install_workflow_actions()
         self._connect_view_actions()
         self.explorer.itemDoubleClicked.connect(self._open_explorer_item)
@@ -949,6 +1022,98 @@ class CmigMainWindow(QMainWindow):
 
     def _show_status(self, key: str, **values: Any) -> None:
         self.statusBar().showMessage(self._message(key, **values))
+
+    def _inspect_gui_run(self, run_dir: Path) -> dict[str, Any] | None:
+        """Strict manifest preflight around the CLI's shared digest inspector."""
+        from cmig.cli.main import _inspect_run_dir
+
+        manifest_path = run_dir / "manifest.json"
+        try:
+            manifest: dict[str, Any] = {}
+            if manifest_path.exists():
+                manifest = json.loads(manifest_path.read_text())
+                if not isinstance(manifest, dict):
+                    raise ValueError("manifest.json is not a JSON object")
+                if "provenance" in manifest and not isinstance(manifest["provenance"], dict):
+                    raise ValueError("manifest provenance must be an object")
+                if "manifest_scope" in manifest and not isinstance(
+                    manifest["manifest_scope"], str
+                ):
+                    raise ValueError("manifest_scope must be a string")
+                if manifest.get("manifest_scope") == "workflow":
+                    version = manifest.get("manifest_schema_version")
+                    if version is not None and not isinstance(version, str):
+                        raise ValueError("workflow manifest schema version must be a string")
+                    if ("manifest_schema_version" in manifest
+                            and not isinstance(manifest.get("workflow_kind"), str)):
+                        raise ValueError("workflow manifest has no workflow_kind")
+                    artifacts = manifest.get("artifacts")
+                    if ("manifest_schema_version" in manifest and (
+                        not isinstance(artifacts, list)
+                        or not all(isinstance(name, str) for name in artifacts)
+                    )):
+                        raise ValueError("workflow manifest artifacts must be a list of names")
+                    digest = manifest.get("result_digest")
+                    if version is not None:
+                        parts = version.split(".")
+                        if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
+                            raise ValueError("workflow manifest schema version is malformed")
+                        if (int(parts[0]), int(parts[1])) >= (1, 2) and digest is None:
+                            raise ValueError("modern workflow manifest has no result_digest")
+                    if digest is not None and (
+                        not isinstance(digest, dict)
+                        or not isinstance(digest.get("digest"), str)
+                        or not isinstance(digest.get("artifacts"), dict)
+                    ):
+                        raise ValueError("workflow manifest result_digest is malformed")
+            # Digests of large runs are I/O bound. A nested event loop keeps repaint,
+            # cancellation and window input live while a read-only worker hashes files.
+            declared = manifest.get("artifacts", []) if manifest_path.exists() else []
+            large = any(
+                (run_dir / name).stat().st_size > 16 * 1024 * 1024
+                for name in declared if isinstance(name, str) and (run_dir / name).is_file()
+            )
+            if large:
+                with ThreadPoolExecutor(max_workers=1) as inspector_pool:
+                    future = inspector_pool.submit(_inspect_run_dir, run_dir)
+                    loop = QEventLoop(self)
+                    timer = QTimer(self)
+                    timer.setInterval(50)
+                    timer.timeout.connect(lambda: loop.quit() if future.done() else None)
+                    timer.start()
+                    while not future.done():
+                        loop.exec()
+                    timer.stop()
+                    inspected = future.result()
+            else:
+                inspected = _inspect_run_dir(run_dir)
+            state = inspected["artifact_integrity"]
+            detail = ""
+            if state == "mismatch":
+                digest = inspected.get("result_digest") or {}
+                detail = "; changed=" + ", ".join(digest.get("changed_artifacts") or [])
+                detail += "; missing=" + ", ".join(digest.get("missing_artifacts") or [])
+            elif state == "not_recorded":
+                detail = f" ({inspected.get('result_digest_absent_reason')})"
+            self.integrity_label.setText(f"Integrity: {state}")
+            self._integrity_detail = f"Run: {run_dir}\nState: {state}{detail}"
+            self.integrity_label.setToolTip(self._integrity_detail)
+            return inspected
+        except Exception as exc:
+            self.integrity_label.setText("Integrity: invalid/unreadable")
+            self._integrity_detail = f"Run: {run_dir}\nInvalid or unreadable: {exc}"
+            self._show_status("status_run_load_failed", error=exc)
+            return None
+
+    def _reject_gui_summary(self, run_dir: Path, error: Exception | str) -> None:
+        """Report unreadable readback separately from the recorded byte digest."""
+        digest_state = self.integrity_label.text().removeprefix("Integrity: ")
+        self.integrity_label.setText("Readback: invalid/unreadable")
+        self._integrity_detail = (
+            f"Run: {run_dir}\nReadback: invalid/unreadable ({error})\n"
+            f"Artifact digest: {digest_state}"
+        )
+        self.integrity_label.setToolTip(self._integrity_detail)
 
     def closeEvent(self, event: Any) -> None:
         """Stop the GUI's timers and the job pool so closing the window ends the session.
@@ -1260,6 +1425,7 @@ class CmigMainWindow(QMainWindow):
         artifact = self.search_view.selected_figure_artifact()
         src = run_dir / artifact
         if not src.exists():
+            self.search_view.refresh_figure_mode()
             self.search_view.status.setText(f"Search figure artifact not found: {artifact}")
             return
         target, _ = QFileDialog.getSaveFileName(
@@ -1408,6 +1574,9 @@ class CmigMainWindow(QMainWindow):
         if (run_dir / "host_microbe_bigg_summary.json").exists():
             self.load_host_microbe_bigg_dir(run_dir)
             return
+        if (run_dir / "search_summary.json").exists():
+            self.load_search_dir(run_dir)
+            return
         manifest_path = run_dir / "manifest.json"
         if manifest_path.exists() and not (run_dir / "nodes.parquet").exists():
             # A *complete* run of a kind with no viewer here (search / sweep / strain-growth /
@@ -1416,15 +1585,40 @@ class CmigMainWindow(QMainWindow):
             # then cleared the run that *was* on screen — double-clicking a Search entry wiped
             # the community run. A directory without a manifest is still a failed load.
             kind = "unknown"
-            try:
-                kind = str(json.loads(manifest_path.read_text()).get("kind") or kind)
-            except (OSError, ValueError):
-                pass
+            inspected = self._inspect_gui_run(run_dir)
+            if inspected is None:
+                return
+            kind = str(inspected.get("kind") or kind)
+            if kind == "unknown":
+                legacy_manifest = json.loads(manifest_path.read_text())
+                kind = str(legacy_manifest.get("kind") or kind)
+            if kind in ("tidy", "community", "solve", "fixture"):
+                self._reject_gui_summary(run_dir, "missing essential nodes.parquet")
+                self.current_manifest = None
+                self.current_graph_payload = None
+                self.graph_view.clear()
+                self.graph_gate_badge.set_unavailable()
+                self.profile_view.load_profile([])
+                self.profile_view.load_targets(None)
+                self._show_status("status_run_load_failed", error="missing essential nodes.parquet")
+                return
             self._show_status("status_run_no_viewer", kind=kind, run_dir=run_dir)
+            return
+        inspected = self._inspect_gui_run(run_dir)
+        if inspected is None:
+            self.current_manifest = None
+            self.current_graph_payload = None
+            self.graph_view.clear()
+            self.graph_gate_badge.set_unavailable()
+            self.profile_view.load_profile([])
+            self.profile_view.load_targets(None)
             return
         try:
             bundle = TidyBundle.read(run_dir)
+            manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else None
+            payload = graph_payload(bundle)
         except Exception as e:
+            self._reject_gui_summary(run_dir, e)
             # A failed load must not leave the *previous* run's provenance on screen: the
             # run_hash in the status bar and the profile table would still describe run A.
             self.current_manifest = None
@@ -1435,11 +1629,8 @@ class CmigMainWindow(QMainWindow):
             self.profile_view.load_targets(None)
             self._show_status("status_run_load_failed", error=e)
             return
-        manifest_path = run_dir / "manifest.json"
-        self.current_manifest = (
-            json.loads(manifest_path.read_text()) if manifest_path.exists() else None
-        )
-        self.current_graph_payload = graph_payload(bundle)
+        self.current_manifest = manifest
+        self.current_graph_payload = payload
         self.graph_view.set_bundle(bundle)
         provenance = (
             self.current_manifest.get("provenance", {})
@@ -1457,10 +1648,49 @@ class CmigMainWindow(QMainWindow):
         suffix = "" if run_hash is None else f" (run_hash {str(run_hash)[:12]})"
         self._show_status("status_loaded_run", run_dir=run_dir, suffix=suffix)
 
+    def load_search_dir(self, path: str | Path) -> bool:
+        run_dir = Path(path).resolve()
+        summary_path = run_dir / "search_summary.json"
+        inspected = self._inspect_gui_run(run_dir)
+        if inspected is None:
+            self.search_view.invalidate_results()
+            self.search_view.status.setText(f"Readback invalid/unreadable: {run_dir}")
+            self.current_search_dir = None
+            return False
+        try:
+            summary = json.loads(summary_path.read_text())
+            if not isinstance(summary, dict):
+                raise ValueError("search_summary.json is not a JSON object")
+            validate_search_summary(summary)
+        except (OSError, ValueError, TypeError) as exc:
+            self._reject_gui_summary(run_dir, exc)
+            self.search_view.invalidate_results()
+            self.search_view.status.setText(f"Readback invalid/unreadable: {exc}")
+            self.current_search_dir = None
+            self._show_status("status_run_load_failed", error=exc)
+            return False
+        try:
+            self.search_view.load_summary(summary, run_dir=run_dir)
+        except (TypeError, ValueError, KeyError) as exc:
+            self._reject_gui_summary(run_dir, exc)
+            self.search_view.invalidate_results()
+            self.search_view.status.setText(f"Readback invalid/unreadable: {exc}")
+            self.current_search_dir = None
+            self._show_status("status_run_load_failed", error=exc)
+            return False
+        self.current_search_dir = run_dir
+        self.explorer.add_run(run_dir.name, run_dir)
+        self.tabs.setCurrentWidget(self.search_view)
+        self.search_view.status.setText(
+            f"{summary.get('status', 'unknown')} Search run: {run_dir} · "
+            f"integrity {inspected['artifact_integrity']}; see details"
+        )
+        return True
+
     def load_host_microbe_bigg_dir(self, path: str | Path) -> bool:
         """Load `cmig host-microbe-bigg` outputs into the Host tab."""
         from cmig.core.host import InterfaceFlux
-        from cmig.core.host_impact import HostImpact
+        from cmig.gui.host_view import host_microbe_network_payload
 
         run_dir = Path(path).resolve()
         # The pointer is only advanced after a successful parse (see the end of this method).
@@ -1474,8 +1704,16 @@ class CmigMainWindow(QMainWindow):
                 path=summary_path,
             )
             return False
+        previous_integrity = self.integrity_label.text()
+        previous_detail = self._integrity_detail
+        if self._inspect_gui_run(run_dir) is None:
+            self.integrity_label.setText(previous_integrity)
+            self._integrity_detail = previous_detail
+            return False
         try:
             payload = json.loads(summary_path.read_text())
+            if not isinstance(payload, dict):
+                raise ValueError("host summary is not a JSON object")
             if "microbial_secretion" not in payload:
                 secretion_path = run_dir / "microbial_secretion.csv"
                 if secretion_path.exists():
@@ -1484,9 +1722,43 @@ class CmigMainWindow(QMainWindow):
                             str(row["metabolite"]): float(row["flux"]) for row in csv.DictReader(f)
                         }
             host_payload = payload.get("host", {})
+            if not isinstance(host_payload, dict):
+                raise ValueError("host summary host block is not an object")
+            if not isinstance(host_payload.get("viable"), bool):
+                raise ValueError("host summary viable must be a boolean")
+            objective = host_payload.get("objective_value")
+            biomass = None if objective is None else float(objective)
+            for field in ("lumen_uptake", "unused_secretion", "microbial_secretion"):
+                values = (
+                    host_payload.get(field, {})
+                    if field == "lumen_uptake" else payload.get(field, {})
+                )
+                if not isinstance(values, dict):
+                    raise ValueError(f"{field} must be an object")
+            transfers = payload.get("microbe_to_host", {})
+            if not isinstance(transfers, dict):
+                raise ValueError("microbe_to_host must be an object")
             transfer = {
-                str(met): float(value)
-                for met, value in dict(payload.get("microbe_to_host", {})).items()
+                str(met): None if value is None else float(value)
+                for met, value in transfers.items()
+            }
+            transfer_ranges = payload.get("microbe_to_host_ranges", {})
+            if not isinstance(transfer_ranges, dict):
+                raise ValueError("microbe_to_host_ranges must be an object")
+            for interval in transfer_ranges.values():
+                if not isinstance(interval, list) or len(interval) != 2:
+                    raise ValueError("transfer range must contain two bounds")
+                low, high = float(interval[0]), float(interval[1])
+                if not (math.isfinite(low) and math.isfinite(high) and low <= high):
+                    raise ValueError("transfer range must be finite and ordered")
+            ambiguous = payload.get("ambiguous_metabolites", [])
+            if not isinstance(ambiguous, list) or not all(
+                isinstance(met, str) for met in ambiguous
+            ):
+                raise ValueError("ambiguous_metabolites must be a list of names")
+            lumen_uptake = {
+                str(met): None if value is None else float(value)
+                for met, value in host_payload.get("lumen_uptake", {}).items()
             }
             uptake_rows: list[InterfaceFlux] = []
             uptake_path = run_dir / "host_uptake.csv"
@@ -1495,7 +1767,10 @@ class CmigMainWindow(QMainWindow):
                     reader = csv.DictReader(f)
                     for row in reader:
                         met = str(row["metabolite"])
-                        uptake = float(row["uptake_flux"])
+                        raw_uptake = row["uptake_flux"]
+                        if raw_uptake is None or not raw_uptake.strip():
+                            continue  # FVA range only: no point flux exists to display.
+                        uptake = float(raw_uptake)
                         uptake_rows.append(
                             InterfaceFlux(
                                 exchange_id=f"EX_{met}_e",
@@ -1505,8 +1780,15 @@ class CmigMainWindow(QMainWindow):
                                 label="uptake",
                             )
                         )
-        except (OSError, ValueError, KeyError, json.JSONDecodeError) as e:
-            self._show_status("status_load_failed", kind=self.tr_map["kind_host_microbe"], error=e)
+            host_microbe_network_payload(payload)
+        except (OSError, ValueError, TypeError, KeyError) as e:
+            self.integrity_label.setText(previous_integrity)
+            self._integrity_detail = previous_detail
+            self.integrity_label.setToolTip(previous_detail)
+            self._show_status(
+                "status_load_failed", kind=self.tr_map["kind_host_microbe"],
+                error=f"{run_dir}: {e}",
+            )
             return False
 
         if not isinstance(host_payload, dict) or "viable" not in host_payload:
@@ -1523,26 +1805,34 @@ class CmigMainWindow(QMainWindow):
         host_result = SimpleNamespace(
             viable=bool(host_payload.get("viable", False)),
             status=str(host_payload.get("status", "unknown")),
-            biomass=float(host_payload.get("objective_value") or 0.0),
+            biomass=biomass,
             interface_fluxes=uptake_rows,
-            lumen_uptake={
-                str(met): float(value)
-                for met, value in dict(host_payload.get("lumen_uptake", {})).items()
-            },
+            lumen_uptake=lumen_uptake,
         )
-        impact = HostImpact(
-            microbe_to_host=transfer,
-            unused_secretion={
-                str(met): float(value)
-                for met, value in dict(payload.get("unused_secretion", {})).items()
-            },
-            host_viable=host_result.viable,
-            host_biomass=host_result.biomass,
+        # This is a readback view: retain nullable transfers from the serialized host
+        # result instead of coercing an unavailable value to a scientific zero.
+        impact = SimpleNamespace(
+            microbe_to_host=transfer, microbe_to_host_ranges=transfer_ranges,
+            ambiguous_metabolites=ambiguous,
+        )
+        community_payload = payload.get("community")
+        community_status = (
+            community_payload.get("status") if isinstance(community_payload, dict) else None
+        )
+        host_status = host_payload.get("status")
+        transfer_solved = (
+            None if host_status is None or community_status is None else
+            host_status == "optimal" and community_status == "optimal"
+            and biomass is not None and math.isfinite(biomass)
         )
         self.host_view.load_host_result(host_result)
-        self.host_view.load_impact(impact)
+        self.host_view.load_impact(impact, solved=transfer_solved)
         self.host_view.show_currency_metabolites = self.host_view.include_currency_check.isChecked()
         self.host_view.load_bigg_summary(payload, run_dir=run_dir)
+        self.host_view.run_status.setText(
+            self.host_view.run_status.text()
+            + f" · integrity {self.integrity_label.text().removeprefix('Integrity: ')}"
+        )
         self.current_host_microbe_dir = run_dir  # only after a successful parse
         self.explorer.add_run(run_dir.name, run_dir)
         self.tabs.setCurrentWidget(self.host_view)
@@ -1557,14 +1847,42 @@ class CmigMainWindow(QMainWindow):
                 "status_summary_missing", kind=self.tr_map["kind_dfba"], path=summary_path
             )
             return False
+        inspected = self._inspect_gui_run(run_dir)
+        if inspected is None:
+            self.dynamics_view.invalidate_results()
+            self.dynamics_view.status.setText(f"Readback invalid/unreadable: {run_dir}")
+            return False
         try:
             payload = json.loads(summary_path.read_text())
             if not isinstance(payload, dict):
                 raise ValueError("dfba_summary.json is not a JSON object")
-        except (OSError, ValueError, json.JSONDecodeError) as e:
+            required = {"status", "final_t", "final_biomass", "final_concentrations"}
+            missing = required - payload.keys()
+            if missing:
+                raise ValueError(f"dfba summary missing required fields: {sorted(missing)}")
+            if not isinstance(payload["status"], str):
+                raise ValueError("dfba status must be a string")
+            if not isinstance(payload.get("final_concentrations", {}), dict):
+                raise ValueError("final_concentrations is not an object")
+            if not isinstance(payload.get("warnings", []), list):
+                raise ValueError("warnings is not a list")
+            for key in ("final_t", "final_biomass"):
+                if key in payload and payload[key] is not None:
+                    float(payload[key])
+            for value in payload.get("final_concentrations", {}).values():
+                if value is not None:
+                    float(value)
+        except (OSError, ValueError, TypeError) as e:
+            self._reject_gui_summary(run_dir, e)
+            self.dynamics_view.invalidate_results()
+            self.dynamics_view.status.setText(f"Readback invalid/unreadable: {e}")
             self._show_status("status_load_failed", kind=self.tr_map["kind_dfba"], error=e)
             return False
         self.dynamics_view.load_dfba_summary(payload, run_dir=run_dir)
+        self.dynamics_view.status.setText(
+            self.dynamics_view.status.text()
+            + f" · integrity {inspected['artifact_integrity']}"
+        )
         self.explorer.add_run(run_dir.name, run_dir)
         self.tabs.setCurrentWidget(self.dynamics_view)
         self._show_status("status_loaded_dfba", run_dir=run_dir)
@@ -1578,14 +1896,36 @@ class CmigMainWindow(QMainWindow):
                 "status_summary_missing", kind=self.tr_map["kind_spatial"], path=summary_path
             )
             return False
+        inspected = self._inspect_gui_run(run_dir)
+        if inspected is None:
+            self.dynamics_view.invalidate_results()
+            self.dynamics_view.status.setText(f"Readback invalid/unreadable: {run_dir}")
+            return False
         try:
             payload = json.loads(summary_path.read_text())
             if not isinstance(payload, dict):
                 raise ValueError("spatial_summary.json is not a JSON object")
-        except (OSError, ValueError, json.JSONDecodeError) as e:
+            missing = {"status", "final_t", "final_min", "final_max"} - payload.keys()
+            if missing:
+                raise ValueError(f"spatial summary missing required fields: {sorted(missing)}")
+            if not isinstance(payload["status"], str):
+                raise ValueError("spatial status must be a string")
+            if not isinstance(payload.get("warnings", []), list):
+                raise ValueError("warnings is not a list")
+            for key in ("final_t", "final_min", "final_max"):
+                if key in payload and payload[key] is not None:
+                    float(payload[key])
+        except (OSError, ValueError, TypeError) as e:
+            self._reject_gui_summary(run_dir, e)
+            self.dynamics_view.invalidate_results()
+            self.dynamics_view.status.setText(f"Readback invalid/unreadable: {e}")
             self._show_status("status_load_failed", kind=self.tr_map["kind_spatial"], error=e)
             return False
         self.dynamics_view.load_spatial_summary(payload, run_dir=run_dir)
+        self.dynamics_view.status.setText(
+            self.dynamics_view.status.text()
+            + f" · integrity {inspected['artifact_integrity']}"
+        )
         self.explorer.add_run(run_dir.name, run_dir)
         self.tabs.setCurrentWidget(self.dynamics_view)
         self._show_status("status_loaded_spatial", run_dir=run_dir)
@@ -1705,7 +2045,20 @@ class CmigMainWindow(QMainWindow):
             if rc == 130:
                 ctx.raise_if_cancelled()
             if rc != 0:
-                raise RuntimeError(f"search failed with rc={rc}")
+                from cmig.service.jobrunner import ArtifactJobFailure
+
+                artifacts = _failed_search_artifacts(out_dir, rc)
+                cause = (
+                    _search_input_diagnostic(model_dir, requested["medium"])
+                    if rc == 2 else None
+                )
+                if cause:
+                    artifacts.setdefault("warnings", []).append(cause)
+                    artifacts["input_diagnostic"] = cause
+                raise ArtifactJobFailure(
+                    f"search failed with rc={rc}; {cause or 'see diagnostics'}; outputs: {out_dir}",
+                    artifacts,
+                )
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / output_name).read_text())
             if not isinstance(payload, dict):
@@ -1894,11 +2247,12 @@ class CmigMainWindow(QMainWindow):
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        model_dir = self.search_view.model_dir_input.text().strip()
-        members = self.search_view.ko_members_input.text().strip()
-        member = self.search_view.ko_member_input.text().strip()
-        genes = self.search_view.ko_genes_input.text().strip()
-        target, target_error = _single_target(self.search_view.targets_input.text())
+        requested = self.search_view.request_fields("gene_ko")
+        model_dir = requested["pool"]
+        members = requested["ko_members"]
+        member = requested["ko_member"]
+        genes = requested["ko_genes"]
+        target, target_error = _single_target(requested["target"])
         if target_error:
             self.search_view.status.setText(target_error)
             return ""
@@ -1912,8 +2266,8 @@ class CmigMainWindow(QMainWindow):
         # closure is handed to the executor. Reading `.value()` inside `_job` meant a queued
         # run silently executed the parameters the user typed *after* clicking, and read a
         # QWidget from a worker thread (undefined behaviour in Qt). Coordinator CC-8.
-        max_genes = str(self.search_view.ko_max_genes_spin.value())
-        top_k = str(self.search_view.top_k_spin.value())
+        max_genes = requested["max_genes"]
+        top_k = requested["top_k"]
         out_dir = Path(tempfile.mkdtemp(prefix="cmig-gene-ko-", dir=_search_temp_root())).resolve()
 
         def _job(ctx: JobContext) -> dict[str, Any]:
@@ -1931,9 +2285,15 @@ class CmigMainWindow(QMainWindow):
                 max_genes,
                 "--top-k",
                 top_k,
+                "--direction",
+                requested["direction"],
+                "--growth-fraction",
+                requested["growth_fraction"],
                 "--out",
                 str(out_dir),
             ]
+            if requested["medium"]:
+                argv.extend(["--medium", requested["medium"], "--exact-medium"])
             if member:
                 argv.extend(["--member", member])
             if genes:
@@ -1948,7 +2308,7 @@ class CmigMainWindow(QMainWindow):
             return payload
 
         jid = self.submit_job("gene_ko_search", _job)
-        self._gene_ko_jobs[jid] = (out_dir, self.search_view.request_fields("gene_ko"))
+        self._gene_ko_jobs[jid] = (out_dir, requested)
         self.search_view.run_ko_btn.setEnabled(False)
         self.search_view.status.setText(f"gene KO search started: {jid}")
         self._show_status("status_started", kind=self.tr_map["kind_gene_ko_search"], job_id=jid)
@@ -1959,7 +2319,8 @@ class CmigMainWindow(QMainWindow):
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        model_dir = self.search_view.model_dir_input.text().strip()
+        requested = self.search_view.request_fields("strain_growth")
+        model_dir = requested["pool"]
         if not model_dir:
             self.search_view.status.setText("Select a model folder before strain growth.")
             return ""
@@ -1974,9 +2335,15 @@ class CmigMainWindow(QMainWindow):
                 "strain-growth",
                 "--model-dir",
                 model_dir,
+                "--tradeoff-f",
+                requested["cooperative_tradeoff"],
+                "--single-medium",
+                "community",
                 "--out",
                 str(out_dir),
             ]
+            if requested["medium"]:
+                argv.extend(["--medium", requested["medium"], "--exact-medium"])
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"strain growth failed with rc={rc}")
@@ -1987,7 +2354,7 @@ class CmigMainWindow(QMainWindow):
             return payload
 
         jid = self.submit_job("strain_growth", _job)
-        self._strain_growth_jobs[jid] = (out_dir, self.search_view.request_fields("strain_growth"))
+        self._strain_growth_jobs[jid] = (out_dir, requested)
         self.search_view.run_growth_btn.setEnabled(False)
         self.search_view.status.setText(f"strain growth started: {jid}")
         self._show_status("status_started", kind=self.tr_map["kind_strain_growth"], job_id=jid)
@@ -1998,10 +2365,11 @@ class CmigMainWindow(QMainWindow):
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        model_dir = self.search_view.model_dir_input.text().strip()
-        member = self.search_view.growth_member_input.text().strip()
-        fractions = self.search_view.abundance_fractions_input.text().strip()
-        target, target_error = _single_target(self.search_view.targets_input.text())
+        requested = self.search_view.request_fields("abundance_impact")
+        model_dir = requested["pool"]
+        member = requested["growth_member"]
+        fractions = requested["fractions"]
+        target, target_error = _single_target(requested["target"])
         if target_error:
             self.search_view.status.setText(target_error)
             return ""
@@ -2027,9 +2395,13 @@ class CmigMainWindow(QMainWindow):
                 fractions or "0.1,0.25,0.5,0.75",
                 "--target",
                 target,
+                "--tradeoff-f",
+                requested["cooperative_tradeoff"],
                 "--out",
                 str(out_dir),
             ]
+            if requested["medium"]:
+                argv.extend(["--medium", requested["medium"], "--exact-medium"])
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"abundance impact failed with rc={rc}")
@@ -2042,7 +2414,7 @@ class CmigMainWindow(QMainWindow):
         jid = self.submit_job("abundance_impact", _job)
         self._abundance_impact_jobs[jid] = (
             out_dir,
-            self.search_view.request_fields("abundance_impact"),
+            requested,
         )
         self.search_view.run_abundance_btn.setEnabled(False)
         self.search_view.status.setText(f"ratio impact started: {jid}")
@@ -2633,14 +3005,30 @@ class CmigMainWindow(QMainWindow):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._search_jobs.pop(jid, None)
-                self.current_search_dir = out_dir
-                self.search_view.load_summary(
-                    job.result,
-                    run_dir=out_dir,
-                    request_note=self.search_view.superseded_note(requested, "search"),
-                )
                 self.search_view.run_btn.setEnabled(True)
                 self.search_view.cancel_btn.setEnabled(False)
+                if self._inspect_gui_run(out_dir) is None:
+                    self.search_view.invalidate_results()
+                    self.search_view.status.setText(f"Readback invalid/unreadable: {out_dir}")
+                    self.current_search_dir = None
+                    continue
+                try:
+                    validate_search_summary(job.result)
+                    self.search_view.load_summary(
+                        job.result,
+                        run_dir=out_dir,
+                        request_note=self.search_view.superseded_note(requested, "search"),
+                        workflow_kind="search",
+                        executed_request=requested,
+                    )
+                except (TypeError, ValueError, KeyError) as exc:
+                    self._reject_gui_summary(out_dir, exc)
+                    self.search_view.invalidate_results()
+                    self.search_view.status.setText(f"Readback invalid/unreadable: {exc}")
+                    self.current_search_dir = None
+                    self._show_status("status_run_load_failed", error=exc)
+                    continue
+                self.current_search_dir = out_dir
                 self.tabs.setCurrentWidget(self.search_view)
                 self._register_run_output(out_dir)
                 self._show_status(
@@ -2649,11 +3037,66 @@ class CmigMainWindow(QMainWindow):
                     job_id=jid,
                     out_dir=out_dir,
                 )
+            elif job.status is JobStatus.DONE:
+                self._search_jobs.pop(jid, None)
+                self.search_view.run_btn.setEnabled(True)
+                self.search_view.cancel_btn.setEnabled(False)
+                if self._inspect_gui_run(out_dir) is not None:
+                    self._reject_gui_summary(out_dir, "completed Search result is not an object")
+                self.search_view.invalidate_results()
+                self.search_view.status.setText(f"Readback invalid/unreadable: {out_dir}")
+                self.current_search_dir = None
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._search_jobs.pop(jid, None)
                 self.search_view.run_btn.setEnabled(True)
                 self.search_view.cancel_btn.setEnabled(False)
-                self.search_view.status.setText(f"search {job.status.value}: {job.error or jid}")
+                if job.status is JobStatus.FAILED and isinstance(job.result, dict):
+                    if self._inspect_gui_run(out_dir) is None:
+                        self.search_view.invalidate_results()
+                        self.search_view.status.setText(
+                            f"Readback invalid/unreadable: {out_dir}"
+                        )
+                        self.current_search_dir = None
+                        continue
+                    if not (out_dir / "manifest.json").exists() and (
+                        job.result.get("cli_exit_code") != 2
+                    ):
+                        self._reject_gui_summary(out_dir, "failed run has no manifest")
+                        self.search_view.invalidate_results()
+                        self.search_view.status.setText(
+                            f"Readback invalid/unreadable: {out_dir}"
+                        )
+                        self.current_search_dir = None
+                        continue
+                    try:
+                        validate_search_summary(job.result)
+                        self.search_view.load_summary(
+                            job.result,
+                            run_dir=out_dir,
+                            request_note=self.search_view.superseded_note(requested, "search"),
+                            workflow_kind="search",
+                            executed_request=requested,
+                        )
+                    except (TypeError, ValueError, KeyError) as exc:
+                        self._reject_gui_summary(out_dir, exc)
+                        self.search_view.invalidate_results()
+                        self.search_view.status.setText(f"Readback invalid/unreadable: {exc}")
+                        self.current_search_dir = None
+                        self._show_status("status_run_load_failed", error=exc)
+                        continue
+                    self.current_search_dir = out_dir
+                    self.search_view.status.setText(
+                        f"search failed (rc={job.result.get('cli_exit_code', '?')}); "
+                        "diagnostics and artifact path are in details"
+                    )
+                    self.tabs.setCurrentWidget(self.search_view)
+                    self._register_run_output(out_dir)
+                else:
+                    # No replacement summary was published. Keep every part of the
+                    # displayed run (including its badge and export pointer) together.
+                    self.statusBar().showMessage(
+                        f"search {job.status.value}: {job.error or jid}"
+                    )
         for jid, out_dir in list(self._host_microbe_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE:
@@ -2674,13 +3117,18 @@ class CmigMainWindow(QMainWindow):
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._host_search_jobs.pop(jid, None)
                 self.host_view.run_search_btn.setEnabled(True)
+                if self._inspect_gui_run(out_dir) is None:
+                    continue
                 self.current_search_dir = out_dir
                 summary = _host_search_summary_for_search_view(job.result)
                 self.search_view.figure_mode_combo.setCurrentText("Ranking")
                 self.search_view.load_summary(
-                    summary,
+                    _with_search_conditions(summary, job.result),
                     run_dir=out_dir,
                     request_note=self.search_view.superseded_note(requested, "host_search"),
+                    workflow_kind="host_search",
+                    executed_request=requested,
+                    source_summary=job.result,
                 )
                 self.tabs.setCurrentWidget(self.search_view)
                 self._register_run_output(out_dir)
@@ -2701,13 +3149,19 @@ class CmigMainWindow(QMainWindow):
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._gene_ko_jobs.pop(jid, None)
                 self.search_view.run_ko_btn.setEnabled(True)
+                if self._inspect_gui_run(out_dir) is None:
+                    continue
                 self.current_search_dir = out_dir
                 summary = _gene_ko_summary_for_search_view(job.result)
                 self.search_view.figure_mode_combo.setCurrentText("Ranking")
                 self.search_view.load_summary(
-                    summary,
+                    _with_search_conditions(summary, job.result),
                     run_dir=out_dir,
-                    request_note=self.search_view.superseded_note(requested, "gene_ko"),
+                    request_note=(self.search_view.effective_note(requested, "gene_ko")
+                                  + self.search_view.superseded_note(requested, "gene_ko")),
+                    workflow_kind="gene_ko",
+                    executed_request=requested,
+                    source_summary=job.result,
                 )
                 self.tabs.setCurrentWidget(self.search_view)
                 self._register_run_output(out_dir)
@@ -2728,13 +3182,19 @@ class CmigMainWindow(QMainWindow):
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._strain_growth_jobs.pop(jid, None)
                 self.search_view.run_growth_btn.setEnabled(True)
+                if self._inspect_gui_run(out_dir) is None:
+                    continue
                 self.current_search_dir = out_dir
                 summary = _strain_growth_summary_for_search_view(job.result)
                 self.search_view.figure_mode_combo.setCurrentText("Ranking")
                 self.search_view.load_summary(
-                    summary,
+                    _with_search_conditions(summary, job.result),
                     run_dir=out_dir,
-                    request_note=self.search_view.superseded_note(requested, "strain_growth"),
+                    request_note=(self.search_view.effective_note(requested, "strain_growth")
+                                  + self.search_view.superseded_note(requested, "strain_growth")),
+                    workflow_kind="strain_growth",
+                    executed_request=requested,
+                    source_summary=job.result,
                 )
                 self.tabs.setCurrentWidget(self.search_view)
                 self._register_run_output(out_dir)
@@ -2755,13 +3215,21 @@ class CmigMainWindow(QMainWindow):
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._abundance_impact_jobs.pop(jid, None)
                 self.search_view.run_abundance_btn.setEnabled(True)
+                if self._inspect_gui_run(out_dir) is None:
+                    continue
                 self.current_search_dir = out_dir
                 summary = _abundance_impact_summary_for_search_view(job.result)
                 self.search_view.figure_mode_combo.setCurrentText("Ranking")
                 self.search_view.load_summary(
-                    summary,
+                    _with_search_conditions(summary, job.result),
                     run_dir=out_dir,
-                    request_note=self.search_view.superseded_note(requested, "abundance_impact"),
+                    request_note=(
+                        self.search_view.effective_note(requested, "abundance_impact")
+                        + self.search_view.superseded_note(requested, "abundance_impact")
+                    ),
+                    workflow_kind="abundance_impact",
+                    executed_request=requested,
+                    source_summary=job.result,
                 )
                 self.tabs.setCurrentWidget(self.search_view)
                 self._register_run_output(out_dir)
@@ -2995,14 +3463,22 @@ def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, A
     for item in payload.get("top_ranked", []):
         if not isinstance(item, dict):
             continue
+        interval = item.get("target_transfer_range")
+        lo = hi = None
+        if isinstance(interval, (list, tuple)) and len(interval) == 2:
+            lo, hi = interval
+        identifiability = str(item.get("target_identifiability", "unknown"))
         rows.append(
             {
                 "members": item.get("members", []),
                 "score": item.get("score"),
                 "target_flux": item.get("target_transfer"),
                 "community_growth": item.get("community_growth"),
-                "status": item.get("evaluation_status", item.get("host_status", "")),
-                "diagnostic": item.get("diagnostic"),
+                "status": (str(item.get("evaluation_status", item.get("host_status", "")))
+                           + f" · transfer {identifiability}"),
+                "diagnostic": item.get("diagnostic") or item.get("target_reason"),
+                "robustness_fva_lo": lo,
+                "robustness_fva_hi": hi,
             }
         )
     return {
@@ -3011,13 +3487,14 @@ def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, A
         "top_ranked": rows,
         # Forward CLI warnings verbatim — the GUI is not allowed to be quieter than the CLI.
         "warnings": list(payload.get("warnings") or []),
+        "status": payload.get("status", "unknown"),
         "column_labels": [
             "Members",
             "Target",
             "Score",
             "Target transfer (mmol gDW⁻¹ h⁻¹)",
             "Community growth (h⁻¹)",
-            "FVA Range",
+            "Transfer range",
             "Status",
         ],
     }

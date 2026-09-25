@@ -17,7 +17,7 @@ from typing import Any, Literal, cast
 
 from cmig.core.search import Direction, TargetSpec, score_target_result, target_max_solve
 from cmig.core.search_constraints import GrowthPolicy, actual_members, validate_taxonomy
-from cmig.core.search_execution import SearchControl
+from cmig.core.search_execution import SearchCancelled, SearchControl
 from cmig.core.search_ga import GAConfig
 from cmig.core.search_profile import profile_evaluation, timed
 
@@ -98,10 +98,7 @@ class PoolSearchResult:
     @property
     def n_robustness_failed(self) -> int:
         """Number of ranked rows whose requested robustness analysis was unavailable."""
-        return sum(
-            row.robustness_status not in (None, "ok")
-            for row in self.ranks
-        )
+        return sum(row.robustness_status not in (None, "ok") for row in self.ranks)
 
 
 # B4: 동점/전부-0 랭킹 경고. rank 1 이 "최고"로 읽히므로, 실제로는 아무 후보도 target 을 만들지
@@ -130,9 +127,7 @@ def unevaluable_warnings(
         f"from the ranking (see unevaluated): {names}"
     ]
     if len(unevaluated) == n_total:
-        warnings.append(
-            "no candidate was evaluable; there is no ranking and no best producer"
-        )
+        warnings.append("no candidate was evaluable; there is no ranking and no best producer")
     return warnings
 
 
@@ -188,11 +183,11 @@ def _ranking_degeneracy_warnings(
             f"{direction} search (0 target flux is essentially always attainable). This does "
             "NOT mean the target cannot be produced — re-run with the matching max_* direction "
             "to measure capability. The ranking order is arbitrary"
-            if _is_minimisation(direction) else
-            "no candidate achieved a non-zero target flux; the ranking order is arbitrary "
+            if _is_minimisation(direction)
+            else "no candidate achieved a non-zero target flux; the ranking order is arbitrary "
             "and rank 1 must not be reported as the best producer"
-            if score_is_flux else
-            "every evaluable candidate scored 0; with a normalized metric this can mean the "
+            if score_is_flux
+            else "every evaluable candidate scored 0; with a normalized metric this can mean the "
             "candidate set has zero score range (a single candidate, or all candidates equal) "
             "rather than zero target flux — read the per-target flux columns, and prefer "
             "--multi-metric carbon_equivalent for an absolute score"
@@ -323,10 +318,7 @@ def sample_candidate_combinations(
     total = count_candidate_combinations(ordered, min_size, max_size)
     sample_size = min(n_samples, total)
     ranks = _sample_integer_ranks(total, sample_size, random.Random(seed))
-    return [
-        _candidate_from_global_rank(ordered, min_size, max_size, rank)
-        for rank in ranks
-    ]
+    return [_candidate_from_global_rank(ordered, min_size, max_size, rank) for rank in ranks]
 
 
 # Round 5 (codex F3, part 2): every search evaluator called `apply_medium_checked` and threw the
@@ -414,8 +406,10 @@ def _evaluate_members(
             spec,
             growth_fraction=growth_fraction,
             solver=solver,
-            **cast(dict[str, Any],
-                   {"growth_policy": growth_policy} if growth_policy is not None else {}),
+            **cast(
+                dict[str, Any],
+                {"growth_policy": growth_policy} if growth_policy is not None else {},
+            ),
         )
         fva_lo = fva_hi = None
         fva_status = None
@@ -427,8 +421,10 @@ def _evaluate_members(
                 spec,
                 growth_fraction=growth_fraction,
                 solver=solver,
-                **cast(dict[str, Any], {"growth_policy": growth_policy}
-                       if growth_policy is not None else {}),
+                **cast(
+                    dict[str, Any],
+                    {"growth_policy": growth_policy} if growth_policy is not None else {},
+                ),
             )
             fva_status = fva.status
             if fva.status == "ok":
@@ -496,8 +492,10 @@ def _add_robustness_fva(
             spec,
             growth_fraction=growth_fraction,
             solver=solver,
-            **cast(dict[str, Any], {"growth_policy": growth_policy}
-                   if growth_policy is not None else {}),
+            **cast(
+                dict[str, Any],
+                {"growth_policy": growth_policy} if growth_policy is not None else {},
+            ),
         )
         robustness_note = None
         if fva.status != "ok":
@@ -567,8 +565,13 @@ def search_model_pool(
         request = SearchRequest(taxonomy, config, medium_spec, strict_medium)
         with search_workers(request, control) as batch:
             return search_model_pool(
-                engine, taxonomy, config, medium_spec=medium_spec, strict_medium=strict_medium,
-                control=control, _batch_evaluate=batch,
+                engine,
+                taxonomy,
+                config,
+                medium_spec=medium_spec,
+                strict_medium=strict_medium,
+                control=control,
+                _batch_evaluate=batch,
             )
     if control is not None:
         from cmig.service.search_service import ConfiguredEngine
@@ -577,9 +580,7 @@ def search_model_pool(
     ids = [str(x) for x in taxonomy["id"]]
     if len(set(ids)) != len(ids):
         raise ValueError("taxonomy id values must be unique")
-    n_candidates_total = count_candidate_combinations(
-        ids, config.min_size, config.max_size
-    )
+    n_candidates_total = count_candidate_combinations(ids, config.min_size, config.max_size)
     if n_candidates_total == 0:
         raise ValueError("no candidate combinations generated")
     strategy = choose_strategy(
@@ -617,21 +618,27 @@ def search_model_pool(
         if members not in cache:
             if control is not None:
                 control.check()
-            remember(_evaluate_members(
-                engine,
-                taxonomy,
-                members,
-                spec,
-                growth_fraction=config.growth_fraction,
-                solver=config.solver,
-                medium_spec=medium_spec,
-                strict_medium=strict_medium,
-                # FVA is deliberately deferred until the final top-k is known.
-                robustness_fva=False,
-                medium_notes=medium_notes,
-                **cast(dict[str, Any], {"growth_policy": config.growth_policy}
-                       if config.growth_policy != GrowthPolicy() else {}),
-            ))
+            remember(
+                _evaluate_members(
+                    engine,
+                    taxonomy,
+                    members,
+                    spec,
+                    growth_fraction=config.growth_fraction,
+                    solver=config.solver,
+                    medium_spec=medium_spec,
+                    strict_medium=strict_medium,
+                    # FVA is deliberately deferred until the final top-k is known.
+                    robustness_fva=False,
+                    medium_notes=medium_notes,
+                    **cast(
+                        dict[str, Any],
+                        {"growth_policy": config.growth_policy}
+                        if config.growth_policy != GrowthPolicy()
+                        else {},
+                    ),
+                )
+            )
         return cache[members]
 
     def evaluate_batch(genomes: list[tuple[str, ...]]) -> list[float]:
@@ -649,9 +656,7 @@ def search_model_pool(
             evaluate_batch(batch)
 
     if strategy == "exhaustive":
-        evaluate_all(_iter_candidate_combinations(
-            ids, config.min_size, config.max_size
-        ))
+        evaluate_all(_iter_candidate_combinations(ids, config.min_size, config.max_size))
     elif strategy == "random":
         selected = sample_candidate_combinations(
             ids,
@@ -680,14 +685,19 @@ def search_model_pool(
             lambda genome: evaluate(tuple(genome)).score,
             normalized_ga_config,
             top_k=config.top_k,
-            **cast(dict[str, Any], {
-                "checkpoint_state": control.algorithm_state,
-                "on_checkpoint": control.save_algorithm,
-                "cancel_check": control.check,
-                "on_progress": control.report,
-                "batch_fitness_fn": evaluate_batch,
-                "batch_size": control.workers,
-            } if control is not None else {}),
+            **cast(
+                dict[str, Any],
+                {
+                    "checkpoint_state": control.algorithm_state,
+                    "on_checkpoint": control.save_algorithm,
+                    "cancel_check": control.check,
+                    "on_progress": control.report,
+                    "batch_fitness_fn": evaluate_batch,
+                    "batch_size": control.workers,
+                }
+                if control is not None
+                else {},
+            ),
         )
         warnings.append(ga.warning)
         ga_metadata = _ga_metadata(normalized_ga_config, ga)
@@ -708,14 +718,18 @@ def search_model_pool(
         key=lambda row: row.members,
     )
     # B4: 동점/전부-0 은 평가된 후보 전체를 기준으로 판정한다(top_k 절단 전).
-    warnings.extend(_ranking_degeneracy_warnings(
-        [(row.members, row.score, row.status) for row in solved],
-        direction=config.direction.value,
-    ))
+    warnings.extend(
+        _ranking_degeneracy_warnings(
+            [(row.members, row.score, row.status) for row in solved],
+            direction=config.direction.value,
+        )
+    )
     warnings.extend(_non_viable_warnings(failed, len(evaluated)))
-    warnings.extend(unevaluable_warnings(
-        [(row.members, row.status, row.diagnostic) for row in failed], len(evaluated)
-    ))
+    warnings.extend(
+        unevaluable_warnings(
+            [(row.members, row.status, row.diagnostic) for row in failed], len(evaluated)
+        )
+    )
 
     def _renumber(row: PoolRank, rank: int) -> PoolRank:
         return replace(row, rank=rank)
@@ -729,8 +743,13 @@ def search_model_pool(
             auxiliary_key = "robustness:" + json.dumps(row.members)
             if control is not None and auxiliary_key in control.validation_records:
                 stored = control.validation_records[auxiliary_key]
-                restored = PoolRank(**{**stored, "members": tuple(stored["members"]),
-                                       "effective_members": tuple(stored["effective_members"])})
+                restored = PoolRank(
+                    **{
+                        **stored,
+                        "members": tuple(stored["members"]),
+                        "effective_members": tuple(stored["effective_members"]),
+                    }
+                )
                 robust_rows.append(restored)
                 continue
             if row.robustness_status is not None:
@@ -746,21 +765,22 @@ def search_model_pool(
                 medium_spec=medium_spec,
                 strict_medium=strict_medium,
                 medium_notes=medium_notes,
-                **cast(dict[str, Any], {"growth_policy": config.growth_policy}
-                       if config.growth_policy != GrowthPolicy() else {}),
+                **cast(
+                    dict[str, Any],
+                    {"growth_policy": config.growth_policy}
+                    if config.growth_policy != GrowthPolicy()
+                    else {},
+                ),
             )
             robust_rows.append(updated)
             if control is not None:
                 control.validation_records[auxiliary_key] = _json_safe(asdict(updated))
                 control.save()
         ranked = robust_rows
-        robustness_failed = [
-            row for row in ranked if row.robustness_status not in (None, "ok")
-        ]
+        robustness_failed = [row for row in ranked if row.robustness_status not in (None, "ok")]
         if robustness_failed:
             details = ", ".join(
-                f"{'+'.join(row.members)} ({row.robustness_status})"
-                for row in robustness_failed
+                f"{'+'.join(row.members)} ({row.robustness_status})" for row in robustness_failed
             )
             warnings.append(
                 f"robustness FVA was unavailable for {len(robustness_failed)} reported "
@@ -791,9 +811,7 @@ def search_model_pool(
 # N-dimensional Pareto non-dominated flag.
 
 
-MultiTargetMetric = Literal[
-    "normalized_weighted", "carbon_equivalent", "raw_sum", "pareto"
-]
+MultiTargetMetric = Literal["normalized_weighted", "carbon_equivalent", "raw_sum", "pareto"]
 
 # Epsilon floors, as a fraction of each target's own achievable maximum for that consortium.
 # 0.0 reproduces the plain scalarised vertex; the rest force progressively more mixed solutions.
@@ -855,9 +873,9 @@ class MultiTargetConfig:
 class MultiTargetRank:
     rank: int
     members: tuple[str, ...]
-    weighted_score: float               # metric 에 따라 무차원 or 실제 flux 합; -inf = 평가 불가
-    target_fluxes: dict[str, float]     # metabolite → raw exchange flux
-    target_scores: dict[str, float]     # metabolite → per-target contribution
+    weighted_score: float  # metric 에 따라 무차원 or 실제 flux 합; -inf = 평가 불가
+    target_fluxes: dict[str, float]  # metabolite → raw exchange flux
+    target_scores: dict[str, float]  # metabolite → per-target contribution
     community_growth: float
     status: str
     pareto: bool = False
@@ -870,6 +888,7 @@ class MultiTargetRank:
     member_growth: dict[str, float] = field(default_factory=dict)
     abundances: dict[str, float] = field(default_factory=dict)
     timings: dict[str, float] = field(default_factory=dict, compare=False)
+    sampling_status: str = "complete"
 
 
 @dataclass(frozen=True)
@@ -896,6 +915,8 @@ class MultiTargetSearchResult:
     normalization_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
     validation_report: dict[str, Any] = field(default_factory=dict)
     profile: dict[str, Any] = field(default_factory=dict, compare=False)
+    pareto_attempts: list[dict[str, Any]] = field(default_factory=list)
+    candidate_sampling_status: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -904,7 +925,7 @@ class _ComboEval:
     status: str
     community_growth: float
     fluxes: dict[str, float]
-    signed: dict[str, float]            # direction-adjusted raw (larger = better), no weight
+    signed: dict[str, float]  # direction-adjusted raw (larger = better), no weight
     diagnostic: str | None = None
     missing_targets: tuple[str, ...] = ()
     flux_basis: str = FLUX_BASIS_CAPABILITY
@@ -913,6 +934,74 @@ class _ComboEval:
     abundances: dict[str, float] = field(default_factory=dict)
     timings: dict[str, float] = field(default_factory=dict, compare=False)
     medium_note: str | None = None
+    pareto_attempts: list[dict[str, Any]] = field(default_factory=list)
+    sampling_status: str = "complete"
+
+
+def _append_pareto_attempt(
+    attempts: list[dict[str, Any]], members: tuple[str, ...], phase: str, status: str,
+    diagnostic: str | None = None, *, weights: dict[str, float] | None = None,
+    floors: dict[str, float] | None = None, vector: dict[str, float] | None = None,
+    measured_result: dict[str, Any] | None = None, target: str | None = None,
+    direction: str | None = None, solve_executed: bool | None = True,
+    solve_started: bool | None = None,
+) -> None:
+    outcome = (
+        "optimal" if status == "optimal" else
+        "infeasible" if status == "infeasible" else
+        "non_viable" if status == "non_viable" else
+        "baseline_failed" if status == "baseline_failed" else
+        "timeout" if status in {"time_limit", "timeout"} else
+        "missing" if status == "missing" else "error"
+    )
+    attempt = {
+        "members": list(members),
+        "attempt_key": f"{'|'.join(members)}:{len(attempts):04d}",
+        "order": len(attempts),
+        "phase": phase,
+        "target": target,
+        "direction": direction,
+        "objective_weights": weights or {},
+        "constraint_floors": floors or {},
+        "raw_status": status,
+        "outcome": outcome,
+        "diagnostic": diagnostic,
+        "achieved_vector": vector,
+        "measured_result": measured_result,
+        "solve_executed": solve_executed,
+    }
+    if solve_started is not None:
+        attempt["solve_started"] = solve_started
+    attempts.append(attempt)
+
+
+def _baseline_observer(
+    attempts: list[dict[str, Any]], members: tuple[str, ...], policy: GrowthPolicy,
+) -> Any:
+    def observe(solution: Any) -> None:
+        status = "solver_no_solution" if solution is None else str(solution.status)
+        growth: float | None = None
+        if status == "optimal":
+            raw = getattr(solution, "growth_rate", None)
+            if raw is None:
+                raw = solution.objective_value
+            try:
+                value = float(raw.iloc[0]) if hasattr(raw, "iloc") else float(raw)
+                if math.isfinite(value):
+                    growth = value
+            except (TypeError, ValueError):
+                pass
+        _append_pareto_attempt(
+            attempts, members, "baseline", status,
+            diagnostic=(
+                None if status == "optimal" and growth is not None
+                else f"baseline status={status}; community growth readout unavailable"
+            ),
+            measured_result={"community_growth": growth},
+            floors={"min_member_growth": policy.min_member_growth,
+                    "min_community_growth": policy.min_community_growth},
+        )
+    return observe
 
 
 def _signed_raw(result: Any, spec: TargetSpec) -> float:
@@ -927,7 +1016,9 @@ def _signed_raw(result: Any, spec: TargetSpec) -> float:
 
 
 def rank_multi_target(
-    evals: list[_ComboEval], specs: list[TargetSpec], *,
+    evals: list[_ComboEval],
+    specs: list[TargetSpec],
+    *,
     normalization_ranges: dict[str, tuple[float, float]] | None = None,
     metric: MultiTargetMetric = "normalized_weighted",
 ) -> tuple[list[MultiTargetRank], str]:
@@ -964,9 +1055,21 @@ def rank_multi_target(
         normalizer = f"none_{metric}_absolute_units"
     for e in evals:
         if e.status != "optimal":
-            rows.append(MultiTargetRank(
-                0, e.members, float("-inf"), e.fluxes, {}, e.community_growth,
-                e.status, False, e.diagnostic, e.missing_targets, e.flux_basis))
+            rows.append(
+                MultiTargetRank(
+                    0,
+                    e.members,
+                    float("-inf"),
+                    e.fluxes,
+                    {},
+                    e.community_growth,
+                    e.status,
+                    False,
+                    e.diagnostic,
+                    e.missing_targets,
+                    e.flux_basis,
+                )
+            )
             continue
         contributions: dict[str, float] = {}
         if metric == "normalized_weighted":
@@ -979,20 +1082,41 @@ def rank_multi_target(
                     contributions[m] = (e.signed.get(m, 0.0) - lo) / scale
                 else:
                     contributions[m] = normalize_score(
-                        e.signed.get(m, 0.0), observed_min=lo, observed_max=hi).value
+                        e.signed.get(m, 0.0), observed_min=lo, observed_max=hi
+                    ).value
             score = weighted_multi_target(contributions, specs)
         else:
             # 실제 단위 유지: 기여도 = weight(=carbon number 등) × direction 보정 flux.
             for m in mets:
                 contributions[m] = weight_of[m] * e.signed.get(m, 0.0)
             score = sum(contributions.values())
-        rows.append(MultiTargetRank(
-            0, e.members, score, e.fluxes, contributions, e.community_growth, "optimal",
-            False, e.diagnostic, e.missing_targets, e.flux_basis))
+        rows.append(
+            MultiTargetRank(
+                0,
+                e.members,
+                score,
+                e.fluxes,
+                contributions,
+                e.community_growth,
+                "optimal",
+                False,
+                e.diagnostic,
+                e.missing_targets,
+                e.flux_basis,
+            )
+        )
 
-    rows = [replace(row, effective_members=e.effective_members,
-                    member_growth=e.member_growth, abundances=e.abundances, timings=e.timings)
-            for row, e in zip(rows, evals, strict=True)]
+    rows = [
+        replace(
+            row,
+            effective_members=e.effective_members,
+            member_growth=e.member_growth,
+            abundances=e.abundances,
+            timings=e.timings,
+            sampling_status=e.sampling_status,
+        )
+        for row, e in zip(rows, evals, strict=True)
+    ]
     ok_idx = [i for i, row in enumerate(rows) if is_evaluable(row.status, row.weighted_score)]
     points = [tuple(evals[i].signed[metabolite] for metabolite in mets) for i in ok_idx]
     keep = {ok_idx[k] for k in pareto_frontier_nd(points)}
@@ -1015,8 +1139,15 @@ def rank_multi_target(
 
 @profile_evaluation
 def _evaluate_members_multi(
-    engine: Any, taxonomy: Any, members: tuple[str, ...], specs: list[TargetSpec], *,
-    growth_fraction: float, solver: str, medium_spec: Any | None, strict_medium: bool,
+    engine: Any,
+    taxonomy: Any,
+    members: tuple[str, ...],
+    specs: list[TargetSpec],
+    *,
+    growth_fraction: float,
+    solver: str,
+    medium_spec: Any | None,
+    strict_medium: bool,
     medium_notes: set[str] | None = None,
     growth_policy: GrowthPolicy | None = None,
 ) -> _ComboEval:
@@ -1029,6 +1160,7 @@ def _evaluate_members_multi(
     sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
     effective: tuple[str, ...] = ()
     medium_note: str | None = None
+    attempts: list[dict[str, Any]] = []
     try:
         community = engine.build_community(sub, cmig_solver=solver)
         effective = tuple(sorted(str(x) for x in getattr(community, "taxa", members)))
@@ -1041,9 +1173,24 @@ def _evaluate_members_multi(
 
         baseline: dict[str, Any] = {}
         if hasattr(community, "optimize"):
-            with community:
-                apply_member_growth(community, growth_policy or GrowthPolicy())
-                baseline["mu_community"] = _community_growth_star(community)
+            try:
+                with community:
+                    apply_member_growth(community, growth_policy or GrowthPolicy())
+                    baseline["mu_community"] = _community_growth_star(
+                        community, on_solution=_baseline_observer(
+                            attempts, members, growth_policy or GrowthPolicy()
+                        )
+                    )
+            except SearchCancelled:
+                raise
+            except Exception as error:
+                if not attempts:
+                    _append_pareto_attempt(
+                        attempts, members, "baseline", "solver_error",
+                        f"{type(error).__name__}: {error}",
+                        solve_executed=None,
+                    )
+                raise
         if growth_policy is not None:
             baseline["growth_policy"] = growth_policy
         fluxes: dict[str, float] = {}
@@ -1053,8 +1200,43 @@ def _evaluate_members_multi(
         diag: str | None = None
         missing: list[str] = []
         for spec in specs:
-            res = target_max_solve(
-                community, spec, growth_fraction=growth_fraction, solver=solver, **baseline)
+            try:
+                res = target_max_solve(
+                    community, spec, growth_fraction=growth_fraction, solver=solver, **baseline
+                )
+            except SearchCancelled:
+                raise
+            except Exception as error:
+                _append_pareto_attempt(
+                    attempts, members, "capability", "solver_error",
+                    f"{type(error).__name__}: {error}", target=spec.metabolite,
+                    direction=spec.direction.value, weights={spec.metabolite: 1.0},
+                    floors={"community_growth": max(
+                        growth_fraction * baseline.get("mu_community", 0.0),
+                        (growth_policy or GrowthPolicy()).min_community_growth,
+                    ), "min_member_growth": (
+                        growth_policy or GrowthPolicy()
+                    ).min_member_growth}, solve_executed=None,
+                )
+                raise
+            _append_pareto_attempt(
+                attempts, members, "capability", res.status, res.diagnostic,
+                target=spec.metabolite, direction=spec.direction.value,
+                weights={spec.metabolite: 1.0},
+                floors={"community_growth": max(
+                    growth_fraction * baseline.get("mu_community", 0.0),
+                    (growth_policy or GrowthPolicy()).min_community_growth,
+                ), "min_member_growth": (
+                    growth_policy or GrowthPolicy()
+                ).min_member_growth},
+                measured_result=(
+                    {"target_flux": float(res.target_flux),
+                     "signed_target_flux": _signed_raw(res, spec),
+                     "community_growth": float(res.community_growth)}
+                    if res.status == "optimal" else None
+                ),
+                solve_executed=res.status not in {"missing", "non_viable", "baseline_failed"},
+            )
             if res.status == "missing":
                 # exchange 부재 = 이 대사체를 만들 수 없음 → 0 기여, consortium 은 계속 평가된다.
                 missing.append(spec.metabolite)
@@ -1064,20 +1246,43 @@ def _evaluate_members_multi(
             fluxes[spec.metabolite] = float(res.target_flux)
             signed[spec.metabolite] = _signed_raw(res, spec)
             growth = float(res.community_growth)
-            if res.status != "optimal":       # 진짜 non-optimal LP → 랭킹 불가
+            if res.status != "optimal":  # 진짜 non-optimal LP → 랭킹 불가
                 status = res.status
                 diag = res.diagnostic
-        if len(missing) == len(specs):        # 평가할 target 이 하나도 없다
+        if len(missing) == len(specs):  # 평가할 target 이 하나도 없다
             status = "missing"
             diag = f"no target exchange present in this consortium: {sorted(missing)}"
         return _ComboEval(
-            members, status, growth, fluxes, signed, _with_medium_note(diag, medium_note),
-            tuple(sorted(missing)), FLUX_BASIS_CAPABILITY,
-            effective_members=effective, medium_note=medium_note,
+            members,
+            status,
+            growth,
+            fluxes,
+            signed,
+            _with_medium_note(diag, medium_note),
+            tuple(sorted(missing)),
+            FLUX_BASIS_CAPABILITY,
+            effective_members=effective,
+            medium_note=medium_note,
+            pareto_attempts=attempts,
+            sampling_status="failed" if status != "optimal" else "complete",
         )
+    except SearchCancelled:
+        raise
     except Exception as e:  # noqa: BLE001 - per-combo isolation
-        return _ComboEval(members, "failed", 0.0, {}, {}, str(e), (), FLUX_BASIS_NONE,
-                          effective_members=effective, medium_note=medium_note)
+        return _ComboEval(
+            members,
+            "failed",
+            0.0,
+            {},
+            {},
+            str(e),
+            (),
+            FLUX_BASIS_NONE,
+            effective_members=effective,
+            medium_note=medium_note,
+            pareto_attempts=attempts,
+            sampling_status="failed",
+        )
 
 
 def _capability_ranges(
@@ -1111,9 +1316,16 @@ def _joint_lp_scales(
 
 @profile_evaluation
 def _evaluate_members_multi_joint(
-    engine: Any, taxonomy: Any, members: tuple[str, ...], specs: list[TargetSpec], *,
-    normalization_ranges: dict[str, tuple[float, float]], growth_fraction: float,
-    solver: str, medium_spec: Any | None, strict_medium: bool,
+    engine: Any,
+    taxonomy: Any,
+    members: tuple[str, ...],
+    specs: list[TargetSpec],
+    *,
+    normalization_ranges: dict[str, tuple[float, float]],
+    growth_fraction: float,
+    solver: str,
+    medium_spec: Any | None,
+    strict_medium: bool,
     metric: MultiTargetMetric = "normalized_weighted",
     medium_notes: set[str] | None = None,
     growth_policy: GrowthPolicy | None = None,
@@ -1138,8 +1350,10 @@ def _evaluate_members_multi_joint(
             normalization_scales=scales,
             growth_fraction=growth_fraction,
             solver=solver,
-            **cast(dict[str, Any],
-                   {"growth_policy": growth_policy} if growth_policy is not None else {}),
+            **cast(
+                dict[str, Any],
+                {"growth_policy": growth_policy} if growth_policy is not None else {},
+            ),
         )
         return _ComboEval(
             members,
@@ -1151,19 +1365,37 @@ def _evaluate_members_multi_joint(
             result.missing_targets,
             FLUX_BASIS_JOINT if result.status == "optimal" else FLUX_BASIS_NONE,
             effective,
-            getattr(result, "member_growth", {}), getattr(result, "abundances", {}),
+            getattr(result, "member_growth", {}),
+            getattr(result, "abundances", {}),
             medium_note=medium_note,
         )
     except Exception as e:  # noqa: BLE001 - per-combo isolation
-        return _ComboEval(members, "failed", 0.0, {}, {}, str(e), (), FLUX_BASIS_NONE,
-                          effective_members=effective, medium_note=medium_note)
+        return _ComboEval(
+            members,
+            "failed",
+            0.0,
+            {},
+            {},
+            str(e),
+            (),
+            FLUX_BASIS_NONE,
+            effective_members=effective,
+            medium_note=medium_note,
+        )
 
 
 @profile_evaluation
 def _pareto_points_for_members(
-    engine: Any, taxonomy: Any, members: tuple[str, ...], specs: list[TargetSpec], *,
-    capability: dict[str, float], growth_fraction: float, solver: str,
-    medium_spec: Any | None, strict_medium: bool,
+    engine: Any,
+    taxonomy: Any,
+    members: tuple[str, ...],
+    specs: list[TargetSpec],
+    *,
+    capability: dict[str, float],
+    growth_fraction: float,
+    solver: str,
+    medium_spec: Any | None,
+    strict_medium: bool,
     epsilon_grid: tuple[float, ...] = PARETO_EPSILON_GRID,
     medium_notes: set[str] | None = None,
     growth_policy: GrowthPolicy | None = None,
@@ -1176,10 +1408,35 @@ def _pareto_points_for_members(
     complete internal trade-off front.
     """
     from cmig.core.search import epsilon_constrained_solve
+    from cmig.core.search_execution import SearchCancelled
 
     sub_taxonomy = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
     points: list[_ComboEval] = []
+    attempts: list[dict[str, Any]] = []
     seen_vectors: set[tuple[float, ...]] = set()
+    medium_note: str | None = None
+
+    def record(
+        phase: str,
+        status: str,
+        diagnostic: str | None = None,
+        *,
+        weights: dict[str, float] | None = None,
+        floors: dict[str, float] | None = None,
+        vector: dict[str, float] | None = None,
+        measured_result: dict[str, Any] | None = None,
+        target: str | None = None,
+        direction: str | None = None,
+        solve_executed: bool | None = True,
+        solve_started: bool | None = None,
+    ) -> None:
+        _append_pareto_attempt(
+            attempts, members, phase, status, diagnostic,
+            weights=weights, floors=floors, vector=vector,
+            measured_result=measured_result, target=target, direction=direction,
+            solve_executed=solve_executed, solve_started=solve_started,
+        )
+
     try:
         community = engine.build_community(sub_taxonomy, cmig_solver=solver)
         actual_members(community, members)
@@ -1191,9 +1448,50 @@ def _pareto_points_for_members(
 
         baseline: dict[str, Any] = {}
         if hasattr(community, "optimize"):
-            with community:
-                apply_member_growth(community, growth_policy or GrowthPolicy())
-                baseline["mu_community"] = _community_growth_star(community)
+            baseline_started = False
+            baseline_attempt_count = len(attempts)
+
+            def mark_baseline_started() -> None:
+                nonlocal baseline_started
+                baseline_started = True
+
+            try:
+                with community:
+                    apply_member_growth(community, growth_policy or GrowthPolicy())
+                    baseline["mu_community"] = _community_growth_star(
+                        community, on_solution=_baseline_observer(
+                            attempts, members, growth_policy or GrowthPolicy()
+                        ), on_start=mark_baseline_started,
+                    )
+            except SearchCancelled:
+                raise
+            except Exception as error:
+                if len(attempts) == baseline_attempt_count:
+                    record(
+                        "baseline" if baseline_started else "setup",
+                        "solver_error", f"{type(error).__name__}: {error}",
+                        floors={
+                            "min_member_growth": (
+                                growth_policy or GrowthPolicy()
+                            ).min_member_growth,
+                            "min_community_growth": (
+                                growth_policy or GrowthPolicy()
+                            ).min_community_growth,
+                        } if baseline_started else None,
+                        solve_executed=None if baseline_started else False,
+                        solve_started=baseline_started,
+                    )
+                else:
+                    # The observer saw a solver return, but extracting the baseline
+                    # growth failed afterwards. Preserve its raw solver status while
+                    # marking the attempt's scientific readout unresolved.
+                    attempt = attempts[-1]
+                    attempt["outcome"] = "error"
+                    attempt["diagnostic"] = (
+                        f"{attempt['diagnostic']}; " if attempt["diagnostic"] else ""
+                    ) + f"{type(error).__name__}: {error}"
+                    attempt["solve_started"] = True
+                raise
         if growth_policy is not None:
             baseline["growth_policy"] = growth_policy
         # Every objective gets its own extreme, then independent epsilon slices.
@@ -1202,11 +1500,51 @@ def _pareto_points_for_members(
         relaxed: dict[str, float] = {}
         for spec in specs:
             if spec.direction in (Direction.MIN_SECRETION, Direction.MIN_UPTAKE):
-                opposite = replace(spec, direction=(Direction.MAX_SECRETION
-                    if spec.direction == Direction.MIN_SECRETION else Direction.MAX_UPTAKE))
-                limit = target_max_solve(
-                    community, opposite, growth_fraction=growth_fraction, solver=solver,
-                    **baseline,
+                opposite = replace(
+                    spec,
+                    direction=(
+                        Direction.MAX_SECRETION
+                        if spec.direction == Direction.MIN_SECRETION
+                        else Direction.MAX_UPTAKE
+                    ),
+                )
+                try:
+                    limit = target_max_solve(
+                        community,
+                        opposite,
+                        growth_fraction=growth_fraction,
+                        solver=solver,
+                        **baseline,
+                    )
+                except SearchCancelled:
+                    raise
+                except Exception as error:  # noqa: BLE001 - one auxiliary LP, not the candidate
+                    record(
+                        f"min_relax={spec.metabolite}", "solver_error", str(error),
+                        target=spec.metabolite, direction=opposite.direction.value,
+                        solve_executed=None,
+                    )
+                    continue
+                record(
+                    f"min_relax={spec.metabolite}",
+                    limit.status,
+                    getattr(limit, "diagnostic", None),
+                    weights={spec.metabolite: 1.0},
+                    floors={"community_growth": max(
+                        growth_fraction * baseline.get("mu_community", 0.0),
+                        (growth_policy or GrowthPolicy()).min_community_growth,
+                    ), "min_member_growth": (
+                        growth_policy or GrowthPolicy()
+                    ).min_member_growth},
+                    target=spec.metabolite,
+                    direction=opposite.direction.value,
+                    measured_result=(
+                        {"target_flux": float(limit.target_flux),
+                         "signed_target_flux": _signed_raw(limit, opposite),
+                         "community_growth": float(limit.community_growth)}
+                        if limit.status == "optimal" else None
+                    ),
+                    solve_executed=limit.status not in {"missing", "non_viable", "baseline_failed"},
                 )
                 if limit.status == "optimal":
                     relaxed[spec.metabolite] = -abs(limit.target_flux)
@@ -1223,23 +1561,67 @@ def _pareto_points_for_members(
                     fraction = step / resolution
                     low = relaxed.get(other.metabolite, 0.0)
                     bound = low + (best - low) * fraction
-                    policies.append((objective_specs, {other.metabolite: bound},
-                                     f"primary={primary.metabolite};{other.metabolite}>={bound:g}"))
+                    policies.append(
+                        (
+                            objective_specs,
+                            {other.metabolite: bound},
+                            f"primary={primary.metabolite};{other.metabolite}>={bound:g}",
+                        )
+                    )
         # Preserve balanced slices too, but never impose a zero bound on omitted
         # minimisation targets (zero is their best value, not a neutral constraint).
         for epsilon in epsilon_grid:
-            floors = {spec.metabolite: epsilon * capability.get(spec.metabolite, 0.0)
-                      for spec in specs if spec.direction in (
-                          Direction.MAX_SECRETION, Direction.MAX_UPTAKE)}
+            floors = {
+                spec.metabolite: epsilon * capability.get(spec.metabolite, 0.0)
+                for spec in specs
+                if spec.direction in (Direction.MAX_SECRETION, Direction.MAX_UPTAKE)
+            }
             policies.append((specs, floors, f"epsilon={epsilon:g}"))
         for objective_specs, floors, label in policies:
-            result = epsilon_constrained_solve(
-                community, objective_specs, floors,
-                normalization_scales=dict.fromkeys(
-                    (spec.metabolite for spec in specs), 1.0
+            weights = {spec.metabolite: float(spec.weight) for spec in objective_specs}
+            try:
+                result = epsilon_constrained_solve(
+                    community,
+                    objective_specs,
+                    floors,
+                    normalization_scales=dict.fromkeys((spec.metabolite for spec in specs), 1.0),
+                    growth_fraction=growth_fraction,
+                    solver=solver,
+                    **baseline,
+                )
+            except SearchCancelled:
+                raise
+            except Exception as error:  # noqa: BLE001 - preserve earlier feasible slices
+                record(
+                    label,
+                    "solver_error",
+                    f"{type(error).__name__}: {error}",
+                    weights=weights,
+                    floors={**floors, "community_growth": max(
+                        growth_fraction * baseline.get("mu_community", 0.0),
+                        (growth_policy or GrowthPolicy()).min_community_growth,
+                    ), "min_member_growth": (
+                        growth_policy or GrowthPolicy()
+                    ).min_member_growth},
+                    solve_executed=None,
+                )
+                continue
+            record(
+                label,
+                result.status,
+                result.diagnostic,
+                weights=weights,
+                floors={**floors, "community_growth": max(
+                    growth_fraction * baseline.get("mu_community", 0.0),
+                    (growth_policy or GrowthPolicy()).min_community_growth,
+                ), "min_member_growth": (
+                    growth_policy or GrowthPolicy()
+                ).min_member_growth},
+                vector=dict(result.signed_values) if result.status == "optimal" else None,
+                measured_result=(
+                    {"community_growth": float(result.community_growth)}
+                    if result.status == "optimal" else None
                 ),
-                growth_fraction=growth_fraction, solver=solver,
-                **baseline,
             )
             if result.status != "optimal":
                 continue
@@ -1247,44 +1629,124 @@ def _pareto_points_for_members(
             if vector in seen_vectors:
                 continue
             seen_vectors.add(vector)
-            points.append(_ComboEval(
-                members, "optimal", result.community_growth,
-                dict(result.target_fluxes), dict(result.signed_values),
-                _with_medium_note(label, medium_note),
-                result.missing_targets, FLUX_BASIS_JOINT,
-                tuple(sorted(str(x) for x in getattr(community, "taxa", members))),
-                getattr(result, "member_growth", {}), getattr(result, "abundances", {}),
-                medium_note=medium_note,
-            ))
-    except Exception as error:  # noqa: BLE001 - per-combo isolation, same as the other passes
-        return [_ComboEval(members, "failed", 0.0, {}, {}, str(error), (), FLUX_BASIS_NONE)]
+            points.append(
+                _ComboEval(
+                    members,
+                    "optimal",
+                    result.community_growth,
+                    dict(result.target_fluxes),
+                    dict(result.signed_values),
+                    _with_medium_note(label, medium_note),
+                    result.missing_targets,
+                    FLUX_BASIS_JOINT,
+                    tuple(sorted(str(x) for x in getattr(community, "taxa", members))),
+                    getattr(result, "member_growth", {}),
+                    getattr(result, "abundances", {}),
+                    medium_note=medium_note,
+                )
+            )
+    except SearchCancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - candidate setup failure
+        if (
+            not attempts or attempts[-1]["phase"] != "baseline"
+            or attempts[-1]["outcome"] == "optimal"
+        ):
+            record(
+                "setup", "solver_error", f"{type(error).__name__}: {error}",
+                solve_executed=False,
+            )
     if not points:
         # Every epsilon level came back non-optimal without raising. Returning [] made the
         # consortium vanish from both the ranking and `unevaluated` while
         # n_candidates_evaluated still counted it; it is an unevaluable candidate.
-        return [_ComboEval(
-            members, "failed", 0.0, {}, {},
-            _with_medium_note("no epsilon level solved to optimality", medium_note),
-            (), FLUX_BASIS_NONE,
-        )]
-    return points
+        return [
+            replace(
+                _ComboEval(
+                    members,
+                    "failed",
+                    0.0,
+                    {},
+                    {},
+                    _with_medium_note("no epsilon level solved to optimality", medium_note),
+                    (),
+                    FLUX_BASIS_NONE,
+                ),
+                pareto_attempts=attempts,
+                sampling_status="failed",
+            )
+        ]
+    unresolved = any(attempt["outcome"] in {"timeout", "error"} for attempt in attempts)
+    return [
+        replace(
+            point, pareto_attempts=attempts, sampling_status="partial" if unresolved else "complete"
+        )
+        for point in points
+    ]
+
+
+def _pareto_attempt_summary(
+    capabilities: dict[tuple[str, ...], _ComboEval],
+    groups: dict[tuple[str, ...], list[_ComboEval]],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    attempts: list[dict[str, Any]] = []
+    states: dict[str, str] = {}
+    for members in sorted(set(capabilities) | set(groups)):
+        cap = capabilities.get(members)
+        if cap is not None:
+            attempts.extend(cap.pareto_attempts)
+        group = groups.get(members, [])
+        if group:
+            repeated_failed_capability = (
+                cap is not None and cap.status != "optimal"
+                and group[0].pareto_attempts == cap.pareto_attempts
+            )
+            if not repeated_failed_capability:
+                attempts.extend(group[0].pareto_attempts)
+            states["+".join(members)] = (
+                "failed" if cap is not None and cap.status != "optimal"
+                else group[0].sampling_status
+            )
+        elif cap is not None:
+            states["+".join(members)] = "failed" if cap.status != "optimal" else "partial"
+    per_member_order: dict[tuple[str, ...], int] = {}
+    for attempt in attempts:
+        members = tuple(attempt["members"])
+        order = per_member_order.get(members, 0)
+        attempt["order"] = order
+        attempt["attempt_key"] = f"{'|'.join(members)}:{order:04d}"
+        per_member_order[members] = order + 1
+    return attempts, states
 
 
 def search_model_pool_multi(
-    engine: Any, taxonomy: Any, config: MultiTargetConfig, *,
-    medium_spec: Any | None = None, strict_medium: bool = True,
+    engine: Any,
+    taxonomy: Any,
+    config: MultiTargetConfig,
+    *,
+    medium_spec: Any | None = None,
+    strict_medium: bool = True,
     control: SearchControl | None = None,
 ) -> MultiTargetSearchResult:
     """Rank model-pool combinations against multiple targets (weighted-normalized + Pareto)."""
     validate_taxonomy(taxonomy)
     config.growth_policy.validate()
-    if (config.strategy != "exhaustive" or control is not None or config.reference_scales
-            or config.growth_policy != GrowthPolicy() or config.pareto_resolution != 5):
+    if (
+        config.strategy != "exhaustive"
+        or control is not None
+        or config.reference_scales
+        or config.growth_policy != GrowthPolicy()
+        or config.pareto_resolution != 5
+    ):
         from cmig.core.search_multi import run_multi_search
 
         return run_multi_search(
-            engine, taxonomy, config, medium_spec=medium_spec,
-            strict_medium=strict_medium, control=control,
+            engine,
+            taxonomy,
+            config,
+            medium_spec=medium_spec,
+            strict_medium=strict_medium,
+            control=control,
         )
     if len(config.targets) < 2:
         raise ValueError("multi-target search needs >= 2 targets; use single --target otherwise")
@@ -1306,19 +1768,16 @@ def search_model_pool_multi(
     ids = [str(x) for x in taxonomy["id"]]
     if len(set(ids)) != len(ids):
         raise ValueError("taxonomy id values must be unique")
-    specs = [
-        TargetSpec(t, config.directions[t], config.weights[t]) for t in config.targets
-    ]
-    n_candidates_total = count_candidate_combinations(
-        ids, config.min_size, config.max_size
-    )
+    specs = [TargetSpec(t, config.directions[t], config.weights[t]) for t in config.targets]
+    n_candidates_total = count_candidate_combinations(ids, config.min_size, config.max_size)
     if n_candidates_total == 0:
         raise ValueError("no candidate combinations generated")
     if n_candidates_total > config.exhaustive_max:
         raise ValueError(
             f"{n_candidates_total} candidates > exhaustive_max={config.exhaustive_max}; "
             "narrow --min-size/--max-size (multi-target search is exhaustive-only, no silent "
-            "truncation)")
+            "truncation)"
+        )
     # Multi-target search is exhaustive-only, but the guard above guarantees this
     # compatibility list is small before it is materialized.
     candidates = candidate_combinations(ids, config.min_size, config.max_size)
@@ -1326,17 +1785,30 @@ def search_model_pool_multi(
     medium_notes: set[str] = set()
     capability_evals = [
         _evaluate_members_multi(
-            engine, taxonomy, members, specs,
-            growth_fraction=config.growth_fraction, solver=config.solver,
-            medium_spec=medium_spec, strict_medium=strict_medium,
-            medium_notes=medium_notes)
+            engine,
+            taxonomy,
+            members,
+            specs,
+            growth_fraction=config.growth_fraction,
+            solver=config.solver,
+            medium_spec=medium_spec,
+            strict_medium=strict_medium,
+            medium_notes=medium_notes,
+        )
         for members in candidates
     ]
     ranges = _capability_ranges(capability_evals, specs)
     if config.metric == "pareto":
         return _pareto_search(
-            engine, taxonomy, candidates, capability_evals, specs, config,
-            medium_spec=medium_spec, strict_medium=strict_medium, ids=ids,
+            engine,
+            taxonomy,
+            candidates,
+            capability_evals,
+            specs,
+            config,
+            medium_spec=medium_spec,
+            strict_medium=strict_medium,
+            ids=ids,
             medium_notes=medium_notes,
         )
     evals: list[_ComboEval] = []
@@ -1389,9 +1861,16 @@ def search_model_pool_multi(
 
 
 def _pareto_search(
-    engine: Any, taxonomy: Any, candidates: list[tuple[str, ...]],
-    capability_evals: list[_ComboEval], specs: list[TargetSpec], config: MultiTargetConfig,
-    *, medium_spec: Any, strict_medium: bool, ids: list[str],
+    engine: Any,
+    taxonomy: Any,
+    candidates: list[tuple[str, ...]],
+    capability_evals: list[_ComboEval],
+    specs: list[TargetSpec],
+    config: MultiTargetConfig,
+    *,
+    medium_spec: Any,
+    strict_medium: bool,
+    ids: list[str],
     medium_notes: set[str] | None = None,
 ) -> MultiTargetSearchResult:
     """Report the non-dominated trade-off set instead of one scalarised winner (item 9).
@@ -1407,20 +1886,31 @@ def _pareto_search(
     weight_of = {spec.metabolite: spec.weight for spec in specs}
     points: list[_ComboEval] = []
     unevaluated: list[_ComboEval] = []
+    groups: dict[tuple[str, ...], list[_ComboEval]] = {}
     for members, capability in zip(candidates, capability_evals, strict=True):
         if capability.status != "optimal":
             unevaluated.append(capability)
             continue
         found = _pareto_points_for_members(
-            engine, taxonomy, members, specs,
+            engine,
+            taxonomy,
+            members,
+            specs,
             capability={m: capability.signed.get(m, 0.0) for m in metabolites},
-            growth_fraction=config.growth_fraction, solver=config.solver,
-            medium_spec=medium_spec, strict_medium=strict_medium,
+            growth_fraction=config.growth_fraction,
+            solver=config.solver,
+            medium_spec=medium_spec,
+            strict_medium=strict_medium,
             medium_notes=medium_notes,
-            **cast(dict[str, Any], {"growth_policy": config.growth_policy}
-                   if config.growth_policy != GrowthPolicy() else {}),
+            **cast(
+                dict[str, Any],
+                {"growth_policy": config.growth_policy}
+                if config.growth_policy != GrowthPolicy()
+                else {},
+            ),
             resolution=config.pareto_resolution,
         )
+        groups[members] = found
         if found and all(point.status != "optimal" for point in found):
             unevaluated.extend(found)
             continue
@@ -1433,11 +1923,22 @@ def _pareto_search(
         if index not in keep:
             continue
         contributions = {m: weight_of[m] * point.signed.get(m, 0.0) for m in metabolites}
-        rows.append(MultiTargetRank(
-            0, point.members, sum(contributions.values()), point.fluxes, contributions,
-            point.community_growth, "optimal", True, point.diagnostic,
-            point.missing_targets, point.flux_basis,
-        ))
+        rows.append(
+            MultiTargetRank(
+                0,
+                point.members,
+                sum(contributions.values()),
+                point.fluxes,
+                contributions,
+                point.community_growth,
+                "optimal",
+                True,
+                point.diagnostic,
+                point.missing_targets,
+                point.flux_basis,
+                sampling_status=point.sampling_status,
+            )
+        )
     # Deduplicate identical achieved vectors from different epsilon levels of the same consortium.
     seen: set[tuple[Any, ...]] = set()
     unique: list[MultiTargetRank] = []
@@ -1449,12 +1950,15 @@ def _pareto_search(
         unique.append(row)
     ranked = [replace(row, rank=i + 1) for i, row in enumerate(unique)]
 
-    warnings = list(unevaluable_warnings(
-        [(r.members, r.status, r.diagnostic) for r in unevaluated],
-        len(candidates),
-    ))
+    warnings = list(
+        unevaluable_warnings(
+            [(r.members, r.status, r.diagnostic) for r in unevaluated],
+            len(candidates),
+        )
+    )
     n_specialists = sum(
-        1 for row in ranked
+        1
+        for row in ranked
         if sum(1 for m in metabolites if abs(row.target_scores.get(m, 0.0)) > TIE_TOLERANCE) <= 1
     )
     warnings.append(
@@ -1465,6 +1969,13 @@ def _pareto_search(
         f"{n_specialists} of {len(ranked)} front points are single-metabolite specialists"
     )
     warnings.extend(sorted(medium_notes or ()))
+    attempts, states = _pareto_attempt_summary(
+        dict(zip(candidates, capability_evals, strict=True)), groups
+    )
+    if any(state == "partial" for state in states.values()):
+        warnings.append(
+            "Pareto sampling is partial; retained feasible points exclude unresolved slices"
+        )
     return MultiTargetSearchResult(
         targets=list(config.targets),
         target_exchanges={s.metabolite: s.exchange_id() for s in specs},
@@ -1483,17 +1994,26 @@ def _pareto_search(
         unevaluated=unevaluated_ranks(unevaluated, metabolites),
         pareto_archive=ranked,
         evaluations=ranked + unevaluated_ranks(unevaluated, metabolites),
+        pareto_attempts=attempts,
+        candidate_sampling_status=states,
     )
 
 
-def unevaluated_ranks(
-    evals: list[_ComboEval], metabolites: list[str]
-) -> list[MultiTargetRank]:
+def unevaluated_ranks(evals: list[_ComboEval], metabolites: list[str]) -> list[MultiTargetRank]:
     """Unevaluable combos as rank-0 rows (P0-C), shared by the pareto path."""
     return [
         MultiTargetRank(
-            0, e.members, float("-inf"), e.fluxes, {}, e.community_growth,
-            e.status, False, e.diagnostic, e.missing_targets, e.flux_basis,
+            0,
+            e.members,
+            float("-inf"),
+            e.fluxes,
+            {},
+            e.community_growth,
+            e.status,
+            False,
+            e.diagnostic,
+            e.missing_targets,
+            e.flux_basis,
         )
         for e in evals
     ]
@@ -1505,14 +2025,17 @@ def _multi_target_warnings(
     config: MultiTargetConfig,
 ) -> list[str]:
     """B3/B4: 부재 target·평가 불가·전부-0·동점을 요약 warnings 로 노출한다."""
-    warnings: list[str] = list(unevaluable_warnings(
-        [(r.members, r.status, r.diagnostic) for r in unevaluated],
-        len(ranked) + len(unevaluated),
-    ))
+    warnings: list[str] = list(
+        unevaluable_warnings(
+            [(r.members, r.status, r.diagnostic) for r in unevaluated],
+            len(ranked) + len(unevaluated),
+        )
+    )
     # P0-F(D7): 선형 joint 목적식은 정점 해를 고르므로, 일부 target 이 정확히 0 인 것은
     # "만들 수 없다"가 아니라 "이 정점에서 선택되지 않았다"일 수 있다.
     collapsed = [
-        r for r in ranked
+        r
+        for r in ranked
         if r.status == "optimal"
         and any(abs(v) <= TIE_TOLERANCE for v in r.target_scores.values())
         and any(abs(v) > TIE_TOLERANCE for v in r.target_scores.values())
@@ -1524,9 +2047,7 @@ def _multi_target_warnings(
             "inability to produce them ("
             + ", ".join(
                 f"{'+'.join(r.members)}:"
-                + ",".join(
-                    sorted(m for m, v in r.target_scores.items() if abs(v) <= TIE_TOLERANCE)
-                )
+                + ",".join(sorted(m for m, v in r.target_scores.items() if abs(v) <= TIE_TOLERANCE))
                 for r in collapsed[:5]
             )
             + ")"
@@ -1553,8 +2074,10 @@ def _multi_target_warnings(
     # Item 9: every scalarised metric inherits the vertex-selection bias, so say it on all of them.
     if config.metric != "pareto":
         warnings.append(SCALARISATION_WARNING)
-    warnings.extend(_ranking_degeneracy_warnings(
-        [(r.members, r.weighted_score, r.status) for r in ranked],
-        score_is_flux=config.metric != "normalized_weighted",
-    ))
+    warnings.extend(
+        _ranking_degeneracy_warnings(
+            [(r.members, r.weighted_score, r.status) for r in ranked],
+            score_is_flux=config.metric != "normalized_weighted",
+        )
+    )
     return warnings

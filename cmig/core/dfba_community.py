@@ -6,9 +6,9 @@ each time step its abundances and member-to-pool uptake bounds are rebound, the 
 solved, and the resulting per-member growth and exchange rates are integrated with explicit
 Euler updates.
 
-MICOM member exchange fluxes use the same convention as COBRA exchanges: negative is uptake from
-the pool and positive is secretion into it.  Consequently the shared-pool balance is
-``dS_m/dt = sum_i(v_i,m * X_i)``.  Death and washout are intentionally out of scope for this
+MICOM member exchange orientation depends on the source reaction. The shared-pool amount
+coordinate is derived from its actual pool coefficient and member abundance. Consequently
+``dS_m/dt = sum_i(q_i,m * X_i)``. Death and washout are intentionally out of scope for this
 prototype; negative member growth is rejected rather than silently interpreted as death.
 """
 
@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
 
-from cmig.core.engine import FLUX_REPORT_LABEL, MicomEngine, SolveResult, _met_from_exchange
+from cmig.core.engine import FLUX_REPORT_LABEL, MicomEngine, SolveResult
 
 COMMUNITY_DFBA_LIMITATIONS = (
     "death and washout are out of scope; member biomass changes only through solved growth",
@@ -142,6 +142,7 @@ class CommunityDfbaResult:
     members: list[str] = field(default_factory=list)
     managed_exchanges: list[str] = field(default_factory=list)
     untracked_uptake: dict[str, float] = field(default_factory=dict)
+    untracked_uptake_basis: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     events: list[CommunityDfbaEvent] = field(default_factory=list)
     community_build_seconds: float = 0.0
@@ -163,9 +164,9 @@ def _exchange_metabolite(exchange_id: str, suffix: str = "_m") -> str:
 
 def _member_exchange_map(
     community: Any, tracked: list[str], members: list[str]
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, dict[str, list[Any]]]:
     """Map each tracked environmental exchange to its connected member reactions."""
-    mapped: dict[str, dict[str, Any]] = {}
+    mapped: dict[str, dict[str, list[Any]]] = {}
     for exchange_id in tracked:
         try:
             external = community.reactions.get_by_id(exchange_id)
@@ -182,11 +183,11 @@ def _member_exchange_map(
                 f"tracked MICOM exchange must contain one pool metabolite: {exchange_id}"
             )
         pool_metabolite = next(iter(external.metabolites))
-        by_member: dict[str, Any] = {}
+        by_member: dict[str, list[Any]] = {}
         for reaction in pool_metabolite.reactions:
             member = getattr(reaction, "community_id", None)
             if not reaction.boundary and member in members:
-                by_member[str(member)] = reaction
+                by_member.setdefault(str(member), []).append(reaction)
         mapped[exchange_id] = by_member
     return mapped
 
@@ -194,13 +195,75 @@ def _member_exchange_map(
 def _default_member_vmax(
     community: Any,
     exchange_id: str,
-    member_reaction: Any,
+    member_reactions: list[Any],
     initial_medium: dict[str, float],
 ) -> float:
+    from cmig.core.exchange import exchange_identity
+
     environmental_limit = float(initial_medium.get(exchange_id, 0.0))
     if environmental_limit > 0.0:
-        return environmental_limit
-    return max(0.0, -float(member_reaction.lower_bound))
+        external = exchange_identity(community.reactions.get_by_id(exchange_id))
+        return environmental_limit * abs(external.coefficient)
+    member = str(member_reactions[0].community_id)
+    abundance = float(community.abundances[member])
+    return sum(
+        max(0.0, -coefficient * bound / abundance)
+        for reaction in member_reactions
+        for coefficient, bound in [_member_pool_supply_bound(reaction)]
+    )
+
+
+def _member_pool_supply_bound(reaction: Any) -> tuple[float, float]:
+    """Pool coefficient and the raw bound in the pool-consuming direction."""
+    pool = [
+        float(coefficient)
+        for met, coefficient in reaction.metabolites.items()
+        if str(getattr(met, "compartment", "")) == "m"
+    ]
+    if (
+        len(pool) != 1 or len(reaction.metabolites) != 2
+        or not math.isfinite(pool[0]) or not pool[0]
+    ):
+        raise ValueError(f"unsupported MICOM member-pool exchange topology: {reaction.id}")
+    coefficient = pool[0]
+    bound = reaction.lower_bound if coefficient > 0 else reaction.upper_bound
+    return coefficient, float(bound)
+
+
+def _member_kinetic_constraints(
+    community: Any,
+    by_member: dict[str, list[Any]],
+    abundances: dict[str, float],
+    budgets: dict[str, float],
+    *,
+    index: int,
+    nutrient_index: int,
+) -> list[Any]:
+    """One physical uptake budget across all channels, with secretion unconstrained."""
+    added: list[Any] = []
+    for member_index, (member, reactions) in enumerate(sorted(by_member.items())):
+        auxiliaries: list[Any] = []
+        for channel_index, reaction in enumerate(reactions):
+            coefficient, _ = _member_pool_supply_bound(reaction)
+            name = f"cmig_kin_{index}_{nutrient_index}_{member_index}_{channel_index}"
+            uptake = community.problem.Variable(name, lb=0)
+            # u >= -q, q=(c_pool/abundance)*v. Positive q is secretion.
+            bound = community.problem.Constraint(
+                uptake + coefficient / abundances[member] * reaction.flux_expression,
+                lb=0,
+                name=f"{name}_channel",
+            )
+            auxiliaries.append(uptake)
+            added.extend((uptake, bound))
+        if auxiliaries:
+            added.append(
+                community.problem.Constraint(
+                    sum(auxiliaries), ub=budgets[member],
+                    name=f"cmig_kin_{index}_{nutrient_index}_{member_index}_total",
+                )
+            )
+    community.add_cons_vars(added)
+    return added
 
 
 def _validate_vmax_surface(
@@ -304,6 +367,10 @@ def _finish_result(
         members=members,
         managed_exchanges=tracked,
         untracked_uptake=untracked_uptake,
+        untracked_uptake_basis={
+            key: "member_biomass" if key.startswith("member:") else "community_biomass"
+            for key in untracked_uptake
+        },
         warnings=list(dict.fromkeys(warnings)),
         events=events,
         community_build_seconds=build_seconds,
@@ -325,10 +392,12 @@ def _member_flux_keys(
     """
     return {
         exchange_id: {
-            # MICOM suffixes every member reaction with `__<taxon>`; `global_id` is the id the
-            # flux table (and therefore the engine's member_exchange) is keyed by.
-            member: _met_from_exchange(str(getattr(reaction, "global_id", reaction.id)), "_e")
-            for member, reaction in by_member.items()
+            # Engine normalizes the actual shared pool identity, independent of global_id.
+            member: next(
+                str(met.id)[:-2] for met in reactions[0].metabolites
+                if str(getattr(met, "compartment", "")) == "m" and str(met.id).endswith("_m")
+            )
+            for member, reactions in by_member.items()
         }
         for exchange_id, by_member in tracked_members.items()
     }
@@ -337,7 +406,7 @@ def _member_flux_keys(
 def _solve_member_state(
     solution: SolveResult,
     members: list[str],
-    tracked_members: dict[str, dict[str, Any]],
+    tracked_members: dict[str, dict[str, list[Any]]],
     tracked_metabolites: dict[str, dict[str, str]],
 ) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
     growth: dict[str, float] = {}
@@ -406,6 +475,10 @@ def run_community_dfba(
         )
     tracked = list(config.initial_concentrations)
     _validate_vmax_surface(config, members, tracked)
+    initial_total = sum(config.initial_biomasses.values())
+    community.set_abundance({
+        member: config.initial_biomasses[member] / initial_total for member in members
+    })
     tracked_members = _member_exchange_map(community, tracked, members)
     tracked_metabolites = _member_flux_keys(tracked_members)
     initial_medium = {
@@ -414,26 +487,28 @@ def run_community_dfba(
 
     vmax: dict[str, dict[str, float]] = {member: {} for member in members}
     for exchange_id, by_member in tracked_members.items():
-        for member, reaction in by_member.items():
+        for member, reactions in by_member.items():
             override = (config.member_vmax or {}).get(member, {}).get(exchange_id)
             vmax[member][exchange_id] = (
                 float(override)
                 if override is not None
                 else _default_member_vmax(
-                    community, exchange_id, reaction, initial_medium
+                    community, exchange_id, reactions, initial_medium
                 )
             )
 
-    environmental_by_metabolite = {
-        _exchange_metabolite(str(reaction.id)): reaction for reaction in community.exchanges
-    }
+    from cmig.core.boundary import close_boundary_supply
+
+    environmental_ids = {str(reaction.id) for reaction in community.exchanges}
     closed_untracked: list[str] = []
     if config.close_untracked_uptake:
-        for reaction in community.exchanges:
-            exchange_id = str(reaction.id)
-            if exchange_id not in tracked and float(reaction.lower_bound) < 0.0:
-                reaction.lower_bound = 0.0
-                closed_untracked.append(exchange_id)
+        closure = close_boundary_supply(community, keep=tracked)
+        if closure.forced_supply:
+            raise ValueError(
+                "community boundary isolation cannot close forced undeclared suppliers: "
+                f"{closure.forced_supply}"
+            )
+        closed_untracked = list(closure.closed)
 
     concentrations = dict(config.initial_concentrations)
     biomasses = dict(config.initial_biomasses)
@@ -456,25 +531,41 @@ def run_community_dfba(
     solve_seconds: list[float] = []
     flux_report_statuses: set[str] = set()
     t = 0.0
+    step_index = 0
+    kinetic_constraints: list[Any] = []
 
     while t < config.t_end - 1e-12:
+        if kinetic_constraints:
+            community.remove_cons_vars(kinetic_constraints)
+            kinetic_constraints = []
         total_biomass = sum(biomasses.values())
         abundances = {member: biomasses[member] / total_biomass for member in members}
         community.set_abundance(abundances)
 
-        for exchange_id, by_member in tracked_members.items():
+        for nutrient_index, (exchange_id, by_member) in enumerate(tracked_members.items()):
             concentration = max(concentrations[exchange_id], 0.0)
             weighted_capacity = 0.0
-            for member, reaction in by_member.items():
+            budgets: dict[str, float] = {}
+            for member in by_member:
                 maximum = vmax[member][exchange_id]
                 uptake = (
                     maximum * concentration / (config.km + concentration)
                     if concentration > 0.0
                     else 0.0
                 )
-                reaction.lower_bound = -uptake
+                budgets[member] = uptake
                 weighted_capacity += abundances[member] * uptake
-            community.reactions.get_by_id(exchange_id).lower_bound = -weighted_capacity
+            kinetic_constraints.extend(_member_kinetic_constraints(
+                community, by_member, abundances, budgets,
+                index=step_index, nutrient_index=nutrient_index,
+            ))
+            from cmig.core.exchange import exchange_identity
+
+            external = community.reactions.get_by_id(exchange_id)
+            exchange_identity(external).set_physical_uptake_limit(
+                external, weighted_capacity
+            )
+        step_index += 1
 
         solve_started = perf_counter()
         solution = engine.cooperative_tradeoff(
@@ -533,15 +624,23 @@ def run_community_dfba(
             )
 
         new_untracked: dict[str, float] = {}
-        for metabolite, flux in solution.external_exchange.items():
-            reaction = environmental_by_metabolite.get(metabolite)
-            if reaction is None or str(reaction.id) in tracked or flux >= -_FLUX_TOLERANCE:
+        if not solution.boundary_supply_complete:
+            return _finish_result(
+                timecourse=timecourse, status="solver_failed",
+                diagnostic="MICOM solution lacks a complete boundary-supply readout",
+                members=members, tracked=tracked, untracked_uptake=untracked_uptake,
+                warnings=warnings, events=events, build_seconds=build_seconds,
+                solve_seconds=solve_seconds, flux_report_statuses=flux_report_statuses,
+            )
+        for reaction_id, uptake in solution.boundary_supply.items():
+            if reaction_id in tracked:
                 continue
-            exchange_id = str(reaction.id)
-            uptake = -float(flux)
-            if uptake > untracked_uptake.get(exchange_id, 0.0):
-                untracked_uptake[exchange_id] = uptake
-                new_untracked[exchange_id] = uptake
+            # Preserve the reaction identity and biomass basis. Member sinks and environment
+            # exchanges are never summed as if they shared a biomass denominator.
+            key = reaction_id if reaction_id in environmental_ids else "member:" + reaction_id
+            if uptake > untracked_uptake.get(key, 0.0):
+                untracked_uptake[key] = uptake
+                new_untracked[key] = uptake
         if new_untracked:
             events.append(
                 CommunityDfbaEvent(

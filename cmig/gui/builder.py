@@ -9,6 +9,8 @@ DeltaTable=core.delta.DeltaResult 표시(significant 강조·실패 명시), Sce
 
 from __future__ import annotations
 
+import json
+import math
 from pathlib import Path
 from typing import cast
 
@@ -23,7 +25,9 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSlider,
     QSpinBox,
     QStackedWidget,
@@ -43,6 +47,80 @@ from cmig.core.sandbox import BoundConstraint
 SEARCH_COLUMNS = ("Members", "Target", "Score", "Flux", "Growth", "FVA Range", "Status")
 
 _DIAGNOSTIC_COLOR = QColor("#d62728")
+
+
+def validate_search_summary(summary: dict[str, object]) -> None:
+    """Validate the ranking fields consumed by SearchView before publishing a run.
+
+    Missing or null numeric readouts mean unknown in older and failed-run schemas.
+    A present value of another type cannot silently become that unknown readout.
+    """
+    if "warnings" in summary and not isinstance(summary["warnings"], list):
+        raise ValueError("search summary warnings must be a list")
+    if "n_pareto_points" in summary and summary["n_pareto_points"] is not None:
+        try:
+            int(str(summary["n_pareto_points"]))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("search summary n_pareto_points must be an integer") from exc
+    ranked = summary.get("top_ranked")
+    if isinstance(ranked, list):
+        groups = [("top_ranked", ranked)]
+    elif isinstance(ranked, dict):
+        if not all(isinstance(key, str) for key in ranked):
+            raise ValueError("search ranking target names must be strings")
+        groups = [(f"top_ranked.{key}", rows) for key, rows in ranked.items()]
+    else:
+        raise ValueError("search summary has no valid top_ranked collection")
+
+    def numeric(value: object, field: str) -> None:
+        if value is None:
+            return
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise ValueError(f"{field} must be numeric or null")
+        try:
+            if not math.isfinite(float(value)):
+                raise ValueError(f"{field} must be finite or null")
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{field} must be numeric or null") from exc
+
+    for group, rows in groups:
+        if not isinstance(rows, list):
+            raise ValueError(f"{group} must be a list")
+        for index, row in enumerate(rows):
+            where = f"{group}[{index}]"
+            if not isinstance(row, dict):
+                raise ValueError(f"{where} must be an object")
+            if "members" in row and (
+                not isinstance(row["members"], list)
+                or not all(isinstance(member, str) for member in row["members"])
+            ):
+                raise ValueError(f"{where}.members must be a list of names")
+            for field in (
+                "score", "weighted_score", "target_flux", "community_growth",
+                "robustness_fva_lo", "robustness_fva_hi",
+            ):
+                if field in row:
+                    numeric(row[field], f"{where}.{field}")
+            if "target_fluxes" in row:
+                fluxes = row["target_fluxes"]
+                if not isinstance(fluxes, dict) or not all(
+                    isinstance(target, str) for target in fluxes
+                ):
+                    raise ValueError(f"{where}.target_fluxes must be an object")
+                for target, flux in fluxes.items():
+                    numeric(flux, f"{where}.target_fluxes.{target}")
+            for field in ("status", "robustness_status", "aux_text"):
+                if field in row and row[field] is not None and not isinstance(row[field], str):
+                    raise ValueError(f"{where}.{field} must be text or null")
+            if "diagnostic" in row:
+                diagnostic = row["diagnostic"]
+                if diagnostic is not None and not isinstance(diagnostic, (str, dict)):
+                    raise ValueError(f"{where}.diagnostic must be text or an object")
+                if isinstance(diagnostic, dict):
+                    for field in ("code", "message", "detail"):
+                        if (field in diagnostic and diagnostic[field] is not None
+                                and not isinstance(diagnostic[field], str)):
+                            raise ValueError(f"{where}.diagnostic.{field} must be text or null")
 
 
 class _NoEditorDelegate(QStyledItemDelegate):
@@ -420,7 +498,14 @@ class SearchView(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setMinimumSize(0, 0)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        self.scroll_area.setWidget(content)
+        outer.addWidget(self.scroll_area)
         self.title = QLabel("Find Best Model Combination")
         pool_row = QHBoxLayout()
         self.model_dir_input = QLineEdit("")
@@ -450,8 +535,8 @@ class SearchView(QWidget):
         self.robustness_check = QCheckBox("FVA")
         self.run_btn = QPushButton("Run Search")
         self.export_figure_btn = QPushButton("Export Figure")
+        self.export_figure_btn.setEnabled(False)
         self.figure_mode_combo = QComboBox()
-        self.figure_mode_combo.addItems(["Ranking", "Scatter"])
         self.figure_mode_combo.currentTextChanged.connect(self.refresh_figure_mode)
         controls.addWidget(QLabel("Target"))
         controls.addWidget(self.targets_input)
@@ -465,9 +550,11 @@ class SearchView(QWidget):
         controls.addWidget(self.top_k_spin)
         controls.addWidget(self.robustness_check)
         controls.addWidget(self.run_btn)
-        controls.addWidget(QLabel("Figure"))
-        controls.addWidget(self.figure_mode_combo)
-        controls.addWidget(self.export_figure_btn)
+        figure_row = QHBoxLayout()
+        figure_row.addWidget(QLabel("Figure"))
+        figure_row.addWidget(self.figure_mode_combo)
+        figure_row.addWidget(self.export_figure_btn)
+        figure_row.addStretch(1)
         settings = QHBoxLayout()
         self.medium_input = QLineEdit("")
         self.medium_input.setPlaceholderText("Defined medium CSV/JSON (blank: model default)")
@@ -486,12 +573,16 @@ class SearchView(QWidget):
         self.min_member_growth_spin = QDoubleSpinBox()
         self.min_member_growth_spin.setRange(0, 100)
         self.min_member_growth_spin.setDecimals(5)
+        growth_settings = QHBoxLayout()
         for label, widget in (("Medium", self.medium_input), ("Seed", self.seed_spin),
-                              ("GA budget", self.ga_budget_spin), ("Workers", self.workers_spin),
-                              ("Growth fraction", self.growth_fraction_spin),
-                              ("Member growth ≥", self.min_member_growth_spin)):
+                              ("GA budget", self.ga_budget_spin), ("Workers", self.workers_spin)):
             settings.addWidget(QLabel(label))
             settings.addWidget(widget)
+        for label, growth_widget in (("Growth fraction", self.growth_fraction_spin),
+                                     ("Member growth ≥", self.min_member_growth_spin)):
+            growth_settings.addWidget(QLabel(label))
+            growth_settings.addWidget(growth_widget)
+        growth_settings.addStretch(1)
         advanced = QHBoxLayout()
         self.direction_combo = QComboBox()
         self.direction_combo.addItems([
@@ -510,12 +601,15 @@ class SearchView(QWidget):
         self.cancel_btn.setEnabled(False)
         for label, advanced_widget in (("Direction", self.direction_combo),
                               ("Multi-target metric", self.multi_metric_combo),
-                              ("References", self.target_scales_input),
-                              ("Checkpoint", self.checkpoint_input)):
+                              ("References", self.target_scales_input)):
             advanced.addWidget(QLabel(label))
             advanced.addWidget(advanced_widget)
-        advanced.addWidget(self.resume_check)
-        advanced.addWidget(self.cancel_btn)
+        checkpoint_row = QHBoxLayout()
+        checkpoint_row.addWidget(QLabel("Checkpoint"))
+        checkpoint_row.addWidget(self.checkpoint_input)
+        checkpoint_row.addWidget(self.resume_check)
+        checkpoint_row.addWidget(self.cancel_btn)
+        checkpoint_row.addStretch(1)
         limits = QHBoxLayout()
         self.validation_top_spin = QSpinBox()
         self.validation_top_spin.setRange(0, 100)
@@ -545,10 +639,13 @@ class SearchView(QWidget):
         ko_row.addWidget(QLabel("Gene KO"))
         ko_row.addWidget(self.ko_members_input)
         ko_row.addWidget(self.ko_member_input)
-        ko_row.addWidget(self.ko_genes_input)
-        ko_row.addWidget(QLabel("Max genes/member"))
-        ko_row.addWidget(self.ko_max_genes_spin)
-        ko_row.addWidget(self.run_ko_btn)
+        ko_action_row = QHBoxLayout()
+        ko_action_row.addWidget(QLabel("Gene IDs"))
+        ko_action_row.addWidget(self.ko_genes_input)
+        ko_action_row.addWidget(QLabel("Max genes/member"))
+        ko_action_row.addWidget(self.ko_max_genes_spin)
+        ko_action_row.addWidget(self.run_ko_btn)
+        ko_action_row.addStretch(1)
         growth_row = QHBoxLayout()
         self.growth_member_input = QLineEdit("")
         self.growth_member_input.setPlaceholderText("Member for ratio sweep, e.g. iML1515")
@@ -556,12 +653,32 @@ class SearchView(QWidget):
         self.abundance_fractions_input.setPlaceholderText("Fractions, e.g. 0.1,0.25,0.5,0.75")
         self.run_growth_btn = QPushButton("Strain Growth")
         self.run_abundance_btn = QPushButton("Ratio Impact")
+        self.cooperative_tradeoff_spin = QDoubleSpinBox()
+        self.cooperative_tradeoff_spin.setRange(0.01, 1.0)
+        self.cooperative_tradeoff_spin.setDecimals(2)
+        self.cooperative_tradeoff_spin.setSingleStep(0.05)
+        self.cooperative_tradeoff_spin.setValue(0.5)
         growth_row.addWidget(QLabel("Growth/Ratio"))
         growth_row.addWidget(self.growth_member_input)
         growth_row.addWidget(self.abundance_fractions_input)
-        growth_row.addWidget(self.run_growth_btn)
-        growth_row.addWidget(self.run_abundance_btn)
+        growth_action_row = QHBoxLayout()
+        growth_action_row.addWidget(self.run_growth_btn)
+        growth_action_row.addWidget(self.run_abundance_btn)
+        growth_action_row.addStretch(1)
+        workflow_note = QLabel(
+            "Gene KO: medium (exact), direction and target growth fraction apply. "
+            "Strain Growth / Ratio: medium (exact) and cooperative tradeoff apply; "
+            "Search direction, target growth fraction, strategy and GA controls do not."
+        )
+        workflow_note.setWordWrap(True)
+        workflow_note.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.status = QLabel("")
+        self.status.setWordWrap(True)
+        self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.details = QPlainTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setMaximumHeight(115)
+        self.details.setPlaceholderText("Run conditions, warnings and diagnostics appear here.")
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(list(SEARCH_COLUMNS))
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -589,15 +706,30 @@ class SearchView(QWidget):
         layout.addWidget(self.title)
         layout.addLayout(pool_row)
         layout.addLayout(controls)
+        layout.addLayout(figure_row)
         layout.addLayout(settings)
+        layout.addLayout(growth_settings)
         layout.addLayout(advanced)
+        layout.addLayout(checkpoint_row)
         layout.addLayout(limits)
         layout.addLayout(ko_row)
+        layout.addLayout(ko_action_row)
         layout.addLayout(growth_row)
+        layout.addLayout(growth_action_row)
+        tradeoff_row = QHBoxLayout()
+        tradeoff_row.addWidget(QLabel("Cooperative tradeoff f (Growth / Ratio)"))
+        tradeoff_row.addWidget(self.cooperative_tradeoff_spin)
+        tradeoff_row.addStretch(1)
+        layout.addLayout(tradeoff_row)
+        layout.addWidget(workflow_note)
         layout.addWidget(self.status)
+        layout.addWidget(self.details)
         layout.addWidget(self.table)
         layout.addWidget(self.pareto_label)
         layout.addWidget(self.figure_stack)
+        self._displayed_kind: str | None = None
+        self._displayed_request: dict[str, str] | None = None
+        self._executed_request: dict[str, str] | None = None
         # Any edit to an answer-determining input invalidates the displayed ranking: a table
         # computed for pool/target/size A must never sit under inputs that now say B.
         for line_edit in (
@@ -633,6 +765,7 @@ class SearchView(QWidget):
         self.direction_combo.currentTextChanged.connect(self.invalidate_results)
         self.multi_metric_combo.currentTextChanged.connect(self.invalidate_results)
         self.resume_check.toggled.connect(self.invalidate_results)
+        self.cooperative_tradeoff_spin.valueChanged.connect(self.invalidate_results)
 
     #: which inputs actually determine each Search-tab workflow's answer. Used to tell the
     #: user when an arriving result was computed for a request they have since edited —
@@ -642,9 +775,15 @@ class SearchView(QWidget):
                    "medium", "seed", "ga_budget", "workers", "growth_fraction",
                    "min_member_growth", "direction", "multi_metric", "target_scales",
                    "checkpoint", "resume", "min_community_growth", "validate_top", "timeout"),
-        "gene_ko": ("pool", "target", "ko_members", "ko_member", "ko_genes", "max_genes", "top_k"),
-        "strain_growth": ("pool",),
-        "abundance_impact": ("pool", "target", "growth_member", "fractions"),
+        "gene_ko": (
+            "pool", "target", "ko_members", "ko_member", "ko_genes", "max_genes",
+            "top_k", "medium", "direction", "growth_fraction",
+        ),
+        "strain_growth": ("pool", "medium", "cooperative_tradeoff"),
+        "abundance_impact": (
+            "pool", "target", "growth_member", "fractions", "medium",
+            "cooperative_tradeoff",
+        ),
         "host_search": (),  # driven by the Host tab's own controls, not these
     }
 
@@ -669,6 +808,7 @@ class SearchView(QWidget):
             "ga_budget": str(self.ga_budget_spin.value()),
             "workers": str(self.workers_spin.value()),
             "growth_fraction": str(self.growth_fraction_spin.value()),
+            "cooperative_tradeoff": str(self.cooperative_tradeoff_spin.value()),
             "min_member_growth": str(self.min_member_growth_spin.value()),
             "direction": self.direction_combo.currentText(),
             "multi_metric": self.multi_metric_combo.currentText(),
@@ -703,51 +843,86 @@ class SearchView(QWidget):
             f"the inputs on screen have changed since; re-run to match them"
         )
 
+    def effective_note(self, requested: dict[str, str], kind: str) -> str:
+        medium = requested.get("medium") or "model default"
+        policy = "exact replacement" if requested.get("medium") else "model default"
+        if kind == "gene_ko":
+            return (f"Executed Gene KO: medium={medium} ({policy}); "
+                    f"direction={requested['direction']}; target growth fraction="
+                    f"{requested['growth_fraction']}")
+        if kind in ("strain_growth", "abundance_impact"):
+            return (f"Executed {kind}: medium={medium} ({policy}); "
+                    f"cooperative tradeoff f={requested['cooperative_tradeoff']}; "
+                    "single-medium=community for Strain Growth; Search direction and "
+                    "target growth fraction do not apply")
+        return ""
+
     def invalidate_results(self, *_args: object) -> None:
         """Drop the displayed ranking when the request that produced it no longer applies."""
         if self.table.rowCount() == 0 and self.current_run_dir is None:
             return
+        if _args and self._displayed_request is not None and self._displayed_kind is not None:
+            if self.request_fields(self._displayed_kind) == self._displayed_request:
+                return
         self.table.setRowCount(0)
         self.table.setHorizontalHeaderLabels(list(SEARCH_COLUMNS))
         self.pareto_label.setText("")
         self.current_run_dir = None
+        self._displayed_kind = None
+        self._displayed_request = None
+        self._executed_request = None
+        self._refresh_figure_choices()
         self.figure_stack.setCurrentWidget(self.figure_placeholder)
+        self.figure_placeholder.setText("Inputs changed — no figure loaded.")
+        self.export_figure_btn.setEnabled(False)
+        self.details.clear()
         self.status.setText("Inputs changed — previous result cleared; re-run to update.")
 
     def selected_figure_artifact(self) -> str:
-        if (
-            self.current_run_dir is not None
-            and (self.current_run_dir / "host_search_plot.svg").exists()
-        ):
-            return "host_search_plot.svg"
-        if (
-            self.current_run_dir is not None
-            and (self.current_run_dir / "gene_ko_plot.svg").exists()
-        ):
-            return "gene_ko_plot.svg"
-        if (
-            self.current_run_dir is not None
-            and (self.current_run_dir / "strain_growth_plot.svg").exists()
-        ):
-            return "strain_growth_plot.svg"
-        if (
-            self.current_run_dir is not None
-            and (self.current_run_dir / "abundance_impact_plot.svg").exists()
-        ):
-            return "abundance_impact_plot.svg"
-        mapping = {"Ranking": "search_plot.svg", "Scatter": "search_scatter.svg"}
-        return mapping[self.figure_mode_combo.currentText()]
+        return str(self.figure_mode_combo.currentData() or "")
+
+    def _refresh_figure_choices(self) -> None:
+        choices = (
+            ("Ranking", "search_plot.svg"), ("Scatter", "search_scatter.svg"),
+            ("Ranking", "host_search_plot.svg"), ("Ranking", "gene_ko_plot.svg"),
+            ("Ranking", "strain_growth_plot.svg"),
+            ("Ranking", "abundance_impact_plot.svg"),
+        )
+        self.figure_mode_combo.blockSignals(True)
+        self.figure_mode_combo.clear()
+        if self.current_run_dir is not None:
+            for label, name in choices:
+                if (self.current_run_dir / name).is_file():
+                    self.figure_mode_combo.addItem(label, name)
+        self.figure_mode_combo.blockSignals(False)
 
     def refresh_figure_mode(self, _mode: str | None = None) -> None:
         """Load the selected saved search SVG into the preview pane."""
-        if self.current_run_dir is None:
+        name = self.selected_figure_artifact()
+        if self.current_run_dir is None or not name:
+            self.figure_stack.setCurrentWidget(self.figure_placeholder)
+            self.figure_placeholder.setText("No figure artifact is available for this run.")
+            self.export_figure_btn.setEnabled(False)
             return
-        artifact = self.current_run_dir / self.selected_figure_artifact()
-        if not artifact.exists():
+        artifact = self.current_run_dir / name
+        if not artifact.is_file():
+            self.figure_stack.setCurrentWidget(self.figure_placeholder)
+            self.figure_placeholder.setText(f"Figure artifact missing: {name}")
+            self.export_figure_btn.setEnabled(False)
             return
+        self.export_figure_btn.setEnabled(True)
         self.figure_stack.setCurrentWidget(self.figure_view)
         if hasattr(self.figure_view, "load"):
             self.figure_view.load(str(artifact))
+            if hasattr(self.figure_view, "renderer"):
+                if not self.figure_view.renderer().isValid():
+                    self.figure_stack.setCurrentWidget(self.figure_placeholder)
+                    self.figure_placeholder.setText(f"Figure artifact unreadable: {name}")
+                    self.export_figure_btn.setEnabled(False)
+                    return
+                self.figure_view.renderer().setAspectRatioMode(
+                    Qt.AspectRatioMode.KeepAspectRatio
+                )
             return
         if hasattr(self.figure_view, "setHtml"):
             uri = artifact.as_uri()
@@ -767,13 +942,21 @@ class SearchView(QWidget):
         *,
         run_dir: Path | None = None,
         request_note: str = "",
+        workflow_kind: str = "search",
+        executed_request: dict[str, str] | None = None,
+        source_summary: dict[str, object] | None = None,
     ) -> None:
         """search_advanced_summary.json 형태를 표로 표시.
 
         `request_note` names the request the numbers belong to when the user has edited the
         inputs while the run was in flight (see `superseded_note`).
         """
+        validate_search_summary(summary)
         self.current_run_dir = None if run_dir is None else run_dir.resolve()
+        self._displayed_kind = workflow_kind
+        self._displayed_request = self.request_fields(workflow_kind)
+        self._executed_request = None if executed_request is None else dict(executed_request)
+        self._refresh_figure_choices()
         labels = summary.get("column_labels")
         headers = (
             [str(x) for x in labels]
@@ -784,10 +967,42 @@ class SearchView(QWidget):
         strategy = str(summary.get("strategy", ""))
         warnings = summary.get("warnings")
         warning_list = [str(w) for w in warnings] if isinstance(warnings, list) else []
-        status_text = f"strategy: {strategy}"
+        status_text = f"status: {summary.get('status', 'unknown')} · strategy: {strategy}"
         if warning_list:
-            # Never a bare count: the CLI's warning text is the scientific caveat itself.
-            status_text += f" · warnings: {len(warning_list)} — {warning_list[0]}"
+            status_text += f" · {len(warning_list)} warning(s); see details"
+        details = [f"Run: {self.current_run_dir or 'unknown'}", f"Strategy: {strategy}"]
+        for key in (
+            "status", "score_unit", "normalizer", "solution_semantics", "metric",
+            "directions", "weights", "normalization_ranges", "ga_metadata",
+            "effective_request", "effective_conditions", "growth_fraction",
+            "min_member_growth", "min_community_growth", "seed", "target_scales",
+            "ga_max_evaluations", "n_candidates_total",
+            "n_candidates_evaluated", "n_candidates_failed", "n_candidates_ranked",
+            "n_pareto_points", "n_pareto_attempts", "n_pareto_resolved_attempts",
+            "n_pareto_failed_attempts", "pareto_attempts", "candidate_sampling_status",
+            "cli_exit_code", "input_diagnostic", "output_dir",
+        ):
+            if key in summary:
+                details.append(f"{key}: {summary[key]}")
+        details.extend(f"Warning {i}: {warning}" for i, warning in enumerate(warning_list, 1))
+        unevaluated = summary.get("unevaluated")
+        if isinstance(unevaluated, list):
+            for i, candidate in enumerate(unevaluated, 1):
+                if isinstance(candidate, dict):
+                    details.append(
+                        f"Unevaluated {i}: {candidate.get('members')} · "
+                        f"{candidate.get('status')} · "
+                        f"{_diagnostic_text(candidate.get('diagnostic'))}"
+                    )
+        if request_note:
+            details.append(request_note)
+        if executed_request:
+            details.append(f"Executed request: {executed_request}")
+        details.append("Recorded summary JSON:\n" + json.dumps(
+            source_summary if source_summary is not None else summary,
+            ensure_ascii=False, indent=2, default=str,
+        ))
+        self.details.setPlainText("\n".join(details))
         ranked = summary.get("top_ranked", {})
         rows: list[tuple[str, str, float | None, float | str | None, float | None, str, str]] = []
         diagnostics: list[object] = []
@@ -858,8 +1073,11 @@ class SearchView(QWidget):
                     item_widget.setToolTip(tooltip)
                 self.table.setItem(r, c, item_widget)
         pareto = summary.get("pareto_frontier")
-        pareto_count = (len(pareto) if isinstance(pareto, list)
-                        else int(str(summary.get("n_pareto_points", 0))))
+        try:
+            pareto_count = (len(pareto) if isinstance(pareto, list)
+                            else int(str(summary.get("n_pareto_points", 0))))
+        except (TypeError, ValueError):
+            pareto_count = 0
         self.pareto_label.setText(
             "" if not pareto_count else f"Pareto frontier candidates: {pareto_count}"
         )
@@ -870,7 +1088,10 @@ def _optional_float(value: object) -> float | None:
     if value is None:
         return None
     if isinstance(value, (int, float, str)):
-        return float(value)
+        try:
+            return float(value)
+        except ValueError:
+            return None
     return None
 
 

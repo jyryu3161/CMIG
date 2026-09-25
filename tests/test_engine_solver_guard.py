@@ -10,6 +10,7 @@ non-optimal 로 끝나면 status 대신 예외가 올라온다. engine 은 (1) p
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,7 +27,7 @@ class _FakeSolution:
             {"growth_rate": [0.5, 0.7], "abundance": [0.5, 0.5]}, index=["A", "B"]
         )
         self.fluxes = pd.DataFrame(
-            {"EX_ac_m": [3.0, 0.0, 0.0], "EX_ac_e": [0.0, 8.0, -5.0]},
+            {"EX_ac_m": [1.5, 0.0, 0.0], "EX_ac_e": [0.0, 8.0, -5.0]},
             index=["medium", "A", "B"],
         )
 
@@ -35,9 +36,25 @@ class _StubCommunity:
     """pfba 인자에 따라 예외/해를 돌려주는 위임 double. 호출 이력을 기록한다."""
 
     def __init__(self, *, pfba_raises: bool, non_pfba_raises: bool) -> None:
+        cobra = pytest.importorskip("cobra")
         self.pfba_raises = pfba_raises
         self.non_pfba_raises = non_pfba_raises
         self.calls: list[bool] = []
+        pool = cobra.Metabolite("ac_m", compartment="m")
+        environment = cobra.Reaction("EX_ac_m")
+        environment.add_metabolites({pool: -1})
+        environment.global_id = "EX_ac_m"
+        environment.community_id = "medium"
+        self.exchanges = [environment]
+        self.boundary = [environment]
+        self.reactions = [environment]
+        for member in ("A", "B"):
+            member_met = cobra.Metabolite(f"ac_e__{member}", compartment=f"e__{member}")
+            reaction = cobra.Reaction(f"EX_ac_e__{member}")
+            reaction.add_metabolites({member_met: -1, pool: 0.5})
+            reaction.global_id = "EX_ac_e"
+            reaction.community_id = member
+            self.reactions.append(reaction)
 
     def cooperative_tradeoff(self, *, fraction: float, fluxes: bool, pfba: bool):
         self.calls.append(pfba)
@@ -48,22 +65,36 @@ class _StubCommunity:
         return _FakeSolution()
 
 
+def _stub_engine() -> MicomEngine:
+    """Keep these delegation doubles independent of an installed MICOM package."""
+    engine = MicomEngine()
+    engine._micom = SimpleNamespace(__version__="0.39.0")
+    return engine
+
+
 def test_pfba_success_keeps_pfba_provenance_and_no_warning():
     community = _StubCommunity(pfba_raises=False, non_pfba_raises=False)
-    result = MicomEngine().cooperative_tradeoff(community, 0.5)
+    result = _stub_engine().cooperative_tradeoff(community, 0.5)
     assert community.calls == [True]                    # 재시도 없음
     assert result.status == "optimal"
     assert result.flux_normalization_method == "pfba"
     assert result.warnings == []
     assert result.diagnostic is None
+    assert result.member_exchange == {"A": {"ac": 8.0}, "B": {"ac": -5.0}}
+    assert result.external_exchange == {"ac": pytest.approx(1.5)}
+    assert sum(
+        result.abundances[member] * result.member_exchange[member]["ac"]
+        for member in ("A", "B")
+    ) == pytest.approx(1.5)
 
 
 def test_pfba_failure_retries_without_pfba_and_warns():
     community = _StubCommunity(pfba_raises=True, non_pfba_raises=False)
-    result = MicomEngine().cooperative_tradeoff(community, 0.5)
+    result = _stub_engine().cooperative_tradeoff(community, 0.5)
     assert community.calls == [True, False]             # pFBA → non-pFBA 재시도
     assert result.status == "optimal"                   # 실제 해는 사용 가능
     assert result.objective == pytest.approx(0.6)
+    assert result.member_exchange == {"A": {"ac": 8.0}, "B": {"ac": -5.0}}
     # 조용한 강등 금지: warning + manifest 용 정규화 방식 + 원인 진단이 모두 남는다.
     assert PFBA_FALLBACK_WARNING in result.warnings
     assert result.flux_normalization_method == "fba"
