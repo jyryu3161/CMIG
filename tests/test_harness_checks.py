@@ -76,6 +76,61 @@ def test_timeout_preserves_byte_output(tmp_path: Path) -> None:
     assert result["elapsed_s"] < 5
 
 
+def test_windows_argv_uses_supplied_path_and_preserves_arguments(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin with spaces"
+    bin_dir.mkdir()
+    command = bin_dir / ("sample.cmd" if os.name == "nt" else "sample")
+    command.write_text("@echo off\r\n" if os.name == "nt" else "#!/bin/sh\n", encoding="utf-8")
+    if os.name != "nt":
+        command.chmod(0o755)
+    argv = ["sample", "argument with spaces", "한글"]
+    env = os.environ.copy()
+    env["PATH"] = str(bin_dir)
+    assert hc._windows_argv(argv, env) == [str(command), *argv[1:]]
+    assert hc._windows_argv(["unavailable", "arg"], env) == ["unavailable", "arg"]
+
+
+def test_run_process_restores_exact_signal_handler(tmp_path: Path) -> None:
+    watched = signal.SIGBREAK if os.name == "nt" else signal.SIGTERM
+    original = signal.getsignal(watched)
+
+    def prior_handler(_signum: int, _frame: object) -> None:
+        pass
+
+    signal.signal(watched, prior_handler)
+    try:
+        result = hc.run_process(
+            [sys.executable, "-c", "print('done')"], cwd=tmp_path, timeout_s=3
+        )
+        assert result["exit_code"] == 0
+        assert result["cancelled"] is False and result["timed_out"] is False
+        assert signal.getsignal(watched) is prior_handler
+    finally:
+        signal.signal(watched, original)
+
+
+def test_windows_communicate_uses_one_deadline_and_sends_input_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        args = ["fake"]
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[bytes | None, float]] = []
+
+        def communicate(self, *, input: bytes | None, timeout: float) -> tuple[bytes, bytes]:
+            self.calls.append((input, timeout))
+            raise subprocess.TimeoutExpired(self.args, timeout)
+
+    clock = iter((0.0, 0.05, 0.3, 0.7, 1.01))
+    proc = FakeProcess()
+    with monkeypatch.context() as patch:
+        patch.setattr(hc.time, "monotonic", lambda: next(clock))
+        with pytest.raises(subprocess.TimeoutExpired):
+            hc._communicate_windows(proc, b"input", 1.0)  # type: ignore[arg-type]
+    assert proc.calls == [(b"input", 0.1), (None, 0.1)]
+
+
 def test_pytest_exit_five_and_all_skipped_fail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -167,10 +222,12 @@ def test_parent_exits_before_pipe_inheriting_descendant(tmp_path: Path) -> None:
 def test_sigterm_parent_cleans_its_check_child(tmp_path: Path) -> None:
     marker = tmp_path / "child.pid"
     script = (
-        "import json,sys;from pathlib import Path;from scripts import harness_checks as h;"
+        "import json,signal,sys;from pathlib import Path;from scripts import harness_checks as h;"
+        "prior=signal.getsignal(signal.SIGTERM);"
         "code='import os,pathlib,sys,time;"
         "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()));time.sleep(30)';"
         "r=h.run_process([sys.executable,'-c',code,sys.argv[1]],cwd=Path(sys.argv[2]),timeout_s=30);"
+        "r['handler_restored']=signal.getsignal(signal.SIGTERM) is prior;"
         "print(json.dumps(r))"
     )
     parent = subprocess.Popen(
@@ -188,7 +245,9 @@ def test_sigterm_parent_cleans_its_check_child(tmp_path: Path) -> None:
         parent.send_signal(signal.SIGTERM)
         out, err = parent.communicate(timeout=5)
         assert parent.returncode == 0, err.decode()
-        assert json.loads(out)["cancelled"]
+        result = json.loads(out)
+        assert result["cancelled"] is True and result["timed_out"] is False
+        assert result["handler_restored"] is True
         status = subprocess.run(
             ["ps", "-o", "stat=", "-p", str(child_pid)], capture_output=True, text=True
         )

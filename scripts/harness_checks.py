@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -186,7 +187,12 @@ def resolve(ids: list[str]) -> list[Check]:
 
 
 def project_python(root: Path) -> Path:
-    for p in (root / ".venv/bin/python", root / ".venv/Scripts/python.exe"):
+    candidates = (
+        (root / ".venv/Scripts/python.exe", root / ".venv/bin/python")
+        if os.name == "nt"
+        else (root / ".venv/bin/python", root / ".venv/Scripts/python.exe")
+    )
+    for p in candidates:
         if p.is_file():
             return p
     raise FileNotFoundError("CMIG .venv Python missing; run explicit uv sync before checks")
@@ -302,6 +308,30 @@ def _drain_after_termination(proc: subprocess.Popen[bytes]) -> tuple[bytes, byte
         return exc.stdout or b"", exc.stderr or b""
 
 
+def _windows_argv(argv: list[str], env: dict[str, str] | None) -> list[str]:
+    """Resolve a native Windows command using the child's search path."""
+    search_path = env.get("PATH") if env is not None else None
+    resolved = shutil.which(argv[0], path=search_path)
+    return [resolved or argv[0], *argv[1:]]
+
+
+def _communicate_windows(
+    proc: subprocess.Popen[bytes], input_bytes: bytes | None, deadline: float
+) -> tuple[bytes, bytes]:
+    """Let the main thread handle CTRL_BREAK without extending the deadline."""
+    pending_input = input_bytes
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(proc.args, 0)
+        try:
+            return proc.communicate(input=pending_input, timeout=min(0.1, remaining))
+        except subprocess.TimeoutExpired:
+            if time.monotonic() >= deadline:
+                raise
+            pending_input = None
+
+
 def run_process(
     argv: list[str],
     *,
@@ -314,7 +344,7 @@ def run_process(
     start = time.monotonic()
     try:
         proc = subprocess.Popen(
-            argv,
+            _windows_argv(argv, env) if os.name == "nt" else argv,
             cwd=cwd,
             stdin=subprocess.PIPE if input_bytes is not None else None,
             stdout=subprocess.PIPE,
@@ -335,19 +365,25 @@ def run_process(
         }
     timed_out = cancelled = False
     out = err = b""
-    old_term = None
-    if os.name != "nt" and hasattr(signal, "SIGTERM"):
+    watched_signal = signal.SIGBREAK if os.name == "nt" else signal.SIGTERM
+    old_handler: Any = None
+    handler_installed = False
+    if hasattr(signal, "SIGBREAK") or os.name != "nt":
         try:
-            old_term = signal.getsignal(signal.SIGTERM)
+            old_handler = signal.getsignal(watched_signal)
 
             def on_term(_signum: int, _frame: Any) -> None:
                 raise KeyboardInterrupt
 
-            signal.signal(signal.SIGTERM, on_term)
+            signal.signal(watched_signal, on_term)
+            handler_installed = True
         except ValueError:  # non-main thread: caller owns its signal lifecycle
-            old_term = None
+            pass
     try:
-        out, err = proc.communicate(input=input_bytes, timeout=timeout_s)
+        if os.name == "nt":
+            out, err = _communicate_windows(proc, input_bytes, start + timeout_s)
+        else:
+            out, err = proc.communicate(input=input_bytes, timeout=timeout_s)
     except subprocess.TimeoutExpired as exc:
         timed_out = True
         out = exc.stdout or b""
@@ -359,8 +395,8 @@ def run_process(
         cancelled = True
         out, err = _terminate(proc)
     finally:
-        if old_term is not None:
-            signal.signal(signal.SIGTERM, old_term)
+        if handler_installed:
+            signal.signal(watched_signal, old_handler)
     return {
         "argv": argv,
         "exit_code": proc.returncode,
