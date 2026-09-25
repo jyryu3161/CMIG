@@ -86,7 +86,9 @@ def test_windows_argv_uses_supplied_path_and_preserves_arguments(tmp_path: Path)
     argv = ["sample", "argument with spaces", "한글"]
     env = os.environ.copy()
     env["PATH"] = str(bin_dir)
-    assert hc._windows_argv(argv, env) == [str(command), *argv[1:]]
+    resolved = hc._windows_argv(argv, env)
+    assert Path(resolved[0]).samefile(command)
+    assert resolved[1:] == argv[1:]
     assert hc._windows_argv(["unavailable", "arg"], env) == ["unavailable", "arg"]
 
 

@@ -391,13 +391,8 @@ def real_cli_fixture(root: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> 
         )
     else:
         codex.chmod(0o755)
-    venv.EnvBuilder(with_pip=False, symlinks=False).create(root / ".venv")
-    if sys.platform == "darwin":
-        # A copied uv-managed Python executable still loads this sibling dylib.
-        dylib = f"libpython{sys.version_info.major}.{sys.version_info.minor}.dylib"
-        source_dylib = Path(sys.base_prefix) / "lib" / dylib
-        if source_dylib.is_file():
-            shutil.copy2(source_dylib, root / ".venv/lib" / dylib)
+    # POSIX links retain the uv-managed runtime location; Windows uses native copies.
+    venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(root / ".venv")
     checker_python = (
         root / ".venv/Scripts/python.exe"
         if os.name == "nt"
