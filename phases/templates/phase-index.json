@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "project": "CMIG",
+  "phase": "example-change",
+  "steps": [
+    {
+      "step": 0,
+      "name": "plan-change",
+      "role": "plan",
+      "read_files": ["AGENTS.md", "docs/HARNESS.md"],
+      "write_paths": [],
+      "report_path": "REVIEW/example-change-plan.md",
+      "checks": ["smoke"],
+      "timeout_s": 1800,
+      "max_attempts": 1
+    },
+    {
+      "step": 1,
+      "name": "implement-change",
+      "role": "implement",
+      "read_files": ["AGENTS.md", "docs/HARNESS.md", "REVIEW/example-change-plan.md"],
+      "write_paths": ["scripts/execute.py", "tests/test_harness_execute.py"],
+      "checks": ["quality"],
+      "timeout_s": 1800,
+      "max_attempts": 1
+    },
+    {
+      "step": 2,
+      "name": "review-change",
+      "role": "review",
+      "read_files": ["AGENTS.md", "REVIEW/example-change-plan.md", "scripts/execute.py"],
+      "write_paths": [],
+      "report_path": "REVIEW/example-change-review.md",
+      "checks": ["quality"],
+      "timeout_s": 1800,
+      "max_attempts": 1
+    }
+  ]
+}

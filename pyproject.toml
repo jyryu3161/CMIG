@@ -112,6 +112,12 @@ exclude = [
     "/.omc",
     "/.bkit",
     "/.Rlib",
+    # Repository-only developer harness needs AGENTS/.codex/.claude/phases, which are
+    # intentionally not package members. Do not ship orphaned runner files or tests.
+    "/scripts/execute.py",
+    "/scripts/harness_checks.py",
+    "/scripts/harness_result.schema.json",
+    "/tests/test_harness_*.py",
 ]
 
 # ── Conventions (Phase 2 essentials folded in — Design §10) ──

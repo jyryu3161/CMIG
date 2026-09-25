@@ -22,6 +22,8 @@ dist/
 # Ignore local Claude Code settings, but keep the shared agent skill in source control.
 .claude/*
 !.claude/skills/
+!.claude/settings.json
+!.claude/commands/
 .Rlib/
 .bkit/runtime/
 Rplots.pdf

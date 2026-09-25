@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "error_message", "blocked_reason", "report_markdown", "verdict"],
+  "properties": {
+    "status": {"enum": ["completed", "error", "blocked"]},
+    "summary": {"type": "string"},
+    "error_message": {"type": "string"},
+    "blocked_reason": {"type": "string"},
+    "report_markdown": {"type": "string"},
+    "verdict": {"enum": ["", "pass", "changes_requested", "blocked"]}
+  }
+}

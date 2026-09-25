@@ -1,0 +1,7 @@
+{
+  "description": "CMIG bounded shell guard and smoke feedback",
+  "hooks": {
+    "PreToolUse": [{"matcher": ".*", "hooks": [{"type": "command", "command": "python -c \"import pathlib,runpy; p=next(x/'.codex/hooks/pre_tool_use.py' for x in (pathlib.Path.cwd(), *pathlib.Path.cwd().parents) if (x/'.codex/hooks/pre_tool_use.py').is_file()); runpy.run_path(str(p),run_name='__main__')\"", "timeout": 10}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "python -c \"import pathlib,runpy; p=next(x/'.codex/hooks/stop.py' for x in (pathlib.Path.cwd(), *pathlib.Path.cwd().parents) if (x/'.codex/hooks/stop.py').is_file()); runpy.run_path(str(p),run_name='__main__')\"", "timeout": 90}]}]
+  }
+}

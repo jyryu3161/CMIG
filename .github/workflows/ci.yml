@@ -70,6 +70,9 @@ jobs:
           tests/test_search_product_ga_scaling.py
           tests/test_cli_search_ga_config.py
           tests/test_run_transaction.py
+          tests/test_harness_execute.py
+          tests/test_harness_hooks.py
+          tests/test_harness_checks.py
 
   package:
     name: Build and inspect distributions

@@ -4,6 +4,8 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](pyproject.toml)
 
+Developer phase workflow: [source harness guide](https://github.com/jyryu3161/CMIG/blob/main/docs/HARNESS.md).
+
 CMIG is a desktop and command-line platform for **metabolic interaction analysis
 in microbial communities**. Community flux balance analysis is delegated to
 [MICOM](https://github.com/micom-dev/micom); CMIG provides the layer around it
