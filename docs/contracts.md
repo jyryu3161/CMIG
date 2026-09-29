@@ -86,6 +86,7 @@ HiGHS·CPLEX는 어떤 명령에서도 고를 수 없다.
 - 순위 CSV/JSON(`search_summary.json`)에는 과학적으로 유효한 후보만 들어간다. `missing`, `non_viable`, `timeout`, `error` 등 평가되지 못한 후보는 `search_unevaluated.csv`에 상태와 함께 들어간다.
 - 다중 타깃: 보고 점수 = LP 목적식과 같은 affine 척도(자르지 않음). 그림은 음·양 기여를 0 양쪽에 그리고 저장된 총점을 표시한다.
 - Pareto: 표본 전선, 시도 ledger(해결·실패 개수), 전선 rank는 보고 순서.
+- 다중 타깃(타깃 2개 이상) Pareto 그림 `search_pareto.svg`/`.tiff`: 타깃 쌍마다 패널 하나(k(k−1)/2개). 점은 top-k가 아니라 `search_evaluations.json`의 평가 행 전체 중 `status == optimal`, `flux_basis == joint_weighted_lp`, 두 축 값이 유한한 행뿐이다(capability 기준·실패·non-viable·missing·timeout·평가 불가는 찍지 않고 0으로 채우지 않는다). 축은 기록된 flux와 부호(+ 분비 / − 흡수, mmol gDW⁻¹ h⁻¹)를 그대로 쓰고 라벨에 방향과 좋은 쪽 화살표를 적는다. 비지배 강조는 기록된 `pareto` 표식이다(다시 계산하지 않음). 결손 타깃 축에서는 기록된 0에 속이 빈 표식("target exchange absent")으로 찍는다. pareto metric은 표본 근사 경고, 비-exhaustive 전략은 "approximate search"를 싣는다. 찍을 점이 없으면 파일을 쓰지 않는다(오류 아님). 그림 작성 실패 시 파일을 지우고 summary `warnings`에 "Pareto figure not written: <원인>"을 남기며 결과·다른 산출물·종료 코드는 그대로다. 파일이 있을 때만 summary/manifest `artifacts`에 들어간다.
 - 숙주 전달 점값이 식별되지 않으면 JSON `null`, CSV 빈칸 + 구간·이유 열. 0은 측정값이다.
 - `medium_gap_supplemented.csv`의 보충 행은 `row_role: gap_supplement`.
 

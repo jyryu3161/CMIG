@@ -9,6 +9,7 @@
 | 로컬 `harness_checks.py --tier quality` (Ruff, 실행기 회귀, lock, 버전 정합, strict mypy, envelope, CI 무라이선스 테스트) | 모두 통과 | 2026-09-29, `3621868` |
 | GitHub CI `quality` 4개 OS/Python 조합, `package` | `3621868`에서 통과. 직전 3개 커밋(`e32d7d9`, `387ccce`, `c0ff2b5`)은 quality(Windows py3.12, 한 번은 Ubuntu py3.10)에서 실패 | 2026-09-25 |
 | GitHub CI `solver-tests` | **실패** — `3621868`에서 처음 이 단계에 도달했고, 저장소에 Gurobi WLS 비밀값이 없어 라이선스 설정 단계에서 중단. 이전 run들은 quality 실패로 이 단계를 건너뜀. golden·전체 pytest·출판 smoke는 원격에서 실행된 적이 없음 | 2026-09-25 |
+| 로컬 `harness_checks.py --tier quality`, 전체 pytest(Gurobi, offscreen Qt), `cmig golden verify`, `verify-envelope` — GUI·CLI Search 동등성 변경 | quality 통과. pytest 1856 passed, 0 failed, 18 skipped(인간 GEM fixture 부재), 요약 출력 후 종료 시 rc=139(macOS QtWebEngine 정리 문제, 변경 전 `9a407bb`에서도 동일). golden·envelope 변화 없음 | 2026-09-29, `dryforge/gui-cli-parity` |
 | 로컬 전체 pytest (Gurobi 라이선스, offscreen Qt) | 1752 passed, 0 failed, 18 skipped(인간 GEM fixture 부재) — `e32d7d9` 커밋 기록 기준. 이후 3개 커밋(Windows 이식성, 실행기)에 대한 로컬 전체 재실행 기록은 없음 | 2026-09-25 |
 | 출판 검증 절차(`docs/PUBLICATION_VALIDATION.md`) Recon3D 재실행 | **미실행**. 현재 문서의 수치는 코드 대조 또는 round-6 기록(`ac1adf3`)이며 릴리스 결과가 아님 | — |
 | 네이티브 GUI 시각 검증(macOS/Windows, HiDPI, 접근성) | **미실행**. offscreen 렌더와 기능 테스트만 있음 | — |
@@ -31,22 +32,15 @@
 | `spatial-preview`(확산 배지 설계) | 검증됨 |
 | 통계 5a(효과 크기·검정·BH-FDR), 5b/5c 일부(`StatsConfig`, seed 고정 임베딩, volcano 준비) | 검증됨 |
 | 출판 그림: R(renv lock, provenance sidecar) + matplotlib 대체, signed 다중 타깃 기여 그림 | 검증됨(R 전용 다중 패널은 R 설치 환경에서만) |
-| GUI: Models / Search / Host / Dynamics / Graph / Profile 탭 + 고급 도구(builder, 배지 편집기, sweep, sandbox, compare), 워크플로별 설정 범위, 실패 run 진단, 무결성 표시 | 기능 테스트 검증됨(offscreen). 네이티브 시각 QA 미실행 |
+| GUI: Models / Search / Host / Dynamics / Graph / Profile 탭 + 고급 도구(builder, 배지 편집기, sweep, sandbox, compare), 워크플로별 설정 범위, 실패 run 진단, 무결성 표시. Search는 `cmig search`와 동등: 타깃 행(방향·가중치·기준값), 탐색 옵션(`--allow-failed-run`만 CLI 전용, `--solver`는 gurobi 하나), 출력 폴더, 배지·checkpoint 선택, Pareto trade-off 그림(`search_pareto.svg`), 후보 inspector, 취소 pending 표시. Search 결과는 Open Run으로 다시 열린다 | 기능 테스트 검증됨(offscreen). 네이티브 시각 QA 미실행 |
 | 배포: wheel/sdist 허용 목록 감사, 설치본 preset 자원, 버전 정합 가드 | 검증됨 |
 | 단계 실행기(`scripts/execute.py`), 검사 tier, Codex/Claude hook | 검증됨(POSIX). Windows 프로세스 정리는 CI quality 통과 외 네이티브 확인 없음 |
 
 ## 남은 작업 (우선순위 순)
 
-1. **GUI·CLI 동등성**
-   - GUI에서 타깃별 방향·가중치 행 편집(현재 GUI는 공통 방향 하나).
-   - Pareto 2D trade-off 그림과 벡터별 조건·진단 inspector(현재 stacked bar와 전선 개수 중심).
-   - Search 결과 다시 열기(일반 Open Run에 Search viewer 없음), 출력 위치 지정(현재 임시 디렉터리), 배지·checkpoint 경로 선택 UI.
-   - GUI에 없는 탐색 설정 노출: taxonomy 입력, 재귀 pool, sample-N, GA 세부 연산·예산, solver thread, Pareto resolution. GUI 기본 metric/top-k를 CLI와 맞춤.
-   - 전용 Search 취소 버튼의 pending 상태 표시 지연.
-   - 한국어화는 범위에서 제외(더 진행하지 않음).
-2. **타깃별 임계값**: per-target threshold를 `MultiTargetConfig`·CLI·GUI에 공통 설계로 추가. 내부 epsilon slice는 이 기능이 아니다. hash 인자 추가이므로 envelope 재승인이 따른다.
-3. **탐색 방법 확장**: abundance 동시 최적화, 명시적 synergy/null-model fitness, 자동 MIP/MRO 사전선별, greedy/Bayesian 탐색. 각각 별도 과학 설계와 비교 벤치마크가 먼저 필요하다.
-4. **내부 정리**
+1. **타깃별 임계값**: per-target threshold를 `MultiTargetConfig`·CLI·GUI에 공통 설계로 추가. 내부 epsilon slice는 이 기능이 아니다. hash 인자 추가이므로 envelope 재승인이 따른다.
+2. **탐색 방법 확장**: abundance 동시 최적화, 명시적 synergy/null-model fitness, 자동 MIP/MRO 사전선별, greedy/Bayesian 탐색. 각각 별도 과학 설계와 비교 벤치마크가 먼저 필요하다.
+3. **내부 정리**
    - exchange id → 대사체 정규화 함수가 여러 벌(`medium_spec.exchange_metabolite`, `dfba_community._exchange_metabolite` 등). `medium_spec` 쪽을 기준으로 통합. engine 쪽 변환은 hash에 영향을 주므로 계약 확인 후 진행.
    - 후보마다 MICOM community를 2~3번 새로 조립하는 탐색 성능 문제.
    - `cmig/cli/main.py`(약 1.1만 줄) 분리: inspect-run, 그림, 입력, workflow 지도, gene-ko.

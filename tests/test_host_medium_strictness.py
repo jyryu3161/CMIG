@@ -538,10 +538,10 @@ def test_the_gui_host_tab_can_relax_the_medium_too():
     from cmig.gui import app as gui_app
 
     argv_source = inspect.getsource(gui_app)
-    assert argv_source.count('argv.append("--allow-unknown-medium")') == 5, (
-        "the Host tab's two runs, the round-8 real Sweep tab, and the round-9 Medium "
-        "editor's Check Growth and minimal-medium hooks all build argv, and all five "
-        "take a medium"
+    assert argv_source.count('argv.append("--allow-unknown-medium")') == 6, (
+        "the Host tab's two runs, the round-8 real Sweep tab, the round-9 Medium "
+        "editor's Check Growth and minimal-medium hooks, and the Search tab's advanced "
+        "settings all build argv, and all six take a medium"
     )
 
 

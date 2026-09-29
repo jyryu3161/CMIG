@@ -27,6 +27,12 @@ PySide6 데스크톱 앱.
 - Pareto·다중 타깃 경고는 첫 줄만이 아니라 전체를 펼쳐 볼 수 있어야 한다.
 - 긴 한 줄 문구나 숨은 탭의 최소 폭 때문에 창이 목표 크기(1280×800, 1500×950)를 넘어 강제로 커지면 안 된다.
 - Sandbox preview는 Apply/Save 전까지 run artifact가 아니다.
+- Search 설정은 `cmig search`와 동등하다(`--allow-failed-run`은 CLI 전용, `--solver`는 gurobi만 있어 노출하지 않음). GUI Search 기본값은 CLI parser 기본값과 같고(예외: 배지를 주면 exact가 GUI 기본), 적용 조건이 맞지 않는 설정은 argv에 넣지 않는다. 출력 폴더·merge 배지·unknown 허용·taxonomy/recursive는 Search 전용이며 Gene KO·Strain Growth·Ratio Impact는 모델 폴더, exact 배지, 임시 폴더를 쓴다. Gene KO top-k는 별도 칸(기본 20, 무효화 키 `ko_top_k`)이다.
+- 출력 폴더를 지정하면 실행마다 새 `search-YYYYMMDD-HHMMSS` 하위 폴더를 만든다. 기존 폴더를 재사용하거나 덮어쓰지 않는다. 출력 폴더 값은 답을 결정하지 않으므로 결과 무효화·superseded 비교에 넣지 않는다.
+- GUI가 넘기는 `SearchControl` 값은 argv보다 우선한다. solver thread처럼 양쪽에 있는 값은 둘 다 같은 값으로 넘긴다(아니면 실행과 provenance가 어긋난다).
+- job의 CLI 오류 메시지는 GUI 스레드에서 한 번 설치한 스레드별 stderr router로만 모은다. job 스레드에서 전역 `sys.stderr`를 바꾸지 않는다.
+- 후보 inspector는 run 산출물에 기록된 값만 보이고, 없는 값은 "not recorded"로 보인다(0으로 채우지 않음). 표 행과 기록은 기록된 rank나 flux 벡터로 맞춘다(pareto에서는 같은 members가 여러 행).
+- Search 취소를 누르면 즉시 Cancel·Run 버튼을 끄고 pending 문구를 job이 실제로 끝날 때까지 유지한다.
 - 배지 preset은 `importlib.resources`로 `cmig.resources/medium_presets`를 읽는다(소스 checkout 경로에 기대지 않음). 미리보기는 자원 파일을 수정하지 않는다.
 
 ## 구현 패턴
@@ -39,5 +45,6 @@ PySide6 데스크톱 앱.
 
 - `QT_QPA_PLATFORM=offscreen`에서 실행한다.
 - 비기본 설정(배지 경로, 방향, 성장 분율)이 해당 workflow의 argv에 실제로 전달되는지 recorder로 검사(`tests/test_gui_audit_regressions.py`, `tests/test_gui_editors_builder.py`).
+- Search 동등성: `tests/test_gui_search_parity.py`(argv·기본값), `tests/test_gui_search_output.py`(출력 폴더·checkpoint), `tests/test_gui_search_inspector.py`(Pareto 그림·inspector), `tests/test_gui_search_cancel.py`(취소 pending). 새 GUI 테스트 파일에는 autouse `_deterministic_qt_teardown` fixture를 둔다(없으면 macOS에서 종료 시 segfault로 rc=139).
 - 실패 run, 무결성 불일치, 손상 manifest, 없는 그림 선택 시 미리보기 초기화(`tests/test_app_shell.py`, `tests/test_gui_render.py`).
 - 창 geometry 회귀는 전체 main window로 측정한다. offscreen 통과는 네이티브 시각 사용성 승인이 아니다.

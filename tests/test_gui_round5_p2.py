@@ -76,14 +76,14 @@ def test_gene_ko_argv_is_frozen_at_click_time(monkeypatch, tmp_path):
     runner.submit("occupy", lambda ctx: release.wait(timeout=20))
     w.search_view.model_dir_input.setText(str(tmp_path))
     w.search_view.ko_members_input.setText("iHN637")
-    w.search_view.targets_input.setText("ac")
+    w.search_view.set_target_rows(["ac"])
     w.search_view.ko_max_genes_spin.setValue(50)
-    w.search_view.top_k_spin.setValue(3)
+    w.search_view.ko_top_k_spin.setValue(3)
     jid = w.run_gene_ko_search()
     assert jid
     # The researcher now prepares the *next* run while the first is still queued.
     w.search_view.ko_max_genes_spin.setValue(5000)
-    w.search_view.top_k_spin.setValue(97)
+    w.search_view.ko_top_k_spin.setValue(97)
     release.set()
     _wait(runner, jid)
     argv = seen["argv"]
@@ -295,7 +295,7 @@ def test_search_results_are_cleared_when_answer_inputs_change(tmp_path):
         }]},
     }, run_dir=tmp_path)
     assert w.search_view.table.rowCount() == 1
-    w.search_view.targets_input.setText("but2")  # default is "but"; must actually change
+    w.search_view.target_table.item(0, 0).setText("but2")  # default is "but"; must change
     assert w.search_view.table.rowCount() == 0
     assert w.search_view.current_run_dir is None
     assert "re-run" in w.search_view.status.text().lower()
@@ -547,7 +547,7 @@ def test_multi_target_text_is_forwarded_without_truncation(tmp_path, monkeypatch
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
     w.search_view.model_dir_input.setText(str(tmp_path))
-    w.search_view.targets_input.setText("ac,but")
+    w.search_view.set_target_rows(["ac", "but"])
     jid = w.run_search_fixture()
     assert jid
     with pytest.raises(RuntimeError):
@@ -565,7 +565,7 @@ def test_empty_target_is_rejected_by_every_search_button(tmp_path):
     w.search_view.model_dir_input.setText(str(tmp_path))
     w.search_view.ko_members_input.setText("iHN637")
     w.search_view.growth_member_input.setText("iHN637")
-    w.search_view.targets_input.setText("")
+    w.search_view.set_target_rows([""])
     assert w.run_search_fixture() == ""
     assert w.run_gene_ko_search() == ""
     assert w.run_abundance_impact() == ""
@@ -601,7 +601,7 @@ def test_search_export_refuses_an_invalidated_run(monkeypatch, tmp_path):
     }, run_dir=run_dir)
     assert w.search_view.table.rowCount() == 1
 
-    w.search_view.targets_input.setText("succ")           # invalidates the displayed result
+    w.search_view.set_target_rows(["succ"])           # invalidates the displayed result
     assert w.search_view.table.rowCount() == 0
     assert w.search_view.current_run_dir is None
 
@@ -638,10 +638,10 @@ def test_search_result_from_a_superseded_request_is_labelled(monkeypatch, tmp_pa
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
     w.search_view.model_dir_input.setText(str(tmp_path))
-    w.search_view.targets_input.setText("but")
+    w.search_view.set_target_rows(["but"])
     jid = w.run_search_fixture()
     # the researcher retargets while the first search is still solving
-    w.search_view.targets_input.setText("succ")
+    w.search_view.set_target_rows(["succ"])
     w.search_view.min_size_spin.setValue(3)
     release.set()
     _wait(runner, jid)
@@ -821,7 +821,7 @@ def test_cancel_after_artifacts_are_written_reports_a_complete_run(monkeypatch, 
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
     w.search_view.model_dir_input.setText(str(tmp_path))
-    w.search_view.targets_input.setText("but")
+    w.search_view.set_target_rows(["but"])
     jid = w.run_search_fixture()
     assert started.wait(timeout=10)
     runner.cancel(jid)
@@ -900,7 +900,7 @@ def test_search_run_directory_is_reported_to_the_user(monkeypatch, tmp_path):
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
     w.search_view.model_dir_input.setText(str(tmp_path))
-    w.search_view.targets_input.setText("but")
+    w.search_view.set_target_rows(["but"])
     jid = w.run_search_fixture()
     runner.result(jid, timeout=10)
     w._poll_completed_jobs()

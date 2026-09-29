@@ -15,12 +15,18 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import shutil
+import sys
 import tempfile
+import threading
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, TextIO, cast
 
 from PySide6.QtCore import QEventLoop, QObject, QStandardPaths, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
@@ -42,11 +48,13 @@ from PySide6.QtWidgets import (
 )
 
 from cmig.gui.builder import (
+    WEIGHTED_METRICS,
     CommunityBuilderView,
     ConstraintSandboxView,
     ScenarioCompareView,
     SearchView,
     make_read_only,
+    medium_mode_text,
     read_only_item,
     validate_search_summary,
 )
@@ -667,25 +675,214 @@ I18N: dict[str, dict[str, str]] = {
 }
 
 
-def _single_target(text: str) -> tuple[str, str]:
-    """Parse the Target box into (target, error_message) without ever substituting a default.
+ONE_TARGET_ROW_REQUIRED = "Gene KO and Ratio Impact need exactly one target row."
 
-    The box used to mean two different metabolites depending on which button was pressed
-    ("but" for Run Search, "ac" for Rank Gene KOs) and silently truncated `ac,but` to `ac`.
-    A scientific request is never guessed here: an empty or multi-valued box is refused.
+
+def _single_target(rows: list[tuple[str, str, str, str]]) -> tuple[str, str, str]:
+    """Return (target, direction, error) from the target table without guessing.
+
+    Gene KO and Ratio Impact answer for one metabolite: an empty table/row is refused
+    (CMIG never substitutes a default target) and so is a table with more than one row.
     """
-    raw = text.strip()
+    if len(rows) > 1:
+        return "", "", ONE_TARGET_ROW_REQUIRED
+    raw = rows[0][0].strip() if rows else ""
     if not raw:
-        return "", (
+        return "", "", (
             "Enter the target metabolite (e.g. but or ac). "
             "CMIG does not substitute a default target."
         )
     if "," in raw:
-        return "", (
-            "Multi-target search is CLI-only (`cmig search --targets ac,but`). "
-            "Enter a single metabolite here."
-        )
-    return raw, ""
+        return "", "", "Enter a single metabolite id in the target row."
+    return raw, rows[0][1], ""
+
+
+def _finite_number(text: str) -> float | None:
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _search_target_argv(
+    rows: list[tuple[str, str, str, str]], metric: str, pareto_resolution: str
+) -> tuple[list[str], str]:
+    """Translate the target table into `cmig search` target flags, or a refusal.
+
+    One row → `--target/--direction` (Weight and Reference unused). Two or more rows →
+    `--targets`, `--target-directions` (row order), `--target-weights` when the metric
+    uses weights, `--target-scales` when References are given. Nothing is defaulted:
+    empty, duplicate or non-numeric cells are refused with the reason.
+    """
+    if not rows:
+        return [], "Add at least one target row. CMIG does not substitute a default target."
+    targets = [row[0] for row in rows]
+    for number, target in enumerate(targets, 1):
+        if not target:
+            return [], (f"Target row {number} is empty. "
+                        "CMIG does not substitute a default target.")
+        if any(ch in target for ch in ",=") or any(ch.isspace() for ch in target):
+            return [], f"Target row {number} ({target!r}) must be a single metabolite id."
+    duplicates = sorted({target for target in targets if targets.count(target) > 1})
+    if duplicates:
+        return [], f"Duplicate target rows: {', '.join(duplicates)}. Each target once."
+    if len(rows) == 1:
+        return ["--target", targets[0], "--direction", rows[0][1]], ""
+    argv = ["--targets", ",".join(targets),
+            "--target-directions", ",".join(row[1] for row in rows)]
+    if metric in WEIGHTED_METRICS:
+        for target, _direction, weight, _reference in rows:
+            if _finite_number(weight) is None:
+                return [], f"Weight for {target} must be a finite number; got {weight!r}."
+        argv.extend(["--target-weights", ",".join(row[2] for row in rows)])
+    references = [row[3] for row in rows]
+    if any(references):
+        if not all(references):
+            return [], ("References must be entered for every target row, or left empty "
+                        "for all rows.")
+        for target, reference in zip(targets, references, strict=True):
+            value = _finite_number(reference)
+            if value is None or value <= 0:
+                return [], (f"Reference for {target} must be a finite positive number; "
+                            f"got {reference!r}.")
+        argv.extend(["--target-scales", ",".join(
+            f"{target}={reference}" for target, reference in zip(targets, references,
+                                                                 strict=True))])
+    argv.extend(["--multi-metric", metric])
+    if metric == "pareto":
+        argv.extend(["--pareto-resolution", pareto_resolution])
+    return argv, ""
+
+
+def _search_argv(
+    requested: dict[str, str], rows: list[tuple[str, str, str, str]]
+) -> tuple[list[str], str]:
+    """Build the `cmig search` argv (without `--out`) from a GUI-thread snapshot.
+
+    An option whose applicability condition does not hold is left out, so the argv never
+    carries a setting the run would ignore.
+    """
+    argv = ["search"]
+    if requested["model_source"] == "taxonomy":
+        if not requested["taxonomy"]:
+            return [], "Select a taxonomy CSV before running product search."
+        argv.extend(["--taxonomy", requested["taxonomy"]])
+    else:
+        if not requested["pool"]:
+            return [], "Select a model folder before running product search."
+        argv.extend(["--model-dir", requested["pool"]])
+        if requested["recursive"] == "True":
+            argv.append("--recursive")
+    target_argv, error = _search_target_argv(
+        rows, requested["multi_metric"], requested["pareto_resolution"]
+    )
+    if error:
+        return [], error
+    argv.extend(target_argv)
+    strategy = requested["strategy"]
+    argv.extend([
+        "--strategy", strategy,
+        "--min-size", requested["min_size"],
+        "--max-size", requested["max_size"],
+        "--top-k", requested["top_k"],
+        "--seed", requested["seed"],
+        "--workers", requested["workers"],
+        "--solver-threads", requested["solver_threads"],
+        "--growth-fraction", requested["growth_fraction"],
+        "--min-member-growth", requested["min_member_growth"],
+        "--min-community-growth", requested["min_community_growth"],
+        "--validate-top", requested["validate_top"],
+    ])
+    if requested["fva"] == "True" and len(rows) == 1:  # FVA is single-target only
+        argv.append("--robustness-fva")
+    if strategy == "auto":
+        argv.extend(["--exhaustive-max", requested["exhaustive_max"]])
+    if strategy == "random":
+        argv.extend(["--n-samples", requested["n_samples"]])
+    if strategy in ("auto", "ga"):
+        argv.extend([
+            "--ga-pop-size", requested["ga_pop_size"],
+            "--ga-generations", requested["ga_generations"],
+            "--ga-mutation-rate", requested["ga_mutation_rate"],
+            "--ga-immigrant-fraction", requested["ga_immigrant_fraction"],
+            "--ga-tournament-k", requested["ga_tournament_k"],
+            "--ga-elitism", requested["ga_elitism"],
+            "--ga-local-search-fraction", requested["ga_local_search_fraction"],
+        ])
+        for key, flag in (("ga_budget", "--ga-max-evaluations"),
+                          ("ga_patience", "--ga-patience"),
+                          ("ga_restart_after", "--ga-restart-after")):
+            if int(requested[key]):  # 0 is the "off" special value
+                argv.extend([flag, requested[key]])
+        if requested["ga_preserve_common"] == "True":
+            argv.append("--ga-preserve-common")
+    if requested["medium"]:
+        argv.extend(["--medium", requested["medium"]])
+        if requested["medium_mode"] == "exact":
+            argv.append("--exact-medium")
+        if requested["allow_unknown_medium"] == "True":
+            argv.append("--allow-unknown-medium")
+    if int(requested["timeout"]):
+        argv.extend(["--solve-timeout", requested["timeout"]])
+    if requested["checkpoint"]:
+        argv.extend(["--checkpoint", requested["checkpoint"]])
+    if requested["resume"] == "True":
+        argv.append("--resume")
+    return argv, ""
+
+
+class _ThreadStderrRouter:
+    """Pass-through `sys.stderr` that also copies writes made by a *registered* thread.
+
+    The GUI runs the CLI in-process on a job thread, and the CLI reports request errors
+    with `print(..., file=sys.stderr)`. Redirecting the global stream from the job thread
+    would capture every other thread's output too (and hide it from the terminal). This
+    router is installed once from the GUI thread; each job thread registers its own buffer,
+    so a job only ever sees what its own thread wrote. Output still reaches the terminal.
+    """
+
+    def __init__(self, underlying: TextIO) -> None:
+        self._underlying = underlying
+        self._local = threading.local()
+
+    def write(self, text: str) -> int:
+        buffer = getattr(self._local, "buffer", None)
+        if buffer is not None:
+            buffer.append(text)
+        return self._underlying.write(text)
+
+    def flush(self) -> None:
+        self._underlying.flush()
+
+    def attach(self, buffer: list[str]) -> None:
+        self._local.buffer = buffer
+
+    def detach(self) -> None:
+        self._local.buffer = None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._underlying, name)
+
+
+def _install_stderr_router() -> None:
+    """Install the pass-through router (GUI thread only; idempotent)."""
+    if not isinstance(sys.stderr, _ThreadStderrRouter):
+        sys.stderr = cast(TextIO, _ThreadStderrRouter(sys.stderr))
+
+
+@contextmanager
+def _captured_job_stderr() -> Iterator[list[str]]:
+    """Collect what the *current* thread writes to stderr (display only, never an artifact)."""
+    chunks: list[str] = []
+    router = sys.stderr if isinstance(sys.stderr, _ThreadStderrRouter) else None
+    if router is not None:
+        router.attach(chunks)
+    try:
+        yield chunks
+    finally:
+        if router is not None:
+            router.detach()
 
 
 def _finish_after_artifacts(ctx: Any) -> None:
@@ -728,14 +925,15 @@ def _failed_search_artifacts(out_dir: Path, rc: int) -> dict[str, Any]:
     return summary
 
 
-def _search_input_diagnostic(model_dir: str, medium: str) -> str | None:
+def _search_input_diagnostic(model_dir: str | None, medium: str) -> str | None:
     """Keep known CLI input errors when a failed transaction publishes no artifacts."""
-    try:
-        from cmig.core.model_pool import discover_model_files
+    if model_dir is not None:
+        try:
+            from cmig.core.model_pool import discover_model_files
 
-        discover_model_files(model_dir)
-    except (OSError, ValueError) as exc:
-        return str(exc)
+            discover_model_files(model_dir)
+        except (OSError, ValueError) as exc:
+            return str(exc)
     if medium and not Path(medium).is_file():
         return f"medium file not found: {medium}"
     return None
@@ -771,6 +969,43 @@ def _search_temp_root() -> Path:
             continue
         return root
     raise RuntimeError("Unable to create CMIG search temp directory") from last_error
+
+
+CHECKPOINT_EXISTS = "checkpoint exists; enable Resume or choose a new path"
+SEARCH_CANCEL_PENDING = "Cancellation requested — the solve in progress will finish first."
+
+
+def _search_run_stamp() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def _output_parent_error(parent: Path) -> str:
+    """Why a chosen Search output folder cannot hold new run subfolders ("" if it can)."""
+    if not parent.exists():
+        return f"Output folder does not exist: {parent}"
+    if not parent.is_dir():
+        return f"Output folder is not a folder: {parent}"
+    if not os.access(parent, os.W_OK | os.X_OK):
+        return f"Output folder is not writable: {parent}"
+    return ""
+
+
+def _new_search_run_dir(parent: Path) -> Path:
+    """Create a fresh `search-YYYYMMDD-HHMMSS[-N]` folder in `parent`; never reuse one.
+
+    `mkdir(exist_ok=False)` is the claim: an existing folder (an earlier run, or anything
+    else of the user's) only moves the name on to the next suffix.
+    """
+    stem = f"search-{_search_run_stamp()}"
+    suffix = 1
+    while True:
+        candidate = parent / (stem if suffix == 1 else f"{stem}-{suffix}")
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            suffix += 1
+            continue
+        return candidate.resolve()
 
 
 class ProjectExplorer(QTreeWidget):
@@ -917,6 +1152,8 @@ class CmigMainWindow(QMainWindow):
         # Each Search-tab map holds (out_dir, the answer-determining inputs at submit time)
         # so an arriving result can say which request it belongs to.
         self._search_jobs: dict[str, tuple[Path, dict[str, str]]] = {}
+        #: Search jobs whose cancel was requested but which have not reached a terminal state.
+        self._search_cancel_pending: set[str] = set()
         self._host_microbe_jobs: dict[str, Path] = {}
         self._host_search_jobs: dict[str, tuple[Path, dict[str, str]]] = {}
         self._gene_ko_jobs: dict[str, tuple[Path, dict[str, str]]] = {}
@@ -1176,6 +1413,9 @@ class CmigMainWindow(QMainWindow):
         self.sandbox_view.preview_btn.clicked.connect(self._run_sandbox_preview)
         self.sandbox_view.commit_btn.clicked.connect(self._run_sandbox_commit)
         self.search_view.browse_pool_btn.clicked.connect(self._browse_search_model_dir)
+        self.search_view.browse_output_btn.clicked.connect(self._browse_search_output_dir)
+        self.search_view.browse_medium_btn.clicked.connect(self._browse_search_medium)
+        self.search_view.browse_checkpoint_btn.clicked.connect(self._browse_search_checkpoint)
         self.search_view.run_btn.clicked.connect(self.run_search_fixture)
         self.search_view.cancel_btn.clicked.connect(self.cancel_search)
         self.search_view.run_ko_btn.clicked.connect(self.run_gene_ko_search)
@@ -1229,6 +1469,9 @@ class CmigMainWindow(QMainWindow):
         if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
             self._show_status("status_job_already", status=job.status.value, job_id=job_id)
             return
+        if job_id in self._search_jobs:
+            self.cancel_search()
+            return
         self.runner.cancel(job_id)
         self.bridge.cancelling.add(job_id)
         self.bridge.refresh()
@@ -1246,6 +1489,29 @@ class CmigMainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Select Model Pool Folder")
         if path:
             self.search_view.model_dir_input.setText(path)
+
+    def _browse_search_output_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Search Output Folder")
+        if path:
+            self.search_view.output_dir_input.setText(path)
+
+    def _browse_search_medium(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Medium File", "", "Medium (*.csv *.json);;All files (*)"
+        )
+        if path:
+            self.search_view.medium_input.setText(path)
+
+    def _browse_search_checkpoint(self) -> None:
+        # A save dialog: the path may be new (fresh run) or existing (Resume), so the
+        # overwrite prompt is off; the run-time pre-check refuses an existing file without
+        # Resume instead.
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Select Checkpoint JSON", "", "Checkpoint (*.json)",
+            options=QFileDialog.Option.DontConfirmOverwrite,
+        )
+        if path:
+            self.search_view.checkpoint_input.setText(path)
 
     def _browse_sweep_taxonomy(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1965,7 +2231,23 @@ class CmigMainWindow(QMainWindow):
     def cancel_search(self) -> None:
         for job_id in self._search_jobs:
             self.runner.cancel(job_id)
-        self.search_view.status.setText("Cancellation requested; active solves will finish.")
+            self.bridge.cancelling.add(job_id)
+            self._search_cancel_pending.add(job_id)
+        self.bridge.refresh()
+        self._show_search_cancel_pending()
+
+    def _show_search_cancel_pending(self) -> None:
+        """Keep the Search tab saying a cancel is pending until the job actually ends.
+
+        The in-flight solve cannot be interrupted, so the job stays RUNNING for a while
+        after Cancel; other Search-tab workflows share this status label and may write it
+        meanwhile, so every poll tick puts the pending notice back.
+        """
+        if not self._search_cancel_pending & self._search_jobs.keys():
+            return
+        self.search_view.cancel_btn.setEnabled(False)
+        self.search_view.run_btn.setEnabled(False)
+        self.search_view.status.setText(SEARCH_CANCEL_PENDING)
 
     def run_search_fixture(self) -> str:
         """Run user model-pool search from the Search tab."""
@@ -1973,74 +2255,68 @@ class CmigMainWindow(QMainWindow):
         from cmig.service import JobContext
 
         requested = self.search_view.request_fields("search")
-        targets = [value.strip() for value in requested["target"].split(",") if value.strip()]
-        if not targets or len(set(targets)) != len(targets):
+        base_argv, error = _search_argv(requested, self.search_view.target_rows())
+        if error:
+            self.search_view.status.setText(error)
+            return ""
+        checkpoint = (
+            Path(requested["checkpoint"]).resolve()
+            if requested["checkpoint"] else None
+        )
+        if checkpoint is not None and checkpoint.exists() and requested["resume"] != "True":
+            self.search_view.status.setText(f"{CHECKPOINT_EXISTS}: {checkpoint}")
+            return ""
+        # The output folder is where the run goes, not what it computes: read here, never
+        # part of the request snapshot.
+        output_parent_text = self.search_view.output_dir_input.text().strip()
+        if output_parent_text:
+            output_parent = Path(output_parent_text).expanduser()
+            parent_error = _output_parent_error(output_parent)
+            if parent_error:
+                self.search_view.status.setText(parent_error)
+                return ""
+            try:
+                out_dir = _new_search_run_dir(output_parent.resolve())
+            except OSError as exc:
+                self.search_view.status.setText(f"Cannot create a run folder: {exc}")
+                return ""
+        else:
+            out_dir = Path(
+                tempfile.mkdtemp(prefix="cmig-search-", dir=_search_temp_root())
+            ).resolve()
+        if checkpoint is not None and checkpoint.is_relative_to(out_dir):
+            # The CLI publishes by replacing --out; a checkpoint inside it would be lost.
+            # The folder was created empty just above, so removing it touches nothing else.
+            out_dir.rmdir()
             self.search_view.status.setText(
-                "Enter one or more unique target IDs separated by commas.")
+                f"Checkpoint is inside this run's output folder ({out_dir}); "
+                "choose a checkpoint path outside it."
+            )
             return ""
-        target = ",".join(targets)
-        model_dir = self.search_view.model_dir_input.text().strip()
-        strategy = self.search_view.strategy_combo.currentText()
-        min_size = str(self.search_view.min_size_spin.value())
-        max_size = str(self.search_view.max_size_spin.value())
-        top_k = str(self.search_view.top_k_spin.value())
-        robustness_fva = self.search_view.robustness_check.isChecked()
-        if not model_dir:
-            self.search_view.status.setText("Select a model folder before running product search.")
-            return ""
+        warning = self.search_view.reference_warning()
+        model_dir = requested["pool"] if requested["model_source"] != "taxonomy" else None
+        _install_stderr_router()
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            argv = [
-                "search",
-                "--model-dir",
-                model_dir,
-                "--targets" if len(targets) > 1 else "--target",
-                target,
-                "--strategy",
-                strategy,
-                "--min-size",
-                min_size,
-                "--max-size",
-                max_size,
-                "--top-k",
-                top_k,
-            ]
-            if robustness_fva:
-                argv.append("--robustness-fva")
-            argv.extend(["--seed", requested["seed"], "--workers", requested["workers"],
-                         "--growth-fraction", requested["growth_fraction"],
-                         "--min-member-growth", requested["min_member_growth"],
-                         "--min-community-growth", requested["min_community_growth"],
-                         "--validate-top", requested["validate_top"],
-                         "--direction", requested["direction"],
-                         "--multi-metric", requested["multi_metric"]])
-            if requested["medium"]:
-                argv.extend(["--medium", requested["medium"], "--exact-medium"])
-            if int(requested["ga_budget"]):
-                argv.extend(["--ga-max-evaluations", requested["ga_budget"]])
-            if int(requested["timeout"]):
-                argv.extend(["--solve-timeout", requested["timeout"]])
-            if requested["target_scales"]:
-                argv.extend(["--target-scales", requested["target_scales"]])
-            if requested["checkpoint"]:
-                argv.extend(["--checkpoint", requested["checkpoint"]])
-            if requested["resume"] == "True":
-                argv.append("--resume")
-            argv.extend(["--out", str(out_dir)])
+            argv = [*base_argv, "--out", str(out_dir)]
             output_name = "search_summary.json"
             from cmig.core.search_execution import SearchControl
             from cmig.service.search_service import search_control
 
+            # The control's values win over the argv inside the CLI, so every value the
+            # argv carries for it must match — otherwise the run would execute N workers or
+            # threads while its provenance recorded a different number.
             control = SearchControl(
                 checkpoint=Path(requested["checkpoint"]).resolve()
                 if requested["checkpoint"] else None,
                 resume=requested["resume"] == "True", workers=int(requested["workers"]),
+                solver_threads=int(requested["solver_threads"]),
                 cancelled=lambda: ctx.cancelled, progress=ctx.report_progress,
                 solve_timeout=float(requested["timeout"]) or None,
             )
-            with search_control(control):
+            with search_control(control), _captured_job_stderr() as stderr_chunks:
                 rc = main(argv)
             if rc == 130:
                 ctx.raise_if_cancelled()
@@ -2048,6 +2324,10 @@ class CmigMainWindow(QMainWindow):
                 from cmig.service.jobrunner import ArtifactJobFailure
 
                 artifacts = _failed_search_artifacts(out_dir, rc)
+                cli_error = "".join(stderr_chunks).strip()
+                if cli_error:
+                    artifacts["cli_error"] = cli_error
+                    artifacts.setdefault("warnings", []).insert(0, f"CLI error: {cli_error}")
                 cause = (
                     _search_input_diagnostic(model_dir, requested["medium"])
                     if rc == 2 else None
@@ -2055,8 +2335,11 @@ class CmigMainWindow(QMainWindow):
                 if cause:
                     artifacts.setdefault("warnings", []).append(cause)
                     artifacts["input_diagnostic"] = cause
+                reason = "; ".join(
+                    part for part in (cli_error, cause) if part
+                ) or "see diagnostics"
                 raise ArtifactJobFailure(
-                    f"search failed with rc={rc}; {cause or 'see diagnostics'}; outputs: {out_dir}",
+                    f"search failed with rc={rc}; {reason}; outputs: {out_dir}",
                     artifacts,
                 )
             _finish_after_artifacts(ctx)
@@ -2065,12 +2348,16 @@ class CmigMainWindow(QMainWindow):
                 raise RuntimeError("search output is not a JSON object")
             return payload
 
-        out_dir = Path(tempfile.mkdtemp(prefix="cmig-search-", dir=_search_temp_root())).resolve()
         jid = self.submit_job("search_fixture", _job)
-        self._search_jobs[jid] = (out_dir, self.search_view.request_fields("search"))
+        self._search_jobs[jid] = (out_dir, requested)
         self.search_view.run_btn.setEnabled(False)
         self.search_view.cancel_btn.setEnabled(True)
-        self.search_view.status.setText(f"search started: {jid}")
+        self.search_view.status.setText(
+            f"search started: {jid} · "
+            + medium_mode_text(requested["medium"], requested["medium_mode"])
+            + f" · output: {out_dir}"
+            + (f" · Warning: {warning}" if warning else "")
+        )
         return jid
 
     def run_host_microbe_bigg(self) -> str:
@@ -2252,7 +2539,7 @@ class CmigMainWindow(QMainWindow):
         members = requested["ko_members"]
         member = requested["ko_member"]
         genes = requested["ko_genes"]
-        target, target_error = _single_target(requested["target"])
+        target, direction, target_error = _single_target(self.search_view.target_rows())
         if target_error:
             self.search_view.status.setText(target_error)
             return ""
@@ -2267,7 +2554,7 @@ class CmigMainWindow(QMainWindow):
         # run silently executed the parameters the user typed *after* clicking, and read a
         # QWidget from a worker thread (undefined behaviour in Qt). Coordinator CC-8.
         max_genes = requested["max_genes"]
-        top_k = requested["top_k"]
+        top_k = requested["ko_top_k"]
         out_dir = Path(tempfile.mkdtemp(prefix="cmig-gene-ko-", dir=_search_temp_root())).resolve()
 
         def _job(ctx: JobContext) -> dict[str, Any]:
@@ -2286,7 +2573,7 @@ class CmigMainWindow(QMainWindow):
                 "--top-k",
                 top_k,
                 "--direction",
-                requested["direction"],
+                direction,
                 "--growth-fraction",
                 requested["growth_fraction"],
                 "--out",
@@ -2369,7 +2656,7 @@ class CmigMainWindow(QMainWindow):
         model_dir = requested["pool"]
         member = requested["growth_member"]
         fractions = requested["fractions"]
-        target, target_error = _single_target(requested["target"])
+        target, _direction, target_error = _single_target(self.search_view.target_rows())
         if target_error:
             self.search_view.status.setText(target_error)
             return ""
@@ -3003,6 +3290,10 @@ class CmigMainWindow(QMainWindow):
                 self._show_status("status_fixture_job", status=job.status.value, job_id=jid)
         for jid, (out_dir, requested) in list(self._search_jobs.items()):
             job = self.runner.poll(jid)
+            was_cancel_pending = jid in self._search_cancel_pending
+            if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+                self._search_cancel_pending.discard(jid)
+                self.bridge.cancelling.discard(jid)
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._search_jobs.pop(jid, None)
                 self.search_view.run_btn.setEnabled(True)
@@ -3085,9 +3376,13 @@ class CmigMainWindow(QMainWindow):
                         self._show_status("status_run_load_failed", error=exc)
                         continue
                     self.current_search_dir = out_dir
+                    cause = job.result.get("cli_error") or job.result.get(
+                        "input_diagnostic"
+                    )
                     self.search_view.status.setText(
-                        f"search failed (rc={job.result.get('cli_exit_code', '?')}); "
-                        "diagnostics and artifact path are in details"
+                        f"search failed (rc={job.result.get('cli_exit_code', '?')})"
+                        + (f": {cause}" if cause else "")
+                        + "; diagnostics and artifact path are in details"
                     )
                     self.tabs.setCurrentWidget(self.search_view)
                     self._register_run_output(out_dir)
@@ -3097,6 +3392,11 @@ class CmigMainWindow(QMainWindow):
                     self.statusBar().showMessage(
                         f"search {job.status.value}: {job.error or jid}"
                     )
+                    if was_cancel_pending:
+                        # The pending notice must not outlive the job it describes.
+                        self.search_view.status.setText(
+                            f"search {job.status.value}: {job.error or jid}"
+                        )
         for jid, out_dir in list(self._host_microbe_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE:
@@ -3454,6 +3754,7 @@ class CmigMainWindow(QMainWindow):
                         error=job.error or jid,
                     )
                 )
+        self._show_search_cancel_pending()
 
 
 def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:

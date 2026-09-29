@@ -172,6 +172,7 @@ GUI_CLI_WORKFLOWS: list[dict[str, Any]] = [
             "pool_diagnostics.csv",
             "search_plot.svg",
             "search_scatter.svg",
+            "search_pareto.svg",
         ],
         "example": (
             "uv run cmig search --model-dir models --target but --min-size 2 "
@@ -6549,6 +6550,17 @@ def _write_multi_target_outputs(
     if result.ranks:
         _write_multi_target_figure(result, out / "search_plot.svg")
         figure_artifacts = ["search_plot.svg", "search_plot.tiff"]
+    # Unlike the stacked bar above, a Pareto figure failure must not discard a valid search:
+    # drop only the figure (partial files included) and say why in the summary.
+    pareto_files = ("search_pareto.svg", "search_pareto.tiff")
+    try:
+        if _write_search_pareto_figure(result, out / pareto_files[0]):
+            figure_artifacts += list(pareto_files)
+    except Exception as exc:  # noqa: BLE001 - any figure failure degrades to a warning
+        for name in pareto_files:
+            (out / name).unlink(missing_ok=True)
+        cause = str(exc) or type(exc).__name__
+        summary["warnings"] = [*summary["warnings"], f"Pareto figure not written: {cause}"]
     summary["artifacts"] = sorted(
         ["pool_taxonomy.csv", "search_rankings.csv", "search_summary.json"]
         + (["pool_diagnostics.csv"] if diagnostics is not None else [])
@@ -7109,6 +7121,8 @@ KNOWN_SEARCH_ARTIFACTS = frozenset({
     "search_plot.tiff",
     "search_scatter.svg",
     "search_scatter.tiff",
+    "search_pareto.svg",
+    "search_pareto.tiff",
 })
 KNOWN_HOST_SEARCH_ARTIFACTS = frozenset({
     "host_search_rankings.csv",
@@ -8250,6 +8264,163 @@ def _write_multi_target_figure(result: Any, svg_path: Path) -> None:
                     )
             save_figure_atomic(fig, svg_path, format="svg", metadata=SVG_METADATA)
             save_publication_tiff(fig, svg_path.with_suffix(".tiff"))
+    finally:
+        plt.close(fig)
+
+
+_PARETO_BETTER_ARROWS = {
+    # Raw exchange flux (+ secretion / - uptake): which way along the axis is better.
+    "max_secretion": ("→", "↑"),
+    "min_uptake": ("→", "↑"),
+    "min_secretion": ("←", "↓"),
+    "max_uptake": ("←", "↓"),
+}
+
+
+def _search_pareto_axis_label(result: Any, target: str, *, axis: str) -> str:
+    """Axis label for one target: raw signed flux, its direction and the better side."""
+    direction = str(result.directions.get(target, ""))
+    if direction not in _PARETO_BETTER_ARROWS:
+        raise ValueError(f"target {target!r} has no recorded direction")
+    arrow = _PARETO_BETTER_ARROWS[direction][0 if axis == "x" else 1]
+    return (
+        f"{target} flux ({direction.replace('_', ' ')}; better {arrow})\n"
+        f"{result.target_exchanges.get(target, target)}, {UNIT_FLUX}"
+    )
+
+
+def _search_pareto_panels(result: Any) -> list[dict[str, Any]]:
+    """Recorded points for every target pair; no dominance is recomputed here.
+
+    Only rows that are optimal and joint (one LP solution) with finite values on both axes
+    are drawn. Capability-basis, failed, non-viable, missing, timeout and unevaluated rows
+    are never plotted, so none of them appears as a fabricated 0.
+    """
+    from itertools import combinations
+
+    from cmig.core.search_product import FLUX_BASIS_JOINT
+
+    targets = list(result.targets)
+    if len(targets) < 2:
+        return []
+    rows = [
+        row for row in getattr(result, "evaluations", [])
+        if row.status == "optimal" and row.flux_basis == FLUX_BASIS_JOINT
+    ]
+    panels: list[dict[str, Any]] = []
+    for x_target, y_target in combinations(targets, 2):
+        points = []
+        for row in rows:
+            try:
+                x = float(row.target_fluxes[x_target])
+                y = float(row.target_fluxes[y_target])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (math.isfinite(x) and math.isfinite(y)):
+                continue
+            points.append({
+                "members": "+".join(row.members),
+                "x": x,
+                "y": y,
+                "pareto": bool(row.pareto),
+                "absent": x_target in row.missing_targets or y_target in row.missing_targets,
+            })
+        panels.append({"x": x_target, "y": y_target, "points": points})
+    return panels
+
+
+def _write_search_pareto_figure(result: Any, svg_path: Path) -> bool:
+    """Write search_pareto.svg/.tiff; return False (no files) when nothing is plottable."""
+    panels = _search_pareto_panels(result)
+    if not any(panel["points"] for panel in panels):
+        return False
+    _draw_search_pareto_figure(result, panels, svg_path)
+    return True
+
+
+def _draw_search_pareto_figure(
+    result: Any, panels: list[dict[str, Any]], svg_path: Path
+) -> None:
+    import textwrap
+
+    plt = _load_matplotlib_pyplot()
+    n_cols = min(3, len(panels))
+    n_rows = math.ceil(len(panels) / n_cols)
+    notes = [
+        "Points: every recorded joint-optimal candidate (one LP solution) with finite fluxes; "
+        "per-target capability, failed, non-viable, missing and timeout candidates are not "
+        "drawn. Non-dominated = the run's recorded Pareto flag.",
+    ]
+    if result.metric == "pareto":
+        notes.append(
+            "Sampled Pareto approximation with objective extremes; "
+            "not a complete continuous front."
+        )
+    if not str(result.strategy).startswith("exhaustive"):
+        notes.append("Non-exhaustive strategy: approximate search; the global optimum and "
+                     "complete front are not guaranteed.")
+    width = 4.6 * n_cols
+    caption = "\n".join(
+        textwrap.fill(note, width=int(width * 16)) for note in notes
+    )
+    caption_lines = caption.count("\n") + 1
+    caption_in = 0.13 * caption_lines + 0.12
+    height = 4.1 * n_rows + caption_in + 0.6
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(width, height), dpi=300, squeeze=False)
+    try:
+        flat = list(axes.flat)
+        for ax in flat[len(panels):]:
+            ax.remove()
+        used = flat[: len(panels)]
+        for ax, panel in zip(used, panels, strict=True):
+            points = panel["points"]
+            groups = [
+                (False, False, "Evaluated (dominated)"),
+                (True, False, "Non-dominated (recorded)"),
+                (False, True, "target exchange absent (recorded 0)"),
+                (True, True, "target exchange absent, non-dominated"),
+            ]
+            for pareto, absent, label in groups:
+                chosen = [p for p in points if p["pareto"] == pareto and p["absent"] == absent]
+                if not chosen:
+                    continue
+                color = OKABE_ITO[5] if pareto else "#8a8a8a"
+                ax.scatter(
+                    [p["x"] for p in chosen], [p["y"] for p in chosen],
+                    s=46 if pareto else 30,
+                    marker="D" if pareto else "o",
+                    facecolors="none" if absent else color,
+                    edgecolors=color, linewidths=1.2,
+                    zorder=4 if pareto else 3, label=label,
+                )
+            if not points:
+                ax.text(0.5, 0.5, "no plottable points", transform=ax.transAxes,
+                        ha="center", va="center", fontsize=9, color="#555555")
+            ax.axhline(0, color="#bbbbbb", linewidth=0.7, zorder=1)
+            ax.axvline(0, color="#bbbbbb", linewidth=0.7, zorder=1)
+            ax.set_xlabel(_search_pareto_axis_label(result, panel["x"], axis="x"), fontsize=9)
+            ax.set_ylabel(_search_pareto_axis_label(result, panel["y"], axis="y"), fontsize=9)
+            _polish_matplotlib_axes(ax, grid_axis="both")
+        handles: dict[str, Any] = {}
+        for ax in used:
+            for handle, label in zip(*ax.get_legend_handles_labels(), strict=True):
+                handles.setdefault(label, handle)
+        if len(used) > 1:
+            _add_panel_letters(used)
+        # fig.text, not suptitle: tight_layout below must not reserve extra room for it.
+        fig.text(
+            0.5, 1 - 0.12 / height,
+            f"Multi-target search trade-off · {result.metric} · {result.strategy}",
+            fontsize=12, ha="center", va="top",
+        )
+        fig.text(0.02, 0.01, caption, fontsize=7.5, va="bottom", color="#333333")
+        bottom = (caption_in + 0.1) / height
+        fig.legend(list(handles.values()), list(handles), loc="upper center",
+                   bbox_to_anchor=(0.5, 1 - 0.45 / height), ncol=min(4, len(handles)),
+                   frameon=False, fontsize=8)
+        fig.tight_layout(rect=(0, bottom, 1, 1 - 0.75 / height))
+        save_figure_atomic(fig, svg_path, format="svg", metadata=SVG_METADATA)
+        save_publication_tiff(fig, svg_path.with_suffix(".tiff"))
     finally:
         plt.close(fig)
 

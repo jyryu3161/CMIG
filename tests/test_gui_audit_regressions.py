@@ -75,22 +75,22 @@ def test_adjacent_workflows_forward_only_applicable_frozen_settings(monkeypatch,
     view = window.search_view
     view.model_dir_input.setText(str(tmp_path))
     view.medium_input.setText(str(tmp_path / "defined-medium.csv"))
-    view.targets_input.setText("ac")
-    view.direction_combo.setCurrentText("min_uptake")
+    view.set_target_rows(["ac"])
+    view.target_direction_combo(0).setCurrentText("min_uptake")
     view.growth_fraction_spin.setValue(0.75)
     view.cooperative_tradeoff_spin.setValue(0.65)
     growth_request = view.request_fields("strain_growth")
-    view.direction_combo.setCurrentText("max_secretion")
+    view.target_direction_combo(0).setCurrentText("max_secretion")
     view.growth_fraction_spin.setValue(0.6)
     assert view.superseded_note(growth_request, "strain_growth") == ""
-    view.direction_combo.setCurrentText("min_uptake")
+    view.target_direction_combo(0).setCurrentText("min_uptake")
     view.growth_fraction_spin.setValue(0.75)
     view.ko_members_input.setText("member_a")
     view.growth_member_input.setText("member_a")
     jobs = [window.run_gene_ko_search(), window.run_strain_growth_report(),
             window.run_abundance_impact()]
     view.medium_input.setText("changed.csv")
-    view.direction_combo.setCurrentText("max_secretion")
+    view.target_direction_combo(0).setCurrentText("max_secretion")
     view.cooperative_tradeoff_spin.setValue(0.8)
     release.set()
     for job in jobs:
@@ -443,7 +443,7 @@ def test_search_cli_exit_two_retains_actionable_request_detail(monkeypatch, tmp_
     runner = JobRunner(max_workers=1)
     window = build_main_window(runner=runner)
     window.search_view.model_dir_input.setText(str(tmp_path))
-    window.search_view.targets_input.setText("ac")
+    window.search_view.set_target_rows(["ac"])
     jid = window.run_search_fixture()
     with pytest.raises(JobFailed):
         runner.result(jid, timeout=5)
@@ -616,9 +616,9 @@ def test_completed_workflow_invalidates_only_applicable_edits(tmp_path, kind):
     if kind == "search":
         view.cooperative_tradeoff_spin.setValue(0.8)
         assert view.current_run_dir == tmp_path.resolve()
-        view.direction_combo.setCurrentText("min_uptake")
+        view.target_direction_combo(0).setCurrentText("min_uptake")
     else:
-        view.direction_combo.setCurrentText("min_uptake")
+        view.target_direction_combo(0).setCurrentText("min_uptake")
         view.growth_fraction_spin.setValue(0.8)
         assert view.current_run_dir == tmp_path.resolve()
         view.cooperative_tradeoff_spin.setValue(0.8)
@@ -638,7 +638,7 @@ def test_irrelevant_edit_keeps_completed_superseded_ratio_result(tmp_path):
         request_note=view.superseded_note(executed, "abundance_impact"),
     )
     assert "superseded" in view.details.toPlainText()
-    view.direction_combo.setCurrentText("min_uptake")
+    view.target_direction_combo(0).setCurrentText("min_uptake")
     assert view.current_run_dir == tmp_path.resolve()
     assert "superseded" in view.details.toPlainText()
     view.cooperative_tradeoff_spin.setValue(0.8)
@@ -694,7 +694,7 @@ def test_real_cli_input_failure_retains_exact_path(tmp_path, missing):
     else:
         path = pool
     window.search_view.model_dir_input.setText(str(pool))
-    window.search_view.targets_input.setText("ac")
+    window.search_view.set_target_rows(["ac"])
     jid = window.run_search_fixture()
     with pytest.raises(JobFailed):
         runner.result(jid, timeout=15)
@@ -795,7 +795,7 @@ def test_completed_search_rejects_verified_malformed_rank(monkeypatch, tmp_path,
     _search_run(prior, {"status": "ok", "top_ranked": [], "warnings": []})
     assert window.load_search_dir(prior)
     window.search_view.model_dir_input.setText(str(tmp_path))
-    window.search_view.targets_input.setText("ac")
+    window.search_view.set_target_rows(["ac"])
     jid = window.run_search_fixture()
     runner.result(jid, timeout=5)
     out_dir = window._search_jobs[jid][0]
@@ -835,7 +835,7 @@ def test_failed_search_rejects_verified_malformed_rank(monkeypatch, tmp_path):
     _search_run(prior, {"status": "ok", "top_ranked": [], "warnings": []})
     assert window.load_search_dir(prior)
     window.search_view.model_dir_input.setText(str(tmp_path))
-    window.search_view.targets_input.setText("ac")
+    window.search_view.set_target_rows(["ac"])
     jid = window.run_search_fixture()
     with pytest.raises(JobFailed):
         runner.result(jid, timeout=5)
@@ -949,7 +949,7 @@ def test_failed_search_invalid_manifest_is_not_published(monkeypatch, tmp_path):
     runner = JobRunner(max_workers=1)
     window = build_main_window(runner=runner)
     window.search_view.model_dir_input.setText(str(tmp_path))
-    window.search_view.targets_input.setText("ac")
+    window.search_view.set_target_rows(["ac"])
     jid = window.run_search_fixture()
     with pytest.raises(JobFailed):
         runner.result(jid, timeout=5)
