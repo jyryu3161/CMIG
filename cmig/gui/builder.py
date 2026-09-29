@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -35,18 +37,33 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from cmig.core.delta import DeltaResult
 from cmig.core.sandbox import BoundConstraint
+from cmig.core.targets import TARGET_PRESETS, preset_targets
 
 #: Default SearchView column labels. Adapters may override them per workflow so a growth
 #: rate is never displayed under a header that says "Flux" (round-5 P2 F7/F21).
 SEARCH_COLUMNS = ("Members", "Target", "Score", "Flux", "Growth", "FVA Range", "Status")
 
 _DIAGNOSTIC_COLOR = QColor("#d62728")
+
+#: The four `--direction` / `--target-directions` choices of `cmig search`, in CLI order.
+TARGET_DIRECTIONS = ("max_secretion", "min_secretion", "max_uptake", "min_uptake")
+#: Multi-target metrics whose score uses the per-target weights (`--target-weights`).
+WEIGHTED_METRICS = ("normalized_weighted", "carbon_equivalent", "raw_sum")
+REFERENCE_WARNING = (
+    "If the search runs as GA or random, normalized_weighted needs a Reference for every "
+    "target."
+)
+MERGE_MEDIUM_WARNING = (
+    "Metabolites missing from the medium file stay at the model defaults (e.g. unlimited "
+    "oxygen); use exact for reported results."
+)
 
 
 def validate_search_summary(summary: dict[str, object]) -> None:
@@ -514,9 +531,48 @@ class SearchView(QWidget):
         pool_row.addWidget(QLabel("Model Folder"))
         pool_row.addWidget(self.model_dir_input)
         pool_row.addWidget(self.browse_pool_btn)
+        # Per-target rows replace the old comma box + shared Direction + References inputs:
+        # every row carries its own direction, weight and fixed reference, exactly like the
+        # CLI's --targets/--target-directions/--target-weights/--target-scales.
+        self.target_table = QTableWidget(0, 4)
+        self.target_table.setHorizontalHeaderLabels(["Target", "Direction", "Weight", "Reference"])
+        self.target_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.target_table.setMaximumHeight(150)
+        self.target_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.add_target_btn = QPushButton("Add target")
+        self.remove_target_btn = QPushButton("Remove selected")
+        self.add_target_btn.clicked.connect(lambda: self.add_target_row(""))
+        self.remove_target_btn.clicked.connect(self._remove_selected_target)
+        self.target_preset_combo = QComboBox()
+        self.target_preset_combo.addItem("Fill from preset…", "")
+        for preset in sorted(TARGET_PRESETS):
+            self.target_preset_combo.addItem(preset, preset)
+        self.target_preset_combo.activated.connect(self._fill_from_preset)
+        self.multi_metric_combo = QComboBox()
+        self.multi_metric_combo.addItems([
+            "normalized_weighted", "carbon_equivalent", "raw_sum", "pareto",
+        ])
+        target_btn_row = QHBoxLayout()
+        target_btn_row.addWidget(self.add_target_btn)
+        target_btn_row.addWidget(self.remove_target_btn)
+        target_btn_row.addWidget(self.target_preset_combo)
+        target_btn_row.addWidget(QLabel("Multi-target metric"))
+        target_btn_row.addWidget(self.multi_metric_combo)
+        target_btn_row.addStretch(1)
+        target_note = QLabel(
+            "Targets: Search uses every row (Weight and Reference apply to 2+ rows). "
+            "Gene KO and Ratio Impact use the single row's target (Gene KO also its direction)."
+        )
+        target_note.setWordWrap(True)
+        self.weight_note = QLabel("Weights do not affect Pareto ranking.")
+        self.weight_note.setWordWrap(True)
+        self.weight_note.setVisible(False)
+        self.reference_warning_label = QLabel("")
+        self.reference_warning_label.setWordWrap(True)
+        self.reference_warning_label.setVisible(False)
         controls = QHBoxLayout()
-        self.targets_input = QLineEdit("but")
-        self.targets_input.setPlaceholderText("Target metabolite, e.g. but or ac")
         self.strategy_combo = QComboBox()
         self.strategy_combo.addItems(["auto", "exhaustive", "random", "ga"])
         self.min_size_spin = QSpinBox()
@@ -529,17 +585,17 @@ class SearchView(QWidget):
         self.max_size_spin = QSpinBox()
         self.max_size_spin.setRange(1, 10_000)
         self.max_size_spin.setValue(2)
-        self.top_k_spin = QSpinBox()
-        self.top_k_spin.setRange(1, 100)
-        self.top_k_spin.setValue(3)
+        # Search top-k: CLI default 10; 0 is refused by the CLI, so the floor is 1 and there
+        # is no artificial ceiling.
+        self.search_top_k_spin = QSpinBox()
+        self.search_top_k_spin.setRange(1, 2_147_483_647)
+        self.search_top_k_spin.setValue(10)
         self.robustness_check = QCheckBox("FVA")
         self.run_btn = QPushButton("Run Search")
         self.export_figure_btn = QPushButton("Export Figure")
         self.export_figure_btn.setEnabled(False)
         self.figure_mode_combo = QComboBox()
         self.figure_mode_combo.currentTextChanged.connect(self.refresh_figure_mode)
-        controls.addWidget(QLabel("Target"))
-        controls.addWidget(self.targets_input)
         controls.addWidget(QLabel("Size"))
         controls.addWidget(self.min_size_spin)
         controls.addWidget(QLabel("to"))
@@ -547,9 +603,10 @@ class SearchView(QWidget):
         controls.addWidget(QLabel("Strategy"))
         controls.addWidget(self.strategy_combo)
         controls.addWidget(QLabel("Top K"))
-        controls.addWidget(self.top_k_spin)
+        controls.addWidget(self.search_top_k_spin)
         controls.addWidget(self.robustness_check)
         controls.addWidget(self.run_btn)
+        controls.addStretch(1)
         figure_row = QHBoxLayout()
         figure_row.addWidget(QLabel("Figure"))
         figure_row.addWidget(self.figure_mode_combo)
@@ -560,10 +617,6 @@ class SearchView(QWidget):
         self.medium_input.setPlaceholderText("Defined medium CSV/JSON (blank: model default)")
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(0, 2_000_000_000)
-        self.ga_budget_spin = QSpinBox()
-        self.ga_budget_spin.setRange(0, 10_000_000)
-        self.ga_budget_spin.setSpecialValueText("Generation limit only")
-        self.ga_budget_spin.setValue(500)
         self.workers_spin = QSpinBox()
         self.workers_spin.setRange(1, 32)
         self.growth_fraction_spin = QDoubleSpinBox()
@@ -575,7 +628,7 @@ class SearchView(QWidget):
         self.min_member_growth_spin.setDecimals(5)
         growth_settings = QHBoxLayout()
         for label, widget in (("Medium", self.medium_input), ("Seed", self.seed_spin),
-                              ("GA budget", self.ga_budget_spin), ("Workers", self.workers_spin)):
+                              ("Workers", self.workers_spin)):
             settings.addWidget(QLabel(label))
             settings.addWidget(widget)
         for label, growth_widget in (("Growth fraction", self.growth_fraction_spin),
@@ -583,27 +636,11 @@ class SearchView(QWidget):
             growth_settings.addWidget(QLabel(label))
             growth_settings.addWidget(growth_widget)
         growth_settings.addStretch(1)
-        advanced = QHBoxLayout()
-        self.direction_combo = QComboBox()
-        self.direction_combo.addItems([
-            "max_secretion", "min_secretion", "max_uptake", "min_uptake",
-        ])
-        self.multi_metric_combo = QComboBox()
-        self.multi_metric_combo.addItems([
-            "carbon_equivalent", "raw_sum", "normalized_weighted", "pareto",
-        ])
-        self.target_scales_input = QLineEdit("")
-        self.target_scales_input.setPlaceholderText("Fixed scales for normalized GA: ac=10,but=5")
         self.checkpoint_input = QLineEdit("")
         self.checkpoint_input.setPlaceholderText("Checkpoint JSON path")
         self.resume_check = QCheckBox("Resume")
         self.cancel_btn = QPushButton("Cancel search")
         self.cancel_btn.setEnabled(False)
-        for label, advanced_widget in (("Direction", self.direction_combo),
-                              ("Multi-target metric", self.multi_metric_combo),
-                              ("References", self.target_scales_input)):
-            advanced.addWidget(QLabel(label))
-            advanced.addWidget(advanced_widget)
         checkpoint_row = QHBoxLayout()
         checkpoint_row.addWidget(QLabel("Checkpoint"))
         checkpoint_row.addWidget(self.checkpoint_input)
@@ -625,6 +662,7 @@ class SearchView(QWidget):
                                     ("Per-solve timeout (s)", self.solve_timeout_spin)):
             limits.addWidget(QLabel(label))
             limits.addWidget(limit_widget)
+        self._build_advanced_settings()
         ko_row = QHBoxLayout()
         self.ko_members_input = QLineEdit("")
         self.ko_members_input.setPlaceholderText("Fixed combo for KO, e.g. iHN637,iSFV_1184")
@@ -635,6 +673,11 @@ class SearchView(QWidget):
         self.ko_max_genes_spin = QSpinBox()
         self.ko_max_genes_spin.setRange(0, 10000)
         self.ko_max_genes_spin.setValue(50)
+        # Gene KO keeps its own top-k (the `gene-ko-search` CLI default is 20), separate from
+        # the Search top-k so neither silently changes the other's request.
+        self.ko_top_k_spin = QSpinBox()
+        self.ko_top_k_spin.setRange(1, 100)
+        self.ko_top_k_spin.setValue(20)
         self.run_ko_btn = QPushButton("Rank Gene KOs")
         ko_row.addWidget(QLabel("Gene KO"))
         ko_row.addWidget(self.ko_members_input)
@@ -644,6 +687,8 @@ class SearchView(QWidget):
         ko_action_row.addWidget(self.ko_genes_input)
         ko_action_row.addWidget(QLabel("Max genes/member"))
         ko_action_row.addWidget(self.ko_max_genes_spin)
+        ko_action_row.addWidget(QLabel("KO Top K"))
+        ko_action_row.addWidget(self.ko_top_k_spin)
         ko_action_row.addWidget(self.run_ko_btn)
         ko_action_row.addStretch(1)
         growth_row = QHBoxLayout()
@@ -666,9 +711,10 @@ class SearchView(QWidget):
         growth_action_row.addWidget(self.run_abundance_btn)
         growth_action_row.addStretch(1)
         workflow_note = QLabel(
-            "Gene KO: medium (exact), direction and target growth fraction apply. "
-            "Strain Growth / Ratio: medium (exact) and cooperative tradeoff apply; "
-            "Search direction, target growth fraction, strategy and GA controls do not."
+            "Gene KO: model folder, medium (exact), the single target row's target and "
+            "direction, target growth fraction and KO Top K apply. "
+            "Strain Growth / Ratio: model folder, medium (exact) and cooperative tradeoff "
+            "apply; Search strategy, GA and advanced search settings do not."
         )
         workflow_note.setWordWrap(True)
         workflow_note.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -705,13 +751,19 @@ class SearchView(QWidget):
         self.figure_stack.setCurrentWidget(self.figure_placeholder)
         layout.addWidget(self.title)
         layout.addLayout(pool_row)
+        layout.addWidget(target_note)
+        layout.addWidget(self.target_table)
+        layout.addLayout(target_btn_row)
+        layout.addWidget(self.weight_note)
+        layout.addWidget(self.reference_warning_label)
         layout.addLayout(controls)
         layout.addLayout(figure_row)
         layout.addLayout(settings)
         layout.addLayout(growth_settings)
-        layout.addLayout(advanced)
         layout.addLayout(checkpoint_row)
         layout.addLayout(limits)
+        layout.addWidget(self.advanced_toggle)
+        layout.addWidget(self.advanced_box)
         layout.addLayout(ko_row)
         layout.addLayout(ko_action_row)
         layout.addLayout(growth_row)
@@ -730,54 +782,376 @@ class SearchView(QWidget):
         self._displayed_kind: str | None = None
         self._displayed_request: dict[str, str] | None = None
         self._executed_request: dict[str, str] | None = None
+        # The CLI's own default request: one row, `--target but --direction max_secretion`.
+        self.add_target_row("but")
         # Any edit to an answer-determining input invalidates the displayed ranking: a table
         # computed for pool/target/size A must never sit under inputs that now say B.
         for line_edit in (
             self.model_dir_input,
-            self.targets_input,
             self.ko_members_input,
             self.ko_member_input,
             self.ko_genes_input,
             self.growth_member_input,
             self.abundance_fractions_input,
             self.medium_input,
-            self.target_scales_input,
             self.checkpoint_input,
+            self.taxonomy_input,
         ):
             line_edit.textChanged.connect(self.invalidate_results)
         for spin in (
             self.min_size_spin,
             self.max_size_spin,
-            self.top_k_spin,
+            self.search_top_k_spin,
+            self.ko_top_k_spin,
             self.ko_max_genes_spin,
             self.seed_spin,
-            self.ga_budget_spin,
             self.workers_spin,
             self.growth_fraction_spin,
             self.min_member_growth_spin,
             self.min_community_growth_spin,
             self.validation_top_spin,
             self.solve_timeout_spin,
+            self.exhaustive_max_spin,
+            self.n_samples_spin,
+            self.ga_pop_size_spin,
+            self.ga_generations_spin,
+            self.ga_mutation_rate_spin,
+            self.ga_immigrant_fraction_spin,
+            self.ga_tournament_k_spin,
+            self.ga_elitism_spin,
+            self.ga_budget_spin,
+            self.ga_patience_spin,
+            self.ga_restart_after_spin,
+            self.ga_local_search_fraction_spin,
+            self.solver_threads_spin,
+            self.pareto_resolution_spin,
         ):
             spin.valueChanged.connect(self.invalidate_results)
-        self.strategy_combo.currentTextChanged.connect(self.invalidate_results)
-        self.robustness_check.toggled.connect(self.invalidate_results)
-        self.direction_combo.currentTextChanged.connect(self.invalidate_results)
-        self.multi_metric_combo.currentTextChanged.connect(self.invalidate_results)
-        self.resume_check.toggled.connect(self.invalidate_results)
+        for check in (
+            self.robustness_check,
+            self.resume_check,
+            self.recursive_check,
+            self.ga_preserve_common_check,
+            self.allow_unknown_medium_check,
+        ):
+            check.toggled.connect(self.invalidate_results)
+        for combo in (
+            self.strategy_combo,
+            self.multi_metric_combo,
+            self.model_source_combo,
+            self.medium_mode_combo,
+        ):
+            combo.currentTextChanged.connect(self.invalidate_results)
         self.cooperative_tradeoff_spin.valueChanged.connect(self.invalidate_results)
+        self.target_table.itemChanged.connect(self._on_target_item_changed)
+        self.multi_metric_combo.currentTextChanged.connect(self._refresh_target_notes)
+        self.strategy_combo.currentTextChanged.connect(self._refresh_target_notes)
+        self.model_source_combo.currentIndexChanged.connect(self._refresh_model_source)
+        self.medium_input.textChanged.connect(self._refresh_medium_notes)
+        self.medium_mode_combo.currentIndexChanged.connect(self._refresh_medium_notes)
+        self.allow_unknown_medium_check.toggled.connect(self._refresh_medium_notes)
+        self.advanced_toggle.toggled.connect(self._toggle_advanced)
+        self._refresh_target_notes()
+        self._refresh_model_source()
+        self._refresh_medium_notes()
+
+    def _build_advanced_settings(self) -> None:
+        """Collapsible "Advanced search settings" group — every value here is Search only.
+
+        Defaults equal the `cmig search` parser / `GAConfig` defaults. An option whose
+        applicability condition does not hold on screen (e.g. GA options with the exhaustive
+        strategy) is left out of the argv by the caller.
+        """
+        self.advanced_toggle = QToolButton()
+        self.advanced_toggle.setText("Advanced search settings (Search only)")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setChecked(False)
+        self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.advanced_box = QWidget()
+        box = QVBoxLayout(self.advanced_box)
+        box.setContentsMargins(12, 0, 0, 0)
+
+        def note(text: str) -> QLabel:
+            label = QLabel(text)
+            label.setWordWrap(True)
+            return label
+
+        def int_spin(low: int, high: int, value: int, off: str = "") -> QSpinBox:
+            spin = QSpinBox()
+            spin.setRange(low, high)
+            spin.setValue(value)
+            if off:
+                spin.setSpecialValueText(off)
+            return spin
+
+        def float_spin(value: float, high: float = 1.0) -> QDoubleSpinBox:
+            spin = QDoubleSpinBox()
+            spin.setRange(0.0, high)
+            spin.setDecimals(3)
+            spin.setSingleStep(0.05)
+            spin.setValue(value)
+            return spin
+
+        # Model input: --model-dir (the Model Folder field above) or --taxonomy.
+        self.model_source_combo = QComboBox()
+        self.model_source_combo.addItem("Model folder", "model_dir")
+        self.model_source_combo.addItem("Taxonomy CSV", "taxonomy")
+        self.taxonomy_input = QLineEdit("")
+        self.taxonomy_input.setPlaceholderText("MICOM-compatible pool taxonomy CSV")
+        self.recursive_check = QCheckBox("Scan model folder recursively")
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("Model input"))
+        source_row.addWidget(self.model_source_combo)
+        source_row.addWidget(self.taxonomy_input)
+        source_row.addWidget(self.recursive_check)
+        box.addLayout(source_row)
+        box.addWidget(note(
+            "Search only. Gene KO, Strain Growth and Ratio Impact always use the Model "
+            "Folder field."
+        ))
+
+        # Strategy-specific limits.
+        self.exhaustive_max_spin = int_spin(1, 2_000_000_000, 100)
+        self.n_samples_spin = int_spin(1, 2_000_000_000, 100)
+        strategy_row = QHBoxLayout()
+        strategy_row.addWidget(QLabel("Exhaustive max (auto only)"))
+        strategy_row.addWidget(self.exhaustive_max_spin)
+        strategy_row.addWidget(QLabel("Samples (random only)"))
+        strategy_row.addWidget(self.n_samples_spin)
+        strategy_row.addStretch(1)
+        box.addLayout(strategy_row)
+
+        # GA options (GAConfig defaults).
+        from cmig.core.search_ga import GAConfig
+
+        ga = GAConfig()
+        self.ga_pop_size_spin = int_spin(1, 1_000_000, ga.pop_size)
+        self.ga_generations_spin = int_spin(1, 1_000_000, ga.generations)
+        self.ga_mutation_rate_spin = float_spin(ga.mutation_rate)
+        self.ga_immigrant_fraction_spin = float_spin(ga.immigrant_fraction)
+        self.ga_tournament_k_spin = int_spin(1, 1_000_000, ga.tournament_k)
+        self.ga_elitism_spin = int_spin(0, 1_000_000, ga.elitism)
+        self.ga_budget_spin = int_spin(0, 2_000_000_000, 0, "Generation limit only")
+        self.ga_patience_spin = int_spin(0, 1_000_000, 0, "Off")
+        self.ga_restart_after_spin = int_spin(0, 1_000_000, 0, "Off")
+        self.ga_local_search_fraction_spin = float_spin(ga.local_search_fraction)
+        self.ga_preserve_common_check = QCheckBox("Preserve shared members (experimental)")
+        self.ga_preserve_common_check.setChecked(ga.preserve_common)
+        box.addWidget(note(
+            "GA options — apply only when the strategy is ga, or auto falls back to GA."
+        ))
+        ga_grid = QGridLayout()
+        ga_fields: tuple[tuple[str, QWidget], ...] = (
+            ("Population", self.ga_pop_size_spin),
+            ("Generations", self.ga_generations_spin),
+            ("Mutation rate", self.ga_mutation_rate_spin),
+            ("Immigrant fraction", self.ga_immigrant_fraction_spin),
+            ("Tournament k", self.ga_tournament_k_spin),
+            ("Elitism", self.ga_elitism_spin),
+            ("Max evaluations", self.ga_budget_spin),
+            ("Patience", self.ga_patience_spin),
+            ("Restart after", self.ga_restart_after_spin),
+            ("Local search fraction", self.ga_local_search_fraction_spin),
+        )
+        for index, (label, widget) in enumerate(ga_fields):
+            row, column = divmod(index, 2)
+            ga_grid.addWidget(QLabel(label), row, column * 2)
+            ga_grid.addWidget(widget, row, column * 2 + 1)
+        ga_grid.addWidget(self.ga_preserve_common_check, len(ga_fields) // 2, 0, 1, 4)
+        box.addLayout(ga_grid)
+
+        # Solver threads and Pareto resolution.
+        self.solver_threads_spin = int_spin(1, 1024, 1)
+        self.pareto_resolution_spin = int_spin(2, 1_000_000, 5)
+        solver_row = QHBoxLayout()
+        solver_row.addWidget(QLabel("Solver threads per worker"))
+        solver_row.addWidget(self.solver_threads_spin)
+        solver_row.addWidget(QLabel("Pareto resolution (pareto metric only)"))
+        solver_row.addWidget(self.pareto_resolution_spin)
+        solver_row.addStretch(1)
+        box.addLayout(solver_row)
+
+        # Medium mode and unknown-medium relaxation (Search only).
+        self.medium_mode_combo = QComboBox()
+        self.medium_mode_combo.addItem("exact", "exact")
+        self.medium_mode_combo.addItem("merge", "merge")
+        self.allow_unknown_medium_check = QCheckBox("Allow unknown medium metabolites")
+        medium_row = QHBoxLayout()
+        medium_row.addWidget(QLabel("Medium mode"))
+        medium_row.addWidget(self.medium_mode_combo)
+        medium_row.addWidget(self.allow_unknown_medium_check)
+        medium_row.addStretch(1)
+        box.addLayout(medium_row)
+        self.medium_mode_note = note("")
+        self.allow_unknown_note = note(
+            "Unknown medium metabolites are dropped and named in warnings; the run is "
+            "reported as degraded."
+        )
+        box.addWidget(self.medium_mode_note)
+        box.addWidget(self.allow_unknown_note)
+        box.addWidget(note(
+            "Medium mode and unknown-medium apply to Search only; Gene KO, Strain Growth "
+            "and Ratio Impact always use exact medium."
+        ))
+        self.advanced_box.setVisible(False)
+
+    def _toggle_advanced(self, expanded: bool) -> None:
+        self.advanced_box.setVisible(expanded)
+        self.advanced_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+
+    def _refresh_model_source(self, *_args: object) -> None:
+        taxonomy = self.model_source_combo.currentData() == "taxonomy"
+        self.taxonomy_input.setEnabled(taxonomy)
+        self.recursive_check.setEnabled(not taxonomy)
+
+    def _refresh_medium_notes(self, *_args: object) -> None:
+        if not self.medium_input.text().strip():
+            self.medium_mode_note.setText(
+                "Medium mode is not applied: no medium file is set (model default medium)."
+            )
+        elif self.medium_mode_combo.currentData() == "merge":
+            self.medium_mode_note.setText(MERGE_MEDIUM_WARNING)
+        else:
+            self.medium_mode_note.setText(
+                "exact: the medium file is the complete set of mass sources."
+            )
+        self.allow_unknown_note.setVisible(self.allow_unknown_medium_check.isChecked())
+
+    # ------------------------------------------------------------------ target rows
+
+    def target_direction_combo(self, row: int) -> QComboBox:
+        widget = self.target_table.cellWidget(row, 1)
+        if not isinstance(widget, QComboBox):
+            raise IndexError(f"no target row {row}")
+        return widget
+
+    def add_target_row(
+        self,
+        target: str = "",
+        direction: str = "max_secretion",
+        weight: str = "1",
+        reference: str = "",
+    ) -> int:
+        """Append one target row (default direction max_secretion, weight 1, no reference)."""
+        if direction not in TARGET_DIRECTIONS:
+            raise ValueError(f"unknown direction: {direction}")
+        row = self.target_table.rowCount()
+        self.target_table.blockSignals(True)
+        try:
+            self.target_table.insertRow(row)
+            self.target_table.setItem(row, 0, QTableWidgetItem(target))
+            self.target_table.setItem(row, 2, QTableWidgetItem(weight))
+            self.target_table.setItem(row, 3, QTableWidgetItem(reference))
+        finally:
+            self.target_table.blockSignals(False)
+        combo = QComboBox()
+        combo.addItems(list(TARGET_DIRECTIONS))
+        combo.setCurrentText(direction)
+        combo.currentTextChanged.connect(self.invalidate_results)
+        self.target_table.setCellWidget(row, 1, combo)
+        self._targets_changed()
+        return row
+
+    def set_target_rows(self, rows: Sequence[str | Sequence[str]]) -> None:
+        """Replace the table; each row is a target or (target, direction, weight, reference)."""
+        self.target_table.setRowCount(0)
+        for row in rows:
+            if isinstance(row, str):
+                self.add_target_row(row)
+            else:
+                self.add_target_row(*row)
+        self._targets_changed()
+
+    def target_rows(self) -> list[tuple[str, str, str, str]]:
+        """Raw (target, direction, weight, reference) text per row, in table order."""
+        out: list[tuple[str, str, str, str]] = []
+        for row in range(self.target_table.rowCount()):
+            cells = []
+            for column in (0, 2, 3):
+                item = self.target_table.item(row, column)
+                cells.append("" if item is None else item.text().strip())
+            out.append((cells[0], self.target_direction_combo(row).currentText(),
+                        cells[1], cells[2]))
+        return out
+
+    def _remove_selected_target(self) -> None:
+        row = self.target_table.currentRow()
+        if row >= 0:
+            self.target_table.removeRow(row)
+            self._targets_changed()
+
+    def _fill_from_preset(self, index: int) -> None:
+        name = str(self.target_preset_combo.itemData(index) or "")
+        if not name:
+            return
+        self.set_target_rows(preset_targets(name))
+        self.target_preset_combo.setCurrentIndex(0)
+
+    def _on_target_item_changed(self, _item: QTableWidgetItem) -> None:
+        self._refresh_target_notes()
+        self.invalidate_results(_item)
+
+    def _targets_changed(self) -> None:
+        self._refresh_target_notes()
+        self.invalidate_results(True)
+
+    def _refresh_target_notes(self, *_args: object) -> None:
+        weighted = self.multi_metric_combo.currentText() in WEIGHTED_METRICS
+        self.weight_note.setVisible(not weighted)
+        self.target_table.blockSignals(True)
+        try:
+            for row in range(self.target_table.rowCount()):
+                item = self.target_table.item(row, 2)
+                if item is None:
+                    continue
+                flags = item.flags()
+                if weighted:
+                    flags |= Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsEditable
+                else:
+                    flags &= ~(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsEditable)
+                item.setFlags(flags)
+        finally:
+            self.target_table.blockSignals(False)
+        warning = self.reference_warning()
+        self.reference_warning_label.setText(warning)
+        self.reference_warning_label.setVisible(bool(warning))
+
+    def reference_warning(self) -> str:
+        """Pre-run warning (never a block): normalized_weighted without References.
+
+        The GUI does not count combinations, so it cannot know whether `auto` will fall back
+        to GA; the CLI makes that call and reports its own error if References are needed.
+        """
+        rows = self.target_rows()
+        if (
+            len(rows) >= 2
+            and self.multi_metric_combo.currentText() == "normalized_weighted"
+            and self.strategy_combo.currentText() in ("auto", "ga", "random")
+            and not any(row[3] for row in rows)
+        ):
+            return REFERENCE_WARNING
+        return ""
 
     #: which inputs actually determine each Search-tab workflow's answer. Used to tell the
     #: user when an arriving result was computed for a request they have since edited —
     #: scoped per workflow so an irrelevant edit never raises a false alarm.
     REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
-        "search": ("pool", "target", "min_size", "max_size", "strategy", "top_k", "fva",
-                   "medium", "seed", "ga_budget", "workers", "growth_fraction",
-                   "min_member_growth", "direction", "multi_metric", "target_scales",
-                   "checkpoint", "resume", "min_community_growth", "validate_top", "timeout"),
+        "search": ("pool", "model_source", "taxonomy", "recursive", "target", "direction",
+                   "target_weights", "target_scales", "min_size", "max_size", "strategy",
+                   "top_k", "fva", "medium", "medium_mode", "allow_unknown_medium", "seed",
+                   "workers", "solver_threads", "growth_fraction", "min_member_growth",
+                   "multi_metric", "pareto_resolution", "exhaustive_max", "n_samples",
+                   "ga_pop_size", "ga_generations", "ga_mutation_rate",
+                   "ga_immigrant_fraction", "ga_tournament_k", "ga_elitism", "ga_budget",
+                   "ga_patience", "ga_restart_after", "ga_local_search_fraction",
+                   "ga_preserve_common", "checkpoint", "resume", "min_community_growth",
+                   "validate_top", "timeout"),
         "gene_ko": (
             "pool", "target", "ko_members", "ko_member", "ko_genes", "max_genes",
-            "top_k", "medium", "direction", "growth_fraction",
+            "ko_top_k", "medium", "direction", "growth_fraction",
         ),
         "strain_growth": ("pool", "medium", "cooperative_tradeoff"),
         "abundance_impact": (
@@ -789,13 +1163,21 @@ class SearchView(QWidget):
 
     def request_fields(self, kind: str) -> dict[str, str]:
         """Snapshot the answer-determining inputs for one workflow."""
+        rows = self.target_rows()
         snapshot = {
             "pool": self.model_dir_input.text().strip(),
-            "target": self.targets_input.text().strip(),
+            "model_source": str(self.model_source_combo.currentData()),
+            "taxonomy": self.taxonomy_input.text().strip(),
+            "recursive": str(self.recursive_check.isChecked()),
+            "target": ",".join(row[0] for row in rows),
+            "direction": ",".join(row[1] for row in rows),
+            "target_weights": ",".join(row[2] for row in rows),
+            "target_scales": ",".join(row[3] for row in rows),
             "min_size": str(self.min_size_spin.value()),
             "max_size": str(self.max_size_spin.value()),
             "strategy": self.strategy_combo.currentText(),
-            "top_k": str(self.top_k_spin.value()),
+            "top_k": str(self.search_top_k_spin.value()),
+            "ko_top_k": str(self.ko_top_k_spin.value()),
             "fva": str(self.robustness_check.isChecked()),
             "ko_members": self.ko_members_input.text().strip(),
             "ko_member": self.ko_member_input.text().strip(),
@@ -804,15 +1186,29 @@ class SearchView(QWidget):
             "growth_member": self.growth_member_input.text().strip(),
             "fractions": self.abundance_fractions_input.text().strip(),
             "medium": self.medium_input.text().strip(),
+            "medium_mode": str(self.medium_mode_combo.currentData()),
+            "allow_unknown_medium": str(self.allow_unknown_medium_check.isChecked()),
             "seed": str(self.seed_spin.value()),
-            "ga_budget": str(self.ga_budget_spin.value()),
             "workers": str(self.workers_spin.value()),
+            "solver_threads": str(self.solver_threads_spin.value()),
             "growth_fraction": str(self.growth_fraction_spin.value()),
             "cooperative_tradeoff": str(self.cooperative_tradeoff_spin.value()),
             "min_member_growth": str(self.min_member_growth_spin.value()),
-            "direction": self.direction_combo.currentText(),
             "multi_metric": self.multi_metric_combo.currentText(),
-            "target_scales": self.target_scales_input.text().strip(),
+            "pareto_resolution": str(self.pareto_resolution_spin.value()),
+            "exhaustive_max": str(self.exhaustive_max_spin.value()),
+            "n_samples": str(self.n_samples_spin.value()),
+            "ga_pop_size": str(self.ga_pop_size_spin.value()),
+            "ga_generations": str(self.ga_generations_spin.value()),
+            "ga_mutation_rate": str(self.ga_mutation_rate_spin.value()),
+            "ga_immigrant_fraction": str(self.ga_immigrant_fraction_spin.value()),
+            "ga_tournament_k": str(self.ga_tournament_k_spin.value()),
+            "ga_elitism": str(self.ga_elitism_spin.value()),
+            "ga_budget": str(self.ga_budget_spin.value()),
+            "ga_patience": str(self.ga_patience_spin.value()),
+            "ga_restart_after": str(self.ga_restart_after_spin.value()),
+            "ga_local_search_fraction": str(self.ga_local_search_fraction_spin.value()),
+            "ga_preserve_common": str(self.ga_preserve_common_check.isChecked()),
             "checkpoint": self.checkpoint_input.text().strip(),
             "resume": str(self.resume_check.isChecked()),
             "min_community_growth": str(self.min_community_growth_spin.value()),
@@ -980,7 +1376,7 @@ class SearchView(QWidget):
             "n_candidates_evaluated", "n_candidates_failed", "n_candidates_ranked",
             "n_pareto_points", "n_pareto_attempts", "n_pareto_resolved_attempts",
             "n_pareto_failed_attempts", "pareto_attempts", "candidate_sampling_status",
-            "cli_exit_code", "input_diagnostic", "output_dir",
+            "cli_exit_code", "cli_error", "input_diagnostic", "output_dir",
         ):
             if key in summary:
                 details.append(f"{key}: {summary[key]}")

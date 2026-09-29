@@ -134,7 +134,7 @@ def test_search_view_loads_advanced_summary(tmp_path):
     """SC-SR-GUI: advanced search summary → ranked table + Pareto badge."""
     _app()
     view = SearchView()
-    assert view.targets_input.text() == "but"
+    assert view.target_rows() == [("but", "max_secretion", "1", "")]
     assert view.strategy_combo.currentText() == "auto"
     assert view.run_btn.text() == "Run Search"
     assert view.model_dir_input.placeholderText() == "Folder of user-prepared microbial models"
