@@ -396,7 +396,8 @@ collapsed "Advanced search settings (Search only)" group exposes the model folde
 or taxonomy CSV, `--recursive`, `--exhaustive-max`, `--n-samples`, every GA option,
 `--solver-threads`, `--pareto-resolution`, exact/merge medium mode (merge shows a
 warning and the active mode stays visible outside the group) and
-`--allow-unknown-medium`. A setting is passed only when it applies (for example GA
+`--allow-unknown-medium` (`--solver` has only `gurobi`; `--allow-failed-run` is
+CLI-only because the GUI always shows a failed run as a failure). A setting is passed only when it applies (for example GA
 options only for `auto`/`ga`, FVA only with one target row). GUI defaults equal the
 CLI defaults (`normalized_weighted`, top-k 10, no GA evaluation cap); with
 `normalized_weighted` and no references the panel warns that a GA or random run

@@ -27,7 +27,7 @@ PySide6 데스크톱 앱.
 - Pareto·다중 타깃 경고는 첫 줄만이 아니라 전체를 펼쳐 볼 수 있어야 한다.
 - 긴 한 줄 문구나 숨은 탭의 최소 폭 때문에 창이 목표 크기(1280×800, 1500×950)를 넘어 강제로 커지면 안 된다.
 - Sandbox preview는 Apply/Save 전까지 run artifact가 아니다.
-- Search 설정은 `cmig search`와 동등하다. GUI Search 기본값은 CLI parser 기본값과 같고(예외: 배지를 주면 exact가 GUI 기본), 적용 조건이 맞지 않는 설정은 argv에 넣지 않는다. 출력 폴더·merge 배지·unknown 허용·taxonomy/recursive는 Search 전용이며 Gene KO·Strain Growth·Ratio Impact는 모델 폴더, exact 배지, 임시 폴더를 쓴다. Gene KO top-k는 별도 칸(기본 20, 무효화 키 `ko_top_k`)이다.
+- Search 설정은 `cmig search`와 동등하다(`--allow-failed-run`은 CLI 전용, `--solver`는 gurobi만 있어 노출하지 않음). GUI Search 기본값은 CLI parser 기본값과 같고(예외: 배지를 주면 exact가 GUI 기본), 적용 조건이 맞지 않는 설정은 argv에 넣지 않는다. 출력 폴더·merge 배지·unknown 허용·taxonomy/recursive는 Search 전용이며 Gene KO·Strain Growth·Ratio Impact는 모델 폴더, exact 배지, 임시 폴더를 쓴다. Gene KO top-k는 별도 칸(기본 20, 무효화 키 `ko_top_k`)이다.
 - 출력 폴더를 지정하면 실행마다 새 `search-YYYYMMDD-HHMMSS` 하위 폴더를 만든다. 기존 폴더를 재사용하거나 덮어쓰지 않는다. 출력 폴더 값은 답을 결정하지 않으므로 결과 무효화·superseded 비교에 넣지 않는다.
 - GUI가 넘기는 `SearchControl` 값은 argv보다 우선한다. solver thread처럼 양쪽에 있는 값은 둘 다 같은 값으로 넘긴다(아니면 실행과 provenance가 어긋난다).
 - job의 CLI 오류 메시지는 GUI 스레드에서 한 번 설치한 스레드별 stderr router로만 모은다. job 스레드에서 전역 `sys.stderr`를 바꾸지 않는다.

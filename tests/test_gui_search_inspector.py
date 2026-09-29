@@ -405,3 +405,17 @@ def test_window_fits_with_inspector_content(tmp_path):
             app.processEvents()
             assert (window.width(), window.height()) == size
         window.close()
+
+
+def test_pareto_record_matches_its_evaluation_row_despite_archive_renumbering():
+    from cmig.gui.builder import _matching_evaluation
+
+    record = {"rank": 1, "members": ["a", "b"], "target_fluxes": {"ac": 2.0, "but": 1.0}}
+    rows = [
+        {"rank": 4, "members": ["a", "b"], "target_fluxes": {"ac": 2.0, "but": 1.0},
+         "timings": {"solve": 0.5}},
+        {"rank": 5, "members": ["a", "b"], "target_fluxes": {"ac": 1.0, "but": 2.0}},
+    ]
+    assert _matching_evaluation(record, rows) is rows[0]
+    ambiguous = rows + [dict(rows[0], rank=6)]
+    assert _matching_evaluation(record, ambiguous) is None

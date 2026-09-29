@@ -16,17 +16,19 @@ semantic versioning for public releases.
   files on re-run; `run_hash`, workflow hashes, the envelope and search policy are
   unchanged.
 - GUI Search edits targets as rows with per-target direction, weight and
-  reference, exposes every `cmig search` option (taxonomy, recursive pool,
+  reference, exposes the remaining `cmig search` options (taxonomy, recursive pool,
   sampling, GA operators and budgets, solver threads, Pareto resolution, merge
-  medium, unknown-medium allowance), writes to an optional output folder (new
+  medium, unknown-medium allowance; `--solver` has only `gurobi` and
+  `--allow-failed-run` stays CLI-only because the GUI always shows failed runs as
+  failures), writes to an optional output folder (new
   subfolder per run), adds medium/checkpoint pickers with pre-run checkpoint
   checks, a Pareto trade-off figure view and a per-candidate inspector, and keeps
   the cancellation-pending state visible until the solve stops.
 - GUI Search defaults now equal the CLI defaults: multi-target metric
   `normalized_weighted` (was `carbon_equivalent`), top-k 10 (was 3, no upper cap
   of 100) and no GA evaluation cap (was 500). Gene KO keeps its own top-k
-  (default 20). GUI `--solver-threads` now reaches the solver as well as the
-  recorded provenance.
+  (default 20). The new GUI solver-thread setting is applied to the running
+  search as well as recorded in provenance.
 
 ### Fixed — 2026-09-25 audit remediation
 

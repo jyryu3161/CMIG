@@ -1721,18 +1721,27 @@ def _read_search_evaluations(run_dir: Path) -> tuple[dict[str, object] | None, s
 def _matching_evaluation(
     record: dict[object, object], rows: object
 ) -> dict[object, object] | None:
-    """The single evaluation row with this record's rank, members and flux vector."""
+    """The single evaluation row with this record's rank, members and flux vector.
+
+    Pareto archive rows are renumbered in report order, so their rank need not equal the
+    evaluation ledger's; members plus the exact flux vector is then the identity.
+    """
     if not isinstance(rows, list):
         return None
     keys = ("rank", "members", "target_fluxes", "target_flux")
     wanted = {key: record[key] for key in keys if key in record}
     if "rank" not in wanted or not any(k in wanted for k in ("target_fluxes", "target_flux")):
         return None
-    matches = [
-        row for row in rows
-        if isinstance(row, dict) and all(row.get(k) == v for k, v in wanted.items())
-    ]
-    return matches[0] if len(matches) == 1 else None
+    for criteria in (wanted, {k: v for k, v in wanted.items() if k != "rank"}):
+        matches = [
+            row for row in rows
+            if isinstance(row, dict) and all(row.get(k) == v for k, v in criteria.items())
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            return None
+    return None
 
 
 def _pareto_attempt_lines(

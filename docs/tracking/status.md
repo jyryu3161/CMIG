@@ -31,7 +31,7 @@
 | `spatial-preview`(확산 배지 설계) | 검증됨 |
 | 통계 5a(효과 크기·검정·BH-FDR), 5b/5c 일부(`StatsConfig`, seed 고정 임베딩, volcano 준비) | 검증됨 |
 | 출판 그림: R(renv lock, provenance sidecar) + matplotlib 대체, signed 다중 타깃 기여 그림 | 검증됨(R 전용 다중 패널은 R 설치 환경에서만) |
-| GUI: Models / Search / Host / Dynamics / Graph / Profile 탭 + 고급 도구(builder, 배지 편집기, sweep, sandbox, compare), 워크플로별 설정 범위, 실패 run 진단, 무결성 표시. Search는 `cmig search`와 동등: 타깃 행(방향·가중치·기준값), 모든 탐색 옵션, 출력 폴더, 배지·checkpoint 선택, Pareto trade-off 그림(`search_pareto.svg`), 후보 inspector, 취소 pending 표시. Search 결과는 Open Run으로 다시 열린다 | 기능 테스트 검증됨(offscreen). 네이티브 시각 QA 미실행 |
+| GUI: Models / Search / Host / Dynamics / Graph / Profile 탭 + 고급 도구(builder, 배지 편집기, sweep, sandbox, compare), 워크플로별 설정 범위, 실패 run 진단, 무결성 표시. Search는 `cmig search`와 동등: 타깃 행(방향·가중치·기준값), 탐색 옵션(`--allow-failed-run`만 CLI 전용, `--solver`는 gurobi 하나), 출력 폴더, 배지·checkpoint 선택, Pareto trade-off 그림(`search_pareto.svg`), 후보 inspector, 취소 pending 표시. Search 결과는 Open Run으로 다시 열린다 | 기능 테스트 검증됨(offscreen). 네이티브 시각 QA 미실행 |
 | 배포: wheel/sdist 허용 목록 감사, 설치본 preset 자원, 버전 정합 가드 | 검증됨 |
 | 단계 실행기(`scripts/execute.py`), 검사 tier, Codex/Claude hook | 검증됨(POSIX). Windows 프로세스 정리는 CI quality 통과 외 네이티브 확인 없음 |
 
