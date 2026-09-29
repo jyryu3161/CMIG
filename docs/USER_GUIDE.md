@@ -470,7 +470,8 @@ Useful outputs:
 - `search_member_matrix.csv`
 - `pool_diagnostics.csv`
 - `search_plot.svg`
-- `search_scatter.svg`
+- `search_scatter.svg` (single target)
+- `search_pareto.svg` (two or more targets)
 
 Use `--recursive` if your model pool is organized as subfolders, for example
 `strainA/model.xml`, `strainB/model.xml`.
@@ -576,13 +577,35 @@ the full score unit and normalizer. For `normalized_weighted`, plotted bars
 include each target weight while `target_scores` retains its recorded
 pre-weight normalized value. A Pareto figure keeps report order and its
 caption says the score does not rank the sampled front. Single-target runs can
-also write Scatter; multi-target runs write Ranking only. GUI figure choices
-follow files actually present in the loaded run.
+also write Scatter; multi-target runs also write the Pareto trade-off figure
+(`search_pareto.svg`/`.tiff`). GUI figure choices follow files actually present
+in the loaded run.
+
+The Pareto trade-off figure draws one panel per target pair (k targets give
+k(k−1)/2 panels). Its points are every evaluated row in
+`search_evaluations.json`, not only the top-k, restricted to optimal rows whose
+`flux_basis` is joint and whose two axis fluxes are finite. Per-target
+capability rows (`per_target_capability_not_simultaneous`), failed, non-viable,
+missing, timeout and unevaluated candidates are never drawn, and nothing is
+filled in as 0. Axes show the recorded raw flux with its sign (+ secretion /
+− uptake, mmol gDW⁻¹ h⁻¹); each label names the target direction and the better
+side with an arrow, and axes are not flipped. Non-dominated points use the run's
+recorded `pareto` flag; the figure does not recompute dominance. The exhaustive
+`--multi-metric pareto` path records only front points, so only those appear. A
+joint-optimal row whose target exchange is absent is drawn at its recorded 0
+with a hollow marker ("target exchange absent") in panels on that target's
+axis. Pareto-metric figures carry the sampled-approximation caveat and
+non-exhaustive strategies an "approximate search" note. With no plottable point
+no file is written; this is not an error. If drawing fails, the figure files
+are removed, `search_summary.json` `warnings` gets "Pareto figure not written:
+<cause>", and the results, other artifacts and exit code are unchanged.
 
 Multi-target search writes a different artifact set from single-target search:
 `pool_taxonomy.csv`, `search_rankings.csv`, `search_summary.json`,
-`search_plot.svg`, `search_plot.tiff`, `pool_diagnostics.csv`, and
-`search_unevaluated.csv` when any candidate could not be evaluated. There is no
+`search_plot.svg`, `search_plot.tiff`, `pool_diagnostics.csv`,
+`search_unevaluated.csv` when any candidate could not be evaluated, and
+`search_pareto.svg`/`search_pareto.tiff` when at least one joint-optimal point
+can be plotted. There is no
 `search_member_matrix.csv` or `search_scatter.svg` in this mode.
 
 Read `search_unevaluated.csv` before the ranking: unevaluable candidates get no
