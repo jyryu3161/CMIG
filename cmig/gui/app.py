@@ -972,6 +972,7 @@ def _search_temp_root() -> Path:
 
 
 CHECKPOINT_EXISTS = "checkpoint exists; enable Resume or choose a new path"
+SEARCH_CANCEL_PENDING = "Cancellation requested — the solve in progress will finish first."
 
 
 def _search_run_stamp() -> str:
@@ -1151,6 +1152,8 @@ class CmigMainWindow(QMainWindow):
         # Each Search-tab map holds (out_dir, the answer-determining inputs at submit time)
         # so an arriving result can say which request it belongs to.
         self._search_jobs: dict[str, tuple[Path, dict[str, str]]] = {}
+        #: Search jobs whose cancel was requested but which have not reached a terminal state.
+        self._search_cancel_pending: set[str] = set()
         self._host_microbe_jobs: dict[str, Path] = {}
         self._host_search_jobs: dict[str, tuple[Path, dict[str, str]]] = {}
         self._gene_ko_jobs: dict[str, tuple[Path, dict[str, str]]] = {}
@@ -1465,6 +1468,9 @@ class CmigMainWindow(QMainWindow):
         job = self.runner.poll(job_id)
         if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
             self._show_status("status_job_already", status=job.status.value, job_id=job_id)
+            return
+        if job_id in self._search_jobs:
+            self.cancel_search()
             return
         self.runner.cancel(job_id)
         self.bridge.cancelling.add(job_id)
@@ -2225,7 +2231,23 @@ class CmigMainWindow(QMainWindow):
     def cancel_search(self) -> None:
         for job_id in self._search_jobs:
             self.runner.cancel(job_id)
-        self.search_view.status.setText("Cancellation requested; active solves will finish.")
+            self.bridge.cancelling.add(job_id)
+            self._search_cancel_pending.add(job_id)
+        self.bridge.refresh()
+        self._show_search_cancel_pending()
+
+    def _show_search_cancel_pending(self) -> None:
+        """Keep the Search tab saying a cancel is pending until the job actually ends.
+
+        The in-flight solve cannot be interrupted, so the job stays RUNNING for a while
+        after Cancel; other Search-tab workflows share this status label and may write it
+        meanwhile, so every poll tick puts the pending notice back.
+        """
+        if not self._search_cancel_pending & self._search_jobs.keys():
+            return
+        self.search_view.cancel_btn.setEnabled(False)
+        self.search_view.run_btn.setEnabled(False)
+        self.search_view.status.setText(SEARCH_CANCEL_PENDING)
 
     def run_search_fixture(self) -> str:
         """Run user model-pool search from the Search tab."""
@@ -3268,6 +3290,10 @@ class CmigMainWindow(QMainWindow):
                 self._show_status("status_fixture_job", status=job.status.value, job_id=jid)
         for jid, (out_dir, requested) in list(self._search_jobs.items()):
             job = self.runner.poll(jid)
+            was_cancel_pending = jid in self._search_cancel_pending
+            if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+                self._search_cancel_pending.discard(jid)
+                self.bridge.cancelling.discard(jid)
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._search_jobs.pop(jid, None)
                 self.search_view.run_btn.setEnabled(True)
@@ -3366,6 +3392,11 @@ class CmigMainWindow(QMainWindow):
                     self.statusBar().showMessage(
                         f"search {job.status.value}: {job.error or jid}"
                     )
+                    if was_cancel_pending:
+                        # The pending notice must not outlive the job it describes.
+                        self.search_view.status.setText(
+                            f"search {job.status.value}: {job.error or jid}"
+                        )
         for jid, out_dir in list(self._host_microbe_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE:
@@ -3723,6 +3754,7 @@ class CmigMainWindow(QMainWindow):
                         error=job.error or jid,
                     )
                 )
+        self._show_search_cancel_pending()
 
 
 def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:
