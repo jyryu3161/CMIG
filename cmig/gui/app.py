@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import shutil
 import sys
 import tempfile
@@ -22,6 +23,7 @@ import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, TextIO, cast
@@ -52,6 +54,7 @@ from cmig.gui.builder import (
     ScenarioCompareView,
     SearchView,
     make_read_only,
+    medium_mode_text,
     read_only_item,
     validate_search_summary,
 )
@@ -791,7 +794,7 @@ def _search_argv(
         "--min-community-growth", requested["min_community_growth"],
         "--validate-top", requested["validate_top"],
     ])
-    if requested["fva"] == "True":
+    if requested["fva"] == "True" and len(rows) == 1:  # FVA is single-target only
         argv.append("--robustness-fva")
     if strategy == "auto":
         argv.extend(["--exhaustive-max", requested["exhaustive_max"]])
@@ -966,6 +969,42 @@ def _search_temp_root() -> Path:
             continue
         return root
     raise RuntimeError("Unable to create CMIG search temp directory") from last_error
+
+
+CHECKPOINT_EXISTS = "checkpoint exists; enable Resume or choose a new path"
+
+
+def _search_run_stamp() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def _output_parent_error(parent: Path) -> str:
+    """Why a chosen Search output folder cannot hold new run subfolders ("" if it can)."""
+    if not parent.exists():
+        return f"Output folder does not exist: {parent}"
+    if not parent.is_dir():
+        return f"Output folder is not a folder: {parent}"
+    if not os.access(parent, os.W_OK | os.X_OK):
+        return f"Output folder is not writable: {parent}"
+    return ""
+
+
+def _new_search_run_dir(parent: Path) -> Path:
+    """Create a fresh `search-YYYYMMDD-HHMMSS[-N]` folder in `parent`; never reuse one.
+
+    `mkdir(exist_ok=False)` is the claim: an existing folder (an earlier run, or anything
+    else of the user's) only moves the name on to the next suffix.
+    """
+    stem = f"search-{_search_run_stamp()}"
+    suffix = 1
+    while True:
+        candidate = parent / (stem if suffix == 1 else f"{stem}-{suffix}")
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            suffix += 1
+            continue
+        return candidate.resolve()
 
 
 class ProjectExplorer(QTreeWidget):
@@ -1371,6 +1410,9 @@ class CmigMainWindow(QMainWindow):
         self.sandbox_view.preview_btn.clicked.connect(self._run_sandbox_preview)
         self.sandbox_view.commit_btn.clicked.connect(self._run_sandbox_commit)
         self.search_view.browse_pool_btn.clicked.connect(self._browse_search_model_dir)
+        self.search_view.browse_output_btn.clicked.connect(self._browse_search_output_dir)
+        self.search_view.browse_medium_btn.clicked.connect(self._browse_search_medium)
+        self.search_view.browse_checkpoint_btn.clicked.connect(self._browse_search_checkpoint)
         self.search_view.run_btn.clicked.connect(self.run_search_fixture)
         self.search_view.cancel_btn.clicked.connect(self.cancel_search)
         self.search_view.run_ko_btn.clicked.connect(self.run_gene_ko_search)
@@ -1441,6 +1483,29 @@ class CmigMainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Select Model Pool Folder")
         if path:
             self.search_view.model_dir_input.setText(path)
+
+    def _browse_search_output_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Search Output Folder")
+        if path:
+            self.search_view.output_dir_input.setText(path)
+
+    def _browse_search_medium(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Medium File", "", "Medium (*.csv *.json);;All files (*)"
+        )
+        if path:
+            self.search_view.medium_input.setText(path)
+
+    def _browse_search_checkpoint(self) -> None:
+        # A save dialog: the path may be new (fresh run) or existing (Resume), so the
+        # overwrite prompt is off; the run-time pre-check refuses an existing file without
+        # Resume instead.
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Select Checkpoint JSON", "", "Checkpoint (*.json)",
+            options=QFileDialog.Option.DontConfirmOverwrite,
+        )
+        if path:
+            self.search_view.checkpoint_input.setText(path)
 
     def _browse_sweep_taxonomy(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -2172,6 +2237,40 @@ class CmigMainWindow(QMainWindow):
         if error:
             self.search_view.status.setText(error)
             return ""
+        checkpoint = (
+            Path(requested["checkpoint"]).resolve()
+            if requested["checkpoint"] else None
+        )
+        if checkpoint is not None and checkpoint.exists() and requested["resume"] != "True":
+            self.search_view.status.setText(f"{CHECKPOINT_EXISTS}: {checkpoint}")
+            return ""
+        # The output folder is where the run goes, not what it computes: read here, never
+        # part of the request snapshot.
+        output_parent_text = self.search_view.output_dir_input.text().strip()
+        if output_parent_text:
+            output_parent = Path(output_parent_text).expanduser()
+            parent_error = _output_parent_error(output_parent)
+            if parent_error:
+                self.search_view.status.setText(parent_error)
+                return ""
+            try:
+                out_dir = _new_search_run_dir(output_parent.resolve())
+            except OSError as exc:
+                self.search_view.status.setText(f"Cannot create a run folder: {exc}")
+                return ""
+        else:
+            out_dir = Path(
+                tempfile.mkdtemp(prefix="cmig-search-", dir=_search_temp_root())
+            ).resolve()
+        if checkpoint is not None and checkpoint.is_relative_to(out_dir):
+            # The CLI publishes by replacing --out; a checkpoint inside it would be lost.
+            # The folder was created empty just above, so removing it touches nothing else.
+            out_dir.rmdir()
+            self.search_view.status.setText(
+                f"Checkpoint is inside this run's output folder ({out_dir}); "
+                "choose a checkpoint path outside it."
+            )
+            return ""
         warning = self.search_view.reference_warning()
         model_dir = requested["pool"] if requested["model_source"] != "taxonomy" else None
         _install_stderr_router()
@@ -2227,13 +2326,15 @@ class CmigMainWindow(QMainWindow):
                 raise RuntimeError("search output is not a JSON object")
             return payload
 
-        out_dir = Path(tempfile.mkdtemp(prefix="cmig-search-", dir=_search_temp_root())).resolve()
         jid = self.submit_job("search_fixture", _job)
         self._search_jobs[jid] = (out_dir, requested)
         self.search_view.run_btn.setEnabled(False)
         self.search_view.cancel_btn.setEnabled(True)
         self.search_view.status.setText(
-            f"search started: {jid}" + (f" · Warning: {warning}" if warning else "")
+            f"search started: {jid} · "
+            + medium_mode_text(requested["medium"], requested["medium_mode"])
+            + f" · output: {out_dir}"
+            + (f" · Warning: {warning}" if warning else "")
         )
         return jid
 

@@ -66,6 +66,15 @@ MERGE_MEDIUM_WARNING = (
 )
 
 
+def medium_mode_text(medium: str, mode: str) -> str:
+    """One line naming the Search medium mode explicitly (merge carries its warning)."""
+    if not medium:
+        return "medium: model default (medium mode not applied)"
+    if mode == "merge":
+        return f"medium: merge — {MERGE_MEDIUM_WARNING}"
+    return "medium: exact"
+
+
 def validate_search_summary(summary: dict[str, object]) -> None:
     """Validate the ranking fields consumed by SearchView before publishing a run.
 
@@ -615,6 +624,7 @@ class SearchView(QWidget):
         settings = QHBoxLayout()
         self.medium_input = QLineEdit("")
         self.medium_input.setPlaceholderText("Defined medium CSV/JSON (blank: model default)")
+        self.browse_medium_btn = QPushButton("Browse")
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(0, 2_000_000_000)
         self.workers_spin = QSpinBox()
@@ -627,10 +637,16 @@ class SearchView(QWidget):
         self.min_member_growth_spin.setRange(0, 100)
         self.min_member_growth_spin.setDecimals(5)
         growth_settings = QHBoxLayout()
-        for label, widget in (("Medium", self.medium_input), ("Seed", self.seed_spin),
-                              ("Workers", self.workers_spin)):
+        settings.addWidget(QLabel("Medium"))
+        settings.addWidget(self.medium_input)
+        settings.addWidget(self.browse_medium_btn)
+        for label, widget in (("Seed", self.seed_spin), ("Workers", self.workers_spin)):
             settings.addWidget(QLabel(label))
             settings.addWidget(widget)
+        # Medium mode lives in the collapsed advanced box; this line keeps the exact/merge
+        # choice visible on screen at all times.
+        self.medium_mode_summary = QLabel("")
+        self.medium_mode_summary.setWordWrap(True)
         for label, growth_widget in (("Growth fraction", self.growth_fraction_spin),
                                      ("Member growth ≥", self.min_member_growth_spin)):
             growth_settings.addWidget(QLabel(label))
@@ -638,15 +654,34 @@ class SearchView(QWidget):
         growth_settings.addStretch(1)
         self.checkpoint_input = QLineEdit("")
         self.checkpoint_input.setPlaceholderText("Checkpoint JSON path")
+        self.browse_checkpoint_btn = QPushButton("Browse")
         self.resume_check = QCheckBox("Resume")
         self.cancel_btn = QPushButton("Cancel search")
         self.cancel_btn.setEnabled(False)
         checkpoint_row = QHBoxLayout()
         checkpoint_row.addWidget(QLabel("Checkpoint"))
         checkpoint_row.addWidget(self.checkpoint_input)
+        checkpoint_row.addWidget(self.browse_checkpoint_btn)
         checkpoint_row.addWidget(self.resume_check)
         checkpoint_row.addWidget(self.cancel_btn)
         checkpoint_row.addStretch(1)
+        # Output folder (Search only). Not an answer-determining input: it is left out of
+        # REQUEST_FIELDS, so changing it never invalidates or supersedes a result.
+        self.output_dir_input = QLineEdit("")
+        self.output_dir_input.setPlaceholderText(
+            "Blank: OS temp folder. Each run writes a new search-YYYYMMDD-HHMMSS subfolder."
+        )
+        self.browse_output_btn = QPushButton("Browse")
+        self.output_dir_label = QLabel("Output folder (Search only)")
+        output_row = QHBoxLayout()
+        output_row.addWidget(self.output_dir_label)
+        output_row.addWidget(self.output_dir_input)
+        output_row.addWidget(self.browse_output_btn)
+        self.output_dir_note = QLabel(
+            "Each Search run gets a new subfolder; existing folders are never reused. "
+            "Gene KO, Strain Growth and Ratio Impact always write to an OS temp folder."
+        )
+        self.output_dir_note.setWordWrap(True)
         limits = QHBoxLayout()
         self.validation_top_spin = QSpinBox()
         self.validation_top_spin.setRange(0, 100)
@@ -759,7 +794,10 @@ class SearchView(QWidget):
         layout.addLayout(controls)
         layout.addLayout(figure_row)
         layout.addLayout(settings)
+        layout.addWidget(self.medium_mode_summary)
         layout.addLayout(growth_settings)
+        layout.addLayout(output_row)
+        layout.addWidget(self.output_dir_note)
         layout.addLayout(checkpoint_row)
         layout.addLayout(limits)
         layout.addWidget(self.advanced_toggle)
@@ -1019,6 +1057,10 @@ class SearchView(QWidget):
                 "exact: the medium file is the complete set of mass sources."
             )
         self.allow_unknown_note.setVisible(self.allow_unknown_medium_check.isChecked())
+        self.medium_mode_summary.setText(
+            "Search " + medium_mode_text(self.medium_input.text().strip(),
+                                         str(self.medium_mode_combo.currentData()))
+        )
 
     # ------------------------------------------------------------------ target rows
 
@@ -1099,6 +1141,10 @@ class SearchView(QWidget):
         self.invalidate_results(True)
 
     def _refresh_target_notes(self, *_args: object) -> None:
+        # FVA robustness is a single-target option; with 2+ rows it is not passed.
+        single = self.target_table.rowCount() <= 1
+        self.robustness_check.setEnabled(single)
+        self.robustness_check.setToolTip("" if single else "FVA is single-target only")
         weighted = self.multi_metric_combo.currentText() in WEIGHTED_METRICS
         self.weight_note.setVisible(not weighted)
         self.target_table.blockSignals(True)
@@ -1393,6 +1439,10 @@ class SearchView(QWidget):
         if request_note:
             details.append(request_note)
         if executed_request:
+            if workflow_kind == "search" and "medium_mode" in executed_request:
+                details.append("Medium mode: " + medium_mode_text(
+                    executed_request.get("medium", ""), executed_request["medium_mode"]
+                ).removeprefix("medium: "))
             details.append(f"Executed request: {executed_request}")
         details.append("Recorded summary JSON:\n" + json.dumps(
             source_summary if source_summary is not None else summary,
