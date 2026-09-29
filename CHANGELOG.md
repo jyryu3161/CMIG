@@ -5,6 +5,29 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Added — GUI/CLI Search parity
+
+- `cmig search` with two or more targets now also writes `search_pareto.svg` /
+  `search_pareto.tiff`: every target pair as a panel of all evaluated candidates
+  whose target fluxes were achieved together in one optimal solution, with the
+  recorded non-dominated flag highlighted, raw signed fluxes on the axes and absent
+  target exchanges marked. Nothing is written when no point is plottable; a figure
+  error only adds a summary warning. Existing multi-target runs gain these two
+  files on re-run; `run_hash`, workflow hashes, the envelope and search policy are
+  unchanged.
+- GUI Search edits targets as rows with per-target direction, weight and
+  reference, exposes every `cmig search` option (taxonomy, recursive pool,
+  sampling, GA operators and budgets, solver threads, Pareto resolution, merge
+  medium, unknown-medium allowance), writes to an optional output folder (new
+  subfolder per run), adds medium/checkpoint pickers with pre-run checkpoint
+  checks, a Pareto trade-off figure view and a per-candidate inspector, and keeps
+  the cancellation-pending state visible until the solve stops.
+- GUI Search defaults now equal the CLI defaults: multi-target metric
+  `normalized_weighted` (was `carbon_equivalent`), top-k 10 (was 3, no upper cap
+  of 100) and no GA evaluation cap (was 500). Gene KO keeps its own top-k
+  (default 20). GUI `--solver-threads` now reaches the solver as well as the
+  recorded provenance.
+
 ### Fixed — 2026-09-25 audit remediation
 
 - Preserve nullable host transfer points and conservative transfer intervals

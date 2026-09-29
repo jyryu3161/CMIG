@@ -387,11 +387,32 @@ contributions or proof of a global abundance optimum. Multi-target comparisons
 use fresh joint weighted solutions at the same fixed scales, not arbitrary
 different points from the Pareto archive.
 
-The GUI Search panel exposes medium (exact application), seed, evaluation budget,
-workers, target direction, multi-target metric/references, growth floors, timeout,
-checkpoint/resume, optional top validation and cancellation for the main Search
-workflow. Strain Growth and Ratio use cooperative tradeoff; they do not inherit
-the main Search direction and growth controls. The active workflow's settings
+The GUI Search panel mirrors `cmig search`. Targets are edited as rows
+(`Target | Direction | Weight | Reference`); one row runs a single-target search,
+two or more rows pass `--targets`, `--target-directions`, `--target-weights`
+(weighted metrics only; disabled for `pareto`) and `--target-scales` (all rows or
+none, finite and positive). A target preset such as `scfa` fills the rows. The
+collapsed "Advanced search settings (Search only)" group exposes the model folder
+or taxonomy CSV, `--recursive`, `--exhaustive-max`, `--n-samples`, every GA option,
+`--solver-threads`, `--pareto-resolution`, exact/merge medium mode (merge shows a
+warning and the active mode stays visible outside the group) and
+`--allow-unknown-medium`. A setting is passed only when it applies (for example GA
+options only for `auto`/`ga`, FVA only with one target row). GUI defaults equal the
+CLI defaults (`normalized_weighted`, top-k 10, no GA evaluation cap); with
+`normalized_weighted` and no references the panel warns that a GA or random run
+needs them, and a failed run shows the CLI's own error message. An optional output
+folder receives a new `search-YYYYMMDD-HHMMSS` subfolder per run (blank keeps the
+temporary folder); medium and checkpoint paths have Browse buttons, and a
+checkpoint that already exists without Resume, or that lies inside the new run
+folder, is refused before running. Selecting a ranking row shows its recorded
+details (fluxes, contributions, whether target fluxes were achieved together,
+growth, diagnostics and, for `pareto`, its epsilon attempts); unrecorded values are
+shown as "not recorded". Cancel disables itself immediately and the panel keeps
+"Cancellation requested" until the running solve actually stops. Gene KO, Strain
+Growth and Ratio use the single target row, their own top-k (Gene KO default 20),
+exact medium and a temporary output folder. Strain Growth and Ratio use
+cooperative tradeoff; they do not inherit the main Search direction and growth
+controls. The active workflow's settings
 are frozen when launched, and later relevant edits invalidate or mark the
 displayed result as superseded. Search uses the CLI service and output writer.
 The GUI lists only supported figure files present for that loaded run, clears
