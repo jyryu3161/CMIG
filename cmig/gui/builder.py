@@ -765,6 +765,21 @@ class SearchView(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         make_read_only(self.table)
         self.pareto_label = QLabel("")
+        # Read-only candidate inspector: shows the recorded summary/evaluation values of the
+        # ONE selected row. Each row carries the index of its own summary record, so the
+        # mapping never depends on table order or on members alone.
+        self.inspector_label = QLabel("Selected candidate — recorded values (read-only)")
+        self.inspector = QPlainTextEdit()
+        self.inspector.setReadOnly(True)
+        self.inspector.setMaximumHeight(160)
+        self.inspector.setPlaceholderText(
+            "Select a ranking row to see that candidate's recorded details."
+        )
+        self._row_records: list[tuple[str, dict[object, object]]] = []
+        self._inspector_summary: dict[str, object] = {}
+        self._evaluations: dict[str, object] | None = None
+        self._evaluations_error: str | None = None
+        self.table.itemSelectionChanged.connect(self._refresh_inspector)
         self.current_run_dir: Path | None = None
         try:
             from PySide6.QtSvgWidgets import QSvgWidget
@@ -815,6 +830,8 @@ class SearchView(QWidget):
         layout.addWidget(self.status)
         layout.addWidget(self.details)
         layout.addWidget(self.table)
+        layout.addWidget(self.inspector_label)
+        layout.addWidget(self.inspector)
         layout.addWidget(self.pareto_label)
         layout.addWidget(self.figure_stack)
         self._displayed_kind: str | None = None
@@ -1306,6 +1323,7 @@ class SearchView(QWidget):
         if _args and self._displayed_request is not None and self._displayed_kind is not None:
             if self.request_fields(self._displayed_kind) == self._displayed_request:
                 return
+        self._clear_inspector()
         self.table.setRowCount(0)
         self.table.setHorizontalHeaderLabels(list(SEARCH_COLUMNS))
         self.pareto_label.setText("")
@@ -1320,6 +1338,112 @@ class SearchView(QWidget):
         self.details.clear()
         self.status.setText("Inputs changed — previous result cleared; re-run to update.")
 
+    def _clear_inspector(self) -> None:
+        self._row_records = []
+        self._inspector_summary = {}
+        self._evaluations = None
+        self._evaluations_error = None
+        self.inspector.clear()
+
+    def row_record(self, row: int) -> dict[object, object] | None:
+        """The summary record the given table row was built from (None if none)."""
+        item = self.table.item(row, 0)
+        index = None if item is None else item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(index, int) and 0 <= index < len(self._row_records):
+            return self._row_records[index][1]
+        return None
+
+    def _refresh_inspector(self) -> None:
+        rows = {index.row() for index in self.table.selectedIndexes()}
+        if len(rows) != 1:
+            self.inspector.clear()
+            return
+        item = self.table.item(rows.pop(), 0)
+        index = None if item is None else item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(index, int) or not 0 <= index < len(self._row_records):
+            self.inspector.clear()
+            return
+        group, record = self._row_records[index]
+        self.inspector.setPlainText("\n".join(self._inspector_lines(group, record)))
+
+    def _inspector_lines(self, group: str, record: dict[object, object]) -> list[str]:
+        """Render only recorded values; anything absent is "not recorded", never 0."""
+        summary = self._inspector_summary
+        pareto_metric = summary.get("metric") == "pareto"
+        lines = [
+            f"Rank: {_recorded(record, 'rank')}",
+            f"Members: {_recorded(record, 'members')}",
+            f"Effective members: {_recorded(record, 'effective_members')}",
+            f"Status: {_recorded(record, 'status')}",
+        ]
+        fluxes = record.get("target_fluxes")
+        if isinstance(fluxes, dict):
+            scores = record.get("target_scores")
+            score_map = scores if isinstance(scores, dict) else {}
+            listed = summary.get("targets")
+            order = [str(t) for t in listed] if isinstance(listed, list) else []
+            order += [str(t) for t in (*fluxes, *score_map) if str(t) not in order]
+            lines.append(f"Weighted score: {_recorded(record, 'weighted_score')}")
+            lines.append("Per-target flux and contribution:")
+            for target in order:
+                if target not in fluxes and target not in score_map:
+                    continue
+                flux = _format_recorded(fluxes.get(target))
+                contribution = _format_recorded(score_map.get(target))
+                lines.append(f"  {target}: flux {flux} · contribution {contribution}")
+            basis = record.get("flux_basis")
+            basis_text = (
+                _NOT_RECORDED if basis is None
+                else f"{_FLUX_BASIS_TEXT[basis]} ({basis})" if basis in _FLUX_BASIS_TEXT
+                else str(basis)
+            )
+            lines.append(f"Flux basis: {basis_text}")
+            missing = record.get("missing_targets")
+            lines.append("Missing targets: " + (
+                _NOT_RECORDED if missing is None
+                else "none" if isinstance(missing, list) and not missing
+                else ", ".join(str(m) for m in missing) if isinstance(missing, list)
+                else str(missing)
+            ))
+            lines.append(f"Sampling status: {_recorded(record, 'sampling_status')}")
+            if pareto_metric:
+                lines.append(f"On Pareto frontier: {_recorded(record, 'pareto')}")
+        else:
+            lines.append(f"Target: {group or _NOT_RECORDED}")
+            lines.append(f"Score: {_recorded(record, 'score')}")
+            lines.append(f"Target flux: {_recorded(record, 'target_flux')}")
+            lo = _optional_float(record.get("robustness_fva_lo"))
+            hi = _optional_float(record.get("robustness_fva_hi"))
+            lines.append("FVA range: " + (
+                f"{lo:.6g}..{hi:.6g}" if lo is not None and hi is not None else _NOT_RECORDED
+            ))
+            if "robustness_status" in record:
+                lines.append(f"FVA status: {_recorded(record, 'robustness_status')}")
+        lines.append(f"Community growth: {_recorded(record, 'community_growth')}")
+        lines.append(f"Member growth: {_recorded(record, 'member_growth')}")
+        lines.append(f"Abundances: {_recorded(record, 'abundances')}")
+        diagnostic = record.get("diagnostic", _ABSENT)
+        lines.append("Diagnostic: " + (
+            _NOT_RECORDED if diagnostic is _ABSENT
+            else "none" if diagnostic is None or diagnostic == ""
+            else _diagnostic_text(diagnostic)
+        ))
+        if self._displayed_kind != "search" or self.current_run_dir is None:
+            return lines
+        if self._evaluations_error is not None:
+            lines.append(f"search_evaluations.json: unreadable ({self._evaluations_error})")
+            lines.append("Timings: unreadable")
+            if pareto_metric:
+                lines.append("Pareto ε attempts: unreadable")
+            return lines
+        evaluations = self._evaluations or {}
+        match = _matching_evaluation(record, evaluations.get("rows"))
+        timings = None if match is None else match.get("timings")
+        lines.append(f"Timings: {_format_recorded(timings)}")
+        if pareto_metric:
+            lines.extend(_pareto_attempt_lines(record, evaluations))
+        return lines
+
     def selected_figure_artifact(self) -> str:
         return str(self.figure_mode_combo.currentData() or "")
 
@@ -1329,6 +1453,7 @@ class SearchView(QWidget):
             ("Ranking", "host_search_plot.svg"), ("Ranking", "gene_ko_plot.svg"),
             ("Ranking", "strain_growth_plot.svg"),
             ("Ranking", "abundance_impact_plot.svg"),
+            ("Pareto trade-off", "search_pareto.svg"),
         )
         self.figure_mode_combo.blockSignals(True)
         self.figure_mode_combo.clear()
@@ -1394,7 +1519,13 @@ class SearchView(QWidget):
         inputs while the run was in flight (see `superseded_note`).
         """
         validate_search_summary(summary)
+        self._clear_inspector()
         self.current_run_dir = None if run_dir is None else run_dir.resolve()
+        self._inspector_summary = summary
+        if workflow_kind == "search" and self.current_run_dir is not None:
+            self._evaluations, self._evaluations_error = _read_search_evaluations(
+                self.current_run_dir
+            )
         self._displayed_kind = workflow_kind
         self._displayed_request = self.request_fields(workflow_kind)
         self._executed_request = None if executed_request is None else dict(executed_request)
@@ -1452,6 +1583,7 @@ class SearchView(QWidget):
         ranked = summary.get("top_ranked", {})
         rows: list[tuple[str, str, float | None, float | str | None, float | None, str, str]] = []
         diagnostics: list[object] = []
+        records: list[tuple[str, dict[object, object]]] = []
         if isinstance(ranked, dict):
             groups = [
                 (str(target), items) for target, items in ranked.items() if isinstance(items, list)
@@ -1461,6 +1593,7 @@ class SearchView(QWidget):
         else:
             groups = []
         for target, items in groups:
+            group_target = target
             for item in items:
                 if not isinstance(item, dict):
                     continue
@@ -1479,6 +1612,7 @@ class SearchView(QWidget):
                 aux_text = _fva_range_text(item) if aux is None else str(aux)
                 diagnostic = item.get("diagnostic")
                 diagnostics.append(diagnostic)
+                records.append((group_target, item))
                 status = str(item.get("status", "ok"))
                 if diagnostic:
                     # The CSV/JSON carry the diagnostic; the table used to print a bare
@@ -1517,7 +1651,11 @@ class SearchView(QWidget):
                 if diagnostic:
                     item_widget.setForeground(_DIAGNOSTIC_COLOR)
                     item_widget.setToolTip(tooltip)
+                if c == 0:
+                    # The row's own summary record, by identity: not table order, not members.
+                    item_widget.setData(Qt.ItemDataRole.UserRole, r)
                 self.table.setItem(r, c, item_widget)
+        self._row_records = records
         pareto = summary.get("pareto_frontier")
         try:
             pareto_count = (len(pareto) if isinstance(pareto, list)
@@ -1528,6 +1666,106 @@ class SearchView(QWidget):
             "" if not pareto_count else f"Pareto frontier candidates: {pareto_count}"
         )
         self.refresh_figure_mode()
+
+
+_NOT_RECORDED = "not recorded"
+_ABSENT = object()
+_FLUX_BASIS_TEXT = {
+    "joint_weighted_lp": "joint — all target fluxes achieved together in one solution",
+    "per_target_capability_not_simultaneous": (
+        "per-target capability — each target solved separately; "
+        "not simultaneously achievable"
+    ),
+    "unevaluated": "unevaluated — no flux solution was recorded",
+}
+
+
+def _format_recorded(value: object) -> str:
+    """Format one recorded value; missing, null or empty never becomes 0."""
+    if value is None:
+        return _NOT_RECORDED
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (int, float)):
+        return f"{float(value):.6g}" if math.isfinite(float(value)) else _NOT_RECORDED
+    if isinstance(value, list):
+        return " + ".join(str(v) for v in value) if value else _NOT_RECORDED
+    if isinstance(value, dict):
+        return (", ".join(f"{k}={_format_recorded(v)}" for k, v in value.items())
+                if value else _NOT_RECORDED)
+    text = str(value)
+    return text if text else _NOT_RECORDED
+
+
+def _recorded(record: dict[object, object], key: str) -> str:
+    return _format_recorded(record.get(key))
+
+
+def _read_search_evaluations(run_dir: Path) -> tuple[dict[str, object] | None, str | None]:
+    """Read search_evaluations.json; every failure is reported, none escapes."""
+    path = run_dir / "search_evaluations.json"
+    if not path.is_file():
+        return None, "file missing"
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError, TypeError, RecursionError) as exc:
+        return None, str(exc) or type(exc).__name__
+    if not isinstance(payload, dict) or not isinstance(payload.get("rows", []), list):
+        return None, "not a search evaluations object"
+    attempts = payload.get("pareto_attempts")
+    if attempts is not None and not isinstance(attempts, list):
+        return None, "pareto_attempts is not a list"
+    return cast(dict[str, object], payload), None
+
+
+def _matching_evaluation(
+    record: dict[object, object], rows: object
+) -> dict[object, object] | None:
+    """The single evaluation row with this record's rank, members and flux vector."""
+    if not isinstance(rows, list):
+        return None
+    keys = ("rank", "members", "target_fluxes", "target_flux")
+    wanted = {key: record[key] for key in keys if key in record}
+    if "rank" not in wanted or not any(k in wanted for k in ("target_fluxes", "target_flux")):
+        return None
+    matches = [
+        row for row in rows
+        if isinstance(row, dict) and all(row.get(k) == v for k, v in wanted.items())
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _pareto_attempt_lines(
+    record: dict[object, object], evaluations: dict[str, object]
+) -> list[str]:
+    attempts = evaluations.get("pareto_attempts")
+    if not isinstance(attempts, list):
+        return [f"Pareto ε attempts: {_NOT_RECORDED}"]
+    members = record.get("members")
+    own = [a for a in attempts if isinstance(a, dict) and a.get("members") == members]
+    if not own:
+        return ["Pareto ε attempts: none recorded for these members"]
+
+    def condition(value: object) -> str:
+        return "none" if value == {} else _format_recorded(value)
+
+    def diagnostic_text(value: object) -> str:
+        return "none" if value is None or value == "" else _diagnostic_text(value)
+
+    lines = [f"Pareto ε attempts ({len(own)}):"]
+    for attempt in own:
+        lines.append(
+            f"  {_format_recorded(attempt.get('attempt_key'))} · "
+            f"{_format_recorded(attempt.get('outcome'))} · "
+            f"phase={_format_recorded(attempt.get('phase'))} · "
+            f"target={_format_recorded(attempt.get('target'))} · "
+            f"direction={_format_recorded(attempt.get('direction'))} · "
+            f"weights: {condition(attempt.get('objective_weights'))} · "
+            f"floors: {condition(attempt.get('constraint_floors'))} · "
+            f"achieved: {condition(attempt.get('achieved_vector'))} · "
+            f"diagnostic: {diagnostic_text(attempt.get('diagnostic'))}"
+        )
+    return lines
 
 
 def _optional_float(value: object) -> float | None:
