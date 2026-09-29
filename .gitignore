@@ -63,3 +63,9 @@ data/gems/*.xml
 data/gems/*.xml.gz
 data/gems/*.mat
 data/gems/*.json
+
+# AGORA2 catalogue cache written when agora2-list/agora2-fetch get neither --catalogue nor --out.
+data/agora2/
+
+# Local task workspace
+.dryforge/
