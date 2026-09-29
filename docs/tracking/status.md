@@ -9,6 +9,7 @@
 | 로컬 `harness_checks.py --tier quality` (Ruff, 실행기 회귀, lock, 버전 정합, strict mypy, envelope, CI 무라이선스 테스트) | 모두 통과 | 2026-09-29, `3621868` |
 | GitHub CI `quality` 4개 OS/Python 조합, `package` | `3621868`에서 통과. 직전 3개 커밋(`e32d7d9`, `387ccce`, `c0ff2b5`)은 quality(Windows py3.12, 한 번은 Ubuntu py3.10)에서 실패 | 2026-09-25 |
 | GitHub CI `solver-tests` | **실패** — `3621868`에서 처음 이 단계에 도달했고, 저장소에 Gurobi WLS 비밀값이 없어 라이선스 설정 단계에서 중단. 이전 run들은 quality 실패로 이 단계를 건너뜀. golden·전체 pytest·출판 smoke는 원격에서 실행된 적이 없음 | 2026-09-25 |
+| 로컬 `harness_checks.py --tier quality`, 전체 pytest(Gurobi, offscreen Qt), `cmig golden verify`, `verify-envelope` — GUI·CLI Search 동등성 변경 | quality 통과. pytest 1856 passed, 0 failed, 18 skipped(인간 GEM fixture 부재), 요약 출력 후 종료 시 rc=139(macOS QtWebEngine 정리 문제, 변경 전 `9a407bb`에서도 동일). golden·envelope 변화 없음 | 2026-09-29, `dryforge/gui-cli-parity` |
 | 로컬 전체 pytest (Gurobi 라이선스, offscreen Qt) | 1752 passed, 0 failed, 18 skipped(인간 GEM fixture 부재) — `e32d7d9` 커밋 기록 기준. 이후 3개 커밋(Windows 이식성, 실행기)에 대한 로컬 전체 재실행 기록은 없음 | 2026-09-25 |
 | 출판 검증 절차(`docs/PUBLICATION_VALIDATION.md`) Recon3D 재실행 | **미실행**. 현재 문서의 수치는 코드 대조 또는 round-6 기록(`ac1adf3`)이며 릴리스 결과가 아님 | — |
 | 네이티브 GUI 시각 검증(macOS/Windows, HiDPI, 접근성) | **미실행**. offscreen 렌더와 기능 테스트만 있음 | — |
