@@ -55,3 +55,10 @@
 - 영향: `run_hash`를 캐시 키나 동일성 판단으로 쓰는 소비자(sweep 캐시 포함)가 merge run과 exact run을 같은 run으로 취급할 수 있다.
 - 지금 못 푸는 이유: solve hash는 고정 11구성요소 계약이고 golden hash가 발표돼 있다. 모드를 넣으려면 구성요소 정의를 바꾸는 계약 변경이 필요하다.
 - 방향: 배지 checksum 입력에 모드를 포함하되 merge 기본값은 기존 직렬화를 유지하는 방식(고정 golden 보존)을 설계해 한 번의 계약 변경으로 처리. 그 전까지는 solve run을 비교할 때 기록된 모드를 반드시 함께 확인.
+
+## macOS 로컬 전체 pytest가 모두 통과한 뒤 rc=139로 끝남
+
+- 증상: `QT_QPA_PLATFORM=offscreen uv run --no-sync pytest`를 전체로 돌리면 모든 테스트가 통과하고 요약 줄까지 출력된 뒤, 인터프리터 종료 중 "Release of profile requested but WebEnginePage still not deleted"를 남기고 segfault(rc=139)로 끝난다. `9a407bb`에서도 같다(2026-09-29, 1762 passed, rc=139).
+- 영향: 종료 코드만 보는 스크립트나 hook은 통과한 실행을 실패로 본다. 반대로 rc=139를 "원래 그렇다"고 넘기면 진짜 crash를 놓칠 수 있다.
+- 지금 못 푸는 이유: QtWebEngine 그래프 화면(`graph_view.py`) 객체가 Python 종료 시점까지 남아 있는 문제로 보이며, 원인 객체를 특정하려면 macOS에서 테스트 파일 단위 이분 탐색이 필요하다. 새 GUI 테스트 파일에 autouse `_deterministic_qt_teardown` fixture를 두면 그 파일 단독 실행에서는 사라진다.
+- 방향: 판정은 요약 줄과 `--junitxml`의 failures/errors로 한다. 전체 실행에서 WebEngine 객체를 명시적으로 정리하는 공용 fixture(`conftest.py`)를 검토한다.
