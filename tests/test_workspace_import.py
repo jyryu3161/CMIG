@@ -315,3 +315,43 @@ def test_model_overview_shows_integrity_problems_and_unchecked_sizes() -> None:
 
     assert column(1) == ["ok", "changed", "pending"]
     assert column(2) == ["7", "—", "—"]
+
+
+def _job_row_status(window, job: str) -> str:
+    window.bridge.refresh()
+    panel = window.jobs_panel
+    for row in range(panel.rowCount()):
+        if panel.item(row, 0).text() == job:
+            return panel.item(row, 2).text()
+    raise AssertionError(f"no Activity row for {job}")
+
+
+def test_cancelled_import_never_reads_as_done_in_activity(
+    window, tmp_path: Path, monkeypatch
+) -> None:
+    files = _models(tmp_path / "many", [f"m{i:03d}.xml" for i in range(200)])
+    gate = _hold(monkeypatch, "m002.xml")
+    job = window.add_model_paths(files)
+    _wait_progress(window, job, 2)
+    window._cancel_job_id(job)
+    # Import-specific wording: nothing here is a solver call.
+    message = window.statusBar().currentMessage()
+    assert "Cancelling import" in message and "solver" not in message.lower()
+    running = _job_row_status(window, job)
+    assert "cancelling" in running and "solver" not in running
+    gate.set()
+    _wait(window, job)
+    status = _job_row_status(window, job)
+    assert status.startswith("cancelled") and "not imported" in status
+    assert status != "done"
+    assert "not imported" in window.activity.log_view.toPlainText()
+    assert window.jobs_panel.selected_job_id() == job
+    kept = len(window.session.project.models)
+    assert 2 <= kept < 200, "models imported before the cancel are kept"
+    assert f"{200 - kept} of 200" in status
+
+
+def test_completed_import_still_reads_done_in_activity(window, tmp_path: Path) -> None:
+    job = window.add_model_paths(_models(tmp_path / "in", ["a.xml", "b.xml"]))
+    _wait(window, job)
+    assert _job_row_status(window, job) == "done"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+from collections.abc import Mapping
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
@@ -46,12 +47,15 @@ class RuntimeJobsPanel(QTableWidget):
         runner: JobRunner,
         job_ids: list[str],
         cancelling: frozenset[str] | set[str] = frozenset(),
+        status_labels: Mapping[str, str] | None = None,
     ) -> None:
         """JobRunner.poll 로 각 job 의 실제 상태를 표에 반영(orphan 아님).
 
         A job whose cancel has been *requested* but which is still inside a non-interruptible
         solver call is shown as `cancelling (solver still running)` rather than plain
         `running` — the previous label made the cancel look like it had done nothing.
+        A job id in `status_labels` shows that text instead of any of these (a job that ended
+        cancelled but returned normally would otherwise read `done`).
         """
         self.setRowCount(len(job_ids))
         for row, jid in enumerate(job_ids):
@@ -67,6 +71,7 @@ class RuntimeJobsPanel(QTableWidget):
             status = job.status.value
             if jid in cancelling and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
                 status = "cancelling (solver still running)"
+            status = (status_labels or {}).get(jid, status)
             for col, text in enumerate([job.job_id, job.kind, status, progress]):
                 item = read_only_item(text)
                 if job.error:

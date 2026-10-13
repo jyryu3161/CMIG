@@ -997,6 +997,8 @@ class JobsBridge(QObject):
         #: jobs for which the user pressed Cancel; the request is cooperative, so a job stays
         #: here until it actually reaches a terminal state.
         self.cancelling: set[str] = set()
+        #: job id -> text shown in the Activity status column instead of the runner's status
+        self.status_labels: dict[str, str] = {}
         self._timer = QTimer(self)
         self._timer.setInterval(interval_ms)
         self._timer.timeout.connect(self.refresh)
@@ -1006,7 +1008,9 @@ class JobsBridge(QObject):
         self.refresh()
 
     def refresh(self) -> None:
-        self._panel.refresh(self._runner, self._job_ids, frozenset(self.cancelling))
+        self._panel.refresh(
+            self._runner, self._job_ids, frozenset(self.cancelling), self.status_labels
+        )
 
     def start(self) -> None:
         self._timer.start()
@@ -1963,6 +1967,14 @@ class CmigMainWindow(QMainWindow):
             return
         self.runner.cancel(job_id)
         self.bridge.cancelling.add(job_id)
+        if job_id in self._import_jobs:
+            # An import is file copying, not a solver call: the solver wording would be wrong.
+            self.bridge.status_labels[job_id] = "cancelling (finishing the current file)"
+            self.bridge.refresh()
+            self.statusBar().showMessage(
+                "Cancelling import — the file being copied will finish first.", 8000
+            )
+            return
         self.bridge.refresh()
         # Cancellation is cooperative and GUI jobs only check it at run boundaries, so saying
         # just "Cancel requested" let the user believe the solve had stopped when it had not.
@@ -2072,6 +2084,15 @@ class CmigMainWindow(QMainWindow):
         self.bridge.cancelling.discard(job_id)
         names = {path.name for path in files}
         self._pending_imports = [n for n in self._pending_imports if n not in names]
+        remaining = 0 if result is None else int(result["cancelled_remaining"])
+        if remaining:
+            # The worker returns normally after a cancel, so the runner calls the job `done`.
+            self.bridge.status_labels[job_id] = (
+                f"cancelled ({remaining} of {len(files)} not imported)"
+            )
+            self._job_logs[job_id] = f"Cancelled: {remaining} of {len(files)} files not imported"
+        else:
+            self.bridge.status_labels.pop(job_id, None)
         project = self.session.project
         if result is None:
             self.statusBar().showMessage(f"Model import {status}; nothing was added.", 8000)
@@ -2082,6 +2103,8 @@ class CmigMainWindow(QMainWindow):
             )
         else:
             self._add_imported(job_id, project, result)
+        if job_id in self._job_logs:
+            self._show_job_in_activity(job_id)
         self.runner.release_payload(job_id)
         self.refresh_workspace()
 
@@ -2103,8 +2126,8 @@ class CmigMainWindow(QMainWindow):
         details += [f"{name}: already in the project as {eid}"
                     for name, eid in result["duplicates"]]
         if details:
-            self._job_logs[job_id] = "\n".join(details)
-            self._show_job_in_activity(job_id)
+            earlier = self._job_logs.get(job_id)  # the "Cancelled: ..." line, if any
+            self._job_logs[job_id] = "\n".join(([earlier] if earlier else []) + details)
         try:
             self.session.add_entries(added)
         except ProjectError as exc:

@@ -220,3 +220,15 @@ def test_activity_pane_cancel_and_command() -> None:
     assert pane.command_label.text() == "cmig search --out 'a b'"
     assert pane.log_view.toPlainText() == "line1\nline2"
     runner.shutdown(wait=True)
+
+
+def test_job_rows_show_a_given_status_label_instead_of_the_runner_status() -> None:
+    runner = JobRunner(max_workers=1)
+    pane = ActivityPane()
+    jid = runner.submit("demo", lambda ctx: {"ok": True})
+    runner.result(jid, timeout=5)
+    pane.jobs.refresh(runner, [jid])
+    assert pane.jobs.item(0, 2).text() == "done"
+    pane.jobs.refresh(runner, [jid], status_labels={jid: "cancelled (2 of 5 not imported)"})
+    assert pane.jobs.item(0, 2).text() == "cancelled (2 of 5 not imported)"
+    runner.shutdown(wait=True)
