@@ -17,6 +17,12 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
 
+from gui_project_helpers import (  # noqa: E402
+    _deterministic_qt_teardown,  # noqa: F401
+    add_test_medium,
+    open_test_project,
+    taxonomy_ids,
+)
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.gui.app import build_main_window  # noqa: E402
@@ -74,7 +80,7 @@ def window(tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(w, tmp_path / "p", ["a", "b"])
     yield w
     w.close()
     runner.shutdown()
@@ -181,6 +187,8 @@ def test_bad_target_rows_are_refused_before_running(window, monkeypatch, rows):
     assert window.run_search_fixture() == ""
     assert rec.calls == []
     assert window.search_view.status.text().strip()
+    # refused before a run folder is claimed: nothing appears in RUNS
+    assert [p.name for p in window.session.require().runs_dir.iterdir()] == ["_inputs"]
 
 
 def test_preset_fills_editable_rows_and_argv_uses_rows(window, monkeypatch):
@@ -235,7 +243,7 @@ def test_strategy_options_only_when_applicable(window, monkeypatch, strategy):
     view.ga_restart_after_spin.setValue(6)
     view.ga_preserve_common_check.setChecked(True)
     view.set_target_rows([("ac", "max_secretion", "2", "1"), ("but", "min_uptake", "1", "3")])
-    view.medium_input.setText("m.csv")
+    view.medium_picker.set_ref("preset:western_diet")
     view.allow_unknown_medium_check.setChecked(True)
     assert _run(window)
     argv = rec.calls[0]
@@ -274,31 +282,28 @@ def test_optional_ga_limits_have_an_off_value(window, monkeypatch):
     assert "--ga-pop-size" in argv
 
 
-def test_taxonomy_and_recursive_are_search_only(window, monkeypatch, tmp_path):
+def test_every_search_page_workflow_passes_the_selected_models(window, monkeypatch):
     rec = _Recorder(monkeypatch)
     view = window.search_view
-    view.recursive_check.setChecked(True)
-    assert _run(window)
-    assert "--recursive" in rec.calls[-1]
-    assert _value(rec.calls[-1], "--model-dir") == str(tmp_path)
-    taxonomy = tmp_path / "pool.csv"
-    view.model_source_combo.setCurrentIndex(view.model_source_combo.findData("taxonomy"))
-    assert not view.recursive_check.isEnabled()
-    view.taxonomy_input.setText("")
-    assert window.run_search_fixture() == ""
-    view.taxonomy_input.setText(str(taxonomy))
-    assert _run(window)
-    argv = rec.calls[-1]
-    assert _value(argv, "--taxonomy") == str(taxonomy)
-    assert "--model-dir" not in argv and "--recursive" not in argv
-    # Gene KO / Strain Growth / Ratio never use the taxonomy in place of the model folder.
-    view.model_dir_input.setText("")
-    view.ko_members_input.setText("a,b")
-    view.growth_member_input.setText("a")
+    for removed in ("model_dir_input", "model_source_combo", "taxonomy_input",
+                    "recursive_check"):
+        assert not hasattr(view, removed)
+    view.model_picker.set_selected(["b"])
+    view.ko_members_input.setText("b")
+    view.growth_member_input.setText("b")
+    for method in ("run_search_fixture", "run_gene_ko_search", "run_strain_growth_report",
+                   "run_abundance_impact"):
+        assert _run(window, method)
+        argv = rec.calls[-1]
+        assert taxonomy_ids(argv) == ["b"], method
+        assert "--model-dir" not in argv and "--recursive" not in argv
+    # With nothing selected every workflow is refused before the CLI is called.
+    view.model_picker.set_selected([])
     n = len(rec.calls)
-    assert window.run_gene_ko_search() == ""
-    assert window.run_strain_growth_report() == ""
-    assert window.run_abundance_impact() == ""
+    for method in ("run_search_fixture", "run_gene_ko_search", "run_strain_growth_report",
+                   "run_abundance_impact"):
+        assert getattr(window, method)() == ""
+        assert view.status.text() == "Select at least one model."
     assert len(rec.calls) == n
 
 
@@ -325,8 +330,9 @@ def test_medium_mode_exact_merge_and_unknown(window, monkeypatch, tmp_path):
     argv = rec.calls[-1]
     for flag in ("--medium", "--exact-medium", "--allow-unknown-medium"):
         assert flag not in argv
-    medium = str(tmp_path / "medium.csv")
-    view.medium_input.setText(medium)
+    ref = add_test_medium(window, tmp_path / "medium.csv")
+    view.medium_picker.set_ref(ref)
+    medium = str(window.session.require().root / "media" / "medium.csv")
     view.allow_unknown_medium_check.setChecked(False)
     assert _run(window)
     argv = rec.calls[-1]
@@ -394,13 +400,11 @@ def test_gui_search_defaults_equal_cli_parser_defaults():
         d["ga_local_search_fraction"])
     assert view.ga_preserve_common_check.isChecked() is d["ga_preserve_common"]
     assert view.pareto_resolution_spin.value() == d["pareto_resolution"]
-    assert view.recursive_check.isChecked() is d["recursive"]
     assert view.robustness_check.isChecked() is d["robustness_fva"]
     assert view.allow_unknown_medium_check.isChecked() is d["allow_unknown_medium"]
     assert view.resume_check.isChecked() is d["resume"]
     assert d["checkpoint"] is None and view.checkpoint_input.text() == ""
-    assert d["medium"] is None and view.medium_input.text() == ""
-    assert view.model_source_combo.currentData() == "model_dir"
+    assert d["medium"] is None and view.medium_picker.current_ref() == ""
     # exact medium is the GUI default by design (spec: exact is the default).
     assert view.medium_mode_combo.currentData() == "exact"
     view.close()
@@ -423,8 +427,7 @@ def test_gene_ko_top_k_is_separate_default_twenty(window, monkeypatch):
     view.set_target_rows([("ac", "min_uptake")])
     view.ko_members_input.setText("a,b")
     view.search_top_k_spin.setValue(3)
-    medium = "m.csv"
-    view.medium_input.setText(medium)
+    view.medium_picker.set_ref("preset:western_diet")
     view.medium_mode_combo.setCurrentIndex(view.medium_mode_combo.findData("merge"))
     assert _run(window, "run_gene_ko_search")
     argv = rec.calls[-1]
@@ -464,8 +467,6 @@ def test_new_search_settings_invalidate_search_result(tmp_path):
         lambda: view.ga_patience_spin.setValue(2),
         lambda: view.medium_mode_combo.setCurrentIndex(1),
         lambda: view.allow_unknown_medium_check.setChecked(True),
-        lambda: view.recursive_check.setChecked(True),
-        lambda: view.taxonomy_input.setText("t.csv"),
         lambda: view.pareto_resolution_spin.setValue(9),
         lambda: view.exhaustive_max_spin.setValue(9),
         lambda: view.n_samples_spin.setValue(9),
@@ -563,7 +564,7 @@ def test_rc2_shows_this_jobs_cli_cause_without_other_threads_output(monkeypatch,
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(w, tmp_path / "p", ["a", "b"])
     w.search_view.set_target_rows([("ac",), ("but",)])
     jid = w.run_search_fixture()
     with pytest.raises(JobFailed):
@@ -590,7 +591,7 @@ def test_korean_mode_new_paths_do_not_raise(monkeypatch, tmp_path):
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner, lang="ko")
     view = w.search_view
-    view.model_dir_input.setText(str(tmp_path))
+    open_test_project(w, tmp_path / "p", ["a", "b"])
     view.advanced_toggle.setChecked(True)
     view.set_target_rows([("ac",), ("ac",)])
     assert w.run_search_fixture() == ""
@@ -606,14 +607,16 @@ def test_korean_mode_new_paths_do_not_raise(monkeypatch, tmp_path):
     runner.shutdown()
 
 
-def test_window_fits_with_advanced_settings_expanded():
+def test_window_fits_with_advanced_settings_expanded(tmp_path):
     app = _app()
     for lang in ("en", "ko"):
         window = build_main_window(lang=lang)
+        open_test_project(window, tmp_path / lang, ["m" * 60, "b"])
         window.search_view.advanced_toggle.setChecked(True)
         window.search_view.set_target_rows([("ac",), ("but",), ("succ",), ("ppa",)])
         window.search_view.multi_metric_combo.setCurrentText("pareto")
-        window.search_view.medium_input.setText("x" * 200)
+        window.search_view.medium_picker.set_ref(
+            add_test_medium(window, tmp_path / f"{'x' * 120}{lang}.csv"))
         window.search_view.medium_mode_combo.setCurrentIndex(1)
         window.search_view.allow_unknown_medium_check.setChecked(True)
         window._show_page(window.search_view)

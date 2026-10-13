@@ -19,7 +19,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QCheckBox,
-    QHBoxLayout,
+    QGridLayout,
     QHeaderView,
     QLabel,
     QSpinBox,
@@ -72,15 +72,16 @@ class InteractionGraphView(QWidget):
         make_read_only(self.edge_table)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        controls = QHBoxLayout()
+        # Two rows, so the controls fit beside the Host tables at a 1280-px window.
+        controls = QGridLayout()
         controls.setContentsMargins(8, 4, 8, 4)
-        controls.addWidget(QLabel("Edges"))
-        controls.addWidget(self.cross_feeding_check)
-        controls.addWidget(self.secretion_check)
-        controls.addWidget(self.uptake_check)
-        controls.addWidget(self.aggregate_check)
-        controls.addWidget(self.top_edges_spin)
-        controls.addStretch(1)
+        controls.addWidget(QLabel("Edges"), 0, 0)
+        controls.addWidget(self.cross_feeding_check, 0, 1)
+        controls.addWidget(self.secretion_check, 0, 2)
+        controls.addWidget(self.uptake_check, 0, 3)
+        controls.addWidget(self.aggregate_check, 1, 1)
+        controls.addWidget(self.top_edges_spin, 1, 2)
+        controls.setColumnStretch(4, 1)
         layout.addLayout(controls)
         layout.addWidget(self._web)
         layout.addWidget(self.edge_table)

@@ -12,6 +12,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
 
+from gui_project_helpers import add_test_medium, open_test_project  # noqa: E402
 from PySide6.QtCore import QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -77,9 +78,10 @@ def test_adjacent_workflows_forward_only_applicable_frozen_settings(monkeypatch,
     release = threading.Event()
     runner.submit("block", lambda ctx: release.wait(10))
     window = build_main_window(runner=runner)
+    project = open_test_project(window, tmp_path / "p", ["member_a", "member_b"])
     view = window.search_view
-    view.model_dir_input.setText(str(tmp_path))
-    view.medium_input.setText(str(tmp_path / "defined-medium.csv"))
+    view.medium_picker.set_ref(add_test_medium(window, tmp_path / "defined-medium.csv"))
+    medium = str(project.root / project.media[0].file)
     view.set_target_rows(["ac"])
     view.target_direction_combo(0).setCurrentText("min_uptake")
     view.growth_fraction_spin.setValue(0.75)
@@ -94,7 +96,7 @@ def test_adjacent_workflows_forward_only_applicable_frozen_settings(monkeypatch,
     view.growth_member_input.setText("member_a")
     jobs = [window.run_gene_ko_search(), window.run_strain_growth_report(),
             window.run_abundance_impact()]
-    view.medium_input.setText("changed.csv")
+    view.medium_picker.set_ref("preset:western_diet")
     view.target_direction_combo(0).setCurrentText("max_secretion")
     view.cooperative_tradeoff_spin.setValue(0.8)
     release.set()
@@ -103,7 +105,7 @@ def test_adjacent_workflows_forward_only_applicable_frozen_settings(monkeypatch,
     window._poll_completed_jobs()
     assert len(seen) == 3
     for argv in seen:
-        assert argv[argv.index("--medium") + 1] == str(tmp_path / "defined-medium.csv")
+        assert argv[argv.index("--medium") + 1] == medium
         assert "--exact-medium" in argv
     ko, growth, ratio = seen
     assert ko[ko.index("--direction") + 1] == "min_uptake"
@@ -447,7 +449,7 @@ def test_search_cli_exit_two_retains_actionable_request_detail(monkeypatch, tmp_
     _app()
     runner = JobRunner(max_workers=1)
     window = build_main_window(runner=runner)
-    window.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(window, tmp_path / "p", ["a", "b"])
     window.search_view.set_target_rows(["ac"])
     jid = window.run_search_fixture()
     with pytest.raises(JobFailed):
@@ -635,7 +637,8 @@ def test_irrelevant_edit_keeps_completed_superseded_ratio_result(tmp_path):
     _app()
     view = SearchView()
     executed = view.request_fields("abundance_impact")
-    view.medium_input.setText(str(tmp_path / "later-medium.csv"))
+    view.medium_picker.set_choices(["western_diet"], [])
+    view.medium_picker.set_ref("preset:western_diet")
     view.cooperative_tradeoff_spin.setValue(0.9)
     view.load_summary(
         {"top_ranked": [], "strategy": "ratio"}, run_dir=tmp_path,
@@ -678,8 +681,7 @@ def test_present_search_conditions_survive_direct_and_adapted_details(tmp_path):
     view.close()
 
 
-@pytest.mark.parametrize("missing", ["medium", "pool"])
-def test_real_cli_input_failure_retains_exact_path(tmp_path, missing):
+def test_real_cli_input_failure_retains_exact_path(tmp_path):
     from cmig.service.jobrunner import JobFailed
 
     _app()
@@ -688,26 +690,20 @@ def test_real_cli_input_failure_retains_exact_path(tmp_path, missing):
     prior = tmp_path / "prior_search"
     _search_run(prior, {"status": "ok", "strategy": "exhaustive", "top_ranked": [],
                         "warnings": []})
+    # The project's models are placeholder files: the real CLI refuses the first one.
+    open_test_project(window, tmp_path / "p", ["member", "other"])
     assert window.load_search_dir(prior)
     assert "Artifact integrity: verified" in _shown(window)
-    pool = tmp_path / "pool"
-    pool.mkdir()
-    if missing == "medium":
-        (pool / "member.xml").write_text("model placeholder")
-        path = tmp_path / "NONEXISTENT_review_medium.csv"
-        window.search_view.medium_input.setText(str(path))
-    else:
-        path = pool
-    window.search_view.model_dir_input.setText(str(pool))
+    path = "member.xml"
     window.search_view.set_target_rows(["ac"])
     jid = window.run_search_fixture()
     with pytest.raises(JobFailed):
         runner.result(jid, timeout=15)
     window._poll_completed_jobs()
     assert runner.poll(jid).status is JobStatus.FAILED
-    assert "input_diagnostic:" in window.search_view.details.toPlainText()
-    assert str(path) in window.search_view.details.toPlainText()
-    assert str(path) in (runner.poll(jid).error or "")
+    assert "cli_error:" in window.search_view.details.toPlainText()
+    assert path in window.search_view.details.toPlainText()
+    assert path in (runner.poll(jid).error or "")
     assert window.search_view.table.rowCount() == 0
     failed_run = Path(runner.poll(jid).result["output_dir"]).resolve()
     assert window.search_view.current_run_dir == failed_run
@@ -799,7 +795,7 @@ def test_completed_search_rejects_verified_malformed_rank(monkeypatch, tmp_path,
     prior = tmp_path / "prior"
     _search_run(prior, {"status": "ok", "top_ranked": [], "warnings": []})
     assert window.load_search_dir(prior)
-    window.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(window, tmp_path / "p", ["a", "b"])
     window.search_view.set_target_rows(["ac"])
     jid = window.run_search_fixture()
     runner.result(jid, timeout=5)
@@ -812,7 +808,8 @@ def test_completed_search_rejects_verified_malformed_rank(monkeypatch, tmp_path,
     assert "Status: readback invalid/unreadable" in _shown(window)
     assert str(out_dir) in _shown(window)
     assert "Artifact digest: verified" in _shown(window)
-    assert window.sidebar.topLevelItem(3).childCount() == 1
+    # the run folder is in the project's runs/; it was not registered as a shown run
+    assert [entry.path for entry in window._external_runs] == [prior.resolve()]
     window.close()
 
 
@@ -839,7 +836,7 @@ def test_failed_search_rejects_verified_malformed_rank(monkeypatch, tmp_path):
     prior = tmp_path / "prior"
     _search_run(prior, {"status": "ok", "top_ranked": [], "warnings": []})
     assert window.load_search_dir(prior)
-    window.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(window, tmp_path / "p", ["a", "b"])
     window.search_view.set_target_rows(["ac"])
     jid = window.run_search_fixture()
     with pytest.raises(JobFailed):
@@ -851,7 +848,8 @@ def test_failed_search_rejects_verified_malformed_rank(monkeypatch, tmp_path):
     assert "Status: readback invalid/unreadable" in _shown(window)
     assert str(out_dir) in _shown(window)
     assert "Artifact digest: verified" in _shown(window)
-    assert window.sidebar.topLevelItem(3).childCount() == 1
+    # the run folder is in the project's runs/; it was not registered as a shown run
+    assert [entry.path for entry in window._external_runs] == [prior.resolve()]
     window.close()
 
 
@@ -956,7 +954,7 @@ def test_failed_search_invalid_manifest_is_not_published(monkeypatch, tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     window = build_main_window(runner=runner)
-    window.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(window, tmp_path / "p", ["a", "b"])
     window.search_view.set_target_rows(["ac"])
     jid = window.run_search_fixture()
     with pytest.raises(JobFailed):
@@ -964,7 +962,7 @@ def test_failed_search_invalid_manifest_is_not_published(monkeypatch, tmp_path):
     window._poll_completed_jobs()
     assert window.current_search_dir is None
     assert window.search_view.current_run_dir is None
-    assert window.sidebar.topLevelItem(3).childCount() == 0
+    assert window._external_runs == []  # not registered as a shown run
     assert "Status: invalid/unreadable" in _shown(window)
     window.close()
 
@@ -1013,10 +1011,6 @@ def _community_run(monkeypatch, tmp_path, *, readable: bool):
     import cmig.cli.main
     from cmig.core.tidy import empty_bundle
 
-    pool = tmp_path / "pool"
-    pool.mkdir()
-    (pool / "A.xml").write_text("<sbml/>")
-
     def fake_main(argv):
         out = Path(argv[argv.index("--out") + 1])
         if readable:
@@ -1028,7 +1022,7 @@ def _community_run(monkeypatch, tmp_path, *, readable: bool):
     monkeypatch.setattr(cmig.cli.main, "main", fake_main)
     runner = JobRunner(max_workers=1)
     window = build_main_window(runner=runner)
-    window.community_builder.model_dir_input.setText(str(pool))
+    open_test_project(window, tmp_path / "p", ["A"])
     window.community_builder.assume_bigg_check.setChecked(True)
     jid = window.run_community_solve()
     out = window._community_jobs[jid]

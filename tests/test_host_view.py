@@ -62,15 +62,19 @@ def test_host_view_request_controls():
     """Host tab exposes a complete host-microbe run request."""
     _app()
     v = HostImpactView()
-    v.host_path_input.setText("/tmp/host.xml")
-    v.model_dir_input.setText("/tmp/models")
-    v.out_dir_input.setText("/tmp/out")
-    v.recursive_check.setChecked(True)
+    for removed in ("host_path_input", "model_dir_input", "out_dir_input", "recursive_check"):
+        assert not hasattr(v, removed)
+    choices = [("host", True, ""), ("m1", True, ""), ("bad", False, "its file is missing")]
+    v.host_picker.set_choices(choices)
+    v.model_picker.set_choices(choices)
+    assert v.request()["host_id"] == ""  # no host is chosen for the user
+    v.host_picker.set_selected(["host"])
+    v.model_picker.set_selected(["m1", "bad"])
     req = v.request()
-    assert req["host"] == "/tmp/host.xml"
-    assert req["model_dir"] == "/tmp/models"
-    assert req["out_dir"] == "/tmp/out"
-    assert req["recursive"] is True
+    assert req["host_id"] == "host"
+    assert req["models"] == ["m1"]
+    assert req["host_medium"] == "" and req["microbe_medium"] == ""
+    assert "recursive" not in req and "out_dir" not in req
     assert req["microbial_biomass_gdw"] == 0.0
     assert req["host_biomass_gdw"] == 0.0
     assert req["biomass_basis_kind"] == ""

@@ -1,4 +1,4 @@
-"""Search output folder, path pickers, checkpoint pre-checks and run reopening (GUI).
+"""Search run folders in the project, checkpoint pre-checks and run reopening (GUI).
 
 The GUI never computes anything: these tests record the argv handed to
 `cmig.cli.main.main` and inspect the folders the GUI creates around it.
@@ -16,14 +16,15 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
 
+from gui_project_helpers import add_test_medium, open_test_project  # noqa: E402
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-import cmig.gui.app as gui_app  # noqa: E402
+import cmig.io.project as project_io  # noqa: E402
 from cmig.core.workflow_manifest import artifact_result_digest  # noqa: E402
 from cmig.gui.app import build_main_window  # noqa: E402
 from cmig.gui.builder import MERGE_MEDIUM_WARNING, SearchView  # noqa: E402
-from cmig.service import JobRunner, JobStatus  # noqa: E402
+from cmig.service import JobRunner  # noqa: E402
 
 CHECKPOINT_EXISTS = "checkpoint exists; enable Resume or choose a new path"
 
@@ -99,9 +100,7 @@ def window(tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    pool = tmp_path / "pool"
-    pool.mkdir()
-    w.search_view.model_dir_input.setText(str(pool))
+    open_test_project(w, tmp_path / "p", ["a", "b"])
     yield w
     w.close()
     runner.shutdown()
@@ -119,63 +118,51 @@ def _out(argv: list[str]) -> Path:
     return Path(argv[argv.index("--out") + 1])
 
 
+def _runs(w) -> Path:
+    return w.session.require().runs_dir
+
+
 def _sidebar_run_paths(w) -> list[str]:
     root = w.sidebar.topLevelItem(3)  # RUNS
     return [str(root.child(i).data(0, Qt.ItemDataRole.UserRole)) for i in range(root.childCount())]
 
 
-# ------------------------------------------------------------------ output folder
+# ------------------------------------------------------------------ run folders
 
 
-def test_output_folder_widgets_are_search_only():
+def test_output_folder_field_is_gone():
     _app()
     view = SearchView()
-    assert view.output_dir_input.text() == ""
-    assert "Search only" in view.output_dir_label.text()
-    note = view.output_dir_note.text()
-    for other in ("Gene KO", "Strain Growth", "Ratio Impact"):
-        assert other in note
-    assert "output_dir" not in view.request_fields("search")
+    for removed in ("output_dir_input", "browse_output_btn", "output_dir_label",
+                    "output_dir_note"):
+        assert not hasattr(view, removed)
     for kind in view.REQUEST_FIELDS:
         assert "output_dir" not in view.REQUEST_FIELDS[kind]
     view.close()
 
 
-def test_blank_output_folder_uses_temp_root(window, monkeypatch):
+def test_each_run_gets_a_new_folder_in_project_runs(window, monkeypatch):
     rec = _Recorder(monkeypatch)
-    assert _run(window)
-    out = _out(rec.calls[0])
-    assert out.parent == gui_app._search_temp_root().resolve()
-    assert out.name.startswith("cmig-search-")
-
-
-def test_chosen_output_folder_gets_a_new_subfolder_each_run(window, monkeypatch, tmp_path):
-    rec = _Recorder(monkeypatch)
-    parent = tmp_path / "results"
-    parent.mkdir()
-    keep = parent / "notes.txt"
+    keep = _runs(window) / "notes.txt"
     keep.write_text("mine")
-    window.search_view.output_dir_input.setText(str(parent))
     assert _run(window)
     assert _run(window)
     first, second = _out(rec.calls[0]), _out(rec.calls[1])
     assert first != second
     for out in (first, second):
-        assert out.parent == parent.resolve()
+        assert out.parent == _runs(window).resolve()
         assert re.fullmatch(r"search-\d{8}-\d{6}(-\d+)?", out.name)
         assert (out / "search_summary.json").is_file()
     assert keep.read_text() == "mine"
     assert (first / "search_summary.json").is_file()  # the earlier run is not replaced
 
 
-def test_existing_subfolder_is_never_reused(window, monkeypatch, tmp_path):
+def test_existing_run_folder_is_never_reused(window, monkeypatch):
     rec = _Recorder(monkeypatch)
-    monkeypatch.setattr(gui_app, "_search_run_stamp", lambda: "20260929-120000")
-    parent = tmp_path / "results"
-    old = parent / "search-20260929-120000"
-    old.mkdir(parents=True)
+    monkeypatch.setattr(project_io, "_stamp", lambda: "20260929-120000")
+    old = _runs(window) / "search-20260929-120000"
+    old.mkdir()
     (old / "old.txt").write_text("previous run")
-    window.search_view.output_dir_input.setText(str(parent))
     assert _run(window)
     assert _run(window)
     assert [_out(c).name for c in rec.calls] == [
@@ -184,78 +171,37 @@ def test_existing_subfolder_is_never_reused(window, monkeypatch, tmp_path):
     assert sorted(p.name for p in old.iterdir()) == ["old.txt"]
 
 
-def test_missing_output_folder_is_refused(window, monkeypatch, tmp_path):
-    rec = _Recorder(monkeypatch)
-    missing = tmp_path / "nope"
-    window.search_view.output_dir_input.setText(str(missing))
-    assert window.run_search_fixture() == ""
-    assert rec.calls == []
-    assert "does not exist" in window.search_view.status.text()
-    assert not missing.exists()
-
-
-def test_file_as_output_folder_is_refused(window, monkeypatch, tmp_path):
-    rec = _Recorder(monkeypatch)
-    afile = tmp_path / "a.txt"
-    afile.write_text("x")
-    window.search_view.output_dir_input.setText(str(afile))
-    assert window.run_search_fixture() == ""
-    assert rec.calls == []
-    assert "not a folder" in window.search_view.status.text()
-
-
 @pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs POSIX non-root")
-def test_unwritable_output_folder_is_refused(window, monkeypatch, tmp_path):
+def test_unwritable_runs_folder_is_refused(window, monkeypatch):
     rec = _Recorder(monkeypatch)
-    locked = tmp_path / "locked"
-    locked.mkdir()
-    locked.chmod(0o500)
+    runs = _runs(window)
+    runs.chmod(0o500)
     try:
-        window.search_view.output_dir_input.setText(str(locked))
         assert window.run_search_fixture() == ""
         assert rec.calls == []
-        assert "not writable" in window.search_view.status.text()
-        assert list(locked.iterdir()) == []
+        assert "cannot create run folder" in window.search_view.status.text()
+        assert [p.name for p in runs.iterdir()] == ["_inputs"]
     finally:
-        locked.chmod(0o700)
+        runs.chmod(0o700)
 
 
-def test_home_directory_as_output_parent_works(window, monkeypatch, tmp_path):
-    from cmig.io.run_transaction import staged_run
-
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
-    # staged_run itself still refuses the home directory as --out ...
-    with pytest.raises(ValueError), staged_run(fake_home):
-        pass
-    # ... but a fresh subfolder inside it is a dedicated run directory.
-    rec = _Recorder(monkeypatch, staged=True)
-    window.search_view.output_dir_input.setText(str(fake_home))
-    jid = _run(window)
-    assert jid
-    assert window.runner.poll(jid).status is JobStatus.DONE
-    out = _out(rec.calls[0])
-    assert out.parent == fake_home.resolve()
-    assert (out / "search_summary.json").is_file()
-
-
-def test_changing_only_output_folder_keeps_displayed_result(window, monkeypatch, tmp_path):
+def test_refreshing_the_workspace_keeps_the_displayed_result(window, monkeypatch):
     _Recorder(monkeypatch)
     view = window.search_view
+    view.medium_picker.set_ref("preset:western_diet")
     assert _run(window)
     run_dir = view.current_run_dir
     assert run_dir is not None and view.table.rowCount() == 1
     requested = view.request_fields("search")
-    other = tmp_path / "elsewhere"
-    other.mkdir()
-    view.output_dir_input.setText(str(other))
+    # The pickers are rebuilt with the same choices (e.g. after RUNS refreshes).
+    window.session.refresh_runs()
+    window.refresh_workspace()
     assert view.current_run_dir == run_dir
     assert view.table.rowCount() == 1
     assert view.superseded_note(requested, "search") == ""
 
 
-def test_output_folder_does_not_apply_to_other_workflows(window, monkeypatch, tmp_path):
+def test_other_search_page_workflows_also_write_to_project_runs(window, monkeypatch):
     import cmig.cli.main
 
     seen: list[list[str]] = []
@@ -271,10 +217,7 @@ def test_output_folder_does_not_apply_to_other_workflows(window, monkeypatch, tm
         return 0
 
     monkeypatch.setattr(cmig.cli.main, "main", fake_main)
-    parent = tmp_path / "results"
-    parent.mkdir()
     view = window.search_view
-    view.output_dir_input.setText(str(parent))
     view.ko_members_input.setText("a,b")
     view.growth_member_input.setText("a")
     for method in ("run_gene_ko_search", "run_strain_growth_report", "run_abundance_impact"):
@@ -282,43 +225,31 @@ def test_output_folder_does_not_apply_to_other_workflows(window, monkeypatch, tm
         assert jid
         window.runner.result(jid, timeout=10)
     assert len(seen) == 3
-    for argv in seen:
-        assert _out(argv).parent == gui_app._search_temp_root().resolve()
-    assert list(parent.iterdir()) == []
+    prefixes = ("gene-ko-", "strain-growth-", "abundance-impact-")
+    for argv, prefix in zip(seen, prefixes, strict=True):
+        out = _out(argv)
+        assert out.parent == _runs(window).resolve()
+        assert out.name.startswith(prefix)
+        taxonomy = Path(argv[argv.index("--taxonomy") + 1])
+        assert taxonomy == _runs(window) / "_inputs" / f"{out.name}-taxonomy.csv"
 
 
 # ------------------------------------------------------------------ browse buttons
 
 
-def test_browse_buttons_fill_paths(window, monkeypatch, tmp_path):
+def test_checkpoint_browse_fills_the_path(window, monkeypatch, tmp_path):
     from PySide6.QtWidgets import QFileDialog
 
     calls: dict[str, Any] = {}
-
-    def existing_dir(*args, **kwargs):
-        calls["dir"] = args
-        return str(tmp_path / "out")
-
-    def open_file(*args, **kwargs):
-        calls["open"] = args
-        return str(tmp_path / "medium.csv"), ""
 
     def save_file(*args, **kwargs):
         calls["save"] = (args, kwargs)
         return str(tmp_path / "ck.json"), ""
 
-    monkeypatch.setattr(QFileDialog, "getExistingDirectory", staticmethod(existing_dir))
-    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(open_file))
     monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(save_file))
     view = window.search_view
-    view.browse_output_btn.click()
-    view.browse_medium_btn.click()
     view.browse_checkpoint_btn.click()
-    assert view.output_dir_input.text() == str(tmp_path / "out")
-    assert view.medium_input.text() == str(tmp_path / "medium.csv")
     assert view.checkpoint_input.text() == str(tmp_path / "ck.json")
-    medium_filter = " ".join(str(a) for a in calls["open"])
-    assert "*.csv" in medium_filter and "*.json" in medium_filter
     save_args = " ".join(str(a) for a in calls["save"][0])
     assert "*.json" in save_args
 
@@ -326,18 +257,10 @@ def test_browse_buttons_fill_paths(window, monkeypatch, tmp_path):
 def test_cancelled_browse_keeps_existing_paths(window, monkeypatch):
     from PySide6.QtWidgets import QFileDialog
 
-    monkeypatch.setattr(QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: ""))
-    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: ("", "")))
     monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: ("", "")))
     view = window.search_view
-    view.output_dir_input.setText("/keep/out")
-    view.medium_input.setText("/keep/m.csv")
     view.checkpoint_input.setText("/keep/ck.json")
-    view.browse_output_btn.click()
-    view.browse_medium_btn.click()
     view.browse_checkpoint_btn.click()
-    assert view.output_dir_input.text() == "/keep/out"
-    assert view.medium_input.text() == "/keep/m.csv"
     assert view.checkpoint_input.text() == "/keep/ck.json"
 
 
@@ -356,13 +279,10 @@ def test_existing_checkpoint_without_resume_is_refused(window, monkeypatch, tmp_
     assert ck.read_text() == "{}"
 
 
-def test_resume_runs_into_a_new_subfolder(window, monkeypatch, tmp_path):
+def test_resume_runs_into_a_new_run_folder(window, monkeypatch, tmp_path):
     rec = _Recorder(monkeypatch)
-    parent = tmp_path / "results"
-    parent.mkdir()
     ck = tmp_path / "ck.json"
     view = window.search_view
-    view.output_dir_input.setText(str(parent))
     view.checkpoint_input.setText(str(ck))
     assert _run(window)  # checkpoint does not exist yet: allowed without Resume
     ck.write_text("{}")  # the (cancelled) run left a checkpoint behind
@@ -373,36 +293,20 @@ def test_resume_runs_into_a_new_subfolder(window, monkeypatch, tmp_path):
     assert "--resume" in second
     assert second[second.index("--checkpoint") + 1] == str(ck)
     assert _out(second) != _out(first)
-    assert _out(second).parent == parent.resolve()
+    assert _out(second).parent == _runs(window).resolve()
 
 
-def test_checkpoint_inside_this_runs_out_is_refused(window, monkeypatch, tmp_path):
+def test_checkpoint_inside_this_runs_out_is_refused(window, monkeypatch):
     rec = _Recorder(monkeypatch)
-    monkeypatch.setattr(gui_app, "_search_run_stamp", lambda: "20260929-120000")
-    parent = tmp_path / "results"
-    parent.mkdir()
+    monkeypatch.setattr(project_io, "_stamp", lambda: "20260929-120000")
     view = window.search_view
-    view.output_dir_input.setText(str(parent))
-    view.checkpoint_input.setText(str(parent / "search-20260929-120000" / "ck.json"))
+    view.checkpoint_input.setText(str(_runs(window) / "search-20260929-120000" / "ck.json"))
     assert window.run_search_fixture() == ""
     assert rec.calls == []
     assert "inside this run's output folder" in view.status.text()
-    assert list(parent.iterdir()) == []  # nothing left behind
-
-
-def test_checkpoint_equal_to_out_is_refused_for_temp_runs(window, monkeypatch, tmp_path):
-    rec = _Recorder(monkeypatch)
-    root = tmp_path / "tmproot"
-    root.mkdir()
-    monkeypatch.setattr(gui_app, "_search_temp_root", lambda: root)
-    monkeypatch.setattr(gui_app.tempfile, "mkdtemp",
-                        lambda prefix, dir: str(Path(dir) / f"{prefix}fixed"))
-    fixed = root / "cmig-search-fixed"
-    fixed.mkdir()  # mkdtemp stand-in creates nothing; pretend it did
-    window.search_view.checkpoint_input.setText(str(fixed / "ck.json"))
-    assert window.run_search_fixture() == ""
-    assert rec.calls == []
-    assert "inside this run's output folder" in window.search_view.status.text()
+    # nothing left behind: no run folder, no run inputs
+    assert [p.name for p in _runs(window).iterdir()] == ["_inputs"]
+    assert list((_runs(window) / "_inputs").iterdir()) == []
 
 
 # ------------------------------------------------------------------ RUNS list / reopen
@@ -410,16 +314,13 @@ def test_checkpoint_equal_to_out_is_refused_for_temp_runs(window, monkeypatch, t
 
 @pytest.mark.parametrize("summary,rows", [(SINGLE, [("ac",)]),
                                           (MULTI, [("ac",), ("but",)])])
-def test_completed_run_in_chosen_folder_registers_and_reopens(window, monkeypatch, tmp_path,
-                                                              summary, rows):
+def test_completed_run_in_project_registers_and_reopens(window, monkeypatch, summary, rows):
     rec = _Recorder(monkeypatch, summary=summary)
-    parent = tmp_path / "results"
-    parent.mkdir()
     view = window.search_view
     view.set_target_rows(rows)
-    view.output_dir_input.setText(str(parent))
     assert _run(window)
     out = _out(rec.calls[0]).resolve()
+    assert out.parent == _runs(window).resolve()
     assert str(out) in _sidebar_run_paths(window)
     assert window.current_search_dir == out
     expected_rows = view.table.rowCount()
@@ -462,11 +363,9 @@ def test_fva_is_single_target_only(window, monkeypatch):
 
 def test_medium_mode_visible_with_advanced_collapsed(window, monkeypatch, tmp_path):
     _Recorder(monkeypatch)
-    medium = tmp_path / "m.csv"
-    medium.write_text("id,flux\n")
     view = window.search_view
     assert view.advanced_box.isHidden()
-    view.medium_input.setText(str(medium))
+    view.medium_picker.set_ref(add_test_medium(window, tmp_path / "m.csv", "id,flux\n"))
     summary = view.medium_mode_summary
     assert not summary.isHidden()
     assert "exact" in summary.text()
@@ -486,7 +385,7 @@ def test_medium_mode_visible_with_advanced_collapsed(window, monkeypatch, tmp_pa
     window.runner.result(jid, timeout=10)
     window._poll_completed_jobs()
     assert "Medium mode: exact" in view.details.toPlainText()
-    view.medium_input.setText("")
+    view.medium_picker.set_ref("")
     assert "not applied" in summary.text()
 
 
@@ -500,14 +399,10 @@ def test_korean_mode_output_paths(monkeypatch, tmp_path):
     w = build_main_window(runner=runner, lang="ko")
     try:
         view = w.search_view
-        pool = tmp_path / "pool"
-        pool.mkdir()
-        view.model_dir_input.setText(str(pool))
-        view.output_dir_input.setText(str(tmp_path / "missing"))
+        open_test_project(w, tmp_path / "p", ["a", "b"])
+        view.model_picker.set_selected([])
         assert w.run_search_fixture() == ""
-        parent = tmp_path / "results"
-        parent.mkdir()
-        view.output_dir_input.setText(str(parent))
+        view.model_picker.set_selected(["a", "b"])
         ck = tmp_path / "ck.json"
         ck.write_text("{}")
         view.checkpoint_input.setText(str(ck))
@@ -519,6 +414,7 @@ def test_korean_mode_output_paths(monkeypatch, tmp_path):
         runner.result(jid, timeout=10)
         w._poll_completed_jobs()
         out = _out(rec.calls[0]).resolve()
+        assert out.parent == _runs(w).resolve()
         assert str(out) in _sidebar_run_paths(w)
         w.load_run_dir(out)
         assert w.current_search_dir == out
@@ -527,13 +423,14 @@ def test_korean_mode_output_paths(monkeypatch, tmp_path):
         runner.shutdown()
 
 
-def test_window_fits_with_long_output_folder():
+def test_window_fits_with_long_paths_and_names(tmp_path):
     app = _app()
     for lang in ("en", "ko"):
         window = build_main_window(lang=lang)
-        window.search_view.output_dir_input.setText("/x" * 200)
+        open_test_project(window, tmp_path / lang, ["a", "b"])
         window.search_view.checkpoint_input.setText("/y" * 200)
-        window.search_view.medium_input.setText("/z" * 200)
+        window.search_view.medium_picker.set_ref(
+            add_test_medium(window, tmp_path / f"{'z' * 150}.csv"))
         window.search_view.medium_mode_combo.setCurrentIndex(1)
         window.search_view.set_target_rows([("ac",), ("but",)])
         window._show_page(window.search_view)

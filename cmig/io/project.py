@@ -581,6 +581,16 @@ def verify_checksums(project: Project) -> list[str]:
     return changed
 
 
+def refresh_integrity(project: Project, entry: ModelEntry | MediumEntry) -> str:
+    """Re-hash one project copy now and store the result on it (``ok``/``changed``/``missing``).
+
+    For inputs a run passes as a single path (``--host``, ``--model``, ``--medium``), the same
+    check ``write_run_taxonomy`` applies to every taxonomy row.
+    """
+    entry.integrity = _integrity(project.root / entry.file, entry.sha256)
+    return entry.integrity
+
+
 def selectable_models(project: Project) -> list[ModelEntry]:
     return [
         m for m in project.models if m.status in _RUNNABLE_STATUSES and m.integrity == "ok"

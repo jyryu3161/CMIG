@@ -16,11 +16,9 @@ from __future__ import annotations
 import csv
 import json
 import math
-import os
 import re
 import shutil
 import sys
-import tempfile
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -35,7 +33,6 @@ from PySide6.QtCore import (
     QItemSelectionModel,
     QModelIndex,
     QObject,
-    QStandardPaths,
     Qt,
     QTimer,
 )
@@ -88,6 +85,7 @@ from cmig.gui.editors import (
 from cmig.gui.graph_view import GateBadge, InteractionGraphView
 from cmig.gui.host_view import HostImpactView
 from cmig.gui.inspector import InspectorPanel
+from cmig.gui.pickers import MediumPicker, ModelPicker
 from cmig.gui.project_session import ProjectSession, RecentProjects, RunEntry, inspect_run
 from cmig.gui.sidebar import (
     ANALYSES,
@@ -103,6 +101,7 @@ from cmig.gui.views import (
 )
 from cmig.io import project as proj
 from cmig.io.agora2 import CATALOGUE_FILENAME, human_bytes, read_manifest
+from cmig.io.atomic import atomic_write_text
 from cmig.io.project import ModelEntry, ProjectError
 from cmig.service import Job, JobRunner, JobStatus
 
@@ -146,18 +145,12 @@ I18N: dict[str, dict[str, str]] = {
         "medium_status_ready": (
             "고급 편집기: 배지를 불러오거나 붙여넣거나 편집한 뒤 CLI 기반 검사를 실행하세요."
         ),
-        "medium_taxonomy_placeholder": "군집 taxonomy CSV",
-        "medium_browse_taxonomy": "Taxonomy…",
-        "medium_taxonomy_label": "Taxonomy",
         "medium_assume_bigg": "모델을 검토했고 BiGG namespace임을 확인합니다",
         "medium_namespace_placeholder": "또는 검토된 namespace-decisions JSON 파일",
         "medium_namespace_button": "판정 파일…",
         "medium_exact_mode": "엄밀한 배지(해제 시 기본 배지에 병합)",
         "medium_allow_unknown": "알 수 없는 ID를 허용하고 누락된 ID를 모두 보고",
         "medium_check_growth": "성장 확인",
-        "medium_model_placeholder": "최소 배지용 단일 SBML/JSON/MAT 모델",
-        "medium_browse_model": "모델…",
-        "medium_model_label": "모델",
         "medium_min_growth": "최소 성장률",
         "medium_oxygen_aerobic": "호기성",
         "medium_oxygen_anaerobic": "혐기성",
@@ -215,11 +208,9 @@ I18N: dict[str, dict[str, str]] = {
             "최소 배지 상태: {status}; 성분 {count}개; 달성 성장률: {growth}; 제한 영양소 "
             "{limiting}개{warnings}"
         ),
-        "medium_dialog_taxonomy": "성장 확인용 taxonomy CSV 선택",
         "medium_dialog_namespace": "Namespace 판정 파일 선택",
-        "medium_dialog_model": "최소 배지용 단일 모델 선택",
-        "medium_select_taxonomy_growth": "성장을 확인할 taxonomy CSV를 선택하세요.",
-        "medium_select_model_minimal": "최소 배지를 계산할 단일 모델을 선택하세요.",
+        "medium_select_taxonomy_growth": "Select at least one model before checking growth.",
+        "medium_select_model_minimal": "Choose a model before finding a minimal medium.",
         "medium_growth_started": "성장 확인 시작: {job_id}",
         "medium_growth_result": "성장률: {growth} · 상태: {status} · 모드: {mode}",
         "medium_mode_exact": "엄밀한 배지",
@@ -270,16 +261,7 @@ I18N: dict[str, dict[str, str]] = {
         "status_fixture_job": "예제 작업 {status}: {job_id}",
         "status_compare_complete": "시나리오 비교 완료",
         "sweep_title": "매개변수 스윕",
-        "sweep_status_ready": (
-            "고급 결과 보기: taxonomy 또는 모델 폴더를 선택하고 축을 설정한 다음 "
-            "실행하세요."
-        ),
-        "sweep_taxonomy_placeholder": "Taxonomy CSV",
-        "sweep_browse_taxonomy": "Taxonomy…",
-        "sweep_model_dir_placeholder": "또는 사용자가 준비한 미생물 모델 폴더",
-        "sweep_browse_models": "모델 폴더…",
-        "sweep_taxonomy_label": "Taxonomy",
-        "sweep_model_dir_label": "모델 소스",
+        "sweep_status_ready": "Advanced result view: pick models, configure the axes, then run.",
         "sweep_mediums_placeholder": (
             "쉼표로 구분한 배지 CSV/JSON 파일(비우면 모델 기본값)"
         ),
@@ -315,10 +297,7 @@ I18N: dict[str, dict[str, str]] = {
         "sweep_col_tradeoff": "Tradeoff f",
         "sweep_col_solver": "Solver",
         "sweep_col_diagnostic": "진단",
-        "sweep_select_source": (
-            "실제 스윕을 실행하려면 taxonomy CSV 또는 모델 폴더를 선택하세요."
-        ),
-        "sweep_one_source": "Taxonomy CSV와 모델 폴더 중 하나만 선택하세요.",
+        "sweep_select_source": "Select at least one model.",
         "sweep_namespace_choice": (
             "Namespace 정책은 검토 파일과 BiGG 확인 중 하나만 선택하세요."
         ),
@@ -332,13 +311,10 @@ I18N: dict[str, dict[str, str]] = {
         "sweep_failed_artifacts": " 산출물의 {count}개 조건을 표시합니다.",
         "sweep_mode_real": "실제",
         "sweep_mode_fixture": "fixture",
-        "sweep_dialog_taxonomy": "Sweep taxonomy CSV 선택",
-        "sweep_dialog_models": "Sweep 모델 폴더 선택",
         "sweep_dialog_mediums": "배지 변형 선택",
         "sweep_dialog_abundances": "Abundance 변형 선택",
         "sweep_dialog_bounds": "Bounds 변형 선택",
         "sweep_dialog_namespace": "Namespace 판정 파일 선택",
-        "sweep_filter_csv": "CSV (*.csv);;모든 파일 (*)",
         "sweep_filter_medium": "배지 파일 (*.csv *.json);;모든 파일 (*)",
         "sweep_filter_abundance": "Abundance 파일 (*.csv *.json);;모든 파일 (*)",
         "sweep_filter_bounds": "Bounds 파일 (*.json);;모든 파일 (*)",
@@ -418,18 +394,12 @@ I18N: dict[str, dict[str, str]] = {
         "medium_status_ready": (
             "Advanced editor: load, paste, or edit a medium, then run a CLI-backed check."
         ),
-        "medium_taxonomy_placeholder": "Community taxonomy CSV",
-        "medium_browse_taxonomy": "Taxonomy…",
-        "medium_taxonomy_label": "Taxonomy",
         "medium_assume_bigg": "I reviewed the models and confirm BiGG namespace",
         "medium_namespace_placeholder": "Or a reviewed namespace-decisions JSON file",
         "medium_namespace_button": "Decisions…",
         "medium_exact_mode": "Exact medium (unchecked = merge overlay)",
         "medium_allow_unknown": "Allow unknown IDs and report every dropped ID",
         "medium_check_growth": "Check Growth",
-        "medium_model_placeholder": "Single SBML/JSON/MAT model for minimal-medium",
-        "medium_browse_model": "Model…",
-        "medium_model_label": "Model",
         "medium_min_growth": "Minimum growth",
         "medium_oxygen_aerobic": "Aerobic",
         "medium_oxygen_anaerobic": "Anaerobic",
@@ -486,11 +456,9 @@ I18N: dict[str, dict[str, str]] = {
             "Minimal-medium status: {status}; {count} components; achieved growth: {growth}; "
             "{limiting} limiting nutrients{warnings}"
         ),
-        "medium_dialog_taxonomy": "Select taxonomy CSV for Growth Check",
         "medium_dialog_namespace": "Select Namespace Decisions",
-        "medium_dialog_model": "Select Single Model for Minimal Medium",
-        "medium_select_taxonomy_growth": "Select a taxonomy CSV before checking growth.",
-        "medium_select_model_minimal": "Select a single model before finding a minimal medium.",
+        "medium_select_taxonomy_growth": "Select at least one model before checking growth.",
+        "medium_select_model_minimal": "Choose a model before finding a minimal medium.",
         "medium_growth_started": "growth check started: {job_id}",
         "medium_growth_result": "growth: {growth} · status: {status} · mode: {mode}",
         "medium_mode_exact": "exact medium",
@@ -546,15 +514,7 @@ I18N: dict[str, dict[str, str]] = {
         "status_fixture_job": "Fixture job {status}: {job_id}",
         "status_compare_complete": "Scenario compare complete",
         "sweep_title": "Parameter Sweep",
-        "sweep_status_ready": (
-            "Advanced result view: choose a taxonomy or model folder, configure axes, then run."
-        ),
-        "sweep_taxonomy_placeholder": "Taxonomy CSV",
-        "sweep_browse_taxonomy": "Taxonomy…",
-        "sweep_model_dir_placeholder": "Or a folder of user-prepared microbial models",
-        "sweep_browse_models": "Model folder…",
-        "sweep_taxonomy_label": "Taxonomy",
-        "sweep_model_dir_label": "Model source",
+        "sweep_status_ready": "Advanced result view: pick models, configure the axes, then run.",
         "sweep_mediums_placeholder": (
             "Comma-separated medium CSV/JSON files (blank = model defaults)"
         ),
@@ -590,10 +550,7 @@ I18N: dict[str, dict[str, str]] = {
         "sweep_col_tradeoff": "Tradeoff f",
         "sweep_col_solver": "Solver",
         "sweep_col_diagnostic": "Diagnostic",
-        "sweep_select_source": (
-            "Select a taxonomy CSV or model folder before running a real sweep."
-        ),
-        "sweep_one_source": "Choose only one model source: taxonomy CSV or model folder.",
+        "sweep_select_source": "Select at least one model.",
         "sweep_namespace_choice": (
             "Choose one namespace policy: reviewed decisions file or BiGG confirmation."
         ),
@@ -609,13 +566,10 @@ I18N: dict[str, dict[str, str]] = {
         "sweep_failed_artifacts": " Displaying {count} recorded conditions from its artifacts.",
         "sweep_mode_real": "real",
         "sweep_mode_fixture": "fixture",
-        "sweep_dialog_taxonomy": "Select Sweep Taxonomy CSV",
-        "sweep_dialog_models": "Select Sweep Model Folder",
         "sweep_dialog_mediums": "Select Medium Variants",
         "sweep_dialog_abundances": "Select Abundance Variants",
         "sweep_dialog_bounds": "Select Bounds Variants",
         "sweep_dialog_namespace": "Select Namespace Decisions",
-        "sweep_filter_csv": "CSV (*.csv);;All files (*)",
         "sweep_filter_medium": "Medium files (*.csv *.json);;All files (*)",
         "sweep_filter_abundance": "Abundance files (*.csv *.json);;All files (*)",
         "sweep_filter_bounds": "Bounds files (*.json);;All files (*)",
@@ -743,22 +697,14 @@ def _search_target_argv(
 def _search_argv(
     requested: dict[str, str], rows: list[tuple[str, str, str, str]]
 ) -> tuple[list[str], str]:
-    """Build the `cmig search` argv (without `--out`) from a GUI-thread snapshot.
+    """Build the `cmig search` argv from a GUI-thread snapshot, without the model input
+    (`--taxonomy`, which the caller inserts right after "search") and without `--out`.
 
-    An option whose applicability condition does not hold is left out, so the argv never
-    carries a setting the run would ignore.
+    `requested["medium"]` is the medium file path (not the picker's ref). An option whose
+    applicability condition does not hold is left out, so the argv never carries a setting
+    the run would ignore.
     """
     argv = ["search"]
-    if requested["model_source"] == "taxonomy":
-        if not requested["taxonomy"]:
-            return [], "Select a taxonomy CSV before running product search."
-        argv.extend(["--taxonomy", requested["taxonomy"]])
-    else:
-        if not requested["pool"]:
-            return [], "Select a model folder before running product search."
-        argv.extend(["--model-dir", requested["pool"]])
-        if requested["recursive"] == "True":
-            argv.append("--recursive")
     target_argv, error = _search_target_argv(
         rows, requested["multi_metric"], requested["pareto_resolution"]
     )
@@ -910,15 +856,8 @@ def _failed_search_artifacts(out_dir: Path, rc: int) -> dict[str, Any]:
     return summary
 
 
-def _search_input_diagnostic(model_dir: str | None, medium: str) -> str | None:
+def _search_input_diagnostic(medium: str) -> str | None:
     """Keep known CLI input errors when a failed transaction publishes no artifacts."""
-    if model_dir is not None:
-        try:
-            from cmig.core.model_pool import discover_model_files
-
-            discover_model_files(model_dir)
-        except (OSError, ValueError) as exc:
-            return str(exc)
     if medium and not Path(medium).is_file():
         return f"medium file not found: {medium}"
     return None
@@ -936,26 +875,6 @@ def _with_search_conditions(summary: dict[str, Any], source: dict[str, Any]) -> 
     return {**summary, **{key: source[key] for key in _SEARCH_CONDITION_KEYS if key in source}}
 
 
-def _search_temp_root() -> Path:
-    """Return an OS-managed temp root for GUI search outputs."""
-    candidates: list[Path] = []
-    qt_temp = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation)
-    if qt_temp:
-        candidates.append(Path(qt_temp))
-    candidates.append(Path(tempfile.gettempdir()))
-
-    last_error: OSError | None = None
-    for base in candidates:
-        root = base / "cmig"
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            last_error = exc
-            continue
-        return root
-    raise RuntimeError("Unable to create CMIG search temp directory") from last_error
-
-
 CHECKPOINT_EXISTS = "checkpoint exists; enable Resume or choose a new path"
 _UNREADABLE_RESULT = (
     "{kind} finished, but its result could not be read back — see the inspector ({out_dir})"
@@ -963,37 +882,16 @@ _UNREADABLE_RESULT = (
 SEARCH_CANCEL_PENDING = "Cancellation requested — the solve in progress will finish first."
 
 
-def _search_run_stamp() -> str:
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
-
-
-def _output_parent_error(parent: Path) -> str:
-    """Why a chosen Search output folder cannot hold new run subfolders ("" if it can)."""
-    if not parent.exists():
-        return f"Output folder does not exist: {parent}"
-    if not parent.is_dir():
-        return f"Output folder is not a folder: {parent}"
-    if not os.access(parent, os.W_OK | os.X_OK):
-        return f"Output folder is not writable: {parent}"
+def _not_runnable(entry: ModelEntry) -> str:
+    """Why a project model cannot be part of a run ("" when it can)."""
+    if entry.integrity == "changed":
+        return "its file changed since it was added"
+    if entry.integrity == "missing":
+        return "its file is missing"
+    if entry.status not in ("ok", "warning"):
+        detail = f": {entry.error}" if entry.error else ""
+        return f"its check status is {entry.status!r}{detail}"
     return ""
-
-
-def _new_search_run_dir(parent: Path) -> Path:
-    """Create a fresh `search-YYYYMMDD-HHMMSS[-N]` folder in `parent`; never reuse one.
-
-    `mkdir(exist_ok=False)` is the claim: an existing folder (an earlier run, or anything
-    else of the user's) only moves the name on to the next suffix.
-    """
-    stem = f"search-{_search_run_stamp()}"
-    suffix = 1
-    while True:
-        candidate = parent / (stem if suffix == 1 else f"{stem}-{suffix}")
-        try:
-            candidate.mkdir()
-        except FileExistsError:
-            suffix += 1
-            continue
-        return candidate.resolve()
 
 
 class JobsBridge(QObject):
@@ -1160,6 +1058,10 @@ class CmigMainWindow(QMainWindow):
         #: job id -> equivalent command / log text shown in Activity for that job
         self._job_commands: dict[str, str] = {}
         self._job_logs: dict[str, str] = {}
+        #: run folder -> the equivalent `cmig` command (the inspector's Copy Command)
+        self._run_commands: dict[str, str] = {}
+        #: True while _refresh_pickers rebuilds the pickers: those changes are not user choices
+        self._refreshing_pickers = False
         #: root of the project the centre page was last laid out for (see refresh_workspace)
         self._shown_root: Path | None = None
         #: True while a sidebar selection drives the centre page (see _show_page)
@@ -1427,7 +1329,7 @@ class CmigMainWindow(QMainWindow):
             inspected["status"] = status
             # The first detail line names the run folder, which the Folder row already shows.
             inspected["artifact_integrity"] = "; ".join(detail.splitlines()[1:]) or detail
-        command = getattr(self, "_run_commands", {}).get(key, "")
+        command = self._run_commands.get(key, "")
         self.inspector.show_run(self._run_entry(run_dir), inspected, command)
         self._inspector_run, self._inspected_model = key, None
 
@@ -1822,8 +1724,158 @@ class CmigMainWindow(QMainWindow):
         finally:
             self.sidebar.blockSignals(blocked)
 
+    def _model_pickers(self) -> dict[str, ModelPicker]:
+        """Every model picker, keyed by the analysis setting that remembers its choice."""
+        return {
+            "search": self.search_view.model_picker,
+            "community": self.community_builder.model_picker,
+            "host": self.host_view.model_picker,
+            "host_model": self.host_view.host_picker,
+            "dynamics": self.dynamics_view.model_picker,
+            "sweep": self.sweep_view.model_picker,
+            "medium": self.medium_editor.model_picker,
+            "medium_single": self.medium_editor.single_model_picker,
+        }
+
+    def _medium_pickers(self) -> dict[tuple[str, str], MediumPicker]:
+        """Every medium picker, keyed by (analysis setting, field) that remembers its choice."""
+        return {
+            ("search", "medium"): self.search_view.medium_picker,
+            ("host", "host_medium"): self.host_view.host_medium_picker,
+            ("host", "microbe_medium"): self.host_view.microbe_medium_picker,
+        }
+
     def _refresh_pickers(self) -> None:
-        """Populated in Task 9 once the pickers exist."""
+        """Offer the project's models and media; restore each analysis' remembered choice.
+
+        Without a remembered choice a multi-model picker selects every runnable model, so a
+        model added later is included until the user picks for themselves.
+        """
+        project = self.session.project
+        models = [] if project is None else project.models
+        choices = [(m.id, not _not_runnable(m), _not_runnable(m)) for m in models]
+        runnable = [model_id for model_id, ok, _reason in choices if ok]
+        presets = installed_medium_presets()
+        media = [] if project is None else [(m.id, m.integrity == "ok") for m in project.media]
+        missing: list[str] = []
+        self._refreshing_pickers = True
+        try:
+            for key, picker in self._model_pickers().items():
+                picker.set_choices(choices)
+                saved = self.session.settings(key).get("models")
+                if isinstance(saved, list):
+                    picker.set_selected([str(x) for x in saved])
+                elif not picker.single:
+                    picker.set_selected(runnable)
+            for (key, field), medium_picker in self._medium_pickers().items():
+                medium_picker.set_choices(presets, media)
+                ref = self.session.settings(key).get(field)
+                if isinstance(ref, str) and ref != medium_picker.current_ref():
+                    try:
+                        medium_picker.set_ref(ref)
+                    except ValueError:
+                        missing.append(ref.partition(":")[2])
+        finally:
+            self._refreshing_pickers = False
+        if missing:
+            self.statusBar().showMessage(
+                f"Remembered medium no longer available: {', '.join(sorted(set(missing)))}; "
+                "the model default is selected instead.", 15000,
+            )
+
+    def _store_settings(self, key: str, values: dict[str, object]) -> None:
+        try:
+            self.session.store_settings(key, values)
+        except ProjectError as exc:
+            self.statusBar().showMessage(f"Could not save the analysis settings: {exc}", 8000)
+
+    def _remember(self, key: str, picker: ModelPicker) -> None:
+        """Keep a picker's choice in the project (a failed save is reported, never raised)."""
+        if self._refreshing_pickers or self.session.project is None:
+            return
+        values = self.session.settings(key)
+        values["models"] = picker.selected_ids()
+        self._store_settings(key, values)
+
+    def _remember_medium(self, key: str, field: str, picker: MediumPicker) -> None:
+        if self._refreshing_pickers or self.session.project is None:
+            return
+        values = self.session.settings(key)
+        values[field] = picker.current_ref()
+        self._store_settings(key, values)
+
+    def _prepare_run(
+        self, kind: str, model_ids: list[str], *, abundances: dict[str, float] | None = None
+    ) -> tuple[Path, Path | None]:
+        """Claim a new `runs/<kind>-…` folder and write its `runs/_inputs` taxonomy.
+
+        Returns (run folder, taxonomy or None when `model_ids` is empty). A model that cannot
+        run raises `ProjectError`; the claimed folder is removed again, so a refused run
+        leaves nothing in RUNS, and the sidebar and pickers show the model's new state.
+        """
+        project = self.session.require()
+        run_dir = proj.new_run_dir(project, kind)
+        try:
+            taxonomy = (
+                proj.write_run_taxonomy(project, run_dir, model_ids, abundances)
+                if model_ids else None
+            )
+        except ProjectError:
+            with suppress(OSError):
+                run_dir.rmdir()
+            self.refresh_workspace()  # a copy found changed or missing is shown and dropped
+            raise
+        return run_dir.resolve(), taxonomy
+
+    @staticmethod
+    def _discard_run(run_dir: Path, *inputs: Path | None) -> None:
+        """Remove a claimed run folder (still empty) and its inputs when the GUI refuses it."""
+        for path in inputs:
+            if path is not None:
+                with suppress(OSError):
+                    path.unlink()
+        with suppress(OSError):
+            run_dir.rmdir()
+
+    def _medium_arg(self, ref: str) -> str | None:
+        """The `--medium` path for a medium picker ref ("" = model default → None).
+
+        A project medium is re-hashed first: a copy that changed or went missing since it was
+        added is refused, never passed to the CLI.
+        """
+        if not ref:
+            return None
+        kind, _, name = ref.partition(":")
+        if kind == "preset":
+            return str(installed_medium_preset_path(name))
+        if kind != "medium":
+            raise ValueError(f"unknown medium choice {ref!r}")
+        project = self.session.require()
+        entry = project.medium(name)
+        state = proj.refresh_integrity(project, entry)
+        if state != "ok":
+            self.refresh_workspace()
+            reason = "changed since it was added" if state == "changed" else "is missing"
+            raise ProjectError(f"medium {name!r} cannot be used: its file {reason}")
+        return str(proj.medium_path(project, entry))
+
+    def _model_file(self, model_id: str) -> Path:
+        """The project copy of one model passed as `--host`/`--model`, checked like a
+        taxonomy row (re-hashed; a changed, missing or failed model is refused)."""
+        project = self.session.require()
+        entry = project.model(model_id)
+        proj.refresh_integrity(project, entry)
+        reason = _not_runnable(entry)
+        if reason:
+            self.refresh_workspace()
+            raise ProjectError(f"model {model_id!r} is not selectable: {reason}")
+        return proj.model_path(project, entry).resolve()
+
+    def _record_command(self, job_id: str, out_dir: Path, argv: list[str]) -> None:
+        """Keep the equivalent `cmig` command for Activity and the run's Copy Command."""
+        command = command_line(argv)
+        self._job_commands[job_id] = command
+        self._run_commands[str(out_dir)] = command
 
     # ── selection → page + inspector ─────────────────────────────────────────────────────
     _RUNNERS = {
@@ -2008,8 +2060,15 @@ class CmigMainWindow(QMainWindow):
         menu.exec(QCursor.pos())
 
     def _search_with_models(self, keys: list[str]) -> None:
-        """Populated in Task 9 (sets the Search model picker), then shows the page."""
+        """Select these models in Search (sidebar "Search with Selected…"), then show it."""
+        picker = self.search_view.model_picker
+        picker.set_selected(keys)
         self.show_analysis("search")
+        left_out = [key for key in keys if key not in picker.selected_ids()]
+        if left_out:
+            self.statusBar().showMessage(
+                f"Not runnable, left out of Search: {', '.join(left_out)}", 8000
+            )
 
     def _remove_selected_models(self) -> None:
         try:
@@ -2488,9 +2547,6 @@ class CmigMainWindow(QMainWindow):
         self.sandbox_view.preview_btn.clicked.connect(self._run_sandbox_preview)
         self.sandbox_view.commit_btn.clicked.connect(self._run_sandbox_commit)
         self.sandbox_view.auto_preview_requested.connect(self._run_sandbox_auto_preview)
-        self.search_view.browse_pool_btn.clicked.connect(self._browse_search_model_dir)
-        self.search_view.browse_output_btn.clicked.connect(self._browse_search_output_dir)
-        self.search_view.browse_medium_btn.clicked.connect(self._browse_search_medium)
         self.search_view.browse_checkpoint_btn.clicked.connect(self._browse_search_checkpoint)
         self.search_view.run_btn.clicked.connect(self.run_search_fixture)
         self.search_view.cancel_btn.clicked.connect(self.cancel_search)
@@ -2498,36 +2554,22 @@ class CmigMainWindow(QMainWindow):
         self.search_view.run_growth_btn.clicked.connect(self.run_strain_growth_report)
         self.search_view.run_abundance_btn.clicked.connect(self.run_abundance_impact)
         self.search_view.export_figure_btn.clicked.connect(self._export_search_figure)
-        self.host_view.browse_host_btn.clicked.connect(self._browse_host_model)
-        self.host_view.browse_model_dir_btn.clicked.connect(self._browse_host_microbe_model_dir)
-        self.host_view.browse_host_medium_btn.clicked.connect(self._browse_host_medium)
-        self.host_view.browse_microbe_medium_btn.clicked.connect(self._browse_microbe_medium)
-        self.host_view.browse_out_dir_btn.clicked.connect(self._browse_host_microbe_out_dir)
         self.host_view.run_btn.clicked.connect(self.run_host_microbe_bigg)
         self.host_view.run_search_btn.clicked.connect(self.run_host_search_bigg)
         self.host_view.export_figure_btn.clicked.connect(self._export_host_figure)
-        self.dynamics_view.browse_model_btn.clicked.connect(self.dynamics_view.browse_model)
-        self.dynamics_view.browse_out_btn.clicked.connect(self.dynamics_view.browse_out)
         self.dynamics_view.run_dfba_btn.clicked.connect(self.run_dfba)
         self.dynamics_view.run_spatial_btn.clicked.connect(self.run_spatial_preview)
-        self.community_builder.browse_model_dir_btn.clicked.connect(
-            self._browse_community_model_dir
-        )
         self.community_builder.run_btn.clicked.connect(self.run_community_solve)
-        self.sweep_view.browse_taxonomy_btn.clicked.connect(self._browse_sweep_taxonomy)
-        self.sweep_view.browse_model_dir_btn.clicked.connect(self._browse_sweep_model_dir)
         self.sweep_view.browse_mediums_btn.clicked.connect(self._browse_sweep_mediums)
         self.sweep_view.browse_abundance_btn.clicked.connect(self._browse_sweep_abundances)
         self.sweep_view.browse_bounds_btn.clicked.connect(self._browse_sweep_bounds)
         self.sweep_view.browse_namespace_btn.clicked.connect(self._browse_sweep_namespace)
         self.sweep_view.run_btn.clicked.connect(self.run_sweep_from_view)
-        self.medium_editor.browse_taxonomy_btn.clicked.connect(self._browse_medium_taxonomy)
         self.medium_editor.browse_namespace_btn.clicked.connect(self._browse_medium_namespace)
-        self.medium_editor.browse_model_btn.clicked.connect(self._browse_medium_model)
         self.medium_editor.check_growth_btn.clicked.connect(self.run_medium_growth_check)
         self.medium_editor.minimal_medium_btn.clicked.connect(self.run_minimal_medium)
         self.medium_editor.medium_changed.connect(self._medium_context_changed)
-        self.medium_editor.taxonomy_input.textChanged.connect(self._medium_context_changed)
+        self.medium_editor.model_picker.selection_changed.connect(self._medium_context_changed)
         self.medium_editor.namespace_decisions_input.textChanged.connect(
             self._medium_context_changed
         )
@@ -2535,6 +2577,12 @@ class CmigMainWindow(QMainWindow):
         self.scenario_compare.browse_a_btn.clicked.connect(self._browse_scenario_run_a)
         self.scenario_compare.browse_b_btn.clicked.connect(self._browse_scenario_run_b)
         self.scenario_compare.compare_btn.clicked.connect(self.run_scenario_compare)
+        for key, picker in self._model_pickers().items():
+            picker.selection_changed.connect(lambda k=key, p=picker: self._remember(k, p))
+        for (key, field), medium_picker in self._medium_pickers().items():
+            medium_picker.currentIndexChanged.connect(
+                lambda _index, k=key, f=field, p=medium_picker: self._remember_medium(k, f, p)
+            )
 
     def _cancel_selected_job(self) -> None:
         job_id = self.jobs_panel.selected_job_id()
@@ -2542,23 +2590,6 @@ class CmigMainWindow(QMainWindow):
             self._show_status("status_select_job")
             return
         self._cancel_job_id(job_id)
-
-    def _browse_search_model_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select Model Pool Folder")
-        if path:
-            self.search_view.model_dir_input.setText(path)
-
-    def _browse_search_output_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select Search Output Folder")
-        if path:
-            self.search_view.output_dir_input.setText(path)
-
-    def _browse_search_medium(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Medium File", "", "Medium (*.csv *.json);;All files (*)"
-        )
-        if path:
-            self.search_view.medium_input.setText(path)
 
     def _browse_search_checkpoint(self) -> None:
         # A save dialog: the path may be new (fresh run) or existing (Resume), so the
@@ -2570,21 +2601,6 @@ class CmigMainWindow(QMainWindow):
         )
         if path:
             self.search_view.checkpoint_input.setText(path)
-
-    def _browse_sweep_taxonomy(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            self.tr_map["sweep_dialog_taxonomy"],
-            "",
-            self.tr_map["sweep_filter_csv"],
-        )
-        if path:
-            self.sweep_view.taxonomy_input.setText(path)
-
-    def _browse_sweep_model_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, self.tr_map["sweep_dialog_models"])
-        if path:
-            self.sweep_view.model_dir_input.setText(path)
 
     def _browse_sweep_files(self, editor: Any, title_key: str, file_filter: str) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -2627,52 +2643,6 @@ class CmigMainWindow(QMainWindow):
         if path:
             self.sweep_view.namespace_decisions_input.setText(path)
 
-    def _browse_host_model(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Host Model", "", "Models (*.xml *.sbml *.xml.gz *.sbml.gz)"
-        )
-        if path:
-            self.host_view.host_path_input.setText(path)
-
-    def _browse_host_microbe_model_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select Microbial Model Folder")
-        if path:
-            self.host_view.model_dir_input.setText(path)
-
-    def _browse_host_medium(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Host Medium", "", "Medium (*.csv *.json);;All Files (*)"
-        )
-        if path:
-            self.host_view.host_medium_input.setText(path)
-
-    def _browse_microbe_medium(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Microbe Medium", "", "Medium (*.csv *.json);;All Files (*)"
-        )
-        if path:
-            self.host_view.microbe_medium_input.setText(path)
-
-    def _browse_host_microbe_out_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select Host-Microbe Output Folder")
-        if path:
-            self.host_view.out_dir_input.setText(path)
-
-    def _browse_community_model_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select Community Model Folder")
-        if path:
-            self.community_builder.model_dir_input.setText(path)
-
-    def _browse_medium_taxonomy(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            self.tr_map["medium_dialog_taxonomy"],
-            "",
-            self.tr_map["sweep_filter_csv"],
-        )
-        if path:
-            self.medium_editor.taxonomy_input.setText(path)
-
     def _browse_medium_namespace(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -2682,16 +2652,6 @@ class CmigMainWindow(QMainWindow):
         )
         if path:
             self.medium_editor.namespace_decisions_input.setText(path)
-
-    def _browse_medium_model(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            self.tr_map["medium_dialog_model"],
-            "",
-            "Models (*.xml *.sbml *.xml.gz *.sbml.gz *.json *.mat)",
-        )
-        if path:
-            self.medium_editor.model_path_input.setText(path)
 
     def _medium_context_changed(self, *_args: Any) -> None:
         """Clear only a medium-owned overlay when its displayed request becomes stale."""
@@ -3300,7 +3260,18 @@ class CmigMainWindow(QMainWindow):
         from cmig.service import JobContext
 
         requested = self.search_view.request_fields("search")
-        base_argv, error = _search_argv(requested, self.search_view.target_rows())
+        model_ids = self.search_view.model_picker.selected_ids()
+        if not model_ids:
+            self.search_view.status.setText("Select at least one model.")
+            return ""
+        try:
+            medium_file = self._medium_arg(requested["medium"])
+        except (ProjectError, ValueError) as exc:
+            self.search_view.status.setText(str(exc))
+            return ""
+        base_argv, error = _search_argv(
+            {**requested, "medium": medium_file or ""}, self.search_view.target_rows()
+        )
         if error:
             self.search_view.status.setText(error)
             return ""
@@ -3311,41 +3282,28 @@ class CmigMainWindow(QMainWindow):
         if checkpoint is not None and checkpoint.exists() and requested["resume"] != "True":
             self.search_view.status.setText(f"{CHECKPOINT_EXISTS}: {checkpoint}")
             return ""
-        # The output folder is where the run goes, not what it computes: read here, never
-        # part of the request snapshot.
-        output_parent_text = self.search_view.output_dir_input.text().strip()
-        if output_parent_text:
-            output_parent = Path(output_parent_text).expanduser()
-            parent_error = _output_parent_error(output_parent)
-            if parent_error:
-                self.search_view.status.setText(parent_error)
-                return ""
-            try:
-                out_dir = _new_search_run_dir(output_parent.resolve())
-            except OSError as exc:
-                self.search_view.status.setText(f"Cannot create a run folder: {exc}")
-                return ""
-        else:
-            out_dir = Path(
-                tempfile.mkdtemp(prefix="cmig-search-", dir=_search_temp_root())
-            ).resolve()
+        try:
+            out_dir, taxonomy = self._prepare_run("search", model_ids)
+        except ProjectError as exc:
+            self.search_view.status.setText(str(exc))
+            return ""
         if checkpoint is not None and checkpoint.is_relative_to(out_dir):
             # The CLI publishes by replacing --out; a checkpoint inside it would be lost.
             # The folder was created empty just above, so removing it touches nothing else.
-            out_dir.rmdir()
+            self._discard_run(out_dir, taxonomy)
             self.search_view.status.setText(
                 f"Checkpoint is inside this run's output folder ({out_dir}); "
                 "choose a checkpoint path outside it."
             )
             return ""
+        self._remember("search", self.search_view.model_picker)
+        argv = ["search", "--taxonomy", str(taxonomy), *base_argv[1:], "--out", str(out_dir)]
         warning = self.search_view.reference_warning()
-        model_dir = requested["pool"] if requested["model_source"] != "taxonomy" else None
         _install_stderr_router()
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            argv = [*base_argv, "--out", str(out_dir)]
             output_name = "search_summary.json"
             from cmig.core.search_execution import SearchControl
             from cmig.service.search_service import search_control
@@ -3373,10 +3331,7 @@ class CmigMainWindow(QMainWindow):
                 if cli_error:
                     artifacts["cli_error"] = cli_error
                     artifacts.setdefault("warnings", []).insert(0, f"CLI error: {cli_error}")
-                cause = (
-                    _search_input_diagnostic(model_dir, requested["medium"])
-                    if rc == 2 else None
-                )
+                cause = _search_input_diagnostic(medium_file or "") if rc == 2 else None
                 if cause:
                     artifacts.setdefault("warnings", []).append(cause)
                     artifacts["input_diagnostic"] = cause
@@ -3394,6 +3349,7 @@ class CmigMainWindow(QMainWindow):
             return payload
 
         jid = self.submit_job("search_fixture", _job)
+        self._record_command(jid, out_dir, argv)
         self._search_jobs[jid] = (out_dir, requested)
         self.search_view.run_btn.setEnabled(False)
         self.search_view.cancel_btn.setEnabled(True)
@@ -3405,68 +3361,88 @@ class CmigMainWindow(QMainWindow):
         )
         return jid
 
+    def _host_inputs(
+        self, kind: str, request: dict[str, Any], biomass_error: str
+    ) -> tuple[Path, Path | None, str, str | None, str | None] | None:
+        """Check the Host page's choices and claim a run: (out, taxonomy, host, media), or
+        None after the reason is shown on the page."""
+        message = ""
+        if not request["host_id"]:
+            message = "Choose a host model."
+        elif not request["models"]:
+            message = "Select at least one microbial model."
+        elif request["host_id"] in request["models"]:
+            message = (
+                f"{request['host_id']} is also selected as a microbe; pick it only as the host."
+            )
+        elif (
+            float(request["microbial_biomass_gdw"]) <= 0.0
+            or float(request["host_biomass_gdw"]) <= 0.0
+            or not request["biomass_basis_kind"]
+            or not request["biomass_basis_source"]
+        ):
+            message = biomass_error
+        if message:
+            self.host_view.run_status.setText(message)
+            return None
+        try:
+            host = str(self._model_file(request["host_id"]))
+            host_medium = self._medium_arg(request["host_medium"])
+            microbe_medium = self._medium_arg(request["microbe_medium"])
+            out_dir, taxonomy = self._prepare_run(kind, list(request["models"]))
+        except (ProjectError, ValueError) as exc:
+            self.host_view.run_status.setText(str(exc))
+            return None
+        return out_dir, taxonomy, host, host_medium, microbe_medium
+
     def run_host_microbe_bigg(self) -> str:
         """Run BiGG host-microbe analysis from the Host tab."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
         request = self.host_view.request()
-        host = request["host"]
-        model_dir = request["model_dir"]
-        out_dir_text = request["out_dir"]
-        if not host or not model_dir or not out_dir_text:
-            self.host_view.run_status.setText(
-                "Host model, microbial model folder, and output folder are required."
-            )
+        inputs = self._host_inputs(
+            "host-microbe", request,
+            "Positive biomass gDW values, basis kind, and source are required.",
+        )
+        if inputs is None:
             return ""
-        if (
-            float(request["microbial_biomass_gdw"]) <= 0.0
-            or float(request["host_biomass_gdw"]) <= 0.0
-            or not request["biomass_basis_kind"]
-            or not request["biomass_basis_source"]
-        ):
-            self.host_view.run_status.setText(
-                "Positive biomass gDW values, basis kind, and source are required."
-            )
-            return ""
-        out_dir = Path(out_dir_text)
+        out_dir, taxonomy, host, host_medium, microbe_medium = inputs
+        argv = [
+            "host-microbe-bigg",
+            "--host",
+            host,
+            "--taxonomy",
+            str(taxonomy),
+            "--tradeoff-f",
+            f"{float(request['tradeoff_f']):.6g}",
+            "--microbial-biomass-gdw",
+            f"{float(request['microbial_biomass_gdw']):.12g}",
+            "--host-biomass-gdw",
+            f"{float(request['host_biomass_gdw']):.12g}",
+            "--biomass-basis-kind",
+            str(request["biomass_basis_kind"]),
+            "--biomass-basis-source",
+            str(request["biomass_basis_source"]),
+            "--out",
+            str(out_dir),
+        ]
+        if request["keep_host_uptake"]:
+            argv.append("--keep-host-uptake")
+        if request["include_currency_metabolites"]:
+            argv.append("--include-currency-metabolites")
+        if request["allow_unknown_medium"]:
+            argv.append("--allow-unknown-medium")
+        if host_medium:
+            argv.extend(["--host-medium", host_medium])
+        if microbe_medium:
+            argv.extend(["--microbe-medium", microbe_medium])
+        if request["host_objective"]:
+            argv.extend(["--host-objective", str(request["host_objective"])])
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            argv = [
-                "host-microbe-bigg",
-                "--host",
-                str(host),
-                "--model-dir",
-                str(model_dir),
-                "--tradeoff-f",
-                f"{float(request['tradeoff_f']):.6g}",
-                "--microbial-biomass-gdw",
-                f"{float(request['microbial_biomass_gdw']):.12g}",
-                "--host-biomass-gdw",
-                f"{float(request['host_biomass_gdw']):.12g}",
-                "--biomass-basis-kind",
-                str(request["biomass_basis_kind"]),
-                "--biomass-basis-source",
-                str(request["biomass_basis_source"]),
-                "--out",
-                str(out_dir),
-            ]
-            if request["recursive"]:
-                argv.append("--recursive")
-            if request["keep_host_uptake"]:
-                argv.append("--keep-host-uptake")
-            if request["include_currency_metabolites"]:
-                argv.append("--include-currency-metabolites")
-            if request["allow_unknown_medium"]:
-                argv.append("--allow-unknown-medium")
-            if request["host_medium"]:
-                argv.extend(["--host-medium", str(request["host_medium"])])
-            if request["microbe_medium"]:
-                argv.extend(["--microbe-medium", str(request["microbe_medium"])])
-            if request["host_objective"]:
-                argv.extend(["--host-objective", str(request["host_objective"])])
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"host-microbe run failed with rc={rc}")
@@ -3477,6 +3453,7 @@ class CmigMainWindow(QMainWindow):
             return payload
 
         jid = self.submit_job("host_microbe_bigg", _job)
+        self._record_command(jid, out_dir, argv)
         self._host_microbe_jobs[jid] = out_dir
         self.host_view.run_btn.setEnabled(False)
         self.host_view.show_currency_metabolites = bool(request["include_currency_metabolites"])
@@ -3490,74 +3467,56 @@ class CmigMainWindow(QMainWindow):
         from cmig.service import JobContext
 
         request = self.host_view.request()
-        host = request["host"]
-        model_dir = request["model_dir"]
-        if not host or not model_dir:
-            self.host_view.run_status.setText(
-                "Host model and microbial model folder are required for ranking."
-            )
+        inputs = self._host_inputs(
+            "host-search", request,
+            "Positive biomass gDW values, basis kind, and source are required for ranking.",
+        )
+        if inputs is None:
             return ""
-        if (
-            float(request["microbial_biomass_gdw"]) <= 0.0
-            or float(request["host_biomass_gdw"]) <= 0.0
-            or not request["biomass_basis_kind"]
-            or not request["biomass_basis_source"]
-        ):
-            self.host_view.run_status.setText(
-                "Positive biomass gDW values, basis kind, and source are required for ranking."
-            )
-            return ""
-        out_dir_text = request["out_dir"]
-        out_dir = (
-            Path(out_dir_text)
-            if out_dir_text
-            else Path(tempfile.mkdtemp(prefix="cmig-host-search-", dir=_search_temp_root()))
-        ).resolve()
+        out_dir, taxonomy, host, host_medium, microbe_medium = inputs
+        argv = [
+            "host-search-bigg",
+            "--host",
+            host,
+            "--taxonomy",
+            str(taxonomy),
+            "--target",
+            str(request["search_target"]),
+            "--metric",
+            str(request["search_metric"]),
+            "--min-size",
+            str(request["min_size"]),
+            "--max-size",
+            str(request["max_size"]),
+            "--tradeoff-f",
+            f"{float(request['tradeoff_f']):.6g}",
+            "--microbial-biomass-gdw",
+            f"{float(request['microbial_biomass_gdw']):.12g}",
+            "--host-biomass-gdw",
+            f"{float(request['host_biomass_gdw']):.12g}",
+            "--biomass-basis-kind",
+            str(request["biomass_basis_kind"]),
+            "--biomass-basis-source",
+            str(request["biomass_basis_source"]),
+            "--out",
+            str(out_dir),
+        ]
+        if request["keep_host_uptake"]:
+            argv.append("--keep-host-uptake")
+        if request["include_currency_metabolites"]:
+            argv.append("--include-currency-metabolites")
+        if request["allow_unknown_medium"]:
+            argv.append("--allow-unknown-medium")
+        if host_medium:
+            argv.extend(["--host-medium", host_medium])
+        if microbe_medium:
+            argv.extend(["--microbe-medium", microbe_medium])
+        if request["host_objective"]:
+            argv.extend(["--host-objective", str(request["host_objective"])])
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            argv = [
-                "host-search-bigg",
-                "--host",
-                str(host),
-                "--model-dir",
-                str(model_dir),
-                "--target",
-                str(request["search_target"]),
-                "--metric",
-                str(request["search_metric"]),
-                "--min-size",
-                str(request["min_size"]),
-                "--max-size",
-                str(request["max_size"]),
-                "--tradeoff-f",
-                f"{float(request['tradeoff_f']):.6g}",
-                "--microbial-biomass-gdw",
-                f"{float(request['microbial_biomass_gdw']):.12g}",
-                "--host-biomass-gdw",
-                f"{float(request['host_biomass_gdw']):.12g}",
-                "--biomass-basis-kind",
-                str(request["biomass_basis_kind"]),
-                "--biomass-basis-source",
-                str(request["biomass_basis_source"]),
-                "--out",
-                str(out_dir),
-            ]
-            if request["recursive"]:
-                argv.append("--recursive")
-            if request["keep_host_uptake"]:
-                argv.append("--keep-host-uptake")
-            if request["include_currency_metabolites"]:
-                argv.append("--include-currency-metabolites")
-            if request["allow_unknown_medium"]:
-                argv.append("--allow-unknown-medium")
-            if request["host_medium"]:
-                argv.extend(["--host-medium", str(request["host_medium"])])
-            if request["microbe_medium"]:
-                argv.extend(["--microbe-medium", str(request["microbe_medium"])])
-            if request["host_objective"]:
-                argv.extend(["--host-objective", str(request["host_objective"])])
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"host-search run failed with rc={rc}")
@@ -3568,11 +3527,29 @@ class CmigMainWindow(QMainWindow):
             return payload
 
         jid = self.submit_job("host_search_bigg", _job)
+        self._record_command(jid, out_dir, argv)
         self._host_search_jobs[jid] = (out_dir, self.search_view.request_fields("host_search"))
         self.host_view.run_search_btn.setEnabled(False)
         self.host_view.run_status.setText(f"host-search started: {jid}")
         self._show_status("status_started", kind=self.tr_map["kind_host_search"], job_id=jid)
         return jid
+
+    def _search_tab_inputs(
+        self, kind: str, medium_ref: str
+    ) -> tuple[Path, Path | None, str | None] | None:
+        """Claim a run for a Search-page workflow: (out, taxonomy, medium file), or None after
+        the reason is shown on the page."""
+        model_ids = self.search_view.model_picker.selected_ids()
+        if not model_ids:
+            self.search_view.status.setText("Select at least one model.")
+            return None
+        try:
+            medium_file = self._medium_arg(medium_ref)
+            out_dir, taxonomy = self._prepare_run(kind, model_ids)
+        except (ProjectError, ValueError) as exc:
+            self.search_view.status.setText(str(exc))
+            return None
+        return out_dir, taxonomy, medium_file
 
     def run_gene_ko_search(self) -> str:
         """Run fixed-combination single-gene KO screening from the Search tab."""
@@ -3580,7 +3557,6 @@ class CmigMainWindow(QMainWindow):
         from cmig.service import JobContext
 
         requested = self.search_view.request_fields("gene_ko")
-        model_dir = requested["pool"]
         members = requested["ko_members"]
         member = requested["ko_member"]
         genes = requested["ko_genes"]
@@ -3588,8 +3564,8 @@ class CmigMainWindow(QMainWindow):
         if target_error:
             self.search_view.status.setText(target_error)
             return ""
-        if not model_dir or not members:
-            self.search_view.status.setText("Model folder and KO members are required.")
+        if not members:
+            self.search_view.status.setText("KO members are required.")
             return ""
         if genes and not member:
             self.search_view.status.setText("Gene ids require a specific edited member.")
@@ -3600,36 +3576,39 @@ class CmigMainWindow(QMainWindow):
         # QWidget from a worker thread (undefined behaviour in Qt). Coordinator CC-8.
         max_genes = requested["max_genes"]
         top_k = requested["ko_top_k"]
-        out_dir = Path(tempfile.mkdtemp(prefix="cmig-gene-ko-", dir=_search_temp_root())).resolve()
+        inputs = self._search_tab_inputs("gene-ko", requested["medium"])
+        if inputs is None:
+            return ""
+        out_dir, taxonomy, medium_file = inputs
+        argv = [
+            "gene-ko-search",
+            "--taxonomy",
+            str(taxonomy),
+            "--members",
+            members,
+            "--target",
+            target,
+            "--max-genes",
+            max_genes,
+            "--top-k",
+            top_k,
+            "--direction",
+            direction,
+            "--growth-fraction",
+            requested["growth_fraction"],
+            "--out",
+            str(out_dir),
+        ]
+        if medium_file:
+            argv.extend(["--medium", medium_file, "--exact-medium"])
+        if member:
+            argv.extend(["--member", member])
+        if genes:
+            argv.extend(["--genes", genes])
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            argv = [
-                "gene-ko-search",
-                "--model-dir",
-                model_dir,
-                "--members",
-                members,
-                "--target",
-                target,
-                "--max-genes",
-                max_genes,
-                "--top-k",
-                top_k,
-                "--direction",
-                direction,
-                "--growth-fraction",
-                requested["growth_fraction"],
-                "--out",
-                str(out_dir),
-            ]
-            if requested["medium"]:
-                argv.extend(["--medium", requested["medium"], "--exact-medium"])
-            if member:
-                argv.extend(["--member", member])
-            if genes:
-                argv.extend(["--genes", genes])
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"gene KO search failed with rc={rc}")
@@ -3640,6 +3619,7 @@ class CmigMainWindow(QMainWindow):
             return payload
 
         jid = self.submit_job("gene_ko_search", _job)
+        self._record_command(jid, out_dir, argv)
         self._gene_ko_jobs[jid] = (out_dir, requested)
         self.search_view.run_ko_btn.setEnabled(False)
         self.search_view.status.setText(f"gene KO search started: {jid}")
@@ -3652,30 +3632,27 @@ class CmigMainWindow(QMainWindow):
         from cmig.service import JobContext
 
         requested = self.search_view.request_fields("strain_growth")
-        model_dir = requested["pool"]
-        if not model_dir:
-            self.search_view.status.setText("Select a model folder before strain growth.")
+        inputs = self._search_tab_inputs("strain-growth", requested["medium"])
+        if inputs is None:
             return ""
-        out_dir = Path(
-            tempfile.mkdtemp(prefix="cmig-strain-growth-", dir=_search_temp_root())
-        ).resolve()
+        out_dir, taxonomy, medium_file = inputs
+        argv = [
+            "strain-growth",
+            "--taxonomy",
+            str(taxonomy),
+            "--tradeoff-f",
+            requested["cooperative_tradeoff"],
+            "--single-medium",
+            "community",
+            "--out",
+            str(out_dir),
+        ]
+        if medium_file:
+            argv.extend(["--medium", medium_file, "--exact-medium"])
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            argv = [
-                "strain-growth",
-                "--model-dir",
-                model_dir,
-                "--tradeoff-f",
-                requested["cooperative_tradeoff"],
-                "--single-medium",
-                "community",
-                "--out",
-                str(out_dir),
-            ]
-            if requested["medium"]:
-                argv.extend(["--medium", requested["medium"], "--exact-medium"])
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"strain growth failed with rc={rc}")
@@ -3686,6 +3663,7 @@ class CmigMainWindow(QMainWindow):
             return payload
 
         jid = self.submit_job("strain_growth", _job)
+        self._record_command(jid, out_dir, argv)
         self._strain_growth_jobs[jid] = (out_dir, requested)
         self.search_view.run_growth_btn.setEnabled(False)
         self.search_view.status.setText(f"strain growth started: {jid}")
@@ -3698,42 +3676,40 @@ class CmigMainWindow(QMainWindow):
         from cmig.service import JobContext
 
         requested = self.search_view.request_fields("abundance_impact")
-        model_dir = requested["pool"]
         member = requested["growth_member"]
         fractions = requested["fractions"]
         target, _direction, target_error = _single_target(self.search_view.target_rows())
         if target_error:
             self.search_view.status.setText(target_error)
             return ""
-        if not model_dir or not member:
-            self.search_view.status.setText(
-                "Model folder and target member are required for ratio impact."
-            )
+        if not member:
+            self.search_view.status.setText("Target member is required for ratio impact.")
             return ""
-        out_dir = Path(
-            tempfile.mkdtemp(prefix="cmig-abundance-impact-", dir=_search_temp_root())
-        ).resolve()
+        inputs = self._search_tab_inputs("abundance-impact", requested["medium"])
+        if inputs is None:
+            return ""
+        out_dir, taxonomy, medium_file = inputs
+        argv = [
+            "abundance-impact",
+            "--taxonomy",
+            str(taxonomy),
+            "--member",
+            member,
+            "--fractions",
+            fractions or "0.1,0.25,0.5,0.75",
+            "--target",
+            target,
+            "--tradeoff-f",
+            requested["cooperative_tradeoff"],
+            "--out",
+            str(out_dir),
+        ]
+        if medium_file:
+            argv.extend(["--medium", medium_file, "--exact-medium"])
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            argv = [
-                "abundance-impact",
-                "--model-dir",
-                model_dir,
-                "--member",
-                member,
-                "--fractions",
-                fractions or "0.1,0.25,0.5,0.75",
-                "--target",
-                target,
-                "--tradeoff-f",
-                requested["cooperative_tradeoff"],
-                "--out",
-                str(out_dir),
-            ]
-            if requested["medium"]:
-                argv.extend(["--medium", requested["medium"], "--exact-medium"])
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"abundance impact failed with rc={rc}")
@@ -3744,6 +3720,7 @@ class CmigMainWindow(QMainWindow):
             return payload
 
         jid = self.submit_job("abundance_impact", _job)
+        self._record_command(jid, out_dir, argv)
         self._abundance_impact_jobs[jid] = (
             out_dir,
             requested,
@@ -3759,37 +3736,36 @@ class CmigMainWindow(QMainWindow):
         from cmig.service import JobContext
 
         request = self.dynamics_view.dfba_request()
-        model = str(request["model"])
-        if not model:
-            self.dynamics_view.status.setText("Select a model before running dFBA.")
+        if not request["model"]:
+            self.dynamics_view.status.setText("Choose a model.")
             return ""
-        out_text = str(request["out_dir"])
-        out_dir = (
-            Path(out_text)
-            if out_text
-            else Path(tempfile.mkdtemp(prefix="cmig-dfba-", dir=_search_temp_root()))
-        ).resolve()
+        try:
+            model = str(self._model_file(str(request["model"])))
+            out_dir, _ = self._prepare_run("dfba", [])
+        except (ProjectError, ValueError) as exc:
+            self.dynamics_view.status.setText(str(exc))
+            return ""
+        argv = [
+            "dfba",
+            "--model",
+            model,
+            "--initial",
+            str(request["initial"]),
+            "--t-end",
+            f"{float(request['t_end']):.6g}",
+            "--dt",
+            f"{float(request['dt']):.6g}",
+            "--initial-biomass",
+            f"{float(request['initial_biomass']):.6g}",
+            "--out",
+            str(out_dir),
+        ]
+        if request.get("close_untracked_uptake"):
+            argv.append("--close-untracked-uptake")
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            argv = [
-                "dfba",
-                "--model",
-                model,
-                "--initial",
-                str(request["initial"]),
-                "--t-end",
-                f"{float(request['t_end']):.6g}",
-                "--dt",
-                f"{float(request['dt']):.6g}",
-                "--initial-biomass",
-                f"{float(request['initial_biomass']):.6g}",
-                "--out",
-                str(out_dir),
-            ]
-            if request.get("close_untracked_uptake"):
-                argv.append("--close-untracked-uptake")
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"dFBA failed with rc={rc}")
@@ -3800,6 +3776,7 @@ class CmigMainWindow(QMainWindow):
             return payload
 
         jid = self.submit_job("dfba", _job)
+        self._record_command(jid, out_dir, argv)
         self._dfba_jobs[jid] = out_dir
         self.dynamics_view.run_dfba_btn.setEnabled(False)
         self.dynamics_view.status.setText(f"dFBA started: {jid}")
@@ -3812,37 +3789,36 @@ class CmigMainWindow(QMainWindow):
         from cmig.service import JobContext
 
         request = self.dynamics_view.spatial_request()
-        out_text = str(request["out_dir"])
-        out_dir = (
-            Path(out_text)
-            if out_text
-            else Path(tempfile.mkdtemp(prefix="cmig-spatial-", dir=_search_temp_root()))
-        ).resolve()
+        try:
+            out_dir, _ = self._prepare_run("spatial", [])
+        except ProjectError as exc:
+            self.dynamics_view.status.setText(str(exc))
+            return ""
+        argv = [
+            "spatial-preview",
+            "--metabolite",
+            str(request["metabolite"]),
+            "--width",
+            str(request["width"]),
+            "--height",
+            str(request["height"]),
+            "--steps",
+            str(request["steps"]),
+            "--dt",
+            f"{float(request['dt']):.6g}",
+            "--diffusion",
+            f"{float(request['diffusion']):.6g}",
+            "--source-edge",
+            str(request["source_edge"]),
+            "--sink-edge",
+            str(request["sink_edge"]),
+            "--out",
+            str(out_dir),
+        ]
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            argv = [
-                "spatial-preview",
-                "--metabolite",
-                str(request["metabolite"]),
-                "--width",
-                str(request["width"]),
-                "--height",
-                str(request["height"]),
-                "--steps",
-                str(request["steps"]),
-                "--dt",
-                f"{float(request['dt']):.6g}",
-                "--diffusion",
-                f"{float(request['diffusion']):.6g}",
-                "--source-edge",
-                str(request["source_edge"]),
-                "--sink-edge",
-                str(request["sink_edge"]),
-                "--out",
-                str(out_dir),
-            ]
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"spatial preview failed with rc={rc}")
@@ -3853,6 +3829,7 @@ class CmigMainWindow(QMainWindow):
             return payload
 
         jid = self.submit_job("spatial_preview", _job)
+        self._record_command(jid, out_dir, argv)
         self._spatial_jobs[jid] = out_dir
         self.dynamics_view.run_spatial_btn.setEnabled(False)
         self.dynamics_view.status.setText(f"spatial preview started: {jid}")
@@ -3862,24 +3839,30 @@ class CmigMainWindow(QMainWindow):
     def run_community_solve(self) -> str:
         """Run a community solve from the Community Builder tab's members/abundances/tradeoff.
 
-        Scans Model Folder into a taxonomy (id/file/abundance), overrides abundances for
-        any member id present in the builder's table, then runs `cmig solve` through the
-        JobRunner (same argv+main() pattern as the other product tabs).
+        The picked members become the run's `runs/_inputs` taxonomy (abundance 1 unless the
+        builder's table gives one), then `cmig solve` runs through the JobRunner (same
+        argv+main() pattern as the other product tabs).
         """
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        model_dir = self.community_builder.model_dir_input.text().strip()
-        if not model_dir:
-            self.community_builder.status.setText(
-                "Select a model folder before running the community."
-            )
+        model_ids = self.community_builder.model_picker.selected_ids()
+        if not model_ids:
+            self.community_builder.status.setText("Select at least one member model.")
             return ""
         members = self.community_builder.members()
         if self.community_builder.invalid_rows:
             rows = ", ".join(str(r) for r in self.community_builder.invalid_rows)
             self.community_builder.status.setText(
                 f"row {rows}: abundance is not a number — fix it before running."
+            )
+            return ""
+        # An abundance row for a model that is not picked used to be dropped silently, so the
+        # community that ran differed from the table on screen.
+        unknown = sorted(set(members) - set(model_ids))
+        if unknown:
+            self.community_builder.status.setText(
+                f"abundance rows for unselected models: {unknown}; select them or remove the rows"
             )
             return ""
         # `cmig solve` blocks on the namespace gate unless it is given a reviewed decisions
@@ -3890,43 +3873,25 @@ class CmigMainWindow(QMainWindow):
             self.community_builder.status.setText(namespace_error)
             return ""
         tradeoff_f = self.community_builder.tradeoff_f()
-        out_dir = Path(
-            tempfile.mkdtemp(prefix="cmig-community-", dir=_search_temp_root())
-        ).resolve()
+        try:
+            out_dir, tax_path = self._prepare_run("community", model_ids, abundances=members)
+        except ProjectError as exc:
+            self.community_builder.status.setText(str(exc))
+            return ""
+        argv = [
+            "solve",
+            "--taxonomy",
+            str(tax_path),
+            "--tradeoff-f",
+            f"{tradeoff_f:.6g}",
+            "--out",
+            str(out_dir),
+            *namespace_argv,
+        ]
 
         def _job(ctx: JobContext) -> dict[str, Any]:
-            from cmig.core.model_pool import taxonomy_from_model_dir
-
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            taxonomy = taxonomy_from_model_dir(model_dir, recursive=False)
-            if members:
-                discovered = {str(mid) for mid in taxonomy["id"]}
-                unknown = sorted(set(members) - discovered)
-                if unknown:
-                    # A typed member that matches no model file used to be dropped silently,
-                    # so the community that ran differed from the table on screen.
-                    raise RuntimeError(
-                        f"member(s) not found in {model_dir}: {unknown}; discovered "
-                        f"{sorted(discovered)}"
-                    )
-                taxonomy = taxonomy.copy()
-                taxonomy["abundance"] = [
-                    members.get(str(mid), taxonomy["abundance"].iloc[i])
-                    for i, mid in enumerate(taxonomy["id"])
-                ]
-            tax_path = out_dir / "taxonomy.csv"
-            taxonomy.to_csv(tax_path, index=False)
-            argv = [
-                "solve",
-                "--taxonomy",
-                str(tax_path),
-                "--tradeoff-f",
-                f"{tradeoff_f:.6g}",
-                "--out",
-                str(out_dir),
-                *namespace_argv,
-            ]
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"community solve failed with rc={rc}")
@@ -3936,6 +3901,7 @@ class CmigMainWindow(QMainWindow):
             return {"manifest": manifest}
 
         jid = self.submit_job("community_solve", _job)
+        self._record_command(jid, out_dir, argv)
         self._community_jobs[jid] = out_dir
         self.community_builder.run_btn.setEnabled(False)
         self.community_builder.status.setText(f"community solve started: {jid}")
@@ -3954,13 +3920,9 @@ class CmigMainWindow(QMainWindow):
         from cmig.service import JobContext
 
         request = self.sweep_view.request()
-        taxonomy = str(request["taxonomy"])
-        model_dir = str(request["model_dir"])
-        if not taxonomy and not model_dir:
+        model_ids = list(request["models"])
+        if not model_ids:
             self.sweep_view.status.setText(self.tr_map["sweep_select_source"])
-            return ""
-        if taxonomy and model_dir:
-            self.sweep_view.status.setText(self.tr_map["sweep_one_source"])
             return ""
         decisions = str(request["namespace_decisions"])
         assumed = bool(request["assume_bigg"])
@@ -3970,50 +3932,47 @@ class CmigMainWindow(QMainWindow):
         if not decisions and not assumed:
             self.sweep_view.status.setText(self.tr_map["sweep_namespace_required"])
             return ""
-
-        out_dir = Path(tempfile.mkdtemp(prefix="cmig-sweep-", dir=_search_temp_root())).resolve()
+        try:
+            out_dir, taxonomy = self._prepare_run("sweep", model_ids)
+        except ProjectError as exc:
+            self.sweep_view.status.setText(str(exc))
+            return ""
+        argv = [
+            "sweep",
+            "--taxonomy",
+            str(taxonomy),
+            "--tradeoff-fs",
+            str(request["tradeoff_fs"] or "0.3,0.5"),
+            "--solvers",
+            str(request["solvers"] or "gurobi"),
+            "--metric",
+            "growth",
+            "--out",
+            str(out_dir),
+        ]
+        for key, flag in (
+            ("mediums", "--mediums"),
+            ("abundance_variants", "--abundance-variants"),
+            ("member_sets", "--member-sets"),
+            ("bounds_variants", "--bounds-variants"),
+            ("fva_metabolites", "--fva-metabolites"),
+        ):
+            if request[key]:
+                argv.extend([flag, str(request[key])])
+        if assumed:
+            argv.append("--assume-bigg-namespace")
+        else:
+            argv.extend(["--namespace-decisions", decisions])
+        if request["fva"]:
+            argv.append("--fva")
+        if request["exact_medium"]:
+            argv.append("--exact-medium")
+        if request["allow_unknown_medium"]:
+            argv.append("--allow-unknown-medium")
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            taxonomy_path = Path(taxonomy) if taxonomy else out_dir / "taxonomy.csv"
-            if model_dir:
-                from cmig.core.model_pool import taxonomy_from_model_dir
-
-                discovered = taxonomy_from_model_dir(model_dir, recursive=False)
-                discovered.to_csv(taxonomy_path, index=False)
-            argv = [
-                "sweep",
-                "--taxonomy",
-                str(taxonomy_path),
-                "--tradeoff-fs",
-                str(request["tradeoff_fs"] or "0.3,0.5"),
-                "--solvers",
-                str(request["solvers"] or "gurobi"),
-                "--metric",
-                "growth",
-                "--out",
-                str(out_dir),
-            ]
-            for key, flag in (
-                ("mediums", "--mediums"),
-                ("abundance_variants", "--abundance-variants"),
-                ("member_sets", "--member-sets"),
-                ("bounds_variants", "--bounds-variants"),
-                ("fva_metabolites", "--fva-metabolites"),
-            ):
-                if request[key]:
-                    argv.extend([flag, str(request[key])])
-            if assumed:
-                argv.append("--assume-bigg-namespace")
-            else:
-                argv.extend(["--namespace-decisions", decisions])
-            if request["fva"]:
-                argv.append("--fva")
-            if request["exact_medium"]:
-                argv.append("--exact-medium")
-            if request["allow_unknown_medium"]:
-                argv.append("--allow-unknown-medium")
             rc = main(argv)
             if rc != 0:
                 # A scientific failure deliberately exits 3 after writing diagnostic-bearing
@@ -4026,6 +3985,7 @@ class CmigMainWindow(QMainWindow):
             return {"out_dir": str(out_dir), "summary": summary}
 
         jid = self.submit_job("sweep", _job)
+        self._record_command(jid, out_dir, argv)
         self._sweep_jobs[jid] = (out_dir, "real")
         self.sweep_view.run_btn.setEnabled(False)
         self.sweep_view.status.setText(self._message("sweep_started_real", job_id=jid))
@@ -4039,22 +3999,26 @@ class CmigMainWindow(QMainWindow):
 
         tradeoff_fs = self.sweep_view.tradeoff_fs_input.text().strip() or "0.3,0.5"
         solvers = self.sweep_view.solvers_input.text().strip() or "gurobi"
-        out_dir = Path(tempfile.mkdtemp(prefix="cmig-sweep-", dir=_search_temp_root())).resolve()
+        try:
+            out_dir, _ = self._prepare_run("sweep", [])
+        except ProjectError as exc:
+            self.sweep_view.status.setText(str(exc))
+            return ""
+        argv = [
+            "sweep-fixture",
+            "--tradeoff-fs",
+            tradeoff_fs,
+            "--solvers",
+            solvers,
+            "--metric",
+            "growth",
+            "--out",
+            str(out_dir),
+        ]
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            argv = [
-                "sweep-fixture",
-                "--tradeoff-fs",
-                tradeoff_fs,
-                "--solvers",
-                solvers,
-                "--metric",
-                "growth",
-                "--out",
-                str(out_dir),
-            ]
             rc = main(argv)
             if rc != 0:
                 raise RuntimeError(f"sweep-fixture failed with rc={rc}")
@@ -4062,19 +4026,30 @@ class CmigMainWindow(QMainWindow):
             return {"out_dir": str(out_dir)}
 
         jid = self.submit_job("sweep_fixture", _job)
+        self._record_command(jid, out_dir, argv)
         self._sweep_jobs[jid] = (out_dir, "fixture")
         self.sweep_view.run_btn.setEnabled(False)
         self.sweep_view.status.setText(self._message("sweep_started_fixture", job_id=jid))
         self._show_status("status_started", kind=self.tr_map["kind_sweep"], job_id=jid)
         return jid
 
+    def _medium_input_file(self, out_dir: Path, uptake: dict[str, float]) -> Path:
+        """Write the editor's medium as `runs/_inputs/<run>-medium.json` (never inside the
+        run folder, which the CLI publishes as a whole)."""
+        path = self.session.require().inputs_dir / f"{out_dir.name}-medium.json"
+        try:
+            atomic_write_text(path, json.dumps(uptake))
+        except OSError as exc:
+            raise ProjectError(f"cannot write run inputs {path}: {exc}") from exc
+        return path
+
     def run_medium_growth_check(self) -> str:
         """Run the editor request through the real ``cmig solve`` CLI workflow."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        taxonomy = self.medium_editor.taxonomy_input.text().strip()
-        if not taxonomy:
+        model_ids = self.medium_editor.model_picker.selected_ids()
+        if not model_ids:
             self.medium_editor.growth_label.setText(
                 self.tr_map["medium_select_taxonomy_growth"]
             )
@@ -4092,18 +4067,41 @@ class CmigMainWindow(QMainWindow):
         except ValueError:
             return ""  # to_spec() already set an explicit status message (no silent failure)
 
-        out_dir = Path(
-            tempfile.mkdtemp(prefix="cmig-medium-growth-", dir=_search_temp_root())
-        ).resolve()
         uptake = dict(spec.uptake)
         exact = self.medium_editor.exact_medium_check.isChecked()
         allow_unknown = self.medium_editor.allow_unknown_check.isChecked()
+        medium_file: Path | None = None
+        try:
+            out_dir, taxonomy = self._prepare_run("medium-growth", model_ids)
+            if uptake:
+                try:
+                    medium_file = self._medium_input_file(out_dir, uptake)
+                except ProjectError:
+                    self._discard_run(out_dir, taxonomy)
+                    raise
+        except ProjectError as exc:
+            self.medium_editor.growth_label.setText(str(exc))
+            return ""
         request: dict[str, Any] = {
-            "taxonomy": str(Path(taxonomy).resolve()),
+            "models": tuple(model_ids),
             "medium": tuple(sorted((exchange, float(limit)) for exchange, limit in uptake.items())),
             "exact": exact,
             "namespace": tuple(namespace_argv),
         }
+        argv = [
+            "solve",
+            "--taxonomy",
+            str(taxonomy),
+            "--out",
+            str(out_dir),
+            *namespace_argv,
+        ]
+        if medium_file is not None:
+            argv.extend(["--medium", str(medium_file)])
+        if exact:
+            argv.append("--exact-medium")
+        if allow_unknown:
+            argv.append("--allow-unknown-medium")
         self._medium_context_changed()
         self.medium_editor.profile_delta_label.clear()
         self.medium_editor.dropped_ids_label.clear()
@@ -4111,25 +4109,6 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            taxonomy_path = Path(taxonomy)
-            if not taxonomy_path.exists():
-                raise RuntimeError(f"taxonomy file not found: {taxonomy_path}")
-            argv = [
-                "solve",
-                "--taxonomy",
-                str(taxonomy_path),
-                "--out",
-                str(out_dir),
-                *namespace_argv,
-            ]
-            if uptake:
-                medium_path = out_dir / "medium.json"
-                medium_path.write_text(json.dumps(uptake))
-                argv.extend(["--medium", str(medium_path)])
-            if exact:
-                argv.append("--exact-medium")
-            if allow_unknown:
-                argv.append("--allow-unknown-medium")
             rc = main(argv)
             manifest_path = out_dir / "manifest.json"
             if not manifest_path.exists() or not (out_dir / "profile.parquet").exists():
@@ -4149,6 +4128,7 @@ class CmigMainWindow(QMainWindow):
             }
 
         jid = self.submit_job("medium_growth_check", _job)
+        self._record_command(jid, out_dir, argv)
         self._medium_growth_jobs[jid] = (out_dir, request)
         self.medium_editor.check_growth_btn.setEnabled(False)
         self.medium_editor.growth_label.setText(
@@ -4162,8 +4142,8 @@ class CmigMainWindow(QMainWindow):
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        model = self.medium_editor.model_path_input.text().strip()
-        if not model:
+        chosen = self.medium_editor.single_model_picker.selected_ids()
+        if not chosen:
             self.medium_editor.minimal_status.setText(
                 self.tr_map["medium_select_model_minimal"]
             )
@@ -4181,41 +4161,46 @@ class CmigMainWindow(QMainWindow):
         except ValueError:
             return ""
 
-        out_dir = Path(
-            tempfile.mkdtemp(prefix="cmig-minimal-medium-", dir=_search_temp_root())
-        ).resolve()
         uptake = dict(spec.uptake)
         exact = self.medium_editor.exact_medium_check.isChecked()
         allow_unknown = self.medium_editor.allow_unknown_check.isChecked()
         min_growth = self.medium_editor.min_growth_spin.value()
         oxygen_mode = str(self.medium_editor.oxygen_mode_combo.currentData())
+        medium_file: Path | None = None
+        try:
+            model = self._model_file(chosen[0])
+            out_dir, _ = self._prepare_run("minimal-medium", [])
+            if uptake:
+                try:
+                    medium_file = self._medium_input_file(out_dir, uptake)
+                except ProjectError:
+                    self._discard_run(out_dir)
+                    raise
+        except ProjectError as exc:
+            self.medium_editor.minimal_status.setText(str(exc))
+            return ""
+        argv = [
+            "minimal-medium",
+            "--model",
+            str(model),
+            "--min-growth",
+            f"{min_growth:.12g}",
+            "--oxygen-mode",
+            oxygen_mode,
+            "--out",
+            str(out_dir),
+            *namespace_argv,
+        ]
+        if medium_file is not None:
+            argv.extend(["--medium", str(medium_file)])
+        if exact:
+            argv.append("--exact-medium")
+        if allow_unknown:
+            argv.append("--allow-unknown-medium")
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            model_path = Path(model)
-            if not model_path.exists():
-                raise RuntimeError(f"model file not found: {model_path}")
-            argv = [
-                "minimal-medium",
-                "--model",
-                str(model_path),
-                "--min-growth",
-                f"{min_growth:.12g}",
-                "--oxygen-mode",
-                oxygen_mode,
-                "--out",
-                str(out_dir),
-                *namespace_argv,
-            ]
-            if uptake:
-                medium_path = out_dir / "medium.json"
-                medium_path.write_text(json.dumps(uptake))
-                argv.extend(["--medium", str(medium_path)])
-            if exact:
-                argv.append("--exact-medium")
-            if allow_unknown:
-                argv.append("--allow-unknown-medium")
             rc = main(argv)
             summary_path = out_dir / "minimal_medium_summary.json"
             if not summary_path.exists():
@@ -4228,6 +4213,7 @@ class CmigMainWindow(QMainWindow):
             return payload
 
         jid = self.submit_job("minimal_medium", _job)
+        self._record_command(jid, out_dir, argv)
         self._minimal_medium_jobs[jid] = out_dir
         self.medium_editor.minimal_medium_btn.setEnabled(False)
         self.medium_editor.minimal_status.setText(
@@ -4281,8 +4267,9 @@ class CmigMainWindow(QMainWindow):
     def _register_run_output(self, out_dir: Path) -> None:
         """A completed run inside the project appears in RUNS; an outside run is listed as opened.
 
-        GUI workflows that still write to an OS temp dir would otherwise never appear anywhere
-        in the UI, so a GUI-only researcher could not find the run_hash a publication needs.
+        A run outside the project (e.g. a fixture run written to a chosen folder) would
+        otherwise never appear anywhere in the UI, so a GUI-only researcher could not find the
+        run_hash a publication needs.
         """
         out_dir = Path(out_dir).resolve()
         project = self.session.project
@@ -4775,7 +4762,7 @@ class CmigMainWindow(QMainWindow):
                 if cli_succeeded and previous is not None:
                     previous_dir, previous_request = previous
                     same_context = (
-                        previous_request.get("taxonomy") == request.get("taxonomy")
+                        previous_request.get("models") == request.get("models")
                         and previous_request.get("exact") == request.get("exact")
                         and previous_request.get("namespace") == request.get("namespace")
                     )

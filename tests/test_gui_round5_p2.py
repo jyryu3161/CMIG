@@ -18,6 +18,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
 
+from gui_project_helpers import open_test_project, taxonomy_ids  # noqa: E402
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QAbstractItemView, QApplication  # noqa: E402
 
@@ -75,7 +76,7 @@ def test_gene_ko_argv_is_frozen_at_click_time(monkeypatch, tmp_path):
     w = build_main_window(runner=runner)
     # Occupy the single worker so the gene-KO job is queued, exactly like a busy session.
     runner.submit("occupy", lambda ctx: release.wait(timeout=20))
-    w.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(w, tmp_path / "p", ["iHN637", "iYO844"])
     w.search_view.ko_members_input.setText("iHN637")
     w.search_view.set_target_rows(["ac"])
     w.search_view.ko_max_genes_spin.setValue(50)
@@ -316,15 +317,20 @@ def test_dfba_results_are_cleared_when_answer_inputs_change(tmp_path):
     assert w.dynamics_view.table.rowCount() == 0
 
 
-def test_host_results_are_cleared_when_answer_inputs_change():
+def test_host_results_are_cleared_when_answer_inputs_change(tmp_path):
     _app()
     w = build_main_window()
+    open_test_project(w, tmp_path / "p", ["host_a", "host_b", "m1"])
+    w.host_view.host_picker.set_selected(["host_a"])
     w.host_view.load_host_result(
         SimpleNamespace(viable=True, biomass=1.234, status="optimal", interface_fluxes=[])
     )
     assert "1.234" in w.host_view.viability_label.text()
-    w.host_view.host_path_input.setText("/tmp/new-host.xml")
+    w.refresh_workspace()  # rebuilding the pickers with the same choice keeps the result
+    assert "1.234" in w.host_view.viability_label.text()
+    w.host_view.host_picker.set_selected(["host_b"])
     assert "1.234" not in w.host_view.viability_label.text()
+    w.close()
 
 
 def test_failed_run_load_clears_previous_provenance(tmp_path):
@@ -393,12 +399,13 @@ def test_dfba_request_exposes_close_untracked_uptake(monkeypatch, tmp_path):
     assert hasattr(w.dynamics_view, "close_untracked_check")
     request = w.dynamics_view.dfba_request()
     assert "close_untracked_uptake" in request
-    w.dynamics_view.model_path_input.setText(str(tmp_path / "m.xml"))
-    w.dynamics_view.out_dir_input.setText(str(tmp_path / "out"))
+    project = open_test_project(w, tmp_path / "p", ["m"])
+    w.dynamics_view.model_picker.set_selected(["m"])
     w.dynamics_view.close_untracked_check.setChecked(True)
     jid = w.run_dfba()
     _wait(runner, jid)
     assert "--close-untracked-uptake" in seen["argv"]
+    assert Path(seen["argv"][seen["argv"].index("--out") + 1]).parent == project.runs_dir
     runner.shutdown()
 
 
@@ -477,10 +484,7 @@ def test_community_solve_blocks_until_namespace_is_confirmed(tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    pool = tmp_path / "pool"
-    pool.mkdir()
-    (pool / "iHN637.xml").write_text("<sbml/>")
-    w.community_builder.model_dir_input.setText(str(pool))
+    open_test_project(w, tmp_path / "p", ["iHN637"])
     assert hasattr(w.community_builder, "assume_bigg_check")
     jid = w.run_community_solve()
     assert jid == ""
@@ -504,15 +508,12 @@ def test_community_solve_passes_namespace_confirmation(monkeypatch, tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    pool = tmp_path / "pool"
-    pool.mkdir()
-    (pool / "iHN637.xml").write_text("<sbml/>")
-    (pool / "iYO844.xml").write_text("<sbml/>")
-    w.community_builder.model_dir_input.setText(str(pool))
+    open_test_project(w, tmp_path / "p", ["iHN637", "iYO844"])
     w.community_builder.assume_bigg_check.setChecked(True)
     jid = w.run_community_solve()
     runner.result(jid, timeout=10)
     assert "--assume-bigg-namespace" in seen["argv"]
+    assert taxonomy_ids(seen["argv"]) == ["iHN637", "iYO844"]
     runner.shutdown()
 
 
@@ -521,10 +522,7 @@ def test_community_invalid_abundance_reports_instead_of_raising(tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    pool = tmp_path / "pool"
-    pool.mkdir()
-    (pool / "iHN637.xml").write_text("<sbml/>")
-    w.community_builder.model_dir_input.setText(str(pool))
+    open_test_project(w, tmp_path / "p", ["iHN637"])
     w.community_builder.assume_bigg_check.setChecked(True)
     w.community_builder.add_member("iHN637", 0.5)
     w.community_builder.table.item(0, 1).setText("0.5x")
@@ -548,7 +546,7 @@ def test_multi_target_text_is_forwarded_without_truncation(tmp_path, monkeypatch
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(w, tmp_path / "p", ["a", "b"])
     w.search_view.set_target_rows(["ac", "but"])
     jid = w.run_search_fixture()
     assert jid
@@ -564,7 +562,7 @@ def test_empty_target_is_rejected_by_every_search_button(tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(w, tmp_path / "p", ["iHN637"])
     w.search_view.ko_members_input.setText("iHN637")
     w.search_view.growth_member_input.setText("iHN637")
     w.search_view.set_target_rows([""])
@@ -639,7 +637,7 @@ def test_search_result_from_a_superseded_request_is_labelled(monkeypatch, tmp_pa
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(w, tmp_path / "p", ["a", "b"])
     w.search_view.set_target_rows(["but"])
     jid = w.run_search_fixture()
     # the researcher retargets while the first search is still solving
@@ -823,7 +821,7 @@ def test_cancel_after_artifacts_are_written_reports_a_complete_run(monkeypatch, 
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(w, tmp_path / "p", ["a", "b"])
     w.search_view.set_target_rows(["but"])
     jid = w.run_search_fixture()
     assert started.wait(timeout=10)
@@ -902,7 +900,7 @@ def test_search_run_directory_is_reported_to_the_user(monkeypatch, tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(w, tmp_path / "p", ["a", "b"])
     w.search_view.set_target_rows(["but"])
     jid = w.run_search_fixture()
     runner.result(jid, timeout=10)

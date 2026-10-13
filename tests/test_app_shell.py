@@ -12,6 +12,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
 
+from gui_project_helpers import open_test_project, taxonomy_ids  # noqa: E402
 from PySide6.QtCore import QSettings, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -98,7 +99,7 @@ def test_advanced_tools_are_listed_apart_and_open_on_request():
     for key, page in zip(advanced, pages, strict=True):
         w.show_analysis(key)
         assert w.pages.currentWidget() is page
-    assert "Advanced preview" in w.community_builder.status.text()
+    assert "Pick members" in w.community_builder.status.text()
     assert "Advanced editor" in w.medium_editor.status.text()
     assert "Advanced result view" in w.sweep_view.status.text()
     assert "Advanced sandbox" in w.sandbox_view.status.text()
@@ -271,11 +272,14 @@ def test_run_spatial_preview_passes_dt_to_cli(monkeypatch, tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
+    project = open_test_project(w, tmp_path / "p", ["a"])
     w.dynamics_view.spatial_dt_spin.setValue(0.25)
     jid = w.run_spatial_preview()
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
     assert seen["argv"][0] == "spatial-preview"
+    out = Path(seen["argv"][seen["argv"].index("--out") + 1])
+    assert out.parent == project.runs_dir and out.name.startswith("spatial-")
     assert seen["argv"][seen["argv"].index("--dt") + 1] == "0.25"
     assert w.dynamics_view.run_spatial_btn.isEnabled()
     runner.shutdown()
@@ -425,19 +429,23 @@ def test_sandbox_debounce_triggers_preview_after_bound_edit(monkeypatch):
     runner.shutdown()
 
 
-def test_search_button_requires_model_folder(monkeypatch, tmp_path):
+def test_search_button_requires_models(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
+    project = open_test_project(w, tmp_path / "p", ["a"])
+    w.search_view.model_picker.set_selected([])
     jid = w.run_search_fixture()
     assert jid == ""
-    assert "Select a model folder" in w.search_view.status.text()
+    assert "Select at least one model" in w.search_view.status.text()
     assert not (tmp_path / ".run").exists()
+    assert [p.name for p in project.runs_dir.iterdir()] == ["_inputs"]
+    w.close()
     runner.shutdown()
 
 
-def test_search_button_uses_model_dir_product_command(monkeypatch, tmp_path):
+def test_search_button_uses_taxonomy_product_command(monkeypatch, tmp_path):
     import json
 
     import cmig.cli.main
@@ -472,7 +480,7 @@ def test_search_button_uses_model_dir_product_command(monkeypatch, tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(w, tmp_path / "p", ["A", "B"])
     w.search_view.set_target_rows(["but"])
     w.search_view.min_size_spin.setValue(200)
     w.search_view.max_size_spin.setValue(200)
@@ -481,7 +489,7 @@ def test_search_button_uses_model_dir_product_command(monkeypatch, tmp_path):
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
     assert seen["argv"][0] == "search"
-    assert seen["argv"][seen["argv"].index("--model-dir") + 1] == str(tmp_path)
+    assert taxonomy_ids(seen["argv"]) == ["A", "B"]
     assert seen["argv"][seen["argv"].index("--min-size") + 1] == "200"
     assert seen["argv"][seen["argv"].index("--max-size") + 1] == "200"
     assert "--robustness-fva" in seen["argv"]
@@ -493,7 +501,7 @@ def test_search_button_uses_model_dir_product_command(monkeypatch, tmp_path):
     runner.shutdown()
 
 
-def test_strain_growth_button_uses_model_dir_command(monkeypatch, tmp_path):
+def test_strain_growth_button_uses_taxonomy_command(monkeypatch, tmp_path):
     import json
 
     import cmig.cli.main
@@ -525,12 +533,12 @@ def test_strain_growth_button_uses_model_dir_command(monkeypatch, tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(w, tmp_path / "p", ["producer"])
     jid = w.run_strain_growth_report()
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
     assert seen["argv"][0] == "strain-growth"
-    assert seen["argv"][seen["argv"].index("--model-dir") + 1] == str(tmp_path)
+    assert taxonomy_ids(seen["argv"]) == ["producer"]
     assert w.search_view.table.item(0, 0).text() == "producer"
     assert w.search_view.table.item(0, 1).text() == "growth"
     assert w.search_view.run_growth_btn.isEnabled()
@@ -571,7 +579,7 @@ def test_abundance_impact_button_uses_member_and_fractions(monkeypatch, tmp_path
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.search_view.model_dir_input.setText(str(tmp_path))
+    open_test_project(w, tmp_path / "p", ["producer", "other"])
     w.search_view.growth_member_input.setText("producer")
     w.search_view.abundance_fractions_input.setText("0.2,0.8")
     w.search_view.set_target_rows(["ac"])
@@ -646,22 +654,23 @@ def test_host_microbe_run_button_uses_product_command(monkeypatch, tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.host_view.host_path_input.setText(str(tmp_path / "Recon3D.xml"))
-    w.host_view.model_dir_input.setText(str(tmp_path / "models"))
-    w.host_view.out_dir_input.setText(str(tmp_path / "out"))
+    project = open_test_project(w, tmp_path / "p", ["Recon3D", "m1", "m2"])
+    w.host_view.host_picker.set_selected(["Recon3D"])
+    w.host_view.model_picker.set_selected(["m1", "m2"])
     w.host_view.microbial_biomass_spin.setValue(0.25)
     w.host_view.host_biomass_spin.setValue(4.0)
     w.host_view.biomass_basis_kind_combo.setCurrentText("measured")
     w.host_view.biomass_basis_source_input.setText("Methods section dry-mass assay")
-    w.host_view.recursive_check.setChecked(True)
     w.host_view.include_currency_check.setChecked(True)
     jid = w.run_host_microbe_bigg()
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
     assert seen["argv"][0] == "host-microbe-bigg"
     assert seen["argv"][seen["argv"].index("--host") + 1].endswith("Recon3D.xml")
-    assert seen["argv"][seen["argv"].index("--model-dir") + 1].endswith("models")
-    assert "--recursive" in seen["argv"]
+    assert taxonomy_ids(seen["argv"]) == ["m1", "m2"]
+    assert "--model-dir" not in seen["argv"] and "--recursive" not in seen["argv"]
+    out = Path(seen["argv"][seen["argv"].index("--out") + 1])
+    assert out.parent == project.runs_dir and out.name.startswith("host-microbe-")
     assert "--include-currency-metabolites" in seen["argv"]
     assert seen["argv"][seen["argv"].index("--biomass-basis-kind") + 1] == "measured"
     assert "Methods section" in seen["argv"][seen["argv"].index("--biomass-basis-source") + 1]
@@ -674,12 +683,14 @@ def test_host_microbe_run_button_uses_product_command(monkeypatch, tmp_path):
 def test_host_microbe_gui_blocks_missing_biomass_provenance(tmp_path):
     _app()
     w = build_main_window()
-    w.host_view.host_path_input.setText(str(tmp_path / "host.xml"))
-    w.host_view.model_dir_input.setText(str(tmp_path / "models"))
-    w.host_view.out_dir_input.setText(str(tmp_path / "out"))
+    project = open_test_project(w, tmp_path / "p", ["host", "m1"])
+    w.host_view.host_picker.set_selected(["host"])
+    w.host_view.model_picker.set_selected(["m1"])
 
     assert w.run_host_microbe_bigg() == ""
     assert "basis kind, and source are required" in w.host_view.run_status.text()
+    assert [p.name for p in project.runs_dir.iterdir()] == ["_inputs"]
+    w.close()
 
 
 def test_host_figure_export_copies_selected_svg(monkeypatch, tmp_path):
@@ -706,13 +717,16 @@ def test_host_figure_export_copies_selected_svg(monkeypatch, tmp_path):
     assert "Exported figure" in w.host_view.run_status.text()
 
 
-def test_community_solve_button_requires_model_folder():
+def test_community_solve_button_requires_member_models(tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
+    open_test_project(w, tmp_path / "p", ["a"])
+    w.community_builder.model_picker.set_selected([])
     jid = w.run_community_solve()
     assert jid == ""
-    assert "model folder" in w.community_builder.status.text().lower()
+    assert "Select at least one member model" in w.community_builder.status.text()
+    w.close()
     runner.shutdown()
 
 
@@ -721,11 +735,6 @@ def test_community_solve_button_writes_taxonomy_and_overrides_abundance(monkeypa
     import json
 
     import cmig.cli.main
-
-    pool_dir = tmp_path / "pool"
-    pool_dir.mkdir()
-    (pool_dir / "iML1515.xml").write_text("<sbml/>")
-    (pool_dir / "iHN637.xml").write_text("<sbml/>")
 
     seen = {"argv": []}
 
@@ -743,7 +752,7 @@ def test_community_solve_button_writes_taxonomy_and_overrides_abundance(monkeypa
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.community_builder.model_dir_input.setText(str(pool_dir))
+    project = open_test_project(w, tmp_path / "p", ["iML1515", "iHN637"])
     # Round-5 P2: `cmig solve` refuses to run without an explicit namespace decision, and the
     # GUI now mirrors that gate instead of always failing at rc=2. The GUI must never supply
     # the confirmation on the user's behalf, so the test confirms it explicitly.
@@ -758,9 +767,13 @@ def test_community_solve_button_writes_taxonomy_and_overrides_abundance(monkeypa
     assert seen["argv"][seen["argv"].index("--tradeoff-f") + 1] == "0.3"
     tax_path = Path(seen["argv"][seen["argv"].index("--taxonomy") + 1])
     assert tax_path.exists()
+    out = Path(seen["argv"][seen["argv"].index("--out") + 1])
+    # the run input is beside the runs, never pre-written into the CLI's run folder
+    assert tax_path == project.inputs_dir / f"{out.name}-taxonomy.csv"
+    assert not (out / "taxonomy.csv").exists()
     rows = {r["id"]: r for r in csv.DictReader(tax_path.open())}
     assert rows["iML1515"]["abundance"] == "0.75"  # overridden from the member table
-    assert rows["iHN637"]["abundance"] == "1.0"  # untouched discovered default
+    assert rows["iHN637"]["abundance"] == "1.0"  # untouched default
     assert "run_hash" in w.community_builder.status.text()
     assert w.community_builder.run_btn.isEnabled()
     runner.shutdown()
@@ -806,6 +819,7 @@ def test_sweep_fixture_button_launches_and_loads_result_matrix(monkeypatch, tmp_
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
+    open_test_project(w, tmp_path / "p", ["a"])
     w.sweep_view.tradeoff_fs_input.setText("0.3,0.5")
     jid = w.run_sweep_fixture()
     runner.result(jid, timeout=5)
@@ -819,13 +833,16 @@ def test_sweep_fixture_button_launches_and_loads_result_matrix(monkeypatch, tmp_
     runner.shutdown()
 
 
-def test_medium_growth_check_requires_taxonomy():
+def test_medium_growth_check_requires_models(tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
+    open_test_project(w, tmp_path / "p", ["a"])
+    w.medium_editor.model_picker.set_selected([])
     jid = w.run_medium_growth_check()
     assert jid == ""
-    assert "taxonomy" in w.medium_editor.growth_label.text().lower()
+    assert "Select at least one model" in w.medium_editor.growth_label.text()
+    w.close()
     runner.shutdown()
 
 
@@ -834,9 +851,7 @@ def test_medium_growth_check_invalid_uptake_shows_status_not_exception(tmp_path)
     the slot either; the guard must show a status message instead (no crash)."""
     _app()
     w = build_main_window()
-    taxonomy_path = tmp_path / "taxonomy.csv"
-    taxonomy_path.write_text("id,file,abundance\nmodel,model.xml,1.0\n")
-    w.medium_editor.taxonomy_input.setText(str(taxonomy_path))
+    open_test_project(w, tmp_path / "p", ["model"])
     w.medium_editor.assume_bigg_check.setChecked(True)
     w.medium_editor.add_row("EX_glc__D_e", 0.0)
     w.medium_editor.table.item(0, 1).setText("not_a_number")
@@ -852,8 +867,6 @@ def test_medium_growth_check_button_uses_solve_command(monkeypatch, tmp_path):
     from cmig.core.engine import SolveResult
     from cmig.core.interactions import build_tidy
 
-    taxonomy_path = tmp_path / "taxonomy.csv"
-    taxonomy_path.write_text("id,file,abundance\nmodel,model.xml,1.0\n")
     seen = {"argv": []}
 
     def fake_main(argv):
@@ -881,14 +894,20 @@ def test_medium_growth_check_button_uses_solve_command(monkeypatch, tmp_path):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w.medium_editor.taxonomy_input.setText(str(taxonomy_path))
+    project = open_test_project(w, tmp_path / "p", ["model"])
     w.medium_editor.assume_bigg_check.setChecked(True)
     w.medium_editor.add_row("EX_glc__D_e", 10.0)
     jid = w.run_medium_growth_check()
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
     assert seen["argv"][0] == "solve"
-    assert "--medium" in seen["argv"]
+    assert taxonomy_ids(seen["argv"]) == ["model"]
+    out = Path(seen["argv"][seen["argv"].index("--out") + 1])
+    medium = Path(seen["argv"][seen["argv"].index("--medium") + 1])
+    # the edited medium is a run input in runs/_inputs, never written into the run folder
+    assert medium == project.inputs_dir / f"{out.name}-medium.json"
+    assert json.loads(medium.read_text()) == {"EX_glc__D_e": 10.0}
+    assert not (out / "medium.json").exists()
     assert "0.87" in w.medium_editor.growth_label.text()
     assert w.medium_editor.check_growth_btn.isEnabled()
     runner.shutdown()

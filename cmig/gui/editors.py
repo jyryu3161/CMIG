@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 
 from cmig.core.medium_spec import MediumSpec, load_medium
 from cmig.gui.builder import make_read_only, read_only_item
+from cmig.gui.pickers import ModelPicker
 from cmig.io.model_import import ModelSummary
 from cmig.io.project import ModelEntry
 
@@ -150,18 +151,9 @@ class MediumEditor(QWidget):
         self.status.setWordWrap(True)
 
         taxonomy_row = QHBoxLayout()
-        self.taxonomy_input = QLineEdit("")
-        self.taxonomy_input.setPlaceholderText(
-            _editor_text(self.strings, "medium_taxonomy_placeholder", "Community taxonomy CSV")
-        )
-        self.browse_taxonomy_btn = QPushButton(
-            _editor_text(self.strings, "medium_browse_taxonomy", "Taxonomy…")
-        )
-        taxonomy_row.addWidget(
-            QLabel(_editor_text(self.strings, "medium_taxonomy_label", "Taxonomy"))
-        )
-        taxonomy_row.addWidget(self.taxonomy_input, 1)
-        taxonomy_row.addWidget(self.browse_taxonomy_btn)
+        self.model_picker = ModelPicker("Models")
+        taxonomy_row.addWidget(self.model_picker)
+        taxonomy_row.addStretch(1)
 
         namespace_row = QHBoxLayout()
         self.assume_bigg_check = QCheckBox(
@@ -217,17 +209,7 @@ class MediumEditor(QWidget):
         self.profile_delta_label.setWordWrap(True)
 
         model_row = QHBoxLayout()
-        self.model_path_input = QLineEdit("")
-        self.model_path_input.setPlaceholderText(
-            _editor_text(
-                self.strings,
-                "medium_model_placeholder",
-                "Single SBML/JSON/MAT model for minimal-medium",
-            )
-        )
-        self.browse_model_btn = QPushButton(
-            _editor_text(self.strings, "medium_browse_model", "Model…")
-        )
+        self.single_model_picker = ModelPicker("Model", single=True)
         self.min_growth_spin = QDoubleSpinBox()
         self.min_growth_spin.setDecimals(6)
         self.min_growth_spin.setRange(0.000001, 1_000_000.0)
@@ -242,9 +224,8 @@ class MediumEditor(QWidget):
         self.minimal_medium_btn = QPushButton(
             _editor_text(self.strings, "medium_run_minimal", "Find Minimal Medium")
         )
-        model_row.addWidget(QLabel(_editor_text(self.strings, "medium_model_label", "Model")))
-        model_row.addWidget(self.model_path_input, 1)
-        model_row.addWidget(self.browse_model_btn)
+        model_row.addWidget(self.single_model_picker)
+        model_row.addStretch(1)
         model_row.addWidget(
             QLabel(_editor_text(self.strings, "medium_min_growth", "Minimum growth"))
         )

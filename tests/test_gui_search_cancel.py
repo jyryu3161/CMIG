@@ -14,6 +14,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
 
+from gui_project_helpers import open_test_project  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.gui.app import SEARCH_CANCEL_PENDING, build_main_window  # noqa: E402
@@ -62,9 +63,7 @@ def _window(tmp_path: Path, lang: str = "en"):
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner, lang=lang)
-    pool = tmp_path / "pool"
-    pool.mkdir()
-    w.search_view.model_dir_input.setText(str(pool))
+    open_test_project(w, tmp_path / "p", ["a", "b"])
     return w, runner
 
 
