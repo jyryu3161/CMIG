@@ -1097,6 +1097,8 @@ class CmigMainWindow(QMainWindow):
         #: model sha256 -> exchange ids (successful loads only); job id -> (model id, sha256)
         self._exchange_cache: dict[str, list[str]] = {}
         self._exchange_jobs: dict[str, tuple[str, str]] = {}
+        #: exchange lookups cancelled because the inspector moved on (not Activity jobs)
+        self._stale_exchange_jobs: set[str] = set()
         self.bridge = JobsBridge(self.runner, self.jobs_panel)
         self._fixture_jobs: dict[str, Path] = {}
         # Each Search-tab map holds (out_dir, the answer-determining inputs at submit time)
@@ -1402,6 +1404,7 @@ class CmigMainWindow(QMainWindow):
         for jid in list(self.bridge._job_ids):
             if self.runner.poll(jid).status in (JobStatus.PENDING, JobStatus.RUNNING):
                 self.runner.cancel(jid)
+        self._cancel_stale_exchange_jobs(everything=True)
         self.runner.shutdown(wait=False, cancel_futures=True)
         self._close_session()
         super().closeEvent(event)
@@ -1729,6 +1732,7 @@ class CmigMainWindow(QMainWindow):
         for job_id in list(self.bridge._job_ids):
             if self.runner.poll(job_id).status in (JobStatus.PENDING, JobStatus.RUNNING):
                 self._cancel_job_id(job_id)
+        self._cancel_stale_exchange_jobs(everything=True)
 
     def _close_project_command(self) -> None:
         """File > Close Project: asks first when jobs are running."""
@@ -2137,6 +2141,7 @@ class CmigMainWindow(QMainWindow):
                 self._open_run_entry(Path(key))
         finally:
             self._following_sidebar = False
+            self._cancel_stale_exchange_jobs()  # lookups for a model no longer shown
 
     def _inspect_model(self, entry: ModelEntry) -> None:
         """Show a model at once; its exchange list is parsed in a job (a GEM takes seconds)."""
@@ -2150,7 +2155,8 @@ class CmigMainWindow(QMainWindow):
         else:
             self.inspector.show_model(project, entry, [])
             self._exchange_placeholder("Loading exchanges…")
-            if all(sha != entry.sha256 for _id, sha in self._exchange_jobs.values()):
+            if all(sha != entry.sha256 or jid in self._stale_exchange_jobs
+                   for jid, (_id, sha) in self._exchange_jobs.items()):
                 path = model_path(project, entry)
 
                 def _job(ctx: Any) -> list[str]:
@@ -2159,9 +2165,24 @@ class CmigMainWindow(QMainWindow):
                     ctx.raise_if_cancelled()
                     return [str(exchange) for exchange in import_model(path).exchanges]
 
-                jid = self.submit_job("model_exchanges", _job, show_activity=False)
+                # A lookup for the inspector, not a user job: kept out of Activity.
+                jid = self.runner.submit("model_exchanges", _job)
                 self._exchange_jobs[jid] = (entry.id, entry.sha256)
         self._inspector_run, self._inspected_model = None, (entry.id, entry.sha256)
+        self._cancel_stale_exchange_jobs()
+
+    def _cancel_stale_exchange_jobs(self, everything: bool = False) -> None:
+        """Cancel lookups for models the inspector no longer shows (all, when `everything`).
+
+        A queued one never starts, so it cannot hold up a run the user starts next; a parse
+        already under way finishes, and its result still fills the cache.
+        """
+        for jid, key in self._exchange_jobs.items():
+            if jid in self._stale_exchange_jobs:
+                continue
+            if everything or key != self._inspected_model:
+                self.runner.cancel(jid)
+                self._stale_exchange_jobs.add(jid)
 
     def _exchange_placeholder(self, text: str) -> None:
         listing = self.inspector.exchange_list
@@ -2171,17 +2192,22 @@ class CmigMainWindow(QMainWindow):
         listing.addItem(item)
 
     def _finish_exchange_jobs(self) -> None:
+        self._cancel_stale_exchange_jobs()  # also when the inspector moved on outside the sidebar
         for jid, (model_id, sha) in list(self._exchange_jobs.items()):
             job = self.runner.poll(jid)
             if job.status in (JobStatus.PENDING, JobStatus.RUNNING):
                 continue
             self._exchange_jobs.pop(jid, None)
+            stale = jid in self._stale_exchange_jobs
+            self._stale_exchange_jobs.discard(jid)
             if job.status is JobStatus.DONE and isinstance(job.result, list):
                 self._exchange_cache[sha] = job.result  # failures are not cached: retried
             self.runner.release_payload(jid)
             project = self.session.project
             if project is None or self._inspected_model != (model_id, sha):
                 continue  # the user moved on; the cache serves the next selection
+            if stale and sha not in self._exchange_cache:
+                continue  # a fresh lookup for this model is under way
             if sha in self._exchange_cache:
                 try:
                     entry = project.model(model_id)
@@ -3030,13 +3056,12 @@ class CmigMainWindow(QMainWindow):
         self.central_stack.addWidget(widget)
         self.central_stack.setCurrentWidget(widget)
 
-    def submit_job(self, kind: str, fn: Any, *, show_activity: bool = True) -> str:
+    def submit_job(self, kind: str, fn: Any) -> str:
         """facade 작업을 JobRunner 로 제출 + bridge 추적(실 소비). Opens the Activity pane."""
         jid = self.runner.submit(kind, fn)
         self.bridge.track(jid)
-        if show_activity:
-            self.activity.expand()
-            self.toggle_activity_action.setText("Hide Activity")
+        self.activity.expand()
+        self.toggle_activity_action.setText("Hide Activity")
         return jid
 
     def load_run_dir(self, path: str | Path) -> bool:

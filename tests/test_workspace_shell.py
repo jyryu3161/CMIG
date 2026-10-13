@@ -742,3 +742,46 @@ def test_run_shortcut_is_refused_while_the_page_run_is_busy(
     assert window.run_action.isEnabled(), "enabled again once the job has ended"
     window.show_analysis("host")
     assert window.run_action.isEnabled()
+
+
+# ── final review: exchange lookups stay out of Activity and never queue stale work ────────
+def test_exchange_lookups_are_hidden_and_cancelled_when_the_selection_moves_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    from types import SimpleNamespace
+
+    import cmig.io.model_import as model_import
+    from cmig.service import JobRunner, JobStatus
+
+    gate = threading.Event()
+    calls: list[str] = []
+
+    def slow_import(path):
+        calls.append(Path(path).stem)
+        assert gate.wait(10)
+        return SimpleNamespace(exchanges=["EX_ac_e"])
+
+    monkeypatch.setattr(model_import, "import_model", slow_import)
+    window = build_main_window(runner=JobRunner(max_workers=1))
+    window.recent = RecentProjects(QSettings(str(tmp_path / "r.ini"), QSettings.Format.IniFormat))
+    make_project(tmp_path / "s", ["a", "b"])
+    assert window.open_project(tmp_path / "s")
+    window.sidebar.select("models", "a")
+    _wait_for(window, lambda: calls == ["a"])
+    window.sidebar.select("models", "b")  # queued behind a's lookup
+    jobs = dict(window._exchange_jobs)
+    assert len(jobs) == 2
+    assert not set(jobs) & set(window.bridge._job_ids), "lookups are not Activity jobs"
+    assert window.jobs_panel.rowCount() == 0
+    window.sidebar.select("media", "preset:western_diet")  # the user moved on
+    gate.set()
+    _wait_for(window, lambda: not window._exchange_jobs)
+    assert calls == ["a"], "b's queued lookup was cancelled before it ran"
+    b_job = next(jid for jid, (model_id, _sha) in jobs.items() if model_id == "b")
+    assert window.runner.poll(b_job).status is JobStatus.CANCELLED
+    assert window.inspector.title_label.text() == "Medium · western_diet"
+    window.sidebar.select("models", "b")  # coming back starts a fresh lookup
+    _wait_for(window, lambda: not window._exchange_jobs)
+    assert calls == ["a", "b"] and _exchange_texts(window) == ["EX_ac_e"]
+    window.close_project()

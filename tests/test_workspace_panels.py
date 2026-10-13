@@ -232,3 +232,17 @@ def test_job_rows_show_a_given_status_label_instead_of_the_runner_status() -> No
     pane.jobs.refresh(runner, [jid], status_labels={jid: "cancelled (2 of 5 not imported)"})
     assert pane.jobs.item(0, 2).text() == "cancelled (2 of 5 not imported)"
     runner.shutdown(wait=True)
+
+
+def test_job_rows_name_the_job_for_people_not_by_its_internal_kind() -> None:
+    runner = JobRunner(max_workers=1)
+    pane = ActivityPane()
+    jids = [runner.submit(kind, lambda ctx: None)
+            for kind in ("search_fixture", "import_models", "agora2_fetch", "gene_ko_search",
+                         "something_new")]
+    for jid in jids:
+        runner.result(jid, timeout=5)
+    pane.jobs.refresh(runner, jids)
+    kinds = [pane.jobs.item(row, 1).text() for row in range(len(jids))]
+    assert kinds == ["Search", "Import Models", "AGORA2 Download", "Gene KO", "something_new"]
+    runner.shutdown(wait=True)

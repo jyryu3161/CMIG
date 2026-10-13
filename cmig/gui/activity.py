@@ -26,6 +26,28 @@ _DEFAULT_HEADERS = {"col_job": "Job", "col_kind": "Kind", "col_status": "Status"
                     "col_progress": "Progress"}
 
 
+#: what the Kind column calls each job; an unknown kind is shown as it is
+JOB_KIND_NAMES = {
+    "search_fixture": "Search",
+    "gene_ko_search": "Gene KO",
+    "strain_growth": "Strain Growth",
+    "abundance_impact": "Ratio Impact",
+    "host_microbe_bigg": "Host–Microbe",
+    "host_search_bigg": "Host Search",
+    "dfba": "dFBA",
+    "spatial_preview": "Spatial Preview",
+    "community_solve": "Community Solve",
+    "sweep": "Sweep",
+    "sweep_fixture": "Sweep Demo",
+    "medium_growth_check": "Medium Growth Check",
+    "minimal_medium": "Minimal Medium",
+    "sandbox_fixture": "Constraint Sandbox",
+    "solve_fixture": "Demo Run",
+    "import_models": "Import Models",
+    "agora2_fetch": "AGORA2 Download",
+}
+
+
 def command_line(argv: list[str]) -> str:
     return "cmig " + shlex.join(argv)
 
@@ -72,7 +94,8 @@ class RuntimeJobsPanel(QTableWidget):
             if jid in cancelling and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
                 status = "cancelling (solver still running)"
             status = (status_labels or {}).get(jid, status)
-            for col, text in enumerate([job.job_id, job.kind, status, progress]):
+            kind = JOB_KIND_NAMES.get(job.kind, job.kind)
+            for col, text in enumerate([job.job_id, kind, status, progress]):
                 item = read_only_item(text)
                 if job.error:
                     item.setToolTip(job.error)
