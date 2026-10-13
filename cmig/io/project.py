@@ -7,12 +7,14 @@ computed when a run is prepared. User source files are only ever read.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from cmig.io.atomic import atomic_write_text
@@ -141,6 +143,37 @@ def _medium_from_json(raw: dict[str, Any]) -> MediumEntry:
     return MediumEntry(**{key: value for key, value in raw.items() if key in known})
 
 
+def _check_entries(root: Path, label: str, items: object) -> list[dict[str, Any]]:
+    """Validate the shape of a ``models``/``media`` list; return it, or raise ``ValueError``.
+
+    ``id`` and ``file`` must be strings, ids are unique within the list, and ``file`` must be a
+    relative path that stays inside the project. Absolute paths are rejected for either path
+    flavour (a project may be moved between Windows and POSIX); ``..`` is judged after
+    resolution, so a symlink leading out of the project is rejected too.
+    """
+    if not isinstance(items, list):
+        raise ValueError(f"{label} must be a list")
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError(f"{label} entry is not an object: {item!r}")
+        entry_id, file = item.get("id"), item.get("file")
+        if not isinstance(entry_id, str) or not isinstance(file, str):
+            raise ValueError(f"{label} entry needs string 'id' and 'file': {item!r}")
+        if entry_id in seen:
+            raise ValueError(f"duplicate {label} id {entry_id!r}")
+        seen.add(entry_id)
+        if PurePosixPath(file).anchor or PureWindowsPath(file).anchor:
+            raise ValueError(f"{label} {entry_id!r} file must be project-relative: {file!r}")
+        try:
+            target = (root / file).resolve()
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise ValueError(f"{label} {entry_id!r} has an unusable file path {file!r}") from exc
+        if target == root or not target.is_relative_to(root):
+            raise ValueError(f"{label} {entry_id!r} file leaves the project: {file!r}")
+    return items
+
+
 def open_project(root: Path) -> Project:
     """Read and validate a project; refuses corrupt or newer formats without writing anything."""
     root = Path(root).expanduser().resolve()
@@ -149,7 +182,9 @@ def open_project(root: Path) -> Project:
         raise ProjectError(f"no cmig-project.json in {root}")
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except ValueError as exc:
+    except OSError as exc:
+        raise ProjectError(f"cannot read {path}: {exc}") from exc
+    except (ValueError, RecursionError) as exc:
         raise ProjectError(f"{path} is not valid JSON: {exc}") from exc
     if not isinstance(raw, dict):
         raise ProjectError(f"{path} is not a JSON object")
@@ -163,39 +198,61 @@ def open_project(root: Path) -> Project:
     if version != FORMAT_VERSION or missing:
         raise ProjectError(f"{path} is missing required fields: {missing or ['format_version']}")
     try:
+        models = _check_entries(root, "models", raw.get("models", []))
+        media = _check_entries(root, "media", raw.get("media", []))
+        settings = raw.get("analysis_settings", {})
+        if not isinstance(settings, dict) or not all(
+            isinstance(value, dict) for value in settings.values()
+        ):
+            raise ValueError("analysis_settings must be an object of objects")
         project = Project(
             root=root,
             name=str(raw["name"]),
             created=str(raw["created"]),
-            models=[_model_from_json(item) for item in raw.get("models", [])],
-            media=[_medium_from_json(item) for item in raw.get("media", [])],
-            analysis_settings=dict(raw.get("analysis_settings", {})),
+            models=[_model_from_json(item) for item in models],
+            media=[_medium_from_json(item) for item in media],
+            analysis_settings=settings,
         )
-    except (TypeError, AttributeError) as exc:
+    except (TypeError, ValueError) as exc:
         raise ProjectError(f"{path} has malformed entries: {exc}") from exc
-    for sub in _SUBDIRS:
-        (root / sub).mkdir(parents=True, exist_ok=True)
+    try:
+        for sub in _SUBDIRS:
+            (root / sub).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ProjectError(f"cannot prepare project folders in {root}: {exc}") from exc
     return project
 
 
 def _pid_alive(pid: int) -> bool:
+    """Whether ``pid`` may still be running; ``True`` whenever that cannot be established."""
     if pid <= 0:
         return False
-    if os.name == "nt":
+    if sys.platform == "win32":
         import ctypes
 
-        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # type: ignore[attr-defined]
+        if pid > 0xFFFFFFFF:  # not a DWORD: ctypes would silently truncate it
+            return True
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
         if handle:
-            ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+            ctypes.windll.kernel32.CloseHandle(handle)
             return True
         return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:
+    except (OverflowError, OSError):  # includes PermissionError: the process exists
         return True
     return True
+
+
+def _read_lock(path: Path) -> dict[str, Any]:
+    """Return the lock owner record, or ``{}`` if the file is unreadable or not an object."""
+    try:
+        held = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return {}
+    return held if isinstance(held, dict) else {}
 
 
 class ProjectLock:
@@ -212,21 +269,39 @@ class ProjectLock:
             try:
                 fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             except FileExistsError:
-                try:
-                    held = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    held = {}
+                held = _read_lock(path)
                 host = str(held.get("host", "unknown host"))
                 pid = held.get("pid")
-                if host == socket.gethostname() and isinstance(pid, int) and not _pid_alive(pid):
-                    path.unlink(missing_ok=True)
+                # Only a well-formed lock from a dead process on this host is reclaimed; an
+                # empty or garbage lock is reported, never silently taken over.
+                if (
+                    host == socket.gethostname()
+                    and isinstance(pid, int)
+                    and not isinstance(pid, bool)
+                    and pid > 0
+                    and not _pid_alive(pid)
+                ):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError as exc:
+                        raise ProjectError(
+                            f"cannot replace stale project lock {path}: {exc}"
+                        ) from exc
                     continue
+                owner = f"pid {pid} on {host}" if held else "owner unknown"
                 raise ProjectError(
-                    f"this project is already open in another window (pid {pid} on {host}); "
-                    f"close it there first"
+                    f"this project is already open in another window ({owner}); if no other "
+                    f"CMIG window has it open, delete {path}"
                 ) from None
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(payload)
+            except OSError as exc:
+                raise ProjectError(f"cannot create project lock {path}: {exc}") from exc
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(payload)
+            except OSError as exc:
+                with contextlib.suppress(OSError):
+                    path.unlink(missing_ok=True)
+                raise ProjectError(f"cannot write project lock {path}: {exc}") from exc
             return cls(path)
         raise ProjectError(f"could not acquire project lock {path}")
 
