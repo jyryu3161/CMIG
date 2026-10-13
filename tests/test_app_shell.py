@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.gui.app import CmigMainWindow, build_main_window  # noqa: E402
 from cmig.gui.project_session import RecentProjects  # noqa: E402
-from cmig.gui.sidebar import ANALYSES, ANALYSIS_SEPARATOR_AFTER  # noqa: E402
+from cmig.gui.sidebar import ANALYSES, ANALYSIS_GROUPS  # noqa: E402
 from cmig.service import JobRunner, JobStatus  # noqa: E402
 from cmig.service.jobrunner import JobCancelled  # noqa: E402
 
@@ -86,19 +86,19 @@ def test_shell_has_file_workflow_actions():
 
 
 def test_advanced_tools_are_listed_apart_and_open_on_request():
-    """Non-primary tools should not look like unfinished default workflows: they sit after
-    the ANALYSES separator, are not shown by default, and open with show_analysis."""
+    """Non-primary tools sit in their own Tools group, are not shown by default, and open
+    with show_analysis."""
     _app()
     w = build_main_window()
-    keys = [key for key, _label in ANALYSES]
-    advanced = keys[keys.index(ANALYSIS_SEPARATOR_AFTER) + 1:]
-    assert advanced == ["community", "medium", "sweep", "sandbox", "compare"]
-    pages = [w.community_builder, w.medium_editor, w.sweep_view, w.sandbox_view,
-             w.scenario_compare]
+    advanced = [key for key, _l in dict(ANALYSIS_GROUPS)["Tools"]]
+    assert advanced == ["medium", "sweep", "sandbox", "compare"]
+    pages = [w.medium_editor, w.sweep_view, w.sandbox_view, w.scenario_compare]
     assert w.pages.currentWidget() not in pages
     for key, page in zip(advanced, pages, strict=True):
         w.show_analysis(key)
         assert w.pages.currentWidget() is page
+        assert w.pages.currentWidget() is w.analysis_pages[key]
+    w.show_analysis("community")
     assert "Pick members" in w.community_builder.status.text()
     assert "Advanced editor" in w.medium_editor.status.text()
     assert "Advanced result view" in w.sweep_view.status.text()

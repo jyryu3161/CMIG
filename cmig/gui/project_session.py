@@ -32,6 +32,8 @@ _KIND_LABELS = {
     "community": "Community",
     "sweep": "Sweep",
     "medium-growth": "Medium Growth",
+    "check-growth": "Check Growth",
+    "single": "Check Growth",
     "minimal_medium": "Minimal Medium",
     "minimal-medium": "Minimal Medium",
 }

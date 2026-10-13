@@ -46,7 +46,7 @@ def test_standard_menus_and_shortcuts(window) -> None:
     assert window.toggle_inspector_action.shortcut().toString() == "Ctrl+Alt+I"
     analysis = _menu(window, "Analysis")
     assert analysis[:5] == [
-        "Combination Search", "Gene Knockout", "Strain Growth & Ratio", "Host–Microbe", "Dynamics",
+        "Combination Search", "Gene Knockout", "Strain Growth", "Ratio Impact", "Community Solve",
     ]
     assert analysis[-2:] == ["Run", "Cancel"]
     assert "Try Demo Run" in _menu(window, "Help")
@@ -91,9 +91,10 @@ def test_selecting_analysis_switches_page_and_inspector(window, tmp_path: Path) 
     assert window.pages.currentWidget() is window.host_view
     assert window.inspector.title_label.text() == "Host–Microbe"
     assert window.run_action.isEnabled()
-    window.sidebar.select("analyses", "growth")
+    window.sidebar.select("analyses", "strain_growth")
     assert window.pages.currentWidget() is window.search_view
-    assert not window.run_action.isEnabled()
+    # Run follows the Strain Growth button of the page on show
+    assert window.run_action.isEnabled() == window.search_view.run_growth_btn.isEnabled()
 
 
 def test_selecting_model_updates_inspector(window, tmp_path: Path) -> None:
@@ -157,7 +158,7 @@ def test_window_fits_target_sizes(window, tmp_path: Path, size: tuple[int, int])
     window.open_project(tmp_path / "g")
     window.resize(*size)
     window.show()
-    for key in ("search", "host", "dynamics", "community", "medium", "sweep"):
+    for key in ("search", "host", "dfba", "community", "medium", "sweep"):
         window.show_analysis(key)
         APP.processEvents()
         assert window.width() <= size[0] and window.height() <= size[1], key

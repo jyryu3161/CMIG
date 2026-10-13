@@ -86,7 +86,7 @@ def test_analyses_listed_with_separator_and_selection_signal() -> None:
     sidebar.selection_changed.connect(lambda g, k: seen.append((g, k)))
     group = sidebar.topLevelItem(2)
     keys = [group.child(i).data(0, Qt.ItemDataRole.UserRole) for i in range(group.childCount())]
-    assert keys[:5] == ["search", "gene_ko", "growth", "host", "dynamics"]
+    assert keys[:5] == ["search", "gene_ko", "strain_growth", "ratio_impact", "community"]
     assert None in keys, "a disabled separator row follows the primary analyses"
     sidebar.select("analyses", "host")
     assert seen[-1] == ("analyses", "host")

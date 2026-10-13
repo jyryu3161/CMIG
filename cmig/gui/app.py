@@ -99,7 +99,7 @@ from cmig.gui.project_session import (
 )
 from cmig.gui.sidebar import (
     ANALYSES,
-    ANALYSIS_SEPARATOR_AFTER,
+    ANALYSIS_GROUPS,
     WorkspaceSidebar,
     droppable_paths,
 )
@@ -1156,15 +1156,18 @@ class CmigMainWindow(QMainWindow):
         self.community_result_page.addTab(self.graph_tab, "Graph")
         self.analysis_pages: dict[str, QWidget] = {
             "search": self.search_view,
-            "gene_ko": self.search_view,
-            "growth": self.search_view,
-            "host": self.host_view,
-            "dynamics": self.dynamics_view,
+            "gene_ko": self.search_view,        # Task 8 replaces
+            "strain_growth": self.search_view,  # Task 8 replaces
+            "ratio_impact": self.search_view,   # Task 8 replaces
             "community": self.community_builder,
-            "medium": self.medium_editor,
-            "sweep": self.sweep_view,
-            "sandbox": self.sandbox_view,
-            "compare": self.scenario_compare,
+            "host": self.host_view,
+            "host_search": self.host_view,      # Task 10 replaces
+            "dfba": self.dynamics_view,
+            "spatial": self.dynamics_view,      # Task 11 replaces
+            "medium": self.medium_editor,       # Task 12 wraps
+            "sweep": self.sweep_view,           # Task 12 wraps
+            "sandbox": self.sandbox_view,       # Task 12 wraps
+            "compare": self.scenario_compare,   # Task 12 wraps
         }
         for page in [self.welcome_page, self.empty_models_page, self.community_result_page,
                      self.model_manager, *dict.fromkeys(self.analysis_pages.values())]:
@@ -1592,10 +1595,11 @@ class CmigMainWindow(QMainWindow):
         view_menu.addActions([self.toggle_sidebar_action, self.toggle_inspector_action,
                               self.toggle_activity_action])
         analysis_menu = bar.addMenu("&Analysis")
-        for key, _label in ANALYSES:
-            analysis_menu.addAction(self.analysis_actions[key])
-            if key == ANALYSIS_SEPARATOR_AFTER:
+        for index, (_title, items) in enumerate(ANALYSIS_GROUPS):
+            if index:
                 analysis_menu.addSeparator()
+            for key, _label in items:
+                analysis_menu.addAction(self.analysis_actions[key])
         analysis_menu.addSeparator()
         analysis_menu.addActions([self.run_action, self.cancel_job_action])
         window_menu = bar.addMenu("&Window")
@@ -2077,9 +2081,13 @@ class CmigMainWindow(QMainWindow):
         return {
             "search": self.search_view.run_btn,
             "gene_ko": self.search_view.run_ko_btn,
-            "host": self.host_view.run_btn,
-            "dynamics": self.dynamics_view.run_dfba_btn,
+            "strain_growth": self.search_view.run_growth_btn,
+            "ratio_impact": self.search_view.run_abundance_btn,
             "community": self.community_builder.run_btn,
+            "host": self.host_view.run_btn,
+            "host_search": self.host_view.run_search_btn,
+            "dfba": self.dynamics_view.run_dfba_btn,
+            "spatial": self.dynamics_view.run_spatial_btn,
             "medium": self.medium_editor.check_growth_btn,
             "sweep": self.sweep_view.run_btn,
         }
@@ -2094,12 +2102,15 @@ class CmigMainWindow(QMainWindow):
     _DESCRIPTIONS = {
         "search": ("Rank model combinations by a target metabolite.", "cmig search"),
         "gene_ko": ("Rank single-gene knockouts of a fixed combination.", "cmig gene-ko-search"),
-        "growth": ("Per-strain growth and one-member ratio sweep.",
-                   "cmig strain-growth / abundance-impact"),
-        "host": ("Couple a host model with microbial models.", "cmig host-microbe-bigg"),
-        "dynamics": ("Well-mixed dFBA and spatial medium preview.",
-                     "cmig dfba / spatial-preview"),
+        "strain_growth": ("Growth of each strain alone and in the community.",
+                          "cmig strain-growth"),
+        "ratio_impact": ("How one member's share changes a target metabolite.",
+                         "cmig abundance-impact"),
         "community": ("Community FBA of selected members.", "cmig solve"),
+        "host": ("Couple a host model with microbial models.", "cmig host-microbe-bigg"),
+        "host_search": ("Rank microbial combinations for a host.", "cmig host-search-bigg"),
+        "dfba": ("Well-mixed dynamic FBA of one model.", "cmig dfba"),
+        "spatial": ("Preview how one metabolite spreads on a grid.", "cmig spatial-preview"),
         "medium": ("Edit a medium, check growth, find a minimal medium.",
                    "cmig solve / minimal-medium"),
         "sweep": ("Parameter sweep across media, abundances and solvers.", "cmig sweep"),
@@ -2113,7 +2124,7 @@ class CmigMainWindow(QMainWindow):
         self._show_page(page)
         if key == "gene_ko":
             self.search_view.scroll_area.ensureWidgetVisible(self.search_view.ko_members_input)
-        elif key == "growth":
+        elif key in ("strain_growth", "ratio_impact"):
             self.search_view.scroll_area.ensureWidgetVisible(self.search_view.growth_member_input)
         blocked = self.sidebar.blockSignals(True)
         try:
