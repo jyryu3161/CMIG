@@ -692,8 +692,9 @@ def write_run_taxonomy(
     return path
 
 
-#: how a job can end without a result; the only states a run marker may record
-RUN_STATE_STATUSES = ("failed", "cancelled")
+#: how a run can end without a result: its job failed or was cancelled, or the GUI could not
+#: read its result back ("unreadable"); the only states a run marker may record
+RUN_STATE_STATUSES = ("failed", "cancelled", "unreadable")
 
 
 def run_state_path(run_dir: Path) -> Path:
@@ -703,10 +704,12 @@ def run_state_path(run_dir: Path) -> Path:
 
 
 def write_run_state(run_dir: Path, status: str, job_kind: str) -> Path:
-    """Record that the job writing ``run_dir`` ended ``failed`` or ``cancelled``.
+    """Record that the job writing ``run_dir`` ended ``failed`` or ``cancelled``, or that the
+    GUI could not read the run back (``unreadable``).
 
-    The marker lets a later session list the folder as failed or cancelled instead of unknown.
-    It only ever records a bad ending: it never makes a run look better than its own summary.
+    The marker lets a later session list the folder as failed, cancelled or unreadable instead
+    of unknown or ok. It only ever records a bad ending: it never makes a run look better than
+    its own summary.
     """
     if status not in RUN_STATE_STATUSES:
         raise ProjectError(f"a run state must be one of {RUN_STATE_STATUSES}, got {status!r}")
@@ -722,13 +725,30 @@ def write_run_state(run_dir: Path, status: str, job_kind: str) -> Path:
 
 
 def read_run_state(run_dir: Path) -> str | None:
-    """``failed`` or ``cancelled`` when a marker says so; anything else is no marker."""
+    """The state a marker records (see ``RUN_STATE_STATUSES``); anything else is no marker."""
     try:
         payload = json.loads(run_state_path(run_dir).read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     status = payload.get("status") if isinstance(payload, dict) else None
     return status if status in RUN_STATE_STATUSES else None
+
+
+def clear_run_state(run_dir: Path, status: str) -> bool:
+    """Remove the marker only if it records ``status``; True when one was removed.
+
+    Lets a readback that now succeeds drop its own ``unreadable`` marker without ever touching
+    the ``failed``/``cancelled`` marker of the job that wrote the run.
+    """
+    if read_run_state(run_dir) != status:
+        return False
+    try:
+        run_state_path(run_dir).unlink()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise ProjectError(f"cannot clear the state of {run_dir}: {exc}") from exc
+    return True
 
 
 def _files_under(folder: Path, recursive: bool) -> list[Path]:

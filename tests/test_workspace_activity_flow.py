@@ -302,3 +302,69 @@ def test_run_refused_after_its_folder_was_claimed_is_removed_with_its_input(
     assert _runs(w) == []
     assert sorted(p.name for p in project.runs_dir.iterdir()) == ["_inputs"]
     assert _inputs(w) == [], "the refused run's taxonomy goes with its folder"
+
+
+# ── final review: a readback rejection is remembered across a restart ─────────────────────
+def _search_run(project, *, ranked: bool) -> Path:
+    run = project.runs_dir / "search-20261013-120000"
+    run.mkdir(exist_ok=True)
+    summary = {"status": "ok", "targets": ["but"]}
+    if ranked:
+        summary.update({"top_ranked": [], "warnings": []})
+    (run / "search_summary.json").write_text(json.dumps(summary))
+    (run / "manifest.json").write_text(json.dumps({
+        "manifest_scope": "workflow", "manifest_schema_version": "1.2",
+        "workflow_kind": "search", "artifacts": ["search_summary.json"],
+        "result_digest": artifact_result_digest(run, "search", ["search_summary.json"]),
+    }))
+    return run
+
+
+def _marker(run: Path) -> dict | None:
+    path = run.parent / "_inputs" / f"{run.name}-state.json"
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def test_readback_rejection_survives_a_restart_until_a_readback_succeeds(
+    w, tmp_path: Path
+) -> None:
+    run = _search_run(w.session.project, ranked=False)  # no ranking: the GUI rejects it
+    assert w.load_search_dir(run) is False
+    assert _runs(w) == ["✗ Search · but · 12:00"]
+    assert _marker(run)["status"] == "unreadable"
+    assert sorted(p.name for p in run.iterdir()) == ["manifest.json", "search_summary.json"]
+    fresh = _reopen(w, tmp_path)
+    try:
+        assert _runs(fresh) == ["✗ Search · but · 12:00"], "still rejected after a restart"
+        fresh.sidebar.select("runs", str(run))  # opening it reads it back again: rejected
+        assert "unreadable" in fresh.inspector.details.toPlainText().lower()
+        _search_run(fresh.session.project, ranked=True)
+        assert fresh.load_search_dir(run) is True
+        assert _runs(fresh) == ["✓ Search · but · 12:00"]
+        assert _marker(run) is None, "a readback that succeeds clears the marker"
+    finally:
+        fresh.close_project()
+
+
+def test_readback_marker_never_replaces_a_job_marker(w) -> None:
+    from cmig.io import project as proj
+
+    run = _search_run(w.session.project, ranked=False)
+    proj.write_run_state(run, "cancelled", "search_fixture")
+    assert w.load_search_dir(run) is False
+    assert _marker(run)["status"] == "cancelled"
+    _search_run(w.session.project, ranked=True)
+    assert w.load_search_dir(run) is True
+    assert _marker(run)["status"] == "cancelled", "the job's ending is kept"
+    assert _runs(w) == ["⊘ Search · but · 12:00"]
+
+
+def test_readback_rejection_of_an_outside_run_writes_nothing_beside_it(w, tmp_path: Path) -> None:
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    project = w.session.project
+    run = _search_run(project, ranked=False)
+    moved = outside / run.name
+    run.rename(moved)
+    assert w.load_search_dir(moved) is False
+    assert sorted(p.name for p in outside.iterdir()) == [moved.name]

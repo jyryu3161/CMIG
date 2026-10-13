@@ -817,3 +817,27 @@ def test_write_run_taxonomy_write_failure_is_project_error(
     monkeypatch.setattr(proj, "atomic_write_text", _deny_write)
     with pytest.raises(proj.ProjectError, match="cannot write run inputs"):
         proj.write_run_taxonomy(project, run, ["a"])
+
+
+def test_run_state_marker_nested_too_deep_is_no_marker(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    run = project.runs_dir / "search-20261013-090000"
+    run.mkdir()
+    proj.run_state_path(run).write_text("[" * 100_000 + "]" * 100_000)
+    assert proj.read_run_state(run) is None
+
+
+def test_unreadable_marker_is_written_and_cleared_without_touching_job_markers(
+    tmp_path: Path,
+) -> None:
+    project = proj.create_project(tmp_path / "p")
+    run = project.runs_dir / "search-20261013-090000"
+    run.mkdir()
+    proj.write_run_state(run, "unreadable", "gui_readback")
+    assert proj.read_run_state(run) == "unreadable"
+    assert proj.clear_run_state(run, "unreadable") is True
+    assert proj.read_run_state(run) is None and not proj.run_state_path(run).exists()
+    assert proj.clear_run_state(run, "unreadable") is False  # nothing to clear
+    proj.write_run_state(run, "cancelled", "search_fixture")
+    assert proj.clear_run_state(run, "unreadable") is False
+    assert proj.read_run_state(run) == "cancelled", "a job's own marker is never cleared"

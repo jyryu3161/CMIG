@@ -1237,6 +1237,7 @@ class CmigMainWindow(QMainWindow):
         manifest_path = run_dir / "manifest.json"
         # A failure below re-records it; one that no longer holds must leave RUNS as well.
         cleared = self._readback_failures.pop(_run_key(run_dir), None) is not None
+        cleared = self._clear_readback_marker(run_dir) or cleared
         try:
             manifest: dict[str, Any] = {}
             if manifest_path.exists():
@@ -1334,10 +1335,34 @@ class CmigMainWindow(QMainWindow):
         )
 
     def _readback_failed(self, run_dir: Path, status: str, detail: str) -> None:
-        """Remember why this run could not be shown; the inspector and RUNS both say so."""
+        """Remember why this run could not be shown; the inspector and RUNS both say so.
+
+        A project run also gets an `unreadable` marker beside its inputs, so RUNS still shows
+        ✗ after a restart; a failed or cancelled job's own marker is kept as it is.
+        """
         self._readback_failures[_run_key(run_dir)] = (status, detail)
+        if self._in_project_runs(run_dir) and proj.read_run_state(run_dir) is None:
+            try:
+                proj.write_run_state(run_dir, "unreadable", "gui_readback")
+            except ProjectError as exc:
+                self.statusBar().showMessage(str(exc), 8000)
         self.refresh_workspace()  # RUNS shows the run as unreadable, never as its folder says
         self._show_run_in_inspector(run_dir)
+
+    def _in_project_runs(self, run_dir: Path) -> bool:
+        """A run folder directly under the open project's runs/ (never an outside run)."""
+        project = self.session.project
+        return project is not None and _same_folder(project.runs_dir, Path(run_dir).parent)
+
+    def _clear_readback_marker(self, run_dir: Path) -> bool:
+        """Drop a project run's `unreadable` marker before it is read back again."""
+        if not self._in_project_runs(run_dir):
+            return False
+        try:
+            return proj.clear_run_state(run_dir, "unreadable")
+        except ProjectError as exc:
+            self.statusBar().showMessage(str(exc), 8000)
+            return False
 
     def _show_run_in_inspector(self, run_dir: Path) -> None:
         """Show a run as RUNS selection does; a failed GUI readback overrides its rows."""
