@@ -17,13 +17,14 @@ import csv
 import json
 import math
 import os
+import re
 import shutil
 import sys
 import tempfile
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,7 +63,13 @@ from PySide6.QtWidgets import (
 
 from cmig.core.diagnostics import parse_diagnostic
 from cmig.gui.activity import ActivityPane, RuntimeJobsPanel, command_line
-from cmig.gui.agora2_dialog import SEARCH_LIMIT, Agora2Dialog
+from cmig.gui.agora2_dialog import (
+    CONFIRM_BYTES,
+    SEARCH_LIMIT,
+    Agora2Dialog,
+    Agora2Strain,
+    download_estimate,
+)
 from cmig.gui.builder import (
     WEIGHTED_METRICS,
     CommunityBuilderView,
@@ -95,7 +102,7 @@ from cmig.gui.views import (
     SweepView,
 )
 from cmig.io import project as proj
-from cmig.io.agora2 import CATALOGUE_FILENAME
+from cmig.io.agora2 import CATALOGUE_FILENAME, human_bytes, read_manifest
 from cmig.io.project import ModelEntry, ProjectError
 from cmig.service import Job, JobRunner, JobStatus
 
@@ -1049,24 +1056,61 @@ def _same_folder(a: Path, b: Path) -> bool:
         return False
 
 
-def _parse_catalogue(text: str) -> list[str]:
-    """Strain ids from the JSON `agora2-list --format json` prints.
+def _parse_catalogue(text: str) -> list[Agora2Strain]:
+    """Strains from the JSON `agora2-list --format json` prints, each with its published size.
 
-    The ids are under `models` (a list of objects with an `id`); a bare list of strings or
-    objects is accepted too. An output with no strain list, or an entry without an id, is an
-    error: it must not read as "no strain matched".
+    The strains are under `models` (a list of objects with an `id` and a `published_size`); a
+    bare list of strings or objects is accepted too (a string has no size). An output with no
+    strain list, or an entry without an id, is an error: it must not read as "no strain
+    matched".
     """
     payload = json.loads(text)
     items = payload.get("models") if isinstance(payload, dict) else payload
     if not isinstance(items, list):
         raise ValueError("agora2-list printed no list of strains")
-    ids: list[str] = []
+    strains: list[Agora2Strain] = []
     for item in items:
         strain = item.get("id") if isinstance(item, dict) else item
         if not isinstance(strain, str) or not strain:
             raise ValueError(f"agora2-list printed an entry without a strain id: {item!r}")
-        ids.append(strain)
-    return ids
+        size = item.get("published_size") if isinstance(item, dict) else None
+        strains.append(Agora2Strain(strain, size if isinstance(size, str) else ""))
+    return strains
+
+
+def _claim_agora2_batch_dir(parent: Path) -> Path:
+    """Create and return a new `<YYYYMMDD-HHMMSS>[-N]` folder under `parent`, reusing none."""
+    base = datetime.now().strftime("%Y%m%d-%H%M%S")
+    n = 1
+    while True:
+        candidate = parent / (base if n == 1 else f"{base}-{n}")
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            n += 1
+            continue
+        return candidate
+
+
+def _manifest_downloads(batch_dir: Path, strains: list[str]) -> dict[str, str]:
+    """The files a batch's own manifest records as fetched, each with the URL it came from.
+
+    `agora2-fetch` writes a manifest beside its output that lists only the strains that arrived
+    (or were already there), so a strain that failed is absent from it. Only a bare file name
+    is followed; it must exist in the batch folder.
+    """
+    wanted = set(strains)
+    found: dict[str, str] = {}
+    for record in read_manifest(batch_dir).get("models") or []:
+        if not isinstance(record, dict) or record.get("id") not in wanted:
+            continue
+        name = record.get("file")
+        if not isinstance(name, str) or Path(name).name != name:
+            continue
+        path = batch_dir / name
+        if path.is_file():
+            found[str(path)] = str(record.get("source_url") or "")
+    return found
 
 
 def _integrity_text(inspected: dict[str, Any]) -> object:
@@ -2061,12 +2105,20 @@ class CmigMainWindow(QMainWindow):
             return "An AGORA2 download is already running; wait for it or cancel it in Activity."
         return ""
 
-    def add_model_paths(self, paths: list[Path], *, recursive: bool = True) -> str:
+    def add_model_paths(
+        self,
+        paths: list[Path],
+        *,
+        recursive: bool = True,
+        source_overrides: dict[Path, str] | None = None,
+    ) -> str:
         """Copy model files, and the models under folders, into the project in the background.
 
         Returns the import job's id, or "" when nothing was started (the status bar says why).
         The worker only copies and checks files against a private snapshot of the project; the
         entries it produces are added through the session on the GUI thread when it is done.
+        `source_overrides` maps a file to the origin to record as its `source_path` instead of
+        its local path (an AGORA2 download records the URL it came from).
         """
         from cmig.service import JobContext
 
@@ -2093,6 +2145,7 @@ class CmigMainWindow(QMainWindow):
         working = proj.Project(project.root, project.name, project.created,
                                list(project.models), list(project.media),
                                dict(project.analysis_settings))
+        origins = {Path(path): origin for path, origin in (source_overrides or {}).items()}
 
         def _job(ctx: JobContext) -> dict[str, Any]:
             added: list[ModelEntry] = []
@@ -2105,7 +2158,10 @@ class CmigMainWindow(QMainWindow):
                             "skipped": skipped, "cancelled_remaining": total - index}
                 ctx.report_progress(index, total)
                 try:
-                    added.append(proj.add_model_file(working, path, check=proj.check_model_file))
+                    entry = proj.add_model_file(working, path, check=proj.check_model_file)
+                    if path in origins:
+                        entry.source_path = origins[path]
+                    added.append(entry)
                 except proj.DuplicateModelError as exc:
                     duplicates.append((path.name, exc.existing_id))
                 except proj.ProjectError as exc:
@@ -2244,11 +2300,43 @@ class CmigMainWindow(QMainWindow):
             self.statusBar().showMessage(busy, 8000)
             return
         dialog = Agora2Dialog(self._agora2_list)
-        if dialog.exec() and dialog.selected_strains():
-            self._agora2_fetch(dialog.selected_strains())
+        if not dialog.exec() or not dialog.selected_strains():
+            return
+        if not self._confirm_agora2_download(dialog.selected_entries()):
+            self.statusBar().showMessage("AGORA2 download not started.", 8000)
+            return
+        self._agora2_fetch(dialog.selected_strains())
 
-    def _agora2_list(self, query: str) -> list[str]:
-        """Strain ids matching `query`, from `cmig agora2-list` run in this process.
+    def _confirm_agora2_download(self, strains: list[Agora2Strain]) -> bool:
+        """Ask before a download of more than 1 GB, or of a size the catalogue does not give.
+
+        `_agora2_fetch` passes `--yes` to the CLI, so this question is the confirmation the CLI
+        asks for from 8 GB up; it defaults to No.
+        """
+        from cmig.cli.main import AGORA2_LARGE_FETCH_BYTES
+
+        known, unknown = download_estimate(strains)
+        if not unknown and known <= CONFIRM_BYTES:
+            return True
+        if unknown:
+            text = (f"{unknown} of the {len(strains)} selected strains have no published size, "
+                    "so the download cannot be estimated"
+                    + (f" (at least {human_bytes(known)} for the others)." if known else "."))
+        else:
+            text = (f"{len(strains)} strains, about {human_bytes(known)}, will be downloaded "
+                    "from vmh.life.")
+        if known >= AGORA2_LARGE_FETCH_BYTES:
+            text += (f" That is a very large download "
+                     f"({human_bytes(AGORA2_LARGE_FETCH_BYTES)} or more).")
+        answer = QMessageBox.question(
+            self, "Download from AGORA2", text + "\n\nDownload them into the project?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return bool(answer == QMessageBox.StandardButton.Yes)
+
+    def _agora2_list(self, query: str) -> list[Agora2Strain]:
+        """Strains matching `query`, from `cmig agora2-list` run in this process.
 
         Runs on the GUI thread (the dialog calls it on Search): `redirect_stdout` swaps the
         process-wide stream, so it must not be used from a job thread. The catalogue cache is
@@ -2262,8 +2350,12 @@ class CmigMainWindow(QMainWindow):
         project = self.session.require()
         argv = ["agora2-list", "--format", "json", "--limit", str(SEARCH_LIMIT),
                 "--catalogue", str(project.models_dir / "agora2" / CATALOGUE_FILENAME)]
-        argv += ["--genus", query] if query[:1].isupper() and "_" not in query else [
-            "--match", query]
+        # An id match, not a genus match: ids read Genus_species_strain, so a partial genus
+        # ("Roseb") and "Genus species" both work. The CLI matches case-insensitively.
+        words = query.split()
+        if not words:
+            raise ValueError("Enter part of a genus or strain name.")
+        argv += ["--match", re.escape("_".join(words))]
         _install_stderr_router()
         buffer = io.StringIO()
         try:
@@ -2277,11 +2369,14 @@ class CmigMainWindow(QMainWindow):
         return _parse_catalogue(buffer.getvalue())
 
     def _agora2_fetch(self, strains: list[str]) -> str:
-        """Download `strains` into the project's `models/agora2/`, then add them as models.
+        """Download `strains` into a new batch folder of `models/agora2/`, then add them.
 
-        Returns the job id, or "" when nothing was started (the status bar says why). The
-        download holds the import gate; `_finish_agora2` passes the files on to
-        `add_model_paths` in the same GUI-thread step that releases it.
+        Returns the job id, or "" when nothing was started (the status bar says why). Each call
+        gets its own `models/agora2/<YYYYMMDD-HHMMSS>[-N]/` folder, because `agora2-fetch`
+        rewrites the manifest beside its output on every call: one folder per call keeps every
+        download's provenance. The download holds the import gate; `_finish_agora2` passes the
+        files the batch manifest records on to `add_model_paths` in the same GUI-thread step
+        that releases it. Callers confirm a large download first (`_confirm_agora2_download`).
         """
         from cmig.cli.main import main
         from cmig.service import JobContext
@@ -2298,10 +2393,15 @@ class CmigMainWindow(QMainWindow):
         if not strains:
             self.statusBar().showMessage("Choose at least one AGORA2 strain.", 8000)
             return ""
-        out_dir = project.models_dir / "agora2"
-        argv = ["agora2-fetch", "--strain", ",".join(strains), "--out", str(out_dir),
-                "--catalogue", str(out_dir / CATALOGUE_FILENAME), "--format", "json", "--yes"]
-        expected = [out_dir / f"{strain}.json" for strain in strains]
+        parent = project.models_dir / "agora2"
+        try:
+            batch_dir = _claim_agora2_batch_dir(parent)
+        except OSError as exc:
+            self.statusBar().showMessage(f"Cannot create a download folder in {parent}: {exc}",
+                                         15000)
+            return ""
+        argv = ["agora2-fetch", "--strain", ",".join(strains), "--out", str(batch_dir),
+                "--catalogue", str(parent / CATALOGUE_FILENAME), "--format", "json", "--yes"]
         _install_stderr_router()
 
         def _job(ctx: JobContext) -> dict[str, Any]:
@@ -2319,27 +2419,33 @@ class CmigMainWindow(QMainWindow):
             # A cancel during the call cannot stop it; it discards the result instead.
             ctx.raise_if_cancelled()
             stderr = "".join(stderr_chunks).strip()
-            # Exit 1 is a partial fetch: the strains that arrived are real, the rest are named
-            # on stderr. Anything else says nothing trustworthy about the files on disk.
-            files = [str(p) for p in expected if p.is_file()] if not error and rc in (0, 1) else []
-            if rc == 0 and files:
+            # Exit 1 is a partial fetch: the strains the manifest records are real, the rest are
+            # named on stderr. Anything else says nothing trustworthy about the files on disk.
+            sources = {} if error or rc not in (0, 1) else _manifest_downloads(batch_dir, strains)
+            if rc == 0 and len(sources) == len(set(strains)):
                 ctx.report_progress(1, 1)
-                return {"files": files}
+                return {"files": list(sources), "sources": sources}
             if not error:
-                error = (f"agora2-fetch finished but wrote no model file to {out_dir}" if rc == 0
-                         else f"agora2-fetch exited {rc}")
-                if rc != 0 and stderr:
-                    error += f": {stderr.splitlines()[-1].strip()}"
+                if rc != 0:
+                    error = f"agora2-fetch exited {rc}"
+                    if stderr:
+                        error += f": {stderr.splitlines()[-1].strip()}"
+                elif sources:
+                    error = (f"agora2-fetch finished but its manifest records only {len(sources)} "
+                             f"of {len(set(strains))} strains in {batch_dir}")
+                else:
+                    error = f"agora2-fetch finished but recorded no model file in {batch_dir}"
             message = "\n".join(part for part in (error, stderr) if part)
-            raise ArtifactJobFailure(
-                message, {"files": files, "message": message, "headline": error}
-            )
+            raise ArtifactJobFailure(message, {
+                "files": list(sources), "sources": sources, "message": message,
+                "headline": error,
+            })
 
         job_id = self.submit_job("agora2_fetch", _job)
-        self._agora2_jobs[job_id] = (project.root, out_dir)
+        self._agora2_jobs[job_id] = (project.root, batch_dir)
         self._job_commands[job_id] = command_line(argv)
         self.statusBar().showMessage(
-            f"Downloading {len(strains)} AGORA2 strain(s) into {out_dir}…", 8000
+            f"Downloading {len(strains)} AGORA2 strain(s) into {batch_dir}…", 8000
         )
         return job_id
 
@@ -2350,11 +2456,14 @@ class CmigMainWindow(QMainWindow):
         self.bridge.status_labels.pop(job_id, None)
         result = job.result if isinstance(job.result, dict) else {}
         files = [Path(f) for f in result.get("files", []) if Path(f).is_file()]
+        origins = {Path(f): url for f, url in (result.get("sources") or {}).items() if url}
         project = self.session.project
         problem = ""
         if job.status is JobStatus.CANCELLED:
             files, problem = [], "AGORA2 download cancelled; nothing was added to the project"
-            self._job_logs[job_id] = f"Cancelled; any files already downloaded stay in {out_dir}"
+            self._job_logs[job_id] = (
+                f"Cancelled; nothing was added. Anything already downloaded is in {out_dir}"
+            )
         elif job.status is JobStatus.FAILED:
             reason = str(result.get("message") or (parse_diagnostic(job.error) or {}).get(
                 "message") or "unknown error")
@@ -2366,7 +2475,11 @@ class CmigMainWindow(QMainWindow):
                        f"downloaded file(s) were not added (they are in {out_dir})")
             files = []
         if files:
-            self.add_model_paths(files)  # takes the gate on the spot: _agora2_jobs is empty now
+            # Takes the gate on the spot: _agora2_jobs is empty now and nothing yields before it.
+            self.add_model_paths(files, source_overrides=origins)
+        else:
+            with suppress(OSError):
+                out_dir.rmdir()  # a download that left nothing leaves no folder (empty only)
         if problem:
             self.statusBar().showMessage(problem, 15000)
             self._show_job_in_activity(job_id)

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -18,17 +21,42 @@ from gui_project_helpers import (  # noqa: E402,F401
     ok_check,
 )
 from PySide6.QtCore import QSettings  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
-from cmig.gui.agora2_dialog import SEARCH_LIMIT, Agora2Dialog  # noqa: E402
-from cmig.gui.app import _parse_catalogue, build_main_window  # noqa: E402
+from cmig.cli.main import build_parser  # noqa: E402
+from cmig.gui.agora2_dialog import (  # noqa: E402
+    SEARCH_LIMIT,
+    Agora2Dialog,
+    Agora2Strain,
+    download_estimate,
+    published_bytes,
+)
+from cmig.gui.app import (  # noqa: E402
+    _claim_agora2_batch_dir,
+    _parse_catalogue,
+    build_main_window,
+)
 from cmig.gui.project_session import RecentProjects  # noqa: E402
 from cmig.io import project as proj  # noqa: E402
+from cmig.io.agora2 import FetchedModel, read_manifest, write_manifest  # noqa: E402
 from cmig.service import JobStatus  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
 
 STRAIN = "Roseburia_hominis_A2_183"
+OTHER = "Roseburia_intestinalis_L1_82"
+ORIGIN = "https://www.vmh.life/files/reconstructions/AGORA2/version2.01/individual/"
+BATCH_NAME = re.compile(r"\d{8}-\d{6}(-\d+)?")
+
+
+@pytest.fixture(autouse=True)
+def _no_unexpected_prompt(monkeypatch):
+    """A modal question in a test would hang it: any test that expects one patches it itself."""
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(f"unexpected QMessageBox.question: {args[1:3]}")
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(refuse))
 
 
 @pytest.fixture
@@ -44,6 +72,11 @@ def window(tmp_path: Path, monkeypatch):
 
 def _agora2_dir(w) -> Path:
     return w.session.project.models_dir / "agora2"
+
+
+def _batches(w) -> list[Path]:
+    """The download batch folders of the open project, oldest first."""
+    return sorted(p for p in _agora2_dir(w).iterdir() if p.is_dir())
 
 
 def _arg(argv: list[str], flag: str) -> str:
@@ -68,14 +101,45 @@ def _wait_import(w, timeout: float = 20.0) -> None:
     assert not w._import_jobs, "import job did not finish"
 
 
-def _writing_main(calls: list[list[str]], ids: tuple[str, ...] = (STRAIN,)):
+def _model_json(strain: str) -> str:
+    return json.dumps({"id": strain, "reactions": [], "metabolites": []})  # passes as cobra JSON
+
+
+def _writing_main(
+    calls: list[list[str]],
+    ids: tuple[str, ...] = (STRAIN,),
+    *,
+    stale: tuple[str, ...] = (),
+    rc: int = 0,
+    err: str = "",
+):
+    """A stand-in for `cmig agora2-fetch`: model files and the manifest it writes beside them.
+
+    `stale` names files left in the folder that the manifest does not record.
+    """
+
     def fake_main(argv: list[str]) -> int:
         calls.append(argv)
         out = Path(_arg(argv, "--out"))
         out.mkdir(parents=True, exist_ok=True)
-        for strain in ids:  # a stub that passes as a cobra JSON model
-            (out / f"{strain}.json").write_text('{"id": "x", "reactions": [], "metabolites": []}')
-        return 0
+        fetched = []
+        for strain in ids:
+            path = out / f"{strain}.json"
+            path.write_text(_model_json(strain))
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            fetched.append(FetchedModel(
+                id=strain, file=path.name, source_url=f"{ORIGIN}{strain}.xml",
+                source_sha256=digest, source_bytes=1, sha256=digest, bytes=1,
+                encoding_repairs=0, repaired_bytes=[], namespace="bigg", format="json",
+            ))
+        for strain in stale:
+            (out / f"{strain}.json").write_text(_model_json(strain))
+        if fetched:
+            write_manifest(fetched, out, namespace="bigg", file_format="json",
+                           repair_encoding=True)
+        if err:
+            print(err, file=sys.stderr)
+        return rc
 
     return fake_main
 
@@ -169,13 +233,14 @@ def test_parse_catalogue_reads_the_agora2_list_json_shape() -> None:
              "species": "intestinalis", "published_size": "1 MB", "url": "u"},
         ],
     }
-    assert _parse_catalogue(json.dumps(payload)) == [
-        "Roseburia_hominis_A2_183", "Roseburia_intestinalis_L1_82"
-    ]
+    strains = _parse_catalogue(json.dumps(payload))
+    assert strains == ["Roseburia_hominis_A2_183", "Roseburia_intestinalis_L1_82"]
+    assert [s.published_size for s in strains] == ["1 MB", "1 MB"]
 
 
 def test_parse_catalogue_accepts_a_bare_list_and_an_empty_selection() -> None:
-    assert _parse_catalogue(json.dumps(["A_1", {"id": "B_2"}])) == ["A_1", "B_2"]
+    strains = _parse_catalogue(json.dumps(["A_1", {"id": "B_2"}]))
+    assert strains == ["A_1", "B_2"] and [s.published_size for s in strains] == ["", ""]
     assert _parse_catalogue(json.dumps({"models": []})) == []
 
 
@@ -203,7 +268,8 @@ def _catalogue_main(calls: list[list[str]], ids: list[str], rc: int = 0, err: st
         if err:
             print(err, file=sys.stderr)
         if rc == 0:
-            print(json.dumps({"models": [{"id": i} for i in ids]}, indent=2))
+            models = [{"id": i, "published_size": "15M"} for i in ids]
+            print(json.dumps({"models": models}, indent=2))
         return rc
 
     return fake_main
@@ -212,15 +278,53 @@ def _catalogue_main(calls: list[list[str]], ids: list[str], rc: int = 0, err: st
 def test_list_runs_the_cli_with_the_project_catalogue(window, monkeypatch) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr("cmig.cli.main.main", _catalogue_main(calls, [STRAIN]))
-    assert window._agora2_list("Roseburia") == [STRAIN]
+    found = window._agora2_list("Roseburia")
+    assert found == [STRAIN] and found[0].published_size == "15M"
     argv = calls[0]
     assert argv[0] == "agora2-list" and _arg(argv, "--format") == "json"
-    assert _arg(argv, "--genus") == "Roseburia"
+    assert _arg(argv, "--match") == "Roseburia" and "--genus" not in argv
     assert Path(_arg(argv, "--catalogue")) == _agora2_dir(window) / "agora2_catalogue.json"
     assert "--out" not in argv  # the cache location is --catalogue, nothing else
-    window._agora2_list("butyr")
-    assert _arg(calls[1], "--match") == "butyr" and "--genus" not in calls[1]
-    assert Path(_arg(calls[1], "--catalogue")) == _agora2_dir(window) / "agora2_catalogue.json"
+
+
+@pytest.mark.parametrize(
+    ("query", "pattern"),
+    [
+        ("Roseb", "Roseb"),  # a partial genus
+        ("Roseburia hominis", "Roseburia_hominis"),  # "Genus species" reads like the id
+        ("  Roseburia   hominis ", "Roseburia_hominis"),
+        ("butyr", "butyr"),
+        ("a.b+c", r"a\.b\+c"),  # text, not a regular expression
+        ("-bad", r"\-bad"),  # never read as an option
+    ],
+)
+def test_list_matches_the_id_case_insensitively_for_any_query(
+    window, monkeypatch, query: str, pattern: str
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr("cmig.cli.main.main", _catalogue_main(calls, [STRAIN]))
+    window._agora2_list(query)
+    assert _arg(calls[0], "--match") == pattern
+    parsed = build_parser().parse_args(calls[0])  # the real CLI accepts exactly this
+    assert parsed.match == pattern and parsed.genus is None
+
+
+@pytest.mark.parametrize("query", ["Roseb", "roseburia", "Roseburia hominis", "HOMINIS_a2"])
+def test_a_partial_genus_or_a_genus_and_species_finds_the_id(window, monkeypatch, query) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr("cmig.cli.main.main", _catalogue_main(calls, [STRAIN]))
+    window._agora2_list(query)
+    pattern = _arg(calls[0], "--match")
+    assert re.search(pattern, STRAIN, re.IGNORECASE)  # the CLI matches with IGNORECASE
+    assert not re.search(pattern, "Bacteroides_ovatus_ATCC_8483", re.IGNORECASE)
+
+
+def test_list_rejects_a_blank_query(window, monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr("cmig.cli.main.main", _catalogue_main(calls, [STRAIN]))
+    with pytest.raises(ValueError, match="Enter part of"):
+        window._agora2_list("   ")
+    assert calls == []
 
 
 def test_list_failure_raises_with_the_cli_message_and_restores_stdout(
@@ -286,21 +390,23 @@ def test_fetch_uses_cli_into_project_agora2_folder(tmp_path: Path, monkeypatch) 
     w.runner.result(job, timeout=10)
     w._poll_completed_jobs()
     argv = calls[0]
+    agora2 = w.session.project.models_dir / "agora2"
     assert argv[:1] == ["agora2-fetch"]
     assert argv[argv.index("--strain") + 1] == "Roseburia_hominis_A2_183"
-    assert Path(argv[argv.index("--out") + 1]) == w.session.project.models_dir / "agora2"
+    batch = Path(argv[argv.index("--out") + 1])  # one folder per download, under models/agora2
+    assert batch.parent == agora2 and BATCH_NAME.fullmatch(batch.name)
     assert "--yes" in argv and argv[argv.index("--format") + 1] == "json"
-    assert Path(_arg(argv, "--catalogue")) == (
-        w.session.project.models_dir / "agora2" / "agora2_catalogue.json"
-    )
-    assert added and added[0][0].parent == w.session.project.models_dir / "agora2"
+    assert Path(_arg(argv, "--catalogue")) == agora2 / "agora2_catalogue.json"  # shared cache
+    assert added and added[0][0].parent == batch
+    parsed = build_parser().parse_args(argv)  # the real CLI accepts exactly this
+    assert parsed.strain == "Roseburia_hominis_A2_183" and parsed.yes and parsed.format == "json"
     w.close_project()
 
 
 def test_fetch_shows_the_command_in_activity_and_registers_every_file(
     window, monkeypatch
 ) -> None:
-    ids = (STRAIN, "Roseburia_intestinalis_L1_82")
+    ids = (STRAIN, OTHER)
     monkeypatch.setattr("cmig.cli.main.main", _writing_main([], ids))
     added: list[list[Path]] = []
     monkeypatch.setattr(window, "add_model_paths", lambda paths, **k: added.append(paths) or "j")
@@ -319,7 +425,72 @@ def test_a_fetch_joins_the_project_once_it_is_registered(window, monkeypatch) ->
     _wait_fetch(window, job)
     _wait_import(window)
     assert [m.id for m in window.session.project.models] == [STRAIN]
-    assert (_agora2_dir(window) / f"{STRAIN}.json").exists()  # the download stays as provenance
+    (batch,) = _batches(window)
+    assert (batch / f"{STRAIN}.json").exists()  # the download stays beside its manifest
+    assert (batch / "agora2_manifest.json").exists()
+
+
+def test_each_download_keeps_its_own_batch_folder_and_manifest(window, monkeypatch) -> None:
+    calls: list[list[str]] = []
+    for strain in (STRAIN, OTHER):
+        monkeypatch.setattr("cmig.cli.main.main", _writing_main(calls, (strain,)))
+        job = window._agora2_fetch([strain])
+        _wait_fetch(window, job)
+        _wait_import(window)
+    first, second = _batches(window)
+    assert first != second and all(BATCH_NAME.fullmatch(b.name) for b in (first, second))
+    assert {Path(_arg(c, "--out")) for c in calls} == {first, second}
+    # the second download did not overwrite the first one's provenance
+    assert [m["id"] for m in read_manifest(first)["models"]] == [STRAIN]
+    assert [m["id"] for m in read_manifest(second)["models"]] == [OTHER]
+    assert sorted(m.id for m in window.session.project.models) == sorted([STRAIN, OTHER])
+    # the catalogue cache is shared, beside the batches
+    assert {_arg(c, "--catalogue") for c in calls} == {
+        str(_agora2_dir(window) / "agora2_catalogue.json")
+    }
+
+
+def test_batch_folders_never_reuse_a_name(tmp_path: Path, monkeypatch) -> None:
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 1, 2, 3, 4, 5)
+
+    monkeypatch.setattr("cmig.gui.app.datetime", Frozen)
+    names = [_claim_agora2_batch_dir(tmp_path / "agora2").name for _ in range(3)]
+    assert names == ["20260102-030405", "20260102-030405-2", "20260102-030405-3"]
+
+
+def test_a_download_that_leaves_nothing_leaves_no_batch_folder(window, monkeypatch) -> None:
+    monkeypatch.setattr("cmig.cli.main.main", lambda argv: 2)
+    job = window._agora2_fetch([STRAIN])
+    _wait_fetch(window, job)
+    assert _batches(window) == []
+
+
+def test_a_fetched_model_records_the_url_it_came_from(window, monkeypatch) -> None:
+    ids = (STRAIN, OTHER)
+    monkeypatch.setattr("cmig.cli.main.main", _writing_main([], ids))
+    job = window._agora2_fetch(list(ids))
+    _wait_fetch(window, job)
+    _wait_import(window)
+    entries = {m.id: m for m in window.session.project.models}
+    assert set(entries) == set(ids)
+    for strain in ids:
+        assert entries[strain].source_path == f"{ORIGIN}{strain}.xml"
+        assert entries[strain].source_path.startswith("https://www.vmh.life/")
+
+
+def test_source_overrides_apply_only_to_the_files_named(window, tmp_path: Path) -> None:
+    named, plain = tmp_path / "named.json", tmp_path / "plain.json"
+    named.write_text(_model_json("named"))
+    plain.write_text(_model_json("plain"))
+    job = window.add_model_paths([named, plain], source_overrides={named: "https://example.org/n"})
+    assert job
+    _wait_import(window)
+    entries = {m.id: m for m in window.session.project.models}
+    assert entries["named"].source_path == "https://example.org/n"
+    assert entries["plain"].source_path == str(plain.resolve())
 
 
 def test_the_gate_stays_closed_from_fetch_through_registration(window, monkeypatch) -> None:
@@ -432,24 +603,53 @@ def test_a_clean_exit_that_produced_no_file_is_a_failure(window, monkeypatch) ->
     assert window.session.project.models == []
 
 
-def test_a_partial_fetch_registers_what_arrived_and_reports_the_rest(
-    window, monkeypatch
-) -> None:
-    inner = _writing_main([], (STRAIN,))
-
-    def partial(argv: list[str]) -> int:
-        inner(argv)
-        print("Other_strain_1: repaired SBML still does not parse", file=sys.stderr)
-        return 1
-
+def test_a_partial_fetch_registers_only_what_the_manifest_records(window, monkeypatch) -> None:
+    # Other_strain_1 failed: a file of that name is in the folder, but the manifest omits it.
+    partial = _writing_main(
+        [], (STRAIN,), stale=("Other_strain_1",), rc=1,
+        err="Other_strain_1: repaired SBML still does not parse",
+    )
     monkeypatch.setattr("cmig.cli.main.main", partial)
     job = window._agora2_fetch([STRAIN, "Other_strain_1"])
     _wait_fetch(window, job)
-    # the job reads as failed, with the reason on record, but the file that did arrive is added
+    # the job reads as failed, with the reason on record, but the recorded file is added
     assert window.runner.poll(job).status is JobStatus.FAILED
     assert "Other_strain_1" in window._job_logs[job]
     _wait_import(window)
     assert [m.id for m in window.session.project.models] == [STRAIN]
+    (batch,) = _batches(window)
+    assert (batch / "Other_strain_1.json").exists()  # left alone, not registered
+
+
+def test_a_clean_exit_with_a_short_manifest_is_a_failure_that_keeps_the_recorded_part(
+    window, monkeypatch
+) -> None:
+    monkeypatch.setattr("cmig.cli.main.main", _writing_main([], (STRAIN,)))
+    job = window._agora2_fetch([STRAIN, OTHER])  # exit 0, but only one strain is recorded
+    _wait_fetch(window, job)
+    assert window.runner.poll(job).status is JobStatus.FAILED
+    assert "only 1 of 2" in window.statusBar().currentMessage()
+    _wait_import(window)
+    assert [m.id for m in window.session.project.models] == [STRAIN]
+
+
+def test_a_manifest_cannot_point_outside_its_batch_folder(window, monkeypatch) -> None:
+    outside = _agora2_dir(window).parent / "outside.json"
+    outside.write_text(_model_json("outside"))
+
+    def lying(argv: list[str]) -> int:
+        out = Path(_arg(argv, "--out"))
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "agora2_manifest.json").write_text(json.dumps({"models": [
+            {"id": STRAIN, "file": "../../outside.json", "source_url": f"{ORIGIN}x.xml"},
+        ]}))
+        return 0
+
+    monkeypatch.setattr("cmig.cli.main.main", lying)
+    job = window._agora2_fetch([STRAIN])
+    _wait_fetch(window, job)
+    assert window.runner.poll(job).status is JobStatus.FAILED
+    assert not window._import_jobs and window.session.project.models == []
 
 
 def test_a_cancelled_fetch_is_cancelled_and_adds_nothing(window, monkeypatch) -> None:
@@ -472,7 +672,8 @@ def test_a_cancelled_fetch_is_cancelled_and_adds_nothing(window, monkeypatch) ->
     assert window.runner.poll(job).status is JobStatus.CANCELLED
     assert "cancelled" in window.statusBar().currentMessage()
     assert not window._import_jobs and window.session.project.models == []
-    assert (_agora2_dir(window) / f"{STRAIN}.json").exists()  # said, not hidden
+    (batch,) = _batches(window)
+    assert (batch / f"{STRAIN}.json").exists()  # said, not hidden
 
 
 def test_closing_the_project_during_a_fetch_adds_nothing_elsewhere(
@@ -497,25 +698,109 @@ def test_closing_the_project_during_a_fetch_adds_nothing_elsewhere(
     assert (window.session.project.models_dir / "agora2").exists() is False
 
 
-# ── menu action ─────────────────────────────────────────────────────────────────────────
+# ── menu action and the size question ───────────────────────────────────────────────────
+
+MB = 1024**2
+GB = 1024**3
 
 
-def test_the_dialog_hands_its_selection_to_the_fetch(window, monkeypatch) -> None:
+def _pick(monkeypatch, strains: list[Agora2Strain]) -> None:
+    """Make the dialog open already searched, with every listed strain selected, and accept."""
     from cmig.gui import agora2_dialog
 
-    fetched: list[list[str]] = []
-    monkeypatch.setattr(window, "_agora2_fetch", lambda strains: fetched.append(strains) or "j")
-
     def fake_exec(self) -> int:
+        self._list_fn = lambda query: strains
         self.search_input.setText("Roseburia")
-        self._list_fn = lambda query: [STRAIN, "Other_1"]
         self.search_btn.click()
-        self.results.item(0).setSelected(True)
+        self.results.selectAll()
         return 1
 
     monkeypatch.setattr(agora2_dialog.Agora2Dialog, "exec", fake_exec)
+
+
+def _ask(monkeypatch, answer: QMessageBox.StandardButton) -> list[tuple[str, object]]:
+    """Answer the size question; the list collects (text, default button) of each ask."""
+    asked: list[tuple[str, object]] = []
+
+    def question(_parent, _title, text, _buttons=None, default=None):
+        asked.append((text, default))
+        return answer
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
+    return asked
+
+
+def _record_fetches(window, monkeypatch) -> list[list[str]]:
+    fetched: list[list[str]] = []
+    monkeypatch.setattr(window, "_agora2_fetch", lambda strains: fetched.append(strains) or "j")
+    return fetched
+
+
+def test_the_dialog_hands_its_selection_to_the_fetch(window, monkeypatch) -> None:
+    fetched = _record_fetches(window, monkeypatch)
+    _pick(monkeypatch, [Agora2Strain(STRAIN, "15M"), Agora2Strain(OTHER, "15M")])
     window._agora2_dialog()
-    assert fetched == [[STRAIN]]
+    assert fetched == [[STRAIN, OTHER]]
+    assert all(type(s) is str for s in fetched[0])  # plain ids go to the CLI argv
+
+
+def test_a_small_download_is_not_asked_about(window, monkeypatch) -> None:
+    fetched = _record_fetches(window, monkeypatch)
+    _pick(monkeypatch, [Agora2Strain(f"S_{i}", "100M") for i in range(10)])  # 1000 MB < 1 GB
+    window._agora2_dialog()  # the autouse guard fails the test if a question is asked
+    assert len(fetched) == 1
+
+
+def test_exactly_one_gigabyte_is_not_asked_about(window, monkeypatch) -> None:
+    fetched = _record_fetches(window, monkeypatch)
+    _pick(monkeypatch, [Agora2Strain("S_1", "1G")])
+    window._agora2_dialog()
+    assert len(fetched) == 1
+
+
+def test_a_download_over_one_gigabyte_waits_for_a_yes(window, monkeypatch) -> None:
+    fetched = _record_fetches(window, monkeypatch)
+    asked = _ask(monkeypatch, QMessageBox.StandardButton.No)
+    _pick(monkeypatch, [Agora2Strain("S_1", "1G"), Agora2Strain("S_2", "1M")])
+    window._agora2_dialog()
+    assert fetched == []  # declined: nothing starts
+    (text, default), = asked
+    assert "2 strains" in text and "1.0 GB" in text and "very large" not in text
+    assert default == QMessageBox.StandardButton.No  # Enter alone does not start it
+    assert "not started" in window.statusBar().currentMessage()
+    assert not window._agora2_jobs
+
+
+def test_an_accepted_large_download_starts(window, monkeypatch) -> None:
+    fetched = _record_fetches(window, monkeypatch)
+    asked = _ask(monkeypatch, QMessageBox.StandardButton.Yes)
+    _pick(monkeypatch, [Agora2Strain("S_1", "1G"), Agora2Strain("S_2", "1M")])
+    window._agora2_dialog()
+    assert fetched == [["S_1", "S_2"]] and len(asked) == 1
+
+
+def test_eight_gigabytes_or_more_is_called_out_and_still_needs_a_yes(
+    window, monkeypatch
+) -> None:
+    fetched = _record_fetches(window, monkeypatch)
+    asked = _ask(monkeypatch, QMessageBox.StandardButton.No)
+    _pick(monkeypatch, [Agora2Strain("S_1", "8G")])
+    window._agora2_dialog()
+    assert fetched == []
+    assert "very large" in asked[0][0] and "8.0 GB" in asked[0][0]
+
+
+def test_an_unknown_size_needs_a_yes_even_for_one_strain(window, monkeypatch) -> None:
+    fetched = _record_fetches(window, monkeypatch)
+    asked = _ask(monkeypatch, QMessageBox.StandardButton.No)
+    _pick(monkeypatch, [Agora2Strain("S_1", "1M"), Agora2Strain("S_2", "")])
+    window._agora2_dialog()
+    assert fetched == []
+    assert "1 of the 2 selected strains have no published size" in asked[0][0]
+    # a bare id (no size at all) is just as unknown
+    _pick(monkeypatch, [Agora2Strain("S_3")])
+    window._agora2_dialog()
+    assert fetched == [] and len(asked) == 2
 
 
 def test_the_dialog_is_not_opened_while_a_job_holds_the_gate(window, monkeypatch) -> None:
@@ -540,3 +825,39 @@ def test_the_dialog_needs_a_project(monkeypatch) -> None:
     monkeypatch.setattr(agora2_dialog.Agora2Dialog, "exec", lambda self: opened.append(True) or 0)
     w._agora2_dialog()
     assert opened == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("15M", 15 * MB), ("1.5G", int(1.5 * GB)), ("512K", 512 * 1024), ("100", 100),
+     (" 2m ", 2 * MB), ("", None), ("-", None), ("1.2.3", None), ("15 MB", None)],
+)
+def test_published_sizes_read_the_catalogue_notation(text: str, expected) -> None:
+    assert published_bytes(text) == expected
+
+
+def test_the_estimate_counts_unknown_sizes_apart() -> None:
+    strains = [Agora2Strain("A_1", "10M"), Agora2Strain("A_2", ""), Agora2Strain("A_3", "5M"),
+               "A_4"]
+    assert download_estimate(strains) == (15 * MB, 2)
+
+
+def test_the_dialog_shows_the_count_and_size_of_the_selection() -> None:
+    dialog = Agora2Dialog(lambda _q: [
+        Agora2Strain("A_1", "15M"), Agora2Strain("A_2", "5M"), Agora2Strain("A_3", ""),
+    ])
+    dialog.search_input.setText("A")
+    dialog.search_btn.click()
+    assert dialog.selection_summary.text() == ""
+    dialog.results.item(0).setSelected(True)
+    assert dialog.selection_summary.text() == "1 selected · about 15.0 MB to download"
+    dialog.results.item(1).setSelected(True)
+    assert dialog.selection_summary.text() == "2 selected · about 20.0 MB to download"
+    dialog.results.item(2).setSelected(True)
+    assert "3 selected" in dialog.selection_summary.text()
+    assert "1 of unknown size, at least 20.0 MB" in dialog.selection_summary.text()
+    dialog.results.clearSelection()
+    assert dialog.selection_summary.text() == ""
+    dialog.results.item(2).setSelected(True)
+    assert dialog.selection_summary.text() == "1 selected · size unknown"
+    assert [(s, s.published_size) for s in dialog.selected_entries()] == [("A_3", "")]
