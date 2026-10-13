@@ -32,14 +32,12 @@ from PySide6.QtCore import QEventLoop, QObject, QStandardPaths, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
-    QHeaderView,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QSplitter,
     QStackedWidget,
-    QTableWidget,
     QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
@@ -47,15 +45,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from cmig.gui.activity import RuntimeJobsPanel
 from cmig.gui.builder import (
     WEIGHTED_METRICS,
     CommunityBuilderView,
     ConstraintSandboxView,
     ScenarioCompareView,
     SearchView,
-    make_read_only,
     medium_mode_text,
-    read_only_item,
     validate_search_summary,
 )
 from cmig.gui.editors import MediumEditor, ModelManagerPanel
@@ -1037,61 +1034,6 @@ class ProjectExplorer(QTreeWidget):
         if path is not None:
             item.setData(0, Qt.ItemDataRole.UserRole, str(path))
         root.addChild(item)
-
-
-class RuntimeJobsPanel(QTableWidget):
-    """우측 런타임&작업 패널 — JobRunner job 상태 표시(실 소비)."""
-
-    def __init__(self, tr: dict[str, str]) -> None:
-        super().__init__(0, 4)
-        self.setHorizontalHeaderLabels(
-            [tr["col_job"], tr["col_kind"], tr["col_status"], tr["col_progress"]]
-        )
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        make_read_only(self)
-
-    def refresh(
-        self,
-        runner: JobRunner,
-        job_ids: list[str],
-        cancelling: frozenset[str] | set[str] = frozenset(),
-    ) -> None:
-        """JobRunner.poll 로 각 job 의 실제 상태를 표에 반영(orphan 아님).
-
-        A job whose cancel has been *requested* but which is still inside a non-interruptible
-        solver call is shown as `cancelling (solver still running)` rather than plain
-        `running` — the previous label made the cancel look like it had done nothing.
-        """
-        self.setRowCount(len(job_ids))
-        for row, jid in enumerate(job_ids):
-            job = runner.poll(jid)
-            # GUI jobs only check cancellation at run boundaries, so an in-flight MICOM/Gurobi
-            # call keeps burning CPU after cancel(); say so instead of implying it stopped.
-            progress = (
-                f"{job.progress[0]}/{job.progress[1]}"
-                if job.progress and job.progress[1] > 1
-                # 0/1 → 1/1 is a two-state placeholder, not measured progress.
-                else "—"
-            )
-            status = job.status.value
-            if jid in cancelling and job.status in (JobStatus.PENDING, JobStatus.RUNNING):
-                status = "cancelling (solver still running)"
-            for col, text in enumerate([job.job_id, job.kind, status, progress]):
-                item = read_only_item(text)
-                if job.error:
-                    item.setToolTip(job.error)
-                if isinstance(job.result, dict) and job.result.get("output_dir"):
-                    item.setToolTip(
-                        f"{job.error or status}\nOutput: {job.result['output_dir']}"
-                    )
-                self.setItem(row, col, item)
-
-    def selected_job_id(self) -> str | None:
-        row = self.currentRow()
-        if row < 0:
-            return None
-        item = self.item(row, 0)
-        return None if item is None else item.text()
 
 
 class JobsBridge(QObject):
