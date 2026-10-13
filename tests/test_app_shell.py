@@ -12,10 +12,12 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QSettings, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.gui.app import CmigMainWindow, build_main_window  # noqa: E402
+from cmig.gui.project_session import RecentProjects  # noqa: E402
+from cmig.gui.sidebar import ANALYSES, ANALYSIS_SEPARATOR_AFTER  # noqa: E402
 from cmig.service import JobRunner, JobStatus  # noqa: E402
 from cmig.service.jobrunner import JobCancelled  # noqa: E402
 
@@ -25,21 +27,18 @@ def _app() -> QApplication:
 
 
 def test_shell_constructs_offscreen():
-    """SC-AP1: 3-pane 셸 offscreen 생성(예외 없음) + 패널 존재."""
+    """SC-AP1: workspace shell offscreen 생성(예외 없음) + 사이드바·작업 창·분석 목록 존재."""
     _app()
     w = build_main_window(lang="ko")
     assert isinstance(w, CmigMainWindow)
-    assert w.explorer.topLevelItemCount() == 3  # 모델·시나리오·실행
+    assert w.sidebar.topLevelItemCount() == 4  # MODELS · MEDIA · ANALYSES · RUNS
+    assert w.jobs_panel is w.activity.jobs
     assert w.jobs_panel.columnCount() == 4
-    assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == [
-        "모델",
-        "탐색",
-        "숙주",
-        "동역학",
-        "그래프",
-        "외부 프로필",
-    ]
-    assert w.tabs.currentWidget() is w.search_view
+    analyses = w.sidebar.topLevelItem(2)
+    listed = [analyses.child(i).text(0) for i in range(analyses.childCount())
+              if analyses.child(i).data(0, Qt.ItemDataRole.UserRole)]
+    assert listed == [label for _key, label in ANALYSES]
+    assert w.pages.currentWidget() is w.welcome_page
     assert w.sweep_view.runner is w.runner
     assert w.search_view is not None
     assert "CMIG" in w.windowTitle()
@@ -51,66 +50,63 @@ def test_i18n_ko_en():
     ko = build_main_window(lang="ko")
     en = build_main_window(lang="en")
     default = build_main_window()
-    assert ko.tr_map["explorer"] == "프로젝트 탐색기"
-    assert en.tr_map["explorer"] == "Project Explorer"
-    assert ko.open_run_action.text() == "실행 열기"
-    assert default.open_run_action.text() == "Open Run"
+    assert ko.tr_map["ready"] == "준비됨"
+    assert en.tr_map["ready"] == "Ready"
+    # Workspace chrome (menus, toolbar) is English in every language: localisation is frozen.
+    assert ko.open_run_action.text() == default.open_run_action.text() == "Open Run…"
     assert ko.statusBar().currentMessage() == "준비됨"
     assert default.statusBar().currentMessage() == "Ready"
 
 
-def test_project_explorer_add_model():
-    """SC-AP3: ProjectExplorer 모델 추가."""
+def test_sidebar_lists_project_models(tmp_path):
+    """SC-AP3: 프로젝트 모델이 사이드바 MODELS에 보인다."""
+    from gui_project_helpers import make_project
+
     _app()
+    make_project(tmp_path / "p", ["e_coli_core"])
     w = build_main_window()
-    w.explorer.add_model("e_coli_core")
-    models_root = w.explorer.topLevelItem(0)
+    w.recent = RecentProjects(QSettings(str(tmp_path / "recent.ini"), QSettings.Format.IniFormat))
+    assert w.open_project(tmp_path / "p")
+    models_root = w.sidebar.topLevelItem(0)
     assert models_root.childCount() == 1
-    assert models_root.child(0).text(0) == "e_coli_core"
+    assert models_root.child(0).data(0, Qt.ItemDataRole.UserRole) == "e_coli_core"
+    assert models_root.child(0).text(0).endswith("e_coli_core")
+    w.close_project()
 
 
 def test_shell_has_file_workflow_actions():
-    """GUI shell 이 파일 열기/fixture 실행 액션을 노출한다."""
+    """GUI shell 이 모델 추가/실행 열기/데모 실행/분석 액션을 노출한다."""
     _app()
     w = build_main_window()
-    assert w.import_model_action.text() == "Import Model"
-    assert w.open_run_action.text() == "Open Run"
-    assert w.run_fixture_action.text() == "Run Fixture"
-    assert w.advanced_tools_action.text() == "Show Advanced Tools"
+    assert w.add_models_action.text() == "Add Models…"
+    assert w.open_run_action.text() == "Open Run…"
+    assert w.demo_run_action.text() == "Try Demo Run"
+    assert set(w.analysis_actions) == {key for key, _label in ANALYSES}
 
 
-def test_advanced_tabs_are_hidden_until_requested():
-    """Non-primary tools should not look like unfinished default workflows."""
+def test_advanced_tools_are_listed_apart_and_open_on_request():
+    """Non-primary tools should not look like unfinished default workflows: they sit after
+    the ANALYSES separator, are not shown by default, and open with show_analysis."""
     _app()
     w = build_main_window()
-    assert w.tabs.indexOf(w.community_builder) == -1
-    assert w.tabs.indexOf(w.medium_editor) == -1
-    assert w.tabs.indexOf(w.sweep_view) == -1
-    assert w.tabs.indexOf(w.sandbox_view) == -1
-    assert w.tabs.indexOf(w.scenario_compare) == -1
-    w.advanced_tools_action.setChecked(True)
-    labels = [w.tabs.tabText(i) for i in range(w.tabs.count())]
-    assert {"Community", "Medium", "Sweep", "Sandbox", "Compare"} <= set(labels)
-    assert w.advanced_tools_action.text() == "Hide Advanced Tools"
+    keys = [key for key, _label in ANALYSES]
+    advanced = keys[keys.index(ANALYSIS_SEPARATOR_AFTER) + 1:]
+    assert advanced == ["community", "medium", "sweep", "sandbox", "compare"]
+    pages = [w.community_builder, w.medium_editor, w.sweep_view, w.sandbox_view,
+             w.scenario_compare]
+    assert w.pages.currentWidget() not in pages
+    for key, page in zip(advanced, pages, strict=True):
+        w.show_analysis(key)
+        assert w.pages.currentWidget() is page
     assert "Advanced preview" in w.community_builder.status.text()
     assert "Advanced editor" in w.medium_editor.status.text()
     assert "Advanced result view" in w.sweep_view.status.text()
     assert "Advanced sandbox" in w.sandbox_view.status.text()
     assert "Advanced preview" in w.scenario_compare.status.text()
-    w.advanced_tools_action.setChecked(False)
-    assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == [
-        "Models",
-        "Search",
-        "Host",
-        "Dynamics",
-        "Graph",
-        "Profile",
-    ]
-    assert w.advanced_tools_action.text() == "Show Advanced Tools"
 
 
-def test_load_run_dir_updates_profile_and_explorer(tmp_path):
-    """Open Run 워크플로: tidy run 디렉터리 → Profile 탭 + run explorer."""
+def test_load_run_dir_updates_profile_and_runs_list(tmp_path):
+    """Open Run 워크플로: tidy run 디렉터리 → Profile 화면 + 사이드바 RUNS."""
     from cmig.core.tidy import empty_bundle
 
     _app()
@@ -118,17 +114,19 @@ def test_load_run_dir_updates_profile_and_explorer(tmp_path):
     w = build_main_window()
     (tmp_path / "manifest.json").write_text('{"run_hash": "abc1234567890"}\n')
     w.load_run_dir(tmp_path)
-    runs_root = w.explorer.topLevelItem(2)
+    runs_root = w.sidebar.topLevelItem(3)
     assert runs_root.childCount() == 1
-    assert runs_root.child(0).text(0) == tmp_path.name
+    assert runs_root.child(0).data(0, Qt.ItemDataRole.UserRole) == str(tmp_path.resolve())
+    assert tmp_path.name in runs_root.child(0).text(0)
     assert w.profile_view.table.rowCount() == 0
     assert w.current_manifest["run_hash"] == "abc1234567890"
     assert "elements" in w.current_graph_payload
-    assert w.tabs.currentWidget() is w.profile_view
+    assert w.pages.currentWidget() is w.community_result_page
+    assert w.community_result_page.currentWidget() is w.profile_view
 
 
-def test_project_explorer_run_double_click_reopens_run(tmp_path):
-    """Runs in Project Explorer should reopen their stored output directory."""
+def test_runs_list_entry_reopens_run(tmp_path):
+    """Runs in the sidebar RUNS list should reopen their stored output directory."""
     from cmig.core.tidy import empty_bundle
 
     _app()
@@ -136,15 +134,18 @@ def test_project_explorer_run_double_click_reopens_run(tmp_path):
     (tmp_path / "manifest.json").write_text('{"run_hash": "abc1234567890"}\n')
     w = build_main_window()
     w.load_run_dir(tmp_path)
-    w.tabs.setCurrentWidget(w.search_view)
-    item = w.explorer.topLevelItem(2).child(0)
-    w._open_explorer_item(item, 0)
-    assert w.tabs.currentWidget() is w.profile_view
-    assert w.explorer.topLevelItem(2).childCount() == 1
+    w._show_page(w.search_view)
+    item = w.sidebar.topLevelItem(3).child(0)
+    w._open_run_entry(Path(item.data(0, Qt.ItemDataRole.UserRole)))
+    assert w.pages.currentWidget() is w.community_result_page
+    assert w.community_result_page.currentWidget() is w.profile_view
+    assert w.sidebar.topLevelItem(3).childCount() == 1
+    # the inspector replaces the status-bar Integrity details
+    assert "Artifact integrity" in w.inspector.details.toPlainText()
 
 
-def test_project_explorer_run_without_viewer_keeps_current_run(tmp_path):
-    """Double-clicking a registered search/sweep run must not wipe the community run on screen."""
+def test_runs_list_entry_without_viewer_keeps_current_run(tmp_path):
+    """Opening a registered search/sweep run must not wipe the community run on screen."""
     from cmig.core.tidy import empty_bundle
 
     _app()
@@ -160,12 +161,11 @@ def test_project_explorer_run_without_viewer_keeps_current_run(tmp_path):
     w.load_run_dir(tidy)
     assert w.current_manifest == {"run_hash": "abc1234567890"}
     w._register_run_output(search)
-    runs = w.explorer.topLevelItem(2)
-    item = next(
-        runs.child(i) for i in range(runs.childCount())
-        if runs.child(i).data(0, Qt.ItemDataRole.UserRole) == str(search)
-    )
-    w._open_explorer_item(item, 0)
+    runs = w.sidebar.topLevelItem(3)
+    assert str(search.resolve()) in [
+        runs.child(i).data(0, Qt.ItemDataRole.UserRole) for i in range(runs.childCount())
+    ]
+    w._open_run_entry(search)
     # the community run is still the one on screen, and the status bar says why
     assert w.current_manifest == {"run_hash": "abc1234567890"}
     assert "search" in w.statusBar().currentMessage()
@@ -194,11 +194,11 @@ def test_load_host_microbe_bigg_dir_updates_host_tab(tmp_path):
     (tmp_path / "host_uptake.csv").write_text("metabolite,uptake_flux\nac,1.25\n")
     w = build_main_window()
     assert w.load_host_microbe_bigg_dir(tmp_path) is True
-    assert w.tabs.currentWidget() is w.host_view
+    assert w.pages.currentWidget() is w.host_view
     assert w.host_view.iface_table.rowCount() == 1
     assert w.host_view.cross_table.rowCount() == 1
     assert w.host_view.cross_table.item(0, 0).text() == "ac"
-    assert w.explorer.topLevelItem(2).child(0).text(0) == tmp_path.name
+    assert tmp_path.name in w.sidebar.topLevelItem(3).child(0).text(0)
 
 
 def test_load_dfba_dir_updates_dynamics_tab(tmp_path):
@@ -217,7 +217,7 @@ def test_load_dfba_dir_updates_dynamics_tab(tmp_path):
     )
     w = build_main_window()
     assert w.load_dfba_dir(tmp_path) is True
-    assert w.tabs.currentWidget() is w.dynamics_view
+    assert w.pages.currentWidget() is w.dynamics_view
     assert w.dynamics_view.table.item(0, 0).text() == "dFBA"
     assert "biomass=0.02" in w.dynamics_view.table.item(0, 3).text()
 
@@ -238,7 +238,7 @@ def test_load_spatial_dir_updates_dynamics_tab(tmp_path):
     )
     w = build_main_window()
     assert w.load_spatial_dir(tmp_path) is True
-    assert w.tabs.currentWidget() is w.dynamics_view
+    assert w.pages.currentWidget() is w.dynamics_view
     assert w.dynamics_view.table.item(0, 0).text() == "Spatial"
     assert "range=0..10" in w.dynamics_view.table.item(0, 3).text()
 
@@ -293,7 +293,6 @@ def test_import_model_file_updates_model_manager(monkeypatch):
     monkeypatch.setattr("cmig.io.model_import.import_model", fake_import_model)
     assert w.import_model_file("/tmp/toy.xml") is True
     assert "toy" in w.model_manager.summary_label.text()
-    assert w.explorer.topLevelItem(0).child(0).text(0) == "toy"
     assert w.current_model_review["model"]["model_id"] == "toy"
 
 
@@ -319,7 +318,7 @@ def test_run_fixture_uses_jobrunner_and_loads_completed_run(tmp_path, monkeypatc
     assert w.runner.poll(jid).kind == "solve_fixture"
     runner.result(jid, timeout=5)
     assert w.load_completed_fixture(jid) is True
-    assert w.explorer.topLevelItem(2).childCount() == 1
+    assert w.sidebar.topLevelItem(3).childCount() == 1
     runner.shutdown()
 
 
@@ -344,7 +343,7 @@ def test_poll_completed_fixture_auto_loads_run(tmp_path, monkeypatch):
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
     assert jid not in w._fixture_jobs
-    assert w.explorer.topLevelItem(2).childCount() == 1
+    assert w.sidebar.topLevelItem(3).childCount() == 1
     assert w.current_manifest["run_hash"] == "fixturehash"
     runner.shutdown()
 
@@ -681,7 +680,7 @@ def test_host_microbe_run_button_uses_product_command(monkeypatch, tmp_path):
     assert "--include-currency-metabolites" in seen["argv"]
     assert seen["argv"][seen["argv"].index("--biomass-basis-kind") + 1] == "measured"
     assert "Methods section" in seen["argv"][seen["argv"].index("--biomass-basis-source") + 1]
-    assert w.tabs.currentWidget() is w.host_view
+    assert w.pages.currentWidget() is w.host_view
     assert w.host_view.cross_table.rowCount() == 1
     assert w.host_view.network_payload is not None
     runner.shutdown()

@@ -208,29 +208,29 @@ def test_integrity_and_malformed_manifest_are_distinct(tmp_path):
     run = tmp_path / "run"
     _small_dfba_run(run)
     assert window.load_dfba_dir(run)
-    assert window.integrity_label.text() == "Integrity: verified"
+    assert window._last_integrity == "Integrity: verified"
     (run / "dfba_summary.json").write_text(json.dumps({
         "status": "completed", "final_t": 2.0, "final_biomass": 0.2,
         "final_concentrations": {}, "warnings": [],
     }))
     assert window.load_dfba_dir(run)
-    assert window.integrity_label.text() == "Integrity: mismatch"
+    assert window._last_integrity == "Integrity: mismatch"
     assert "dfba_summary.json" in window._integrity_detail
     modern_without_digest = json.loads((run / "manifest.json").read_text())
     modern_without_digest.pop("result_digest")
     (run / "manifest.json").write_text(json.dumps(modern_without_digest))
     assert window.load_dfba_dir(run) is False
-    assert window.integrity_label.text() == "Integrity: invalid/unreadable"
+    assert window._last_integrity == "Integrity: invalid/unreadable"
     (run / "manifest.json").write_text("null")
     assert window.load_dfba_dir(run) is False
-    assert window.integrity_label.text() == "Integrity: invalid/unreadable"
+    assert window._last_integrity == "Integrity: invalid/unreadable"
     assert window.dynamics_view.table.rowCount() == 0
     (run / "manifest.json").write_text("[]")
     assert window.load_dfba_dir(run) is False
-    assert window.integrity_label.text() == "Integrity: invalid/unreadable"
+    assert window._last_integrity == "Integrity: invalid/unreadable"
     (run / "manifest.json").unlink()
     assert window.load_dfba_dir(run)
-    assert window.integrity_label.text() == "Integrity: not_recorded"
+    assert window._last_integrity == "Integrity: not_recorded"
     (run / "dfba_summary.json").write_text(json.dumps({
         "status": "failed", "final_t": None, "final_biomass": None,
         "final_concentrations": {"glc": None}, "warnings": [],
@@ -260,7 +260,7 @@ def test_missing_declared_artifact_is_mismatch_and_host_null_is_unknown(tmp_path
     (run / "extra.csv").unlink()
     window = build_main_window()
     assert window.load_dfba_dir(run)
-    assert window.integrity_label.text() == "Integrity: mismatch"
+    assert window._last_integrity == "Integrity: mismatch"
     assert "missing=extra.csv" in window._integrity_detail
     window.close()
 
@@ -288,7 +288,7 @@ def test_spatial_and_host_direct_readback_report_integrity(tmp_path):
         "warnings": [],
     }))
     assert window.load_spatial_dir(spatial)
-    assert window.integrity_label.text() == "Integrity: not_recorded"
+    assert window._last_integrity == "Integrity: not_recorded"
     digest = artifact_result_digest(spatial, "spatial", ["spatial_summary.json"])
     (spatial / "manifest.json").write_text(json.dumps({
         "manifest_scope": "workflow", "manifest_schema_version": "1.2",
@@ -296,13 +296,13 @@ def test_spatial_and_host_direct_readback_report_integrity(tmp_path):
         "result_digest": digest,
     }))
     assert window.load_spatial_dir(spatial)
-    assert window.integrity_label.text() == "Integrity: verified"
+    assert window._last_integrity == "Integrity: verified"
     (spatial / "spatial_summary.json").write_text(json.dumps({
         "status": "degraded", "final_t": 1, "final_min": 0, "final_max": 1,
         "warnings": ["changed after recording"],
     }))
     assert window.load_spatial_dir(spatial)
-    assert window.integrity_label.text() == "Integrity: mismatch"
+    assert window._last_integrity == "Integrity: mismatch"
 
     host = tmp_path / "host"
     host.mkdir()
@@ -314,7 +314,7 @@ def test_spatial_and_host_direct_readback_report_integrity(tmp_path):
         "microbial_secretion": {"ac": 1.0}, "warnings": ["transfer ambiguous"],
     }))
     assert window.load_host_microbe_bigg_dir(host)
-    assert window.integrity_label.text() == "Integrity: not_recorded"
+    assert window._last_integrity == "Integrity: not_recorded"
     assert "unknown [0, 1]" == window.host_view.cross_table.item(0, 1).text()
     digest = artifact_result_digest(host, "host_microbe_bigg", [host_summary.name])
     (host / "manifest.json").write_text(json.dumps({
@@ -323,10 +323,10 @@ def test_spatial_and_host_direct_readback_report_integrity(tmp_path):
         "result_digest": digest,
     }))
     assert window.load_host_microbe_bigg_dir(host)
-    assert window.integrity_label.text() == "Integrity: verified"
+    assert window._last_integrity == "Integrity: verified"
     host_summary.write_text(host_summary.read_text() + "\n")
     assert window.load_host_microbe_bigg_dir(host)
-    assert window.integrity_label.text() == "Integrity: mismatch"
+    assert window._last_integrity == "Integrity: mismatch"
     window.close()
 
 
@@ -366,7 +366,7 @@ def test_tidy_readback_rejects_wrong_manifest_nested_type_without_stale_state(tm
     }))
     window.load_run_dir(bad)
     assert window.current_manifest is None
-    assert window.integrity_label.text() == "Integrity: invalid/unreadable"
+    assert window._last_integrity == "Integrity: invalid/unreadable"
     assert window.profile_view.table.rowCount() == 0
     window.close()
 
@@ -451,7 +451,7 @@ def test_search_cli_exit_two_retains_actionable_request_detail(monkeypatch, tmp_
     assert runner.poll(jid).status is JobStatus.FAILED
     assert "Invalid Search request" in window.search_view.details.toPlainText()
     assert "output_dir" in window.search_view.details.toPlainText()
-    assert window.explorer.topLevelItem(2).childCount() == 1
+    assert window.sidebar.topLevelItem(3).childCount() == 1
     window.close()
 
 
@@ -491,7 +491,7 @@ def test_real_host_writer_sparse_fva_ranges_round_trip(tmp_path, monkeypatch):
     }
     assert rows == {"ac": "unknown [0.0, 5.0]", "but": "unknown [0.0, 5.0]"}
     assert window.host_view.iface_table.rowCount() == 0
-    assert window.integrity_label.text() == "Integrity: verified"
+    assert window._last_integrity == "Integrity: verified"
     json_only = tmp_path / "json_only"
     json_only.mkdir()
     (json_only / "host_microbe_bigg_summary.json").write_bytes(
@@ -509,7 +509,7 @@ def test_real_host_writer_sparse_fva_ranges_round_trip(tmp_path, monkeypatch):
     assert window.load_host_microbe_bigg_dir(zero)
     assert window.host_view.cross_table.rowCount() == 1
     assert window.host_view.cross_table.item(0, 1).text() == "0"
-    assert window.integrity_label.text() == "Integrity: not_recorded"
+    assert window._last_integrity == "Integrity: not_recorded"
     contradictory = tmp_path / "contradictory_point"
     contradictory.mkdir()
     identified["microbe_to_host"] = {"ac": 2.0}
@@ -568,7 +568,7 @@ def test_real_host_writer_sparse_fva_ranges_round_trip(tmp_path, monkeypatch):
         for i in range(window.host_view.cross_table.rowCount())
     }
     assert zero_cells["ac"] == "0"
-    assert window.integrity_label.text() == "Integrity: verified"
+    assert window._last_integrity == "Integrity: verified"
     assert not any(
         element.get("data", {}).get("etype") == "cross_feeding"
         and element["data"].get("metabolite") == "ac"
@@ -684,7 +684,7 @@ def test_real_cli_input_failure_retains_exact_path(tmp_path, missing):
     _search_run(prior, {"status": "ok", "strategy": "exhaustive", "top_ranked": [],
                         "warnings": []})
     assert window.load_search_dir(prior)
-    assert window.integrity_label.text() == "Integrity: verified"
+    assert window._last_integrity == "Integrity: verified"
     pool = tmp_path / "pool"
     pool.mkdir()
     if missing == "medium":
@@ -707,13 +707,13 @@ def test_real_cli_input_failure_retains_exact_path(tmp_path, missing):
     failed_run = Path(runner.poll(jid).result["output_dir"]).resolve()
     assert window.search_view.current_run_dir == failed_run
     assert window.current_search_dir == failed_run
-    assert window.integrity_label.text() == "Integrity: not_recorded"
+    assert window._last_integrity == "Integrity: not_recorded"
     assert str(failed_run) in window._integrity_detail
     assert "no_manifest" in window._integrity_detail
     assert str(prior) not in window._integrity_detail
     assert str(failed_run) in window.search_view.details.toPlainText()
     assert "search failed (rc=2)" in window.search_view.status.text()
-    assert window.explorer.topLevelItem(2).childCount() == 2
+    assert window.sidebar.topLevelItem(3).childCount() == 2
     assert not window.search_view.export_figure_btn.isEnabled()
     window.close()
 
@@ -744,10 +744,10 @@ def test_verified_search_rejects_malformed_rank_records_after_good_run(tmp_path,
     assert window.current_search_dir is None
     assert window.search_view.table.rowCount() == 0
     assert not window.search_view.export_figure_btn.isEnabled()
-    assert window.integrity_label.text() == "Readback: invalid/unreadable"
+    assert window._last_integrity == "Readback: invalid/unreadable"
     assert f"Run: {bad}" in window._integrity_detail
     assert "Artifact digest: verified" in window._integrity_detail
-    assert window.explorer.topLevelItem(2).childCount() == 1
+    assert window.sidebar.topLevelItem(3).childCount() == 1
     window.close()
 
 
@@ -766,7 +766,7 @@ def test_search_nullable_numeric_readouts_remain_unknown(tmp_path):
         "—", "—", "—"]
     assert window.search_view.table.item(1, 2).text() == "2.5"
     assert window.search_view.table.item(1, 3).text() == "3.5"
-    assert window.integrity_label.text() == "Integrity: verified"
+    assert window._last_integrity == "Integrity: verified"
     window.close()
 
 
@@ -804,10 +804,10 @@ def test_completed_search_rejects_verified_malformed_rank(monkeypatch, tmp_path,
     assert window.current_search_dir is None
     assert window.search_view.table.rowCount() == 0
     assert not window.search_view.export_figure_btn.isEnabled()
-    assert window.integrity_label.text() == "Readback: invalid/unreadable"
+    assert window._last_integrity == "Readback: invalid/unreadable"
     assert str(out_dir) in window._integrity_detail
     assert "Artifact digest: verified" in window._integrity_detail
-    assert window.explorer.topLevelItem(2).childCount() == 1
+    assert window.sidebar.topLevelItem(3).childCount() == 1
     window.close()
 
 
@@ -843,10 +843,10 @@ def test_failed_search_rejects_verified_malformed_rank(monkeypatch, tmp_path):
     window._poll_completed_jobs()
     assert window.search_view.current_run_dir is None
     assert window.current_search_dir is None
-    assert window.integrity_label.text() == "Readback: invalid/unreadable"
+    assert window._last_integrity == "Readback: invalid/unreadable"
     assert str(out_dir) in window._integrity_detail
     assert "Artifact digest: verified" in window._integrity_detail
-    assert window.explorer.topLevelItem(2).childCount() == 1
+    assert window.sidebar.topLevelItem(3).childCount() == 1
     window.close()
 
 
@@ -872,11 +872,11 @@ def test_rejected_host_objective_keeps_complete_previous_view(tmp_path):
             "artifacts": ["host_microbe_bigg_summary.json"], "result_digest": digest,
         }))
     assert window.load_host_microbe_bigg_dir(good)
-    before = (window.integrity_label.text(), window._integrity_detail,
+    before = (window._last_integrity, window._integrity_detail,
               window.host_view.current_run_dir, window.current_host_microbe_dir,
               window.host_view.viability_label.text())
     assert window.load_host_microbe_bigg_dir(bad) is False
-    assert before == (window.integrity_label.text(), window._integrity_detail,
+    assert before == (window._last_integrity, window._integrity_detail,
                       window.host_view.current_run_dir, window.current_host_microbe_dir,
                       window.host_view.viability_label.text())
     assert str(bad) in window.statusBar().currentMessage()
@@ -911,7 +911,7 @@ def test_valid_digest_cannot_certify_invalid_summary_schema(tmp_path, kind):
         "result_digest": artifact_result_digest(prior, kind, [filename]),
     }))
     assert getattr(window, f"load_{kind}_dir")(prior)
-    assert window.integrity_label.text() == "Integrity: verified"
+    assert window._last_integrity == "Integrity: verified"
     run = tmp_path / kind
     run.mkdir()
     (run / filename).write_text(json.dumps(summary))
@@ -922,7 +922,7 @@ def test_valid_digest_cannot_certify_invalid_summary_schema(tmp_path, kind):
     }))
     loaded = getattr(window, f"load_{kind}_dir")(run)
     assert loaded is False
-    assert window.integrity_label.text() == "Readback: invalid/unreadable"
+    assert window._last_integrity == "Readback: invalid/unreadable"
     assert "Artifact digest: verified" in window._integrity_detail
     view_status = (window.search_view.status if kind == "search"
                    else window.dynamics_view.status).text()
@@ -956,8 +956,8 @@ def test_failed_search_invalid_manifest_is_not_published(monkeypatch, tmp_path):
     window._poll_completed_jobs()
     assert window.current_search_dir is None
     assert window.search_view.current_run_dir is None
-    assert window.explorer.topLevelItem(2).childCount() == 0
-    assert window.integrity_label.text() == "Integrity: invalid/unreadable"
+    assert window.sidebar.topLevelItem(3).childCount() == 0
+    assert window._last_integrity == "Integrity: invalid/unreadable"
     window.close()
 
 
@@ -977,8 +977,8 @@ def test_missing_essential_tidy_nodes_is_readback_failure(tmp_path):
     (run / "nodes.parquet").unlink()
     window = build_main_window()
     window.load_run_dir(run)
-    assert window.integrity_label.text() == "Readback: invalid/unreadable"
+    assert window._last_integrity == "Readback: invalid/unreadable"
     assert "missing essential nodes.parquet" in window._integrity_detail
     assert window.current_manifest is None
-    assert window.explorer.topLevelItem(2).childCount() == 0
+    assert window.sidebar.topLevelItem(3).childCount() == 0
     window.close()

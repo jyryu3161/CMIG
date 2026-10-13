@@ -398,7 +398,7 @@ def test_window_fits_with_inspector_content(tmp_path):
         window.load_run_dir(run)
         view = window.search_view
         _inspect(view, _row_for(view, 1))
-        window.tabs.setCurrentWidget(view)
+        window._show_page(view)
         for size in ((1280, 800), (1500, 950)):
             window.resize(*size)
             window.show()

@@ -787,3 +787,23 @@ class ModelManagerPanel(QWidget):
             self.exchange_table.setItem(i, 0, read_only_item(ex))
         bio = ", ".join(summary.biomass_reactions) or "(not detected)"
         self.biomass_label.setText(f"Biomass: {bio}")
+
+
+_PRESET_METADATA = "provenance_rows.csv"  # shipped beside the presets; not a medium
+
+
+def installed_medium_presets() -> list[str]:
+    """Names (file stems) of the medium presets shipped inside the package."""
+    folder = resources.files("cmig.resources").joinpath("medium_presets")
+    return sorted(
+        item.name[:-4]
+        for item in folder.iterdir()
+        if item.is_file() and item.name.endswith(".csv") and item.name != _PRESET_METADATA
+    )
+
+
+def installed_medium_preset_path(name: str) -> Path:
+    if name not in installed_medium_presets():
+        raise ValueError(f"unknown medium preset {name!r}")
+    folder = resources.files("cmig.resources").joinpath("medium_presets")
+    return Path(str(folder.joinpath(f"{name}.csv")))

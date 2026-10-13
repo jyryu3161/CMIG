@@ -616,7 +616,7 @@ def test_window_fits_with_advanced_settings_expanded():
         window.search_view.medium_input.setText("x" * 200)
         window.search_view.medium_mode_combo.setCurrentIndex(1)
         window.search_view.allow_unknown_medium_check.setChecked(True)
-        window.tabs.setCurrentWidget(window.search_view)
+        window._show_page(window.search_view)
         for size in ((1280, 800), (1500, 950)):
             window.resize(*size)
             window.show()

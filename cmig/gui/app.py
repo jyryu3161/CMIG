@@ -1,10 +1,11 @@
-"""CMIG App Shell — PySide6 3-pane 데스크톱 셸 (Roadmap Phase 0.3, §11).
+"""CMIG App Shell — PySide6 작업 공간 데스크톱 셸.
 
-Design Ref: §11 (Project Explorer·Runtime&Jobs·셸) / cmig-app-shell.design. Plan SC: SC-AP1~AP6.
+Design Ref: docs/superpowers/specs/2026-10-13-gui-workspace-phase1-design.md §5.
+Plan SC: SC-AP1~AP6.
 
-QMainWindow 3-pane(ProjectExplorer | 중앙 | Runtime&Jobs) + JobRunner→Qt bridge(jobs_bridge) +
-i18n(한/영) + 상태바. service(Qt 비의존) 소비. offscreen 실행 검증(QT_QPA_PLATFORM=offscreen) —
-*실행 증거*지 human 시각 QA(G-7b) 아님(별도, 정직 표기).
+QMainWindow 작업 공간(사이드바 | 가운데 화면 | 상세 패널, 아래 작업 창) + 표준 메뉴·툴바 +
+JobRunner→Qt bridge(jobs_bridge) + i18n 카탈로그 + 상태바. service(Qt 비의존) 소비. offscreen
+실행 검증(QT_QPA_PLATFORM=offscreen) — *실행 증거*지 human 시각 QA(G-7b) 아님(별도, 정직 표기).
 
 [정직성] 본 셸은 service facade/JobRunner 를 실제로 소비(orphan UI 아님): RuntimeJobsPanel 이
 JobRunner.poll 로 실 job 상태를 표시.
@@ -28,24 +29,36 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, TextIO, cast
 
-from PySide6.QtCore import QEventLoop, QObject, QStandardPaths, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import (
+    QEventLoop,
+    QItemSelectionModel,
+    QModelIndex,
+    QObject,
+    QStandardPaths,
+    Qt,
+    QTimer,
+)
+from PySide6.QtGui import QAction, QCursor, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
+    QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
-    QMessageBox,
+    QMenu,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QTabWidget,
-    QTreeWidget,
-    QTreeWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from cmig.gui.activity import RuntimeJobsPanel
+from cmig.gui.activity import ActivityPane, RuntimeJobsPanel
 from cmig.gui.builder import (
     WEIGHTED_METRICS,
     CommunityBuilderView,
@@ -55,47 +68,37 @@ from cmig.gui.builder import (
     medium_mode_text,
     validate_search_summary,
 )
-from cmig.gui.editors import MediumEditor, ModelManagerPanel
+from cmig.gui.editors import (
+    MediumEditor,
+    ModelManagerPanel,
+    installed_medium_preset_path,
+    installed_medium_presets,
+)
 from cmig.gui.graph_view import GateBadge, InteractionGraphView
 from cmig.gui.host_view import HostImpactView
+from cmig.gui.inspector import InspectorPanel
+from cmig.gui.project_session import ProjectSession, RecentProjects, RunEntry, inspect_run
+from cmig.gui.sidebar import (
+    ANALYSES,
+    ANALYSIS_SEPARATOR_AFTER,
+    WorkspaceSidebar,
+    droppable_paths,
+)
 from cmig.gui.views import (
     CONTRIBUTION_BASIS_NOTE,
     DfbaSpatialView,
     ExternalProfileView,
     SweepView,
 )
+from cmig.io.project import ProjectError
 from cmig.service import JobRunner, JobStatus
 
 I18N: dict[str, dict[str, str]] = {
     "ko": {
-        "title": "CMIG — 군집 대사 상호작용",
-        "explorer": "프로젝트 탐색기",
-        "models": "모델",
-        "scenarios": "시나리오",
-        "runs": "실행 기록",
-        "jobs": "런타임 및 작업",
         "col_job": "작업",
         "col_kind": "종류",
         "col_status": "상태",
         "col_progress": "진행률",
-        "tab_models": "모델",
-        "tab_search": "탐색",
-        "tab_host": "숙주",
-        "tab_dynamics": "동역학",
-        "tab_graph": "그래프",
-        "tab_profile": "외부 프로필",
-        "tab_community": "군집",
-        "tab_medium": "배지",
-        "tab_sweep": "스윕",
-        "tab_sandbox": "샌드박스",
-        "tab_compare": "비교",
-        "toolbar_workflow": "워크플로",
-        "action_import_model": "모델 가져오기",
-        "action_open_run": "실행 열기",
-        "action_run_fixture": "예제 실행",
-        "action_cancel_job": "선택한 작업 취소",
-        "action_show_advanced": "고급 도구 표시",
-        "action_hide_advanced": "고급 도구 숨기기",
         "kind_sandbox_solve": "샌드박스 계산",
         "kind_fixture_run": "예제 실행",
         "kind_host_microbe": "숙주-미생물 실행",
@@ -366,34 +369,10 @@ I18N: dict[str, dict[str, str]] = {
         "profile_sandbox_commit": "샌드박스 적용",
     },
     "en": {
-        "title": "CMIG — Community Metabolic Interaction",
-        "explorer": "Project Explorer",
-        "models": "Models",
-        "scenarios": "Scenarios",
-        "runs": "Runs",
-        "jobs": "Runtime & Jobs",
         "col_job": "Job",
         "col_kind": "Kind",
         "col_status": "Status",
         "col_progress": "Progress",
-        "tab_models": "Models",
-        "tab_search": "Search",
-        "tab_host": "Host",
-        "tab_dynamics": "Dynamics",
-        "tab_graph": "Graph",
-        "tab_profile": "Profile",
-        "tab_community": "Community",
-        "tab_medium": "Medium",
-        "tab_sweep": "Sweep",
-        "tab_sandbox": "Sandbox",
-        "tab_compare": "Compare",
-        "toolbar_workflow": "Workflow",
-        "action_import_model": "Import Model",
-        "action_open_run": "Open Run",
-        "action_run_fixture": "Run Fixture",
-        "action_cancel_job": "Cancel Selected Job",
-        "action_show_advanced": "Show Advanced Tools",
-        "action_hide_advanced": "Hide Advanced Tools",
         "kind_sandbox_solve": "sandbox solve",
         "kind_fixture_run": "fixture run",
         "kind_host_microbe": "Host-microbe",
@@ -1005,37 +984,6 @@ def _new_search_run_dir(parent: Path) -> Path:
         return candidate.resolve()
 
 
-class ProjectExplorer(QTreeWidget):
-    """좌측 프로젝트 트리(모델·시나리오·실행)."""
-
-    def __init__(self, tr: dict[str, str]) -> None:
-        super().__init__()
-        self.setHeaderLabel(tr["explorer"])
-        self._roots: dict[str, QTreeWidgetItem] = {}
-        for key in ("models", "scenarios", "runs"):
-            item = QTreeWidgetItem([tr[key]])
-            self.addTopLevelItem(item)
-            self._roots[key] = item
-
-    def add_model(self, label: str) -> None:
-        self._roots["models"].addChild(QTreeWidgetItem([label]))
-
-    def add_run(self, label: str, path: str | Path | None = None) -> None:
-        root = self._roots["runs"]
-        path_text = None if path is None else str(path)
-        for i in range(root.childCount()):
-            child = root.child(i)
-            if path_text is not None and child.data(0, Qt.ItemDataRole.UserRole) == path_text:
-                child.setText(0, label)
-                return
-            if path_text is None and child.text(0) == label:
-                return
-        item = QTreeWidgetItem([label])
-        if path is not None:
-            item.setData(0, Qt.ItemDataRole.UserRole, str(path))
-        root.addChild(item)
-
-
 class JobsBridge(QObject):
     """JobRunner(Qt 비의존) → Qt 패널 bridge. QTimer 폴링(GUI 비차단)."""
 
@@ -1077,18 +1025,54 @@ def _read_target_summary(run_dir: Path) -> list[dict[str, Any]] | None:
     return payload if isinstance(payload, list) else None
 
 
+#: WorkspaceSidebar's top-level groups, in row order.
+_SIDEBAR_GROUPS = ("models", "media", "analyses", "runs")
+
+
+def _same_folder(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
+def _integrity_text(inspected: dict[str, Any]) -> object:
+    """Inspector integrity row: the digest state plus which artifacts differ or why none."""
+    state = inspected.get("artifact_integrity")
+    if state == "mismatch":
+        digest = inspected.get("result_digest")
+        digest = digest if isinstance(digest, dict) else {}
+        changed = ", ".join(digest.get("changed_artifacts") or []) or "none"
+        missing = ", ".join(digest.get("missing_artifacts") or []) or "none"
+        return f"mismatch — changed: {changed}; missing: {missing}"
+    if state == "not_recorded" and inspected.get("result_digest_absent_reason"):
+        return f"not_recorded ({inspected['result_digest_absent_reason']})"
+    return state
+
+
 class CmigMainWindow(QMainWindow):
-    """3-pane 메인 윈도우. service(JobRunner) 소비."""
+    """Workspace window: sidebar | centre page | inspector, activity pane below. Consumes
+    the service layer (JobRunner); every analysis runs the CLI."""
 
     def __init__(self, runner: JobRunner | None = None, lang: str = "en") -> None:
         super().__init__()
         self.lang = lang if lang in I18N else "en"
         self.tr_map = I18N[self.lang]
         self.runner = runner if runner is not None else JobRunner(max_workers=2)
-        self.setWindowTitle(self.tr_map["title"])
 
-        self.explorer = ProjectExplorer(self.tr_map)
-        self.jobs_panel = RuntimeJobsPanel(self.tr_map)
+        self.session = ProjectSession(self)
+        self.recent = RecentProjects()
+        self.sidebar = WorkspaceSidebar()
+        # Long preset names share prefixes (…_low_carb vs …_low_carb_x100): keep both ends.
+        self.sidebar.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.inspector = InspectorPanel()
+        self.activity = ActivityPane(self.tr_map)
+        self.jobs_panel = self.activity.jobs
+        self._external_runs: list[RunEntry] = []
+        #: root of the project the centre page was last laid out for (see refresh_workspace)
+        self._shown_root: Path | None = None
+        #: True while a sidebar selection drives the centre page (see _show_page)
+        self._following_sidebar = False
         self.bridge = JobsBridge(self.runner, self.jobs_panel)
         self._fixture_jobs: dict[str, Path] = {}
         # Each Search-tab map holds (out_dir, the answer-determining inputs at submit time)
@@ -1120,10 +1104,6 @@ class CmigMainWindow(QMainWindow):
         self.current_search_dir: Path | None = None
         self.current_host_microbe_dir: Path | None = None
 
-        center = QWidget()
-        layout = QVBoxLayout(center)
-        self.central_stack = QStackedWidget()
-        self.tabs = QTabWidget()
         self.model_manager = ModelManagerPanel()
         self.community_builder = CommunityBuilderView()
         self.medium_editor = MediumEditor(strings=self.tr_map)
@@ -1141,54 +1121,73 @@ class CmigMainWindow(QMainWindow):
         self.search_view = SearchView()
         self.host_view = HostImpactView()
         self.dynamics_view = DfbaSpatialView()
-        self._primary_tabs = [
-            (self.tr_map["tab_models"], self.model_manager),
-            (self.tr_map["tab_search"], self.search_view),
-            (self.tr_map["tab_host"], self.host_view),
-            (self.tr_map["tab_dynamics"], self.dynamics_view),
-            (self.tr_map["tab_graph"], self.graph_tab),
-            (self.tr_map["tab_profile"], self.profile_view),
-        ]
-        self._advanced_tabs = [
-            (self.tr_map["tab_community"], self.community_builder),
-            (self.tr_map["tab_medium"], self.medium_editor),
-            (self.tr_map["tab_sweep"], self.sweep_view),
-            (self.tr_map["tab_sandbox"], self.sandbox_view),
-            (self.tr_map["tab_compare"], self.scenario_compare),
-        ]
-        self._advanced_tabs_visible = False
-        for label, widget in self._primary_tabs:
-            self.tabs.addTab(widget, label)
-        self.tabs.setCurrentWidget(self.search_view)
-        self.central_stack.addWidget(self.tabs)
-        layout.addWidget(self.central_stack)
+        self.central_stack = QStackedWidget()  # kept: set_central() still docks extra views
+        self.pages = self.central_stack
+        self.welcome_page = self._build_welcome_page()
+        self.empty_models_page = self._build_empty_models_page()
+        self.community_result_page = QTabWidget()
+        self.community_result_page.addTab(self.profile_view, "Profile")
+        self.community_result_page.addTab(self.graph_tab, "Graph")
+        self.analysis_pages: dict[str, QWidget] = {
+            "search": self.search_view,
+            "gene_ko": self.search_view,
+            "growth": self.search_view,
+            "host": self.host_view,
+            "dynamics": self.dynamics_view,
+            "community": self.community_builder,
+            "medium": self.medium_editor,
+            "sweep": self.sweep_view,
+            "sandbox": self.sandbox_view,
+            "compare": self.scenario_compare,
+        }
+        for page in [self.welcome_page, self.empty_models_page, self.community_result_page,
+                     self.model_manager, *dict.fromkeys(self.analysis_pages.values())]:
+            self.pages.addWidget(page)
+        self.current_analysis: str | None = None
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        # Without minimum widths the centre widget's size hint squeezed both side panes to
-        # 90 px at the shipped 1500x950 default, making Runtime & Jobs unreadable — and it is
-        # the only surface from which a job can be selected and cancelled.
-        self.explorer.setMinimumWidth(180)
-        self.jobs_panel.setMinimumWidth(260)
-        splitter.setChildrenCollapsible(False)
-        splitter.addWidget(self.explorer)
-        splitter.addWidget(center)
-        splitter.addWidget(self.jobs_panel)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([200, 600, 250])
-        self.setCentralWidget(splitter)
+        vertical = QSplitter(Qt.Orientation.Vertical)
+        horizontal = QSplitter(Qt.Orientation.Horizontal)
+        horizontal.setChildrenCollapsible(False)
+        horizontal.addWidget(self.sidebar)
+        horizontal.addWidget(self.pages)
+        horizontal.addWidget(self.inspector)
+        horizontal.setStretchFactor(1, 1)
+        horizontal.setSizes([220, 760, 280])
+        vertical.addWidget(horizontal)
+        vertical.addWidget(self.activity)
+        vertical.setStretchFactor(0, 1)
+        vertical.setSizes([640, 160])
+        self.activity.setVisible(False)
+        self.setCentralWidget(vertical)
+        self.setAcceptDrops(True)
         self.statusBar().showMessage(self.tr_map["ready"])
-        self.integrity_label = QLabel("Integrity: no run loaded")
-        self.integrity_label.setToolTip("Artifact integrity is checked against the run manifest.")
-        self.statusBar().addPermanentWidget(self.integrity_label)
+        #: Digest state of the last loaded run ("Integrity: verified", "Readback: …").
+        self._last_integrity = "Integrity: no run loaded"
         self._integrity_detail = "No run loaded."
-        self.integrity_details_btn = QPushButton("Integrity details")
-        self.integrity_details_btn.clicked.connect(
-            lambda: QMessageBox.information(self, "Artifact integrity", self._integrity_detail)
-        )
-        self.statusBar().addPermanentWidget(self.integrity_details_btn)
+        self.solver_label = QLabel("")
+        self.statusBar().addPermanentWidget(self.solver_label)
+        self._refresh_solver_label()
         self._install_workflow_actions()
         self._connect_view_actions()
-        self.explorer.itemDoubleClicked.connect(self._open_explorer_item)
+        self.sidebar.selection_changed.connect(self._on_sidebar_selection)
+        self.sidebar.files_dropped.connect(self.add_model_paths)
+        self.sidebar.context_requested.connect(self._show_sidebar_menu)
+        self.activity.cancel_requested.connect(self._cancel_job_id)
+        self.jobs_panel.itemSelectionChanged.connect(self._show_selected_job_detail)
+        self.session.opened.connect(self.refresh_workspace)
+        self.session.closed.connect(self.refresh_workspace)
+        self.session.models_changed.connect(self.refresh_workspace)
+        self.session.media_changed.connect(self.refresh_workspace)
+        self.session.runs_changed.connect(self.refresh_workspace)
+        # An undo/redo whose save failed was rolled back. Report it without a modal dialog:
+        # a nested event loop inside the undo stack's own call can crash QUndoStack.
+        self.session.save_failed.connect(
+            lambda message: self.statusBar().showMessage(
+                f"Could not save the project, so that undo/redo was rolled back: {message}",
+                15000,
+            )
+        )
+        self.refresh_workspace()
         self._completion_timer = QTimer(self)
         self._completion_timer.setInterval(500)
         self._completion_timer.timeout.connect(self._poll_completed_jobs)
@@ -1274,25 +1273,23 @@ class CmigMainWindow(QMainWindow):
                 detail += "; missing=" + ", ".join(digest.get("missing_artifacts") or [])
             elif state == "not_recorded":
                 detail = f" ({inspected.get('result_digest_absent_reason')})"
-            self.integrity_label.setText(f"Integrity: {state}")
+            self._last_integrity = f"Integrity: {state}"
             self._integrity_detail = f"Run: {run_dir}\nState: {state}{detail}"
-            self.integrity_label.setToolTip(self._integrity_detail)
             return inspected
         except Exception as exc:
-            self.integrity_label.setText("Integrity: invalid/unreadable")
+            self._last_integrity = "Integrity: invalid/unreadable"
             self._integrity_detail = f"Run: {run_dir}\nInvalid or unreadable: {exc}"
             self._show_status("status_run_load_failed", error=exc)
             return None
 
     def _reject_gui_summary(self, run_dir: Path, error: Exception | str) -> None:
         """Report unreadable readback separately from the recorded byte digest."""
-        digest_state = self.integrity_label.text().removeprefix("Integrity: ")
-        self.integrity_label.setText("Readback: invalid/unreadable")
+        digest_state = self._last_integrity.removeprefix("Integrity: ")
+        self._last_integrity = "Readback: invalid/unreadable"
         self._integrity_detail = (
             f"Run: {run_dir}\nReadback: invalid/unreadable ({error})\n"
             f"Artifact digest: {digest_state}"
         )
-        self.integrity_label.setToolTip(self._integrity_detail)
 
     def closeEvent(self, event: Any) -> None:
         """Stop the GUI's timers and the job pool so closing the window ends the session.
@@ -1308,48 +1305,605 @@ class CmigMainWindow(QMainWindow):
             if self.runner.poll(jid).status in (JobStatus.PENDING, JobStatus.RUNNING):
                 self.runner.cancel(jid)
         self.runner.shutdown(wait=False, cancel_futures=True)
+        self._close_session()
         super().closeEvent(event)
 
-    def _install_workflow_actions(self) -> None:
-        toolbar = self.addToolBar(self.tr_map["toolbar_workflow"])
-        self.import_model_action = QAction(self.tr_map["action_import_model"], self)
-        self.import_model_action.triggered.connect(self._import_model_dialog)
-        self.import_model_action.setShortcut(QKeySequence("Ctrl+I"))
-        self.open_run_action = QAction(self.tr_map["action_open_run"], self)
-        self.open_run_action.triggered.connect(self._open_run_dialog)
-        self.open_run_action.setShortcut(QKeySequence.StandardKey.Open)
-        self.run_fixture_action = QAction(self.tr_map["action_run_fixture"], self)
-        self.run_fixture_action.triggered.connect(self._run_fixture_dialog)
-        self.run_fixture_action.setShortcut(QKeySequence("Ctrl+R"))
-        self.cancel_job_action = QAction(self.tr_map["action_cancel_job"], self)
-        self.cancel_job_action.triggered.connect(self._cancel_selected_job)
-        self.cancel_job_action.setShortcut(QKeySequence("Ctrl+."))
-        self.advanced_tools_action = QAction(self.tr_map["action_show_advanced"], self)
-        self.advanced_tools_action.setCheckable(True)
-        self.advanced_tools_action.toggled.connect(self._set_advanced_tabs_visible)
-        toolbar.addAction(self.import_model_action)
-        toolbar.addAction(self.open_run_action)
-        toolbar.addAction(self.run_fixture_action)
-        toolbar.addAction(self.cancel_job_action)
-        toolbar.addAction(self.advanced_tools_action)
-
-    def _set_advanced_tabs_visible(self, visible: bool) -> None:
-        """Show or hide advanced/preview tools so the default workflow stays focused."""
-        if visible == self._advanced_tabs_visible:
-            return
-        self._advanced_tabs_visible = visible
-        self.advanced_tools_action.setText(
-            self.tr_map["action_hide_advanced"] if visible else self.tr_map["action_show_advanced"]
+    # ── pages ────────────────────────────────────────────────────────────────────────────
+    def _build_welcome_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addStretch(1)
+        title = QLabel("<h2>CMIG</h2>Community metabolic interaction analysis")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.welcome_message = QLabel("")
+        self.welcome_message.setWordWrap(True)
+        self.welcome_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # The reason names user folders and files; never render it as markup.
+        self.welcome_message.setTextFormat(Qt.TextFormat.PlainText)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        new_btn = QPushButton("New Project…")
+        new_btn.clicked.connect(self._new_project_dialog)
+        open_btn = QPushButton("Open Project…")
+        open_btn.clicked.connect(self._open_project_dialog)
+        run_btn = QPushButton("Open Run…")
+        run_btn.clicked.connect(self._open_run_dialog)
+        for button in (new_btn, open_btn, run_btn):
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        self.welcome_recent = QListWidget()
+        self.welcome_recent.setMaximumWidth(420)
+        self.welcome_recent.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.welcome_recent.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.welcome_recent.itemActivated.connect(
+            lambda item: self.open_project(Path(item.data(Qt.ItemDataRole.UserRole)))
         )
-        if visible:
-            for label, widget in self._advanced_tabs:
-                if self.tabs.indexOf(widget) == -1:
-                    self.tabs.addTab(widget, label)
+        recent_row = QHBoxLayout()
+        recent_row.addStretch(1)
+        recent_row.addWidget(self.welcome_recent)
+        recent_row.addStretch(1)
+        layout.addWidget(title)
+        layout.addLayout(buttons)
+        layout.addWidget(self.welcome_message)
+        layout.addLayout(recent_row)
+        layout.addStretch(2)
+        return page
+
+    def _build_empty_models_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addStretch(1)
+        hint = QLabel("Drop SBML, JSON or MAT files or folders here")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        add_btn = QPushButton("Add Models…")
+        add_btn.clicked.connect(self._add_models_dialog)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(add_btn)
+        row.addStretch(1)
+        layout.addWidget(hint)
+        layout.addLayout(row)
+        layout.addStretch(2)
+        return page
+
+    def _show_page(self, widget: QWidget) -> None:
+        changed = self.pages.currentWidget() is not widget
+        if self.pages.indexOf(widget) == -1:
+            self.pages.addWidget(widget)
+        self.pages.setCurrentWidget(widget)
+        current = None if self._following_sidebar else self._sidebar_current()
+        if current is not None and (changed or current[0] == "runs"):
+            # The centre no longer shows the sidebar's current item (a run row names one
+            # result, so any other show replaces it): drop it, keeping the selection, so
+            # clicking that item again opens it.
+            self.sidebar.selectionModel().setCurrentIndex(
+                QModelIndex(), QItemSelectionModel.SelectionFlag.NoUpdate
+            )
+        self._update_run_action()
+
+    def _show_models_overview(self) -> None:
+        project = self.session.project
+        if project is None:
+            self._show_page(self.welcome_page)
+        elif not project.models:
+            self._show_page(self.empty_models_page)
+        else:
+            self._show_page(self.model_manager)
+
+    # ── actions & menus ──────────────────────────────────────────────────────────────────
+    def _action(self, text: str, slot: Any, shortcut: Any = None) -> QAction:
+        action = QAction(text, self)
+        action.triggered.connect(slot)
+        if shortcut is not None:
+            action.setShortcut(QKeySequence(shortcut))
+        return action
+
+    def _install_workflow_actions(self) -> None:
+        self.new_project_action = self._action("New Project…", self._new_project_dialog,
+                                               QKeySequence.StandardKey.New)
+        self.open_project_action = self._action("Open Project…", self._open_project_dialog,
+                                                QKeySequence.StandardKey.Open)
+        self.recent_menu = QMenu("Open Recent", self)
+        self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        self.close_project_action = self._action("Close Project", self.close_project,
+                                                 QKeySequence.StandardKey.Close)
+        self.add_models_action = self._action("Add Models…", self._add_models_dialog,
+                                              "Ctrl+Shift+A")
+        self.add_models_folder_action = self._action("Add Models from Folder…",
+                                                     self._add_models_folder_dialog)
+        self.add_agora2_action = self._action("Add Models from AGORA2…", self._agora2_dialog)
+        self.add_medium_action = self._action("Add Medium…", self._add_medium_dialog)
+        self.open_run_action = self._action("Open Run…", self._open_run_dialog, "Ctrl+Shift+O")
+        self.show_project_action = self._action("Show Project in Finder", self._reveal_project)
+        self.undo_action = self.session.undo_stack.createUndoAction(self, "Undo")
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.redo_action = self.session.undo_stack.createRedoAction(self, "Redo")
+        self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        self.rename_action = self._action("Rename…", self._rename_selected_model)
+        self.remove_action = self._action("Remove from Project", self._remove_selected_models,
+                                          QKeySequence.StandardKey.Delete)
+        # Delete removes the sidebar's selected models, so it must only fire while the sidebar
+        # has focus — not when Delete is pressed in a table or editor elsewhere in the window.
+        self.remove_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.sidebar.addAction(self.remove_action)
+        self.toggle_sidebar_action = self._action("Hide Sidebar",
+                                                  lambda: self._toggle(self.sidebar, "Sidebar"),
+                                                  "Ctrl+Meta+S")
+        self.toggle_inspector_action = self._action(
+            "Hide Inspector", lambda: self._toggle(self.inspector, "Inspector"), "Ctrl+Alt+I")
+        self.toggle_activity_action = self._action(
+            "Show Activity", lambda: self._toggle(self.activity, "Activity"), "Ctrl+Shift+Y")
+        self.analysis_actions = {
+            key: self._action(label, lambda _=False, k=key: self.show_analysis(k))
+            for key, label in ANALYSES
+        }
+        self.run_action = self._action("Run", self._run_current_analysis, "Ctrl+R")
+        self.cancel_job_action = self._action("Cancel", self._cancel_selected_job, "Ctrl+.")
+        self.demo_run_action = self._action("Try Demo Run", self._run_fixture_dialog)
+        guide = self._action("CMIG User Guide", self._open_user_guide)
+
+        bar = self.menuBar()
+        file_menu = bar.addMenu("&File")
+        file_menu.addActions([self.new_project_action, self.open_project_action])
+        file_menu.addMenu(self.recent_menu)
+        file_menu.addAction(self.close_project_action)
+        file_menu.addSeparator()
+        file_menu.addActions([self.add_models_action, self.add_models_folder_action,
+                              self.add_agora2_action, self.add_medium_action])
+        file_menu.addSeparator()
+        file_menu.addActions([self.open_run_action, self.show_project_action])
+        edit_menu = bar.addMenu("&Edit")
+        edit_menu.addActions([self.undo_action, self.redo_action])
+        edit_menu.addSeparator()
+        edit_menu.addActions([self.rename_action, self.remove_action])
+        view_menu = bar.addMenu("&View")
+        view_menu.addActions([self.toggle_sidebar_action, self.toggle_inspector_action,
+                              self.toggle_activity_action])
+        analysis_menu = bar.addMenu("&Analysis")
+        for key, _label in ANALYSES:
+            analysis_menu.addAction(self.analysis_actions[key])
+            if key == ANALYSIS_SEPARATOR_AFTER:
+                analysis_menu.addSeparator()
+        analysis_menu.addSeparator()
+        analysis_menu.addActions([self.run_action, self.cancel_job_action])
+        window_menu = bar.addMenu("&Window")
+        window_menu.addAction(self._action("Minimize", self.showMinimized, "Ctrl+M"))
+        window_menu.addAction(self._action("Zoom", self._zoom))
+        help_menu = bar.addMenu("&Help")
+        help_menu.addActions([guide, self.demo_run_action])
+
+        toolbar = self.addToolBar("Workspace")
+        toolbar.setObjectName("workspace_toolbar")
+        toolbar.setMovable(False)
+        self.workspace_toolbar = toolbar
+        toolbar.addAction(self.toggle_sidebar_action)
+        self.project_title = QLabel("No Project")
+        toolbar.addWidget(self.project_title)
+        toolbar.addSeparator()
+        toolbar.addAction(self.add_models_action)
+        new_analysis = QToolButton()
+        new_analysis.setText("New Analysis")
+        new_analysis.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        new_analysis.setMenu(analysis_menu)
+        toolbar.addWidget(new_analysis)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(spacer)
+        toolbar.addAction(self.toggle_inspector_action)
+        toolbar.addAction(self.run_action)
+
+    def _toggle(self, widget: QWidget, name: str) -> None:
+        # isHidden() is the pane's own state; isVisible() is also False while the window is.
+        widget.setVisible(widget.isHidden())
+        verb = "Show" if widget.isHidden() else "Hide"
+        action = {"Sidebar": self.toggle_sidebar_action, "Inspector": self.toggle_inspector_action,
+                  "Activity": self.toggle_activity_action}[name]
+        action.setText(f"{verb} {name}")
+
+    def _zoom(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def _open_user_guide(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        QDesktopServices.openUrl(QUrl("https://github.com/jyryu3161/CMIG/blob/main/docs/USER_GUIDE.md"))
+
+    def _fill_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        for path in self.recent.paths():
+            action = self.recent_menu.addAction(path.name)
+            action.setToolTip(str(path))
+            action.triggered.connect(lambda _=False, p=path: self.open_project(p))
+        self.recent_menu.addSeparator()
+        clear = self.recent_menu.addAction("Clear Menu")
+        clear.triggered.connect(self._clear_recent)
+
+    def _clear_recent(self) -> None:
+        self.recent.clear()
+        self.refresh_workspace()
+
+    # ── project lifecycle ────────────────────────────────────────────────────────────────
+    def open_project(self, path: Path) -> bool:
+        target = Path(path)
+        current = self.session.project
+        if current is not None and _same_folder(current.root, target):
+            # Already open in this window; locking it again would report "already open in
+            # another window".
+            self.recent.add(current.root)
+            self.refresh_workspace()
+            return True
+        if current is not None:
+            self.close_project()
+        try:
+            if not target.is_dir():
+                raise ProjectError(f"folder not found: {target}")
+            self.session.open(target)
+        except (ProjectError, OSError) as exc:
+            self.welcome_message.setText(f"Could not open {target.name}: {exc}")
+            self._show_page(self.welcome_page)
+            return False
+        self.welcome_message.setText("")
+        self.recent.add(target)
+        return True
+
+    def create_project(self, path: Path, name: str | None = None) -> bool:
+        target = Path(path)
+        if self.session.project is not None:
+            self.close_project()
+        try:
+            self.session.create(target, name)
+        except ProjectError as exc:
+            self.welcome_message.setText(f"Could not create the project: {exc}")
+            self._show_page(self.welcome_page)
+            return False
+        self.welcome_message.setText("")
+        self.recent.add(target)
+        return True
+
+    def close_project(self) -> None:
+        """Cancel queued/running jobs (cooperative; an in-flight solve finishes) and unlock."""
+        if self.session.project is None:
             return
-        for _label, widget in self._advanced_tabs:
-            idx = self.tabs.indexOf(widget)
-            if idx != -1:
-                self.tabs.removeTab(idx)
+        for job_id in list(self.bridge._job_ids):
+            if self.runner.poll(job_id).status in (JobStatus.PENDING, JobStatus.RUNNING):
+                self._cancel_job_id(job_id)
+        self._close_session()
+
+    def _close_session(self) -> None:
+        """Close the project; a failed final save is reported here, never raised into Qt."""
+        try:
+            self.session.close()
+        except ProjectError as exc:
+            self.statusBar().showMessage(
+                f"The project was closed, but its final save failed: {exc}", 15000
+            )
+
+    def _new_project_dialog(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "New Project", "", "CMIG project folder")
+        if path:
+            self.create_project(Path(path))
+
+    def _open_project_dialog(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Open Project")
+        if path:
+            self.open_project(Path(path))
+
+    def _reveal_project(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        if self.session.project is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.session.project.root)))
+
+    def refresh_workspace(self) -> None:
+        project = self.session.project
+        has_project = project is not None
+        for action in (self.add_models_action, self.add_models_folder_action,
+                       self.add_agora2_action, self.add_medium_action, self.close_project_action,
+                       self.show_project_action, self.rename_action, self.remove_action):
+            action.setEnabled(has_project)
+        for action in self.analysis_actions.values():
+            action.setEnabled(has_project)
+        self.setWindowTitle("CMIG" if project is None else f"{project.name} — CMIG")
+        self.project_title.setText("No Project" if project is None else project.name)
+        root = None if project is None else project.root
+        switched = root != self._shown_root
+        # Rebuilding a group drops its rows' selection; put it back unless the project changed.
+        current = None if switched else self._sidebar_current()
+        selected_models = [] if switched else self.sidebar.selected_keys("models")
+        pending = list(getattr(self, "_pending_imports", []))
+        self.sidebar.set_models([] if project is None else project.models, pending)
+        self.sidebar.set_media(installed_medium_presets(), [] if project is None else project.media)
+        self.sidebar.set_runs(self.session.runs(), self._external_runs)
+        self._restore_sidebar_selection(current, selected_models)
+        self.welcome_recent.clear()
+        for path in self.recent.paths():
+            item = QListWidgetItem(f"{path.name}  —  {path.parent}")
+            item.setData(Qt.ItemDataRole.UserRole, str(path))
+            item.setToolTip(str(path))
+            self.welcome_recent.addItem(item)
+        self.welcome_recent.setVisible(self.welcome_recent.count() > 0)
+        self._refresh_pickers()
+        if switched:
+            # Opened, switched or closed: lay the centre out for the new state.
+            self._shown_root = root
+            self.current_analysis = None
+            self.inspector.clear()
+            self._show_models_overview()
+        elif project is not None and self.pages.currentWidget() in (
+            self.welcome_page, self.empty_models_page, self.model_manager
+        ):
+            self._show_models_overview()
+        self._update_run_action()
+
+    def _sidebar_current(self) -> tuple[str, str] | None:
+        item = self.sidebar.currentItem()
+        parent = None if item is None else item.parent()
+        key = None if item is None else item.data(0, Qt.ItemDataRole.UserRole)
+        if parent is None or not isinstance(key, str):
+            return None
+        return _SIDEBAR_GROUPS[self.sidebar.indexOfTopLevelItem(parent)], key
+
+    def _restore_sidebar_selection(
+        self, current: tuple[str, str] | None, selected_models: list[str]
+    ) -> None:
+        """Re-select rows after a rebuild without re-running their selection handlers."""
+        blocked = self.sidebar.blockSignals(True)
+        try:
+            if current is None:
+                self.sidebar.selectionModel().clear()
+            else:
+                self.sidebar.select(*current)
+            models = self.sidebar.topLevelItem(_SIDEBAR_GROUPS.index("models"))
+            if models is not None:
+                for i in range(models.childCount()):
+                    child = models.child(i)
+                    if child.data(0, Qt.ItemDataRole.UserRole) in selected_models:
+                        child.setSelected(True)
+        finally:
+            self.sidebar.blockSignals(blocked)
+
+    def _refresh_pickers(self) -> None:
+        """Populated in Task 9 once the pickers exist."""
+
+    # ── selection → page + inspector ─────────────────────────────────────────────────────
+    _RUNNERS = {
+        "search": "run_search_fixture",
+        "gene_ko": "run_gene_ko_search",
+        "host": "run_host_microbe_bigg",
+        "dynamics": "run_dfba",
+        "community": "run_community_solve",
+        "medium": "run_medium_growth_check",
+        "sweep": "run_sweep_from_view",
+    }
+    _DESCRIPTIONS = {
+        "search": ("Rank model combinations by a target metabolite.", "cmig search"),
+        "gene_ko": ("Rank single-gene knockouts of a fixed combination.", "cmig gene-ko-search"),
+        "growth": ("Per-strain growth and one-member ratio sweep.",
+                   "cmig strain-growth / abundance-impact"),
+        "host": ("Couple a host model with microbial models.", "cmig host-microbe-bigg"),
+        "dynamics": ("Well-mixed dFBA and spatial medium preview.",
+                     "cmig dfba / spatial-preview"),
+        "community": ("Community FBA of selected members.", "cmig solve"),
+        "medium": ("Edit a medium, check growth, find a minimal medium.",
+                   "cmig solve / minimal-medium"),
+        "sweep": ("Parameter sweep across media, abundances and solvers.", "cmig sweep"),
+        "sandbox": ("Preview one bound change before committing it.", "cmig sandbox-fixture"),
+        "compare": ("Compare two completed runs.", "cmig inspect-run"),
+    }
+
+    def show_analysis(self, key: str) -> None:
+        page = self.analysis_pages[key]
+        self.current_analysis = key
+        self._show_page(page)
+        if key == "gene_ko":
+            self.search_view.scroll_area.ensureWidgetVisible(self.search_view.ko_members_input)
+        elif key == "growth":
+            self.search_view.scroll_area.ensureWidgetVisible(self.search_view.growth_member_input)
+        blocked = self.sidebar.blockSignals(True)
+        try:
+            self.sidebar.select("analyses", key)  # a menu choice shows in the sidebar too
+        finally:
+            self.sidebar.blockSignals(blocked)
+        title = dict(ANALYSES)[key]
+        description, cli = self._DESCRIPTIONS[key]
+        self.inspector.show_analysis(title, description, cli)
+        self._update_run_action()
+
+    def _update_run_action(self) -> None:
+        key = self.current_analysis
+        on_page = key is not None and self.pages.currentWidget() is self.analysis_pages.get(key)
+        enabled = self.session.project is not None and on_page and key in self._RUNNERS
+        self.run_action.setEnabled(enabled)
+        if enabled:
+            tip = "Run this analysis (⌘R)"
+        elif self.session.project is None:
+            tip = "Open a project to run an analysis"
+        elif on_page:
+            tip = "Use the buttons on this page"
+        else:
+            tip = "Choose an analysis to run"
+        self.run_action.setToolTip(tip)
+
+    def _run_current_analysis(self) -> None:
+        if self.current_analysis in self._RUNNERS:
+            getattr(self, self._RUNNERS[self.current_analysis])()
+
+    def _on_sidebar_selection(self, group: str, key: str) -> None:
+        self._following_sidebar = True
+        try:
+            project = self.session.project
+            if group == "analyses":
+                self.show_analysis(key)
+            elif group == "models" and project is not None:
+                entry = project.model(key)
+                self.inspector.show_model(project, entry, self._model_exchanges(entry))
+                self.current_analysis = None
+                self._show_models_overview()
+            elif group == "media":
+                self._inspect_medium(key)
+            elif group == "runs":
+                self.current_analysis = None
+                self._open_run_entry(Path(key))
+        finally:
+            self._following_sidebar = False
+
+    def _model_exchanges(self, entry: Any) -> list[str] | None:
+        from cmig.io.model_import import import_model
+        from cmig.io.project import model_path
+
+        if self.session.project is None or entry.status == "failed" or entry.integrity != "ok":
+            return None
+        cache: dict[str, list[str] | None] = getattr(self, "_exchange_cache", {})
+        self._exchange_cache = cache
+        if entry.sha256 not in cache:
+            try:
+                cache[entry.sha256] = list(
+                    import_model(model_path(self.session.project, entry)).exchanges
+                )
+            except Exception:  # noqa: BLE001 - inspector shows what it can
+                cache[entry.sha256] = None
+        return cache[entry.sha256]
+
+    def _inspect_medium(self, key: str) -> None:
+        from cmig.io.project import medium_path
+
+        project = self.session.project
+        kind, _, name = key.partition(":")
+        rows: list[tuple[str, str]] = []
+        try:
+            if kind == "preset":
+                path, title = installed_medium_preset_path(name), name
+            elif project is not None:
+                entry = project.medium(name)
+                path, title = medium_path(project, entry), entry.id
+            else:
+                return
+            if path.suffix.lower() == ".csv":
+                with path.open(newline="") as handle:
+                    for record in csv.reader(handle):
+                        if len(record) >= 2 and record[0] and not record[0].startswith("#"):
+                            rows.append((record[0], record[1]))
+        except (OSError, UnicodeDecodeError, csv.Error, ValueError, ProjectError) as exc:
+            self.statusBar().showMessage(f"Cannot read medium {name}: {exc}", 8000)
+            return
+        self.inspector.show_medium(title, rows[1:] if rows else rows, str(path))
+
+    def _open_run_entry(self, run_dir: Path) -> None:
+        from cmig.cli.main import _inspect_run_dir
+
+        run_dir = Path(run_dir).resolve()
+        self.load_run_dir(run_dir)
+        inspected: dict[str, Any]
+        try:
+            inspected = dict(_inspect_run_dir(run_dir))
+            inspected["artifact_integrity"] = _integrity_text(inspected)
+        except Exception as exc:  # noqa: BLE001 - an unreadable run is shown as unreadable
+            inspected = {"artifact_integrity": f"unreadable ({exc})"}
+        command = getattr(self, "_run_commands", {}).get(str(run_dir), "")
+        self.inspector.show_run(inspect_run(run_dir), inspected, command)
+
+    def _show_sidebar_menu(self, group: str, keys: list[str]) -> None:
+        if group != "models" or not keys:
+            return
+        menu = QMenu(self)
+        search = menu.addAction("Search with Selected…")
+        search.triggered.connect(lambda: self._search_with_models(keys))
+        menu.addSeparator()
+        menu.addAction(self.rename_action)
+        menu.addAction(self.remove_action)
+        menu.addSeparator()
+        reveal = menu.addAction("Show in Finder")
+        reveal.triggered.connect(self.inspector._reveal)
+        menu.exec(QCursor.pos())
+
+    def _search_with_models(self, keys: list[str]) -> None:
+        """Populated in Task 9 (sets the Search model picker), then shows the page."""
+        self.show_analysis("search")
+
+    def _remove_selected_models(self) -> None:
+        try:
+            self.session.remove_models(self.sidebar.selected_keys("models"))
+        except ProjectError as exc:
+            self.statusBar().showMessage(str(exc), 8000)
+
+    def _rename_selected_model(self) -> None:
+        keys = self.sidebar.selected_keys("models")
+        if len(keys) != 1:
+            return
+        new_id, ok = QInputDialog.getText(self, "Rename Model", "New model id:", text=keys[0])
+        if ok and new_id and new_id != keys[0]:
+            try:
+                self.session.rename_model(keys[0], new_id.strip())
+            except ProjectError as exc:
+                self.statusBar().showMessage(str(exc), 8000)
+
+    def _cancel_job_id(self, job_id: str) -> None:
+        job = self.runner.poll(job_id)
+        if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+            self._show_status("status_job_already", status=job.status.value, job_id=job_id)
+            return
+        if job_id in self._search_jobs:
+            self.cancel_search()
+            return
+        self.runner.cancel(job_id)
+        self.bridge.cancelling.add(job_id)
+        self.bridge.refresh()
+        # Cancellation is cooperative and GUI jobs only check it at run boundaries, so saying
+        # just "Cancel requested" let the user believe the solve had stopped when it had not.
+        self._show_status("status_cancel_requested", job_id=job_id)
+
+    def _show_selected_job_detail(self) -> None:
+        job_id = self.jobs_panel.selected_job_id()
+        if not job_id:
+            return
+        job = self.runner.poll(job_id)
+        log = job.error or ""
+        if isinstance(job.result, dict):
+            log = str(job.result.get("cli_error") or job.result.get("input_diagnostic") or log)
+        self.activity.set_job_detail(log, getattr(self, "_job_commands", {}).get(job_id, ""))
+
+    def _refresh_solver_label(self) -> None:
+        try:
+            import gurobipy  # noqa: F401
+
+            self.solver_label.setText("Solver: Gurobi (full-flux)")
+        except ImportError:
+            self.solver_label.setText("Solver: Gurobi not available")
+
+    # ── drag & drop on the whole window ─────────────────────────────────────────────────
+    def dragEnterEvent(self, event: Any) -> None:  # noqa: N802 - Qt override
+        files, _ = droppable_paths(list(event.mimeData().urls()))
+        if files and self.session.project is not None:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: Any) -> None:  # noqa: N802 - Qt override
+        local = [Path(u.toLocalFile()) for u in event.mimeData().urls() if u.isLocalFile()]
+        if local and self.session.project is not None:
+            self.add_model_paths(local)
+            event.acceptProposedAction()
+
+    def add_model_paths(self, paths: list[Path]) -> str:
+        """Implemented in Task 7 (background import)."""
+        return ""
+
+    def _add_models_dialog(self) -> None:
+        """Implemented in Task 7."""
+
+    def _add_models_folder_dialog(self) -> None:
+        """Implemented in Task 7."""
+
+    def _add_medium_dialog(self) -> None:
+        """Implemented in Task 7."""
+
+    def _agora2_dialog(self) -> None:
+        """Implemented in Task 8."""
 
     def _connect_view_actions(self) -> None:
         self.sandbox_view.preview_btn.clicked.connect(self._run_sandbox_preview)
@@ -1407,25 +1961,7 @@ class CmigMainWindow(QMainWindow):
         if not job_id:
             self._show_status("status_select_job")
             return
-        job = self.runner.poll(job_id)
-        if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
-            self._show_status("status_job_already", status=job.status.value, job_id=job_id)
-            return
-        if job_id in self._search_jobs:
-            self.cancel_search()
-            return
-        self.runner.cancel(job_id)
-        self.bridge.cancelling.add(job_id)
-        self.bridge.refresh()
-        # Cancellation is cooperative and GUI jobs only check it at run boundaries, so saying
-        # just "Cancel requested" let the user believe the solve had stopped when it had not.
-        self._show_status("status_cancel_requested", job_id=job_id)
-
-    def _open_explorer_item(self, item: QTreeWidgetItem, _column: int) -> None:
-        path = item.data(0, Qt.ItemDataRole.UserRole)
-        if not path:
-            return
-        self.load_run_dir(str(path))
+        self._cancel_job_id(job_id)
 
     def _browse_search_model_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Model Pool Folder")
@@ -1647,17 +2183,10 @@ class CmigMainWindow(QMainWindow):
         shutil.copyfile(src, target)
         self.search_view.status.setText(f"Exported figure: {target}")
 
-    def _import_model_dialog(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import GEM Model", "", "Models (*.xml *.sbml *.xml.gz *.sbml.gz *.json *.mat)"
-        )
-        if path:
-            self.import_model_file(path)
-
     def _open_run_dialog(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Open CMIG Run")
         if path:
-            self.load_run_dir(path)
+            self._open_run_entry(Path(path))
 
     def _run_fixture_dialog(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
@@ -1740,7 +2269,7 @@ class CmigMainWindow(QMainWindow):
         return jid
 
     def import_model_file(self, path: str | Path) -> bool:
-        """모델 파일 import + namespace review 를 Model 탭과 Explorer 에 반영."""
+        """모델 파일 import + namespace review 를 Model 화면에 반영."""
         from cmig.io.model_import import build_import_review, import_model
 
         try:
@@ -1750,7 +2279,6 @@ class CmigMainWindow(QMainWindow):
             self._show_status("status_model_import_failed", error=e)
             return False
         self.model_manager.load_summary(summary)
-        self.explorer.add_model(summary.model_id)
         self.current_model_review = {
             "model": review.model,
             "inferred_origin": review.inferred_origin,
@@ -1758,7 +2286,6 @@ class CmigMainWindow(QMainWindow):
             "warnings": review.warnings,
             "next_actions": review.next_actions,
         }
-        self.tabs.setCurrentWidget(self.model_manager)
         ns = review.namespace
         self._show_status(
             "status_imported_model",
@@ -1850,8 +2377,9 @@ class CmigMainWindow(QMainWindow):
         self.graph_gate_badge.set_recorded_policy(None if policy is None else str(policy))
         self.profile_view.load_bundle(bundle)
         self.profile_view.load_targets(_read_target_summary(run_dir))
-        self.explorer.add_run(run_dir.name, run_dir)
-        self.tabs.setCurrentWidget(self.profile_view)
+        self._register_run_output(run_dir)
+        self._show_page(self.community_result_page)
+        self.community_result_page.setCurrentWidget(self.profile_view)
         run_hash = None if self.current_manifest is None else self.current_manifest.get("run_hash")
         suffix = "" if run_hash is None else f" (run_hash {str(run_hash)[:12]})"
         self._show_status("status_loaded_run", run_dir=run_dir, suffix=suffix)
@@ -1887,8 +2415,8 @@ class CmigMainWindow(QMainWindow):
             self._show_status("status_run_load_failed", error=exc)
             return False
         self.current_search_dir = run_dir
-        self.explorer.add_run(run_dir.name, run_dir)
-        self.tabs.setCurrentWidget(self.search_view)
+        self._register_run_output(run_dir)
+        self._show_page(self.search_view)
         self.search_view.status.setText(
             f"{summary.get('status', 'unknown')} Search run: {run_dir} · "
             f"integrity {inspected['artifact_integrity']}; see details"
@@ -1912,10 +2440,10 @@ class CmigMainWindow(QMainWindow):
                 path=summary_path,
             )
             return False
-        previous_integrity = self.integrity_label.text()
+        previous_integrity = self._last_integrity
         previous_detail = self._integrity_detail
         if self._inspect_gui_run(run_dir) is None:
-            self.integrity_label.setText(previous_integrity)
+            self._last_integrity = previous_integrity
             self._integrity_detail = previous_detail
             return False
         try:
@@ -1990,9 +2518,8 @@ class CmigMainWindow(QMainWindow):
                         )
             host_microbe_network_payload(payload)
         except (OSError, ValueError, TypeError, KeyError) as e:
-            self.integrity_label.setText(previous_integrity)
+            self._last_integrity = previous_integrity
             self._integrity_detail = previous_detail
-            self.integrity_label.setToolTip(previous_detail)
             self._show_status(
                 "status_load_failed", kind=self.tr_map["kind_host_microbe"],
                 error=f"{run_dir}: {e}",
@@ -2039,11 +2566,11 @@ class CmigMainWindow(QMainWindow):
         self.host_view.load_bigg_summary(payload, run_dir=run_dir)
         self.host_view.run_status.setText(
             self.host_view.run_status.text()
-            + f" · integrity {self.integrity_label.text().removeprefix('Integrity: ')}"
+            + f" · integrity {self._last_integrity.removeprefix('Integrity: ')}"
         )
         self.current_host_microbe_dir = run_dir  # only after a successful parse
-        self.explorer.add_run(run_dir.name, run_dir)
-        self.tabs.setCurrentWidget(self.host_view)
+        self._register_run_output(run_dir)
+        self._show_page(self.host_view)
         self._show_status("status_loaded_host", run_dir=run_dir, count=len(transfer))
         return True
 
@@ -2091,8 +2618,8 @@ class CmigMainWindow(QMainWindow):
             self.dynamics_view.status.text()
             + f" · integrity {inspected['artifact_integrity']}"
         )
-        self.explorer.add_run(run_dir.name, run_dir)
-        self.tabs.setCurrentWidget(self.dynamics_view)
+        self._register_run_output(run_dir)
+        self._show_page(self.dynamics_view)
         self._show_status("status_loaded_dfba", run_dir=run_dir)
         return True
 
@@ -2134,8 +2661,8 @@ class CmigMainWindow(QMainWindow):
             self.dynamics_view.status.text()
             + f" · integrity {inspected['artifact_integrity']}"
         )
-        self.explorer.add_run(run_dir.name, run_dir)
-        self.tabs.setCurrentWidget(self.dynamics_view)
+        self._register_run_output(run_dir)
+        self._show_page(self.dynamics_view)
         self._show_status("status_loaded_spatial", run_dir=run_dir)
         return True
 
@@ -3175,13 +3702,19 @@ class CmigMainWindow(QMainWindow):
         self._show_status("status_compare_complete")
 
     def _register_run_output(self, out_dir: Path) -> None:
-        """Make a GUI-only run reachable: it is the directory holding manifest.json.
+        """A completed run inside the project appears in RUNS; an outside run is listed as opened.
 
-        GUI workflows write to an OS temp dir that never appeared anywhere in the UI, so a
-        GUI-only researcher could not find the run_hash a publication needs (and macOS purges
-        `/var/folders/**/T` periodically).
+        GUI workflows that still write to an OS temp dir would otherwise never appear anywhere
+        in the UI, so a GUI-only researcher could not find the run_hash a publication needs.
         """
-        self.explorer.add_run(out_dir.name, out_dir)
+        out_dir = Path(out_dir).resolve()
+        project = self.session.project
+        if project is not None and out_dir.parent == project.runs_dir.resolve():
+            self.session.refresh_runs()
+            return
+        if all(entry.path != out_dir for entry in self._external_runs):
+            self._external_runs.append(inspect_run(out_dir))
+        self.refresh_workspace()
 
     def _poll_completed_jobs(self) -> None:
         for jid, (commit, constraint) in list(self._sandbox_jobs.items()):
@@ -3262,7 +3795,7 @@ class CmigMainWindow(QMainWindow):
                     self._show_status("status_run_load_failed", error=exc)
                     continue
                 self.current_search_dir = out_dir
-                self.tabs.setCurrentWidget(self.search_view)
+                self._show_page(self.search_view)
                 self._register_run_output(out_dir)
                 self._show_status(
                     "status_complete_out",
@@ -3326,7 +3859,7 @@ class CmigMainWindow(QMainWindow):
                         + (f": {cause}" if cause else "")
                         + "; diagnostics and artifact path are in details"
                     )
-                    self.tabs.setCurrentWidget(self.search_view)
+                    self._show_page(self.search_view)
                     self._register_run_output(out_dir)
                 else:
                     # No replacement summary was published. Keep every part of the
@@ -3372,7 +3905,7 @@ class CmigMainWindow(QMainWindow):
                     executed_request=requested,
                     source_summary=job.result,
                 )
-                self.tabs.setCurrentWidget(self.search_view)
+                self._show_page(self.search_view)
                 self._register_run_output(out_dir)
                 self._show_status(
                     "status_complete_out",
@@ -3405,7 +3938,7 @@ class CmigMainWindow(QMainWindow):
                     executed_request=requested,
                     source_summary=job.result,
                 )
-                self.tabs.setCurrentWidget(self.search_view)
+                self._show_page(self.search_view)
                 self._register_run_output(out_dir)
                 self._show_status(
                     "status_complete_out",
@@ -3438,7 +3971,7 @@ class CmigMainWindow(QMainWindow):
                     executed_request=requested,
                     source_summary=job.result,
                 )
-                self.tabs.setCurrentWidget(self.search_view)
+                self._show_page(self.search_view)
                 self._register_run_output(out_dir)
                 self._show_status(
                     "status_complete_out",
@@ -3473,7 +4006,7 @@ class CmigMainWindow(QMainWindow):
                     executed_request=requested,
                     source_summary=job.result,
                 )
-                self.tabs.setCurrentWidget(self.search_view)
+                self._show_page(self.search_view)
                 self._register_run_output(out_dir)
                 self._show_status(
                     "status_complete_out",

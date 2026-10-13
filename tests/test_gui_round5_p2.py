@@ -18,6 +18,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QAbstractItemView, QApplication  # noqa: E402
 
 from cmig.gui.app import (  # noqa: E402
@@ -205,7 +206,8 @@ def test_result_tables_are_read_only():
     """P0: a double-click + keystroke replaced a solved flux with an arbitrary value."""
     _app()
     w = build_main_window()
-    w._set_advanced_tabs_visible(True)
+    for key in ("community", "medium", "sweep", "sandbox", "compare"):
+        w.show_analysis(key)  # the advanced tools open from the analysis list
     none = QAbstractItemView.EditTrigger.NoEditTriggers
     result_tables = {
         "search": w.search_view.table,
@@ -742,7 +744,8 @@ def test_read_only_guarantee_holds_at_item_level():
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
-    w._set_advanced_tabs_visible(True)
+    for key in ("community", "medium", "sweep", "sandbox", "compare"):
+        w.show_analysis(key)  # the advanced tools open from the analysis list
     w.search_view.load_summary({"strategy": "x", "top_ranked": [
         {"members": ["A"], "score": 1.0, "target_flux": 12.11,
          "community_growth": 0.3, "status": "optimal"}]})
@@ -907,7 +910,8 @@ def test_search_run_directory_is_reported_to_the_user(monkeypatch, tmp_path):
     out_dir = w.current_search_dir
     assert out_dir is not None
     assert str(out_dir) in w.statusBar().currentMessage()
-    runs_root = w.explorer.topLevelItem(2)
-    labels = [runs_root.child(i).text(0) for i in range(runs_root.childCount())]
-    assert out_dir.name in labels
+    runs_root = w.sidebar.topLevelItem(3)  # RUNS
+    paths = [runs_root.child(i).data(0, Qt.ItemDataRole.UserRole)
+             for i in range(runs_root.childCount())]
+    assert str(out_dir) in paths
     runner.shutdown()

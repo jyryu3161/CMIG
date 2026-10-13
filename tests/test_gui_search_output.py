@@ -119,8 +119,8 @@ def _out(argv: list[str]) -> Path:
     return Path(argv[argv.index("--out") + 1])
 
 
-def _explorer_paths(w) -> list[str]:
-    root = w.explorer._roots["runs"]
+def _sidebar_run_paths(w) -> list[str]:
+    root = w.sidebar.topLevelItem(3)  # RUNS
     return [str(root.child(i).data(0, Qt.ItemDataRole.UserRole)) for i in range(root.childCount())]
 
 
@@ -405,7 +405,7 @@ def test_checkpoint_equal_to_out_is_refused_for_temp_runs(window, monkeypatch, t
     assert "inside this run's output folder" in window.search_view.status.text()
 
 
-# ------------------------------------------------------------------ explorer / reopen
+# ------------------------------------------------------------------ RUNS list / reopen
 
 
 @pytest.mark.parametrize("summary,rows", [(SINGLE, [("ac",)]),
@@ -420,16 +420,13 @@ def test_completed_run_in_chosen_folder_registers_and_reopens(window, monkeypatc
     view.output_dir_input.setText(str(parent))
     assert _run(window)
     out = _out(rec.calls[0]).resolve()
-    assert str(out) in _explorer_paths(window)
+    assert str(out) in _sidebar_run_paths(window)
     assert window.current_search_dir == out
     expected_rows = view.table.rowCount()
     assert expected_rows == len(summary["top_ranked"])
     view.invalidate_results()
     assert view.table.rowCount() == 0
-    root = window.explorer._roots["runs"]
-    item = next(root.child(i) for i in range(root.childCount())
-                if root.child(i).data(0, Qt.ItemDataRole.UserRole) == str(out))
-    window._open_explorer_item(item, 0)
+    window._open_run_entry(out)
     assert window.current_search_dir == out
     assert view.table.rowCount() == expected_rows
 
@@ -441,7 +438,7 @@ def test_open_run_reopens_synthetic_search_dirs(window, tmp_path, summary):
     window.load_run_dir(run)
     assert window.current_search_dir == run.resolve()
     assert window.search_view.table.rowCount() == len(summary["top_ranked"])
-    assert str(run.resolve()) in _explorer_paths(window)
+    assert str(run.resolve()) in _sidebar_run_paths(window)
 
 
 # ------------------------------------------------------------------ spec fixes
@@ -522,7 +519,7 @@ def test_korean_mode_output_paths(monkeypatch, tmp_path):
         runner.result(jid, timeout=10)
         w._poll_completed_jobs()
         out = _out(rec.calls[0]).resolve()
-        assert str(out) in _explorer_paths(w)
+        assert str(out) in _sidebar_run_paths(w)
         w.load_run_dir(out)
         assert w.current_search_dir == out
     finally:
@@ -539,7 +536,7 @@ def test_window_fits_with_long_output_folder():
         window.search_view.medium_input.setText("/z" * 200)
         window.search_view.medium_mode_combo.setCurrentIndex(1)
         window.search_view.set_target_rows([("ac",), ("but",)])
-        window.tabs.setCurrentWidget(window.search_view)
+        window._show_page(window.search_view)
         for size in ((1280, 800), (1500, 950)):
             window.resize(*size)
             window.show()
