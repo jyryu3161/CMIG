@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QStackedWidget,
+    QStyle,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -1581,6 +1582,11 @@ class CmigMainWindow(QMainWindow):
         new_analysis.setText("New Analysis")
         new_analysis.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         new_analysis.setMenu(analysis_menu)
+        # QToolButton draws its menu arrow over the text's last letters; leave room for it.
+        arrow = new_analysis.style().pixelMetric(
+            QStyle.PixelMetric.PM_MenuButtonIndicator, None, new_analysis
+        )
+        new_analysis.setMinimumWidth(new_analysis.sizeHint().width() + 2 * arrow)
         toolbar.addWidget(new_analysis)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)

@@ -128,6 +128,16 @@ def test_every_toolbar_command_is_also_in_a_menu(window) -> None:
         assert action in menu_actions, action.text()
 
 
+def test_new_analysis_button_leaves_room_for_its_menu_arrow(window) -> None:
+    from PySide6.QtWidgets import QToolButton
+
+    button = next(
+        b for b in window.workspace_toolbar.findChildren(QToolButton) if b.text() == "New Analysis"
+    )
+    # The arrow is drawn over the text's last letters unless the button is wider than its text.
+    assert button.minimumWidth() > button.fontMetrics().horizontalAdvance(button.text())
+
+
 def test_korean_mode_opens_every_page_without_missing_strings(tmp_path: Path) -> None:
     from cmig.gui.sidebar import ANALYSES
 
