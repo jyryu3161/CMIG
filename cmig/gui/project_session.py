@@ -248,15 +248,25 @@ class _SetNamespaceConfirmation(_Command):
         )
         self._id, self._confirmed = model_id, confirmed
         self._before: dict[str, str] | None = None
+        self._after: dict[str, str] | None = None
+        self._applied = False
 
     def apply(self) -> None:
+        entry = self._session.require().model(self._id)
+        if self._applied:
+            # redo: put back exactly what the first apply recorded, without re-hashing the file
+            entry.namespace_confirmed = None if self._after is None else dict(self._after)
+            return
         project = self._session.require()
-        before = project.model(self._id).namespace_confirmed
+        before = entry.namespace_confirmed
         self._before = None if before is None else dict(before)
         if self._confirmed:
             proj.confirm_namespace(project, self._id)
         else:
             proj.revoke_namespace(project, self._id)
+        after = entry.namespace_confirmed
+        self._after = None if after is None else dict(after)
+        self._applied = True
 
     def revert(self) -> None:
         entry = self._session.require().model(self._id)

@@ -458,3 +458,20 @@ def test_undo_rename_restores_remembered_settings_exactly(tmp_path: Path) -> Non
         assert session.settings("search")["models"] == ["a", "b"]
     finally:
         session.close()
+
+
+def test_redo_of_confirmation_does_not_rehash_a_changed_file(tmp_path: Path) -> None:
+    make_project(tmp_path / "p", ["a"])
+    session = ProjectSession()
+    session.open(tmp_path / "p")
+    try:
+        session.confirm_namespace("a")
+        session.undo_stack.undo()
+        entry = session.require().model("a")
+        (tmp_path / "p" / entry.file).write_text("<sbml id='edited'/>")
+        proj.verify_checksums(session.require())
+        session.undo_stack.redo()  # must not raise: it restores the recorded confirmation
+        assert entry.namespace_confirmed is not None
+        assert proj.confirmation_state(entry) == "changed"
+    finally:
+        session.close()

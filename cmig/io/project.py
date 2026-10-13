@@ -578,6 +578,8 @@ def rename_model(project: Project, model_id: str, new_id: str) -> None:
         raise ProjectError("a model id starts with a letter or _ and uses letters, digits, _")
     if any(m.id == new_id for m in project.models if m is not entry):
         raise ProjectError(f"another model already uses the id {new_id!r}")
+    if new_id == model_id:
+        return
     entry.id = new_id
     for values in project.analysis_settings.values():
         chosen = values.get("models")
@@ -898,6 +900,10 @@ def namespace_confirmed(entry: ModelEntry) -> bool:
 def confirm_namespace(project: Project, model_id: str, *, at: str | None = None) -> None:
     """Record the user's confirmation that this copy's exchange ids are BiGG (caller saves)."""
     entry = project.model(model_id)
+    if entry.status not in _RUNNABLE_STATUSES:
+        raise ProjectError(
+            f"model {model_id!r} cannot be confirmed: its check status is {entry.status!r}"
+        )
     state = refresh_integrity(project, entry)
     if state != "ok":
         reason = "changed since it was added" if state == "changed" else "is missing"

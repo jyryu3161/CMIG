@@ -184,3 +184,19 @@ def test_rename_onto_removed_remembered_id_drops_the_stale_id(tmp_path: Path) ->
     proj.remove_model(project, "a")  # "a" stays remembered, as phase 1 keeps it
     proj.rename_model(project, "b", "a")
     assert project.analysis_settings["search"]["models"] == ["a"]  # the renamed b, once
+
+
+def test_same_id_rename_changes_nothing(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "p", ["a", "b"])
+    project.analysis_settings["search"] = {"models": ["a", "b"]}
+    proj.rename_model(project, "a", "a")
+    assert project.model("a").id == "a"
+    assert project.analysis_settings["search"]["models"] == ["a", "b"]
+
+
+@pytest.mark.parametrize("status", ["failed", "pending"])
+def test_unchecked_or_unreadable_model_cannot_be_confirmed(tmp_path: Path, status: str) -> None:
+    project = make_project(tmp_path / "p", ["a"], statuses={"a": status})
+    with pytest.raises(proj.ProjectError, match=f"check status is '{status}'"):
+        proj.confirm_namespace(project, "a")
+    assert project.model("a").namespace_confirmed is None
