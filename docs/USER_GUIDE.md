@@ -8,6 +8,7 @@ Contents:
 
 - [CLI For LLM Agents And Automation](#cli-for-llm-agents-and-automation)
 - [Agentic Skill For Claude Code](#agentic-skill-for-claude-code)
+- [Desktop GUI](#desktop-gui)
 - [Typical CLI Workflows](#typical-cli-workflows)
 - [Medium Files](#medium-files)
 - [Solver Provenance](#solver-provenance)
@@ -160,6 +161,161 @@ Two caveats worth knowing when driving CMIG from the skill:
   with `… 는 엔진 stack 필요`, and that message names a fix that would sync the
   wrong project. Run `uv run` from the checkout whose environment you synced.
 
+## Desktop GUI
+
+```bash
+uv run cmig gui
+```
+
+The GUI is organised around a **project**: one folder that holds the models and media
+you work with and every run you make. Each analysis page picks its inputs from the
+project and writes its result back into it. The GUI does no calculation of its own: an
+analysis button builds the `cmig` command described in the rest of this guide and runs
+it in the background. For a run started in the current session, **Copy Command** in the
+inspector gives the equivalent command line.
+
+### Projects
+
+A project is an ordinary folder:
+
+```text
+my-study/
+├── cmig-project.json    format version, name, model and medium lists, last picks per analysis
+├── models/              copies of the GEMs you added (AGORA2: models/agora2/<timestamp>/)
+├── media/               copies of the medium files you added
+└── runs/                one folder per run: <kind>-YYYYMMDD-HHMMSS
+    └── _inputs/         files the GUI wrote for the CLI, and failed/cancelled markers
+```
+
+- **File > New Project…** (⌘N) creates the folder, which must be absent or empty.
+  **Open Project…** (⌘O), **Open Recent** (the last ten, with Clear Menu) and
+  **Close Project** (⌘W) do the rest. When the GUI starts it reopens the last project; if
+  that fails (folder gone, locked or damaged) the start screen says why and changes nothing.
+- The project file stores paths relative to the project folder, so a project can be moved
+  or copied and still opens. (The taxonomy files under `runs/_inputs/` keep the absolute
+  paths the run used.) It is saved after every edit.
+- An open project holds `.cmig-project.lock` (process id, host, time). A second window or
+  process is refused with "already open in another window". A lock left by a process that
+  no longer exists on the same host is replaced; if CMIG reports a lock but no other window
+  has the project open, delete `.cmig-project.lock`.
+- A project file that is damaged or written by a newer CMIG (format version above 1) is
+  refused and not touched.
+- Your original model and medium files are only read. The GUI works on the copies in
+  `models/` and `media/`.
+
+### Adding models and media
+
+- **Add Models…** (⇧⌘A) takes several files at once. **Add Models from Folder…** asks
+  whether to include subfolders. With a project open, dropping files or folders anywhere on
+  the window adds them too (folders are searched recursively; unsupported files are skipped
+  and counted).
+  Supported: SBML (`.xml`, `.sbml`, also gzipped), JSON and MAT.
+- Each file is copied into `models/`, hashed (SHA-256) and read once to record its reaction,
+  metabolite and gene counts, biomass reaction, BiGG namespace coverage and warnings. The
+  work runs in the background, one import or download at a time; the sidebar shows a
+  placeholder row per file. A file that cannot be read stays in the list as failed, with the
+  reason, and the other files continue. Cancelling in Activity stops after the current file.
+- A file whose SHA-256 matches a model already in the project is refused as a duplicate.
+  Model ids come from the file names; a clash gets a short digest suffix. **Edit > Rename…**
+  changes an id.
+- Marks in MODELS: ✓ readable, ⚠ readable with warnings or the project copy changed or went
+  missing, ✗ failed to read, … still importing. A failed model, or a copy whose checksum no
+  longer matches, cannot be picked for an analysis; it is greyed out with the reason.
+- The checksum of every copy is checked again when the project opens and once more just
+  before a run uses it. A run that would include a changed or missing copy is refused.
+- **Edit > Remove from Project** (or Delete in the sidebar) only drops the list entry; the
+  copy stays in `models/` because earlier runs may refer to it. **Edit > Undo / Redo** cover
+  Add, Remove and Rename Model(s) and Add Medium.
+- **File > Add Models from AGORA2…** searches the catalogue by strain or genus (a
+  case-insensitive match on the strain id, for example `Roseburia` or
+  `Roseburia intestinalis`) and downloads the strains you select with `cmig agora2-fetch`.
+  The first search downloads the catalogue index to `models/agora2/agora2_catalogue.json`.
+  The dialog shows how many strains are selected and their published size; a download over
+  1 GB, or of unknown size, asks first, and from 8 GB the question says so explicitly. Each
+  download goes into its own `models/agora2/<YYYYMMDD-HHMMSS>/` folder with its own
+  `agora2_manifest.json`, and the model's original path is recorded as the download URL.
+- **File > Add Medium…** copies CSV or JSON medium files into `media/`. MEDIA always lists
+  the installed gut-medium presets as well.
+
+### The window
+
+- **Menus.** File (project, adding models and media, Open Run…, Show Project in Finder),
+  Edit (Undo, Redo, Rename…, Remove from Project), View (show or hide the sidebar,
+  inspector and activity pane), Analysis, Window and Help (CMIG User Guide, Try Demo Run).
+  A command that cannot be used right now is greyed out, not hidden.
+- **Toolbar.** Sidebar toggle and project name, **Add Models…**, **New Analysis** (the
+  Analysis menu), inspector toggle and **Run**. Every toolbar item is also in a menu. Run
+  starts the analysis on the centre page and is greyed out when the page has its own
+  buttons (Strain Growth & Ratio, Constraint Sandbox, Compare Runs) or no project is open.
+- **Sidebar.** MODELS (several can be selected; right-click for Search with Selected…,
+  Rename…, Remove from Project, Show in Finder), MEDIA (presets and project media),
+  ANALYSES and RUNS, newest first, labelled `<analysis> · <target> · HH:MM`. Run marks: ✓
+  succeeded, ⚠ warning or degraded, ✗ failed or unreadable, ⊘ cancelled. The mark follows
+  the same verdict as `cmig inspect-run`, and a run the GUI could not read back also shows ✗.
+  A job that failed or was cancelled leaves its folder in place, and a small marker
+  `runs/_inputs/<run>-state.json` keeps that mark after a restart; a marker can only make a
+  run look worse, never better.
+- **Centre.** The page of the selected sidebar item: an analysis page, or the result viewer
+  for a run (a community run offers Profile and Graph).
+- **Inspector** (right, follows the selection, read-only). A model shows its checks (size,
+  biomass, BiGG namespace coverage, warnings, original path, SHA-256) and a filterable
+  exchange list that loads in the background. A medium shows its rows and source. A run
+  shows its status, artifact integrity, `run_hash` and solver wording as the run recorded
+  it (Gurobi full-flux, OSQP QP-only approximation, non-parsimonious or no flux), with
+  **Copy Command** and **Show in Finder**. If the GUI cannot read a run's summary back, the
+  inspector says so and the run is not treated as a loaded result.
+- **Activity** (bottom; opens when a job starts). Every job with kind, status and progress;
+  select one for its log or error and its `cmig` command. **Cancel** (⌘.) shows "cancelling"
+  until the job actually stops. A running solve stops at its next boundary, an import
+  after the current file, and an AGORA2 download cannot be interrupted (its files are then
+  not added).
+
+| Action | Shortcut (macOS; Ctrl replaces ⌘ elsewhere) |
+| --- | --- |
+| New / Open / Close Project | ⌘N / ⌘O / ⌘W |
+| Add Models… | ⇧⌘A |
+| Open Run… | ⇧⌘O |
+| Undo / Redo | ⌘Z / ⇧⌘Z |
+| Remove selected models (sidebar focused) | Delete |
+| Show or hide sidebar / inspector / activity | ⌃⌘S / ⌥⌘I / ⇧⌘Y |
+| Run / Cancel | ⌘R / ⌘. |
+
+### Analyses and runs
+
+- An analysis needs an open project: its models and media come from the project and its
+  result goes to `runs/`. Model pickers ("Models: n selected") default to every model that
+  can run, so a model added later is included until you choose your own set. One-model
+  inputs (the Host model, Dynamics, Minimal medium) use a single-choice picker; the Host
+  microbes leave out the chosen host. Your picks are remembered per analysis in the
+  project. A remembered model that can no longer run is left out and named in the status bar.
+- Medium pickers list the model default, the installed presets and the project's media. A
+  project medium whose copy changed or went missing is refused, never passed to the CLI.
+- Every run writes to a new `runs/<kind>-YYYYMMDD-HHMMSS` folder (`-2`, `-3`… on a clash)
+  that is never reused, passed as `--out`; for example `search-…`, `host-microbe-…`, `dfba-…`.
+  The Search "Output folder" field and the temporary output folders of the other pages are
+  gone.
+- Before the run the GUI writes `runs/_inputs/<run>-taxonomy.csv` (`id,file,abundance`, with
+  the project copies' absolute paths) and passes it as `--taxonomy`. It is written beside the
+  run folder, not inside it, because the CLI publishes the run folder as a whole.
+  Single-model pages pass `--host` or `--model`; a medium built in the Medium Editor is
+  written as `runs/_inputs/<run>-medium.json`.
+- Model choices and the medium are inputs that decide the answer, so changing them
+  invalidates a displayed result, like the other settings of that workflow.
+- Exact/merge medium mode and `--allow-unknown-medium` remain Search-only settings.
+
+**Hash caveat.** Earlier GUI versions passed a model folder (`--model-dir`); the GUI now
+passes `--taxonomy`. The CLI contract and hash definition are unchanged, but a run started
+this way can have a different `run_hash` from an earlier GUI run of the same models. Compare
+`run_hash` values only between runs started the same way.
+
+### Opening results
+
+**File > Open Run…** (⇧⌘O) opens any run folder. A run inside the project is selected in
+RUNS. A run outside it (also a Help > Try Demo Run output, which goes to a folder you choose)
+is shown read-only in RUNS marked "(opened)" for this session; it is not copied into the
+project. Every run view reads the run's summary and artifacts back; an unsupported or
+malformed run is reported as unreadable instead of being shown as a result.
+
 ## Typical CLI Workflows
 
 ### 0. Fetch an AGORA2 model pool
@@ -185,7 +341,9 @@ Selection flags are conjunctive: `--strain` / `--strain-file` (exact ids),
 `--genus`, `--match` and `--exclude-match` (regular expressions),
 `--one-per-genus`, `--sample N --seed S`, `--limit`. `--all` takes the whole
 catalogue and `--dry-run` prints the plan without downloading. A fetch above
-8 GB additionally requires `--yes`.
+8 GB additionally requires `--yes`. Every call rewrites `agora2_manifest.json` in
+`--out` with only the strains that call selected, so fetch a pool in one call (or
+use a new `--out` folder per call) to keep every model's provenance record.
 
 **Three published-file facts the command handles for you**, each measured against
 version 2.01 on 2026-09-02 and recorded per model in `agora2_manifest.json`:
@@ -392,8 +550,11 @@ The GUI Search panel mirrors `cmig search`. Targets are edited as rows
 two or more rows pass `--targets`, `--target-directions`, `--target-weights`
 (weighted metrics only; disabled for `pareto`) and `--target-scales` (all rows or
 none, finite and positive). A target preset such as `scfa` fills the rows. The
-collapsed "Advanced search settings (Search only)" group exposes the model folder
-or taxonomy CSV, `--recursive`, `--exhaustive-max`, `--n-samples`, every GA option,
+pool is picked from the project's models ("Models: n selected") and passed as
+`--taxonomy`; the medium comes from a picker that lists the installed presets and
+the project's media. The
+collapsed "Advanced search settings (Search only)" group exposes `--exhaustive-max`,
+`--n-samples`, every GA option,
 `--solver-threads`, `--pareto-resolution`, exact/merge medium mode (merge shows a
 warning and the active mode stays visible outside the group) and
 `--allow-unknown-medium` (`--solver` has only `gurobi`; `--allow-failed-run` is
@@ -401,9 +562,9 @@ CLI-only because the GUI always shows a failed run as a failure). A setting is p
 options only for `auto`/`ga`, FVA only with one target row). GUI defaults equal the
 CLI defaults (`normalized_weighted`, top-k 10, no GA evaluation cap); with
 `normalized_weighted` and no references the panel warns that a GA or random run
-needs them, and a failed run shows the CLI's own error message. An optional output
-folder receives a new `search-YYYYMMDD-HHMMSS` subfolder per run (blank keeps the
-temporary folder); medium and checkpoint paths have Browse buttons, and a
+needs them, and a failed run shows the CLI's own error message. Every run writes
+a new `runs/search-YYYYMMDD-HHMMSS` folder in the project (there is no output
+folder field); the checkpoint path has a Browse button, and a
 checkpoint that already exists without Resume, or that lies inside the new run
 folder, is refused before running. Selecting a ranking row shows its recorded
 details (fluxes, contributions, whether target fluxes were achieved together,
@@ -411,14 +572,14 @@ growth, diagnostics and, for `pareto`, its epsilon attempts); unrecorded values 
 shown as "not recorded". Cancel disables itself immediately and the panel keeps
 "Cancellation requested" until the running solve actually stops. Gene KO, Strain
 Growth and Ratio use the single target row, their own top-k (Gene KO default 20),
-exact medium and a temporary output folder. Strain Growth and Ratio use
+exact medium and a new run folder under `runs/`. Strain Growth and Ratio use
 cooperative tradeoff; they do not inherit the main Search direction and growth
 controls. The active workflow's settings
 are frozen when launched, and later relevant edits invalidate or mark the
 displayed result as superseded. Search uses the CLI service and output writer.
 The GUI lists only supported figure files present for that loaded run, clears
 an absent or unreadable preview, and disables export for it. Its status bar
-keeps scientific outcome separate from artifact integrity; the details control
+keeps scientific outcome separate from artifact integrity; the inspector
 shows the digest check or a readback error. A successful byte check cannot
 turn a malformed summary into a valid view. A failed job can still be opened
 for its diagnostic summary when its readback is valid.

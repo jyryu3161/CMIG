@@ -5,6 +5,23 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Changed — GUI workspace (phase 1)
+
+- The desktop GUI is organised around an on-disk project folder (`cmig-project.json`,
+  `models/`, `media/`, `runs/`). Models are copied in with SHA-256 checks, re-verified when
+  the project opens and again before a run; several files, whole folders, drag-and-drop and
+  AGORA2 strains can be added at once, in the background. Each AGORA2 download keeps its own
+  folder and manifest under `models/agora2/`, and a download over 1 GB asks first.
+- Standard File/Edit/View/Analysis/Window/Help menus, a three-group toolbar, a sidebar of
+  models, media, analyses and runs, a selection-following inspector and a bottom activity
+  pane replace the tab bar, Project Explorer, jobs table and the Import Model / Run Fixture /
+  Show Advanced Tools buttons. Runs that failed, were cancelled or could not be read back stay
+  in RUNS with their own mark.
+- Every analysis picks models and media from the project and writes to a new
+  `runs/<kind>-YYYYMMDD-HHMMSS` folder; the GUI passes `--taxonomy runs/_inputs/<run>-taxonomy.csv`
+  to the unchanged CLI. Runs started this way can have a different `run_hash` from earlier GUI
+  runs of the same models that used `--model-dir`. The Search "Output folder" field is removed.
+
 ### Added — GUI/CLI Search parity
 
 - `cmig search` with two or more targets now also writes `search_pareto.svg` /
