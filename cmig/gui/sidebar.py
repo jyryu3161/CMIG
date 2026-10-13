@@ -9,7 +9,7 @@ from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QFont
 from PySide6.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem
 
 from cmig.gui.project_session import RunEntry
-from cmig.io.project import MediumEntry, ModelEntry, ProjectError, supported_model_paths
+from cmig.io.project import MediumEntry, ModelEntry, model_import_candidates
 
 ANALYSES: list[tuple[str, str]] = [
     ("search", "Combination Search"),
@@ -58,18 +58,15 @@ def _integrity_tip(integrity: str) -> str | None:
 
 
 def droppable_paths(urls: list[QUrl]) -> tuple[list[Path], int]:
-    """Model files found under the dropped URLs (folders recurse) and the skipped count.
+    """The dropped folders and model-named files, and how many dropped items were left out.
 
-    Runs inside Qt drag handlers, so an unreadable folder must not raise: the drop is
-    treated as carrying nothing droppable and the import step reports the real error.
+    Runs inside Qt drag handlers on the GUI thread, so nothing is listed or read here: a
+    folder is taken as it is and a file by its name. The import job searches the folders,
+    skips what is not a model and reports a folder it cannot read.
     """
     local = [Path(url.toLocalFile()) for url in urls if url.isLocalFile()]
-    skipped = len(urls) - len(local)
-    try:
-        files, unsupported = supported_model_paths(local)
-    except ProjectError:
-        return [], len(urls)
-    return files, skipped + unsupported
+    found, skipped = model_import_candidates(local)
+    return found, skipped + len(urls) - len(local)
 
 
 class WorkspaceSidebar(QTreeWidget):

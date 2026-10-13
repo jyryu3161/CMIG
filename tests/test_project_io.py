@@ -533,6 +533,26 @@ def test_project_survives_move(tmp_path: Path) -> None:
     assert rows[0]["file"].startswith(str(tmp_path / "new"))
 
 
+def test_model_import_candidates_judge_by_name_without_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "pool"
+    folder.mkdir()
+    for name in ("a.XML", "b.json", "c.sbml.gz", "notes.txt", ".hidden.xml"):
+        (tmp_path / name).write_text("{}")
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("nothing is listed or read")
+
+    monkeypatch.setattr(proj, "_files_under", refuse)
+    monkeypatch.setattr("cmig.core.model_pool._is_cobra_json_candidate", refuse)
+    given = [folder, *(tmp_path / n for n in ("a.XML", "b.json", "c.sbml.gz", "notes.txt",
+                                               ".hidden.xml", "gone.txt"))]
+    found, skipped = proj.model_import_candidates(given)
+    assert found == [folder, tmp_path / "a.XML", tmp_path / "b.json", tmp_path / "c.sbml.gz"]
+    assert skipped == 3
+
+
 def test_supported_model_paths_filters_and_counts(tmp_path: Path) -> None:
     folder = tmp_path / "pool"
     _fake_model(folder / "a.xml")

@@ -1054,9 +1054,11 @@ class CmigMainWindow(QMainWindow):
         self.activity = ActivityPane(self.tr_map)
         self.jobs_panel = self.activity.jobs
         self._external_runs: list[RunEntry] = []
-        #: import job id -> the model files it was given; at most one import runs at a time
-        #: (two would race for the same models/ file names)
+        #: import job id -> the files and folders it was given; at most one import runs at a
+        #: time (two would race for the same models/ file names)
         self._import_jobs: dict[str, list[Path]] = {}
+        #: import job id -> filled by the job with the model files its folder search found
+        self._import_found: dict[str, list[list[Path]]] = {}
         #: import job id -> root of the project it imports into
         self._import_roots: dict[str, Path] = {}
         #: AGORA2 download job id -> (project root, folder it downloads into). A download holds
@@ -2366,24 +2368,29 @@ class CmigMainWindow(QMainWindow):
         if busy:
             self.statusBar().showMessage(busy, 8000)
             return ""
-        try:
-            files, skipped = proj.supported_model_paths(
-                [Path(p) for p in paths], recursive=recursive
-            )
-        except ProjectError as exc:
-            self.statusBar().showMessage(str(exc), 15000)
-            return ""
-        if not files:
+        # Only names are checked here: listing a folder or parsing a JSON model can take
+        # seconds, so the job searches the folders and skips what is not a model.
+        given, skipped_here = proj.model_import_candidates([Path(p) for p in paths])
+        if not given:
             self.statusBar().showMessage(
-                f"No SBML, JSON or MAT model files found ({skipped} skipped).", 8000
+                f"No SBML, JSON or MAT model files found ({skipped_here} skipped).", 8000
             )
             return ""
         working = proj.Project(project.root, project.name, project.created,
                                list(project.models), list(project.media),
                                dict(project.analysis_settings))
         origins = {Path(path): origin for path, origin in (source_overrides or {}).items()}
+        found_box: list[list[Path]] = []
 
         def _job(ctx: JobContext) -> dict[str, Any]:
+            from cmig.service.jobrunner import ArtifactJobFailure
+
+            try:
+                files, skipped = proj.supported_model_paths(given, recursive=recursive)
+            except ProjectError as exc:  # e.g. a folder that cannot be read
+                raise ArtifactJobFailure(str(exc), {"scan_error": str(exc)}) from exc
+            skipped += skipped_here
+            found_box.append(files)  # the GUI swaps its placeholder rows for these names
             added: list[ModelEntry] = []
             failed: list[tuple[str, str]] = []
             duplicates: list[tuple[str, str]] = []
@@ -2391,7 +2398,8 @@ class CmigMainWindow(QMainWindow):
             for index, path in enumerate(files):
                 if ctx.cancelled:
                     return {"added": added, "failed": failed, "duplicates": duplicates,
-                            "skipped": skipped, "cancelled_remaining": total - index}
+                            "skipped": skipped, "cancelled_remaining": total - index,
+                            "total": total}
                 ctx.report_progress(index, total)
                 try:
                     entry = proj.add_model_file(working, path, check=proj.check_model_file)
@@ -2406,35 +2414,63 @@ class CmigMainWindow(QMainWindow):
                     failed.append((path.name, f"{type(exc).__name__}: {exc}"))
             ctx.report_progress(total, total)
             return {"added": added, "failed": failed, "duplicates": duplicates,
-                    "skipped": skipped, "cancelled_remaining": 0}
+                    "skipped": skipped, "cancelled_remaining": 0, "total": total}
 
         job_id = self.submit_job("import_models", _job)
-        self._import_jobs[job_id] = files
+        self._import_jobs[job_id] = given
+        self._import_found[job_id] = found_box
         self._import_roots[job_id] = project.root
-        self._pending_imports.extend(path.name for path in files)
-        self._job_commands[job_id] = f"Add {len(files)} model file(s) to {project.name}"
+        self._pending_imports.extend(path.name for path in given)
+        self._job_commands[job_id] = (
+            f"Add models from {len(given)} file(s) or folder(s) to {project.name}"
+        )
         self.refresh_workspace()
         return job_id
 
-    def _finish_import(self, job_id: str, result: dict[str, Any] | None, status: str) -> None:
+    def _take_import_scan(self, job_id: str) -> bool:
+        """Once the job has searched its folders, show one placeholder row per model file."""
+        box = self._import_found.get(job_id)
+        if not box:
+            return False
+        files = box.pop()
+        self._pending_imports = [path.name for path in files]
+        project = self.session.project
+        name = project.name if project is not None else "the project"
+        self._job_commands[job_id] = f"Add {len(files)} model file(s) to {name}"
+        return True
+
+    def _finish_import(
+        self, job_id: str, result: dict[str, Any] | None, status: str, reason: str = ""
+    ) -> None:
         """Add what an import job produced to the project it was started for."""
-        files = self._import_jobs.pop(job_id, [])
+        self._take_import_scan(job_id)
+        self._import_jobs.pop(job_id, None)
+        self._import_found.pop(job_id, None)
         root = self._import_roots.pop(job_id, None)
         self.bridge.cancelling.discard(job_id)
-        names = {path.name for path in files}
-        self._pending_imports = [n for n in self._pending_imports if n not in names]
+        self._pending_imports = []  # imports run one at a time: every placeholder was this job's
         remaining = 0 if result is None else int(result["cancelled_remaining"])
+        total = 0 if result is None else int(result["total"])
         if remaining:
             # The worker returns normally after a cancel, so the runner calls the job `done`.
             self.bridge.status_labels[job_id] = (
-                f"cancelled ({remaining} of {len(files)} not imported)"
+                f"cancelled ({remaining} of {total} not imported)"
             )
-            self._job_logs[job_id] = f"Cancelled: {remaining} of {len(files)} files not imported"
+            self._job_logs[job_id] = f"Cancelled: {remaining} of {total} files not imported"
         else:
             self.bridge.status_labels.pop(job_id, None)
         project = self.session.project
         if result is None:
-            self.statusBar().showMessage(f"Model import {status}; nothing was added.", 8000)
+            detail = f": {reason}" if reason else ""
+            self.statusBar().showMessage(
+                f"Model import {status}; nothing was added{detail}", 15000
+            )
+            if reason:
+                self._job_logs[job_id] = reason
+        elif not total and not result["cancelled_remaining"]:
+            self.statusBar().showMessage(
+                f"No SBML, JSON or MAT model files found ({result['skipped']} skipped).", 8000
+            )
         elif project is None or root is None or not _same_folder(project.root, root):
             self.statusBar().showMessage(
                 f"The project was closed during the import; {len(result['added'])} copied "
@@ -4499,7 +4535,13 @@ class CmigMainWindow(QMainWindow):
             job = self.runner.poll(jid)
             if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
                 done = job.status is JobStatus.DONE and isinstance(job.result, dict)
-                self._finish_import(jid, job.result if done else None, job.status.value)
+                reason = (
+                    str(job.result.get("scan_error") or "")
+                    if job.status is JobStatus.FAILED and isinstance(job.result, dict) else ""
+                )
+                self._finish_import(jid, job.result if done else None, job.status.value, reason)
+            elif self._take_import_scan(jid):
+                self.refresh_workspace()
         for jid in list(self._agora2_jobs):
             job = self.runner.poll(jid)
             if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):

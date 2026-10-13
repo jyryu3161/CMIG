@@ -115,8 +115,13 @@ def test_drop_filters_unsupported_and_reports_skipped(tmp_path: Path) -> None:
     (pool / "a.xml").write_text("<sbml/>")
     (pool / "readme.txt").write_text("x")
     (pool / ".DS_Store").write_text("x")
+    # A folder is taken as dropped; the import job searches it (and counts the skipped files).
     paths, skipped = droppable_paths([QUrl.fromLocalFile(str(pool))])
-    assert [p.name for p in paths] == ["a.xml"] and skipped == 2
+    assert paths == [pool] and skipped == 0
+    paths, skipped = droppable_paths(
+        [QUrl.fromLocalFile(str(pool / name)) for name in ("a.xml", "readme.txt", ".DS_Store")]
+    )
+    assert paths == [pool / "a.xml"] and skipped == 2
 
     sidebar = WorkspaceSidebar()
     received: list[list[Path]] = []
@@ -183,7 +188,8 @@ def test_drop_of_only_unsupported_items_emits_nothing(tmp_path: Path) -> None:
     os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
     reason="needs POSIX permissions enforced for this user",
 )
-def test_drag_of_unreadable_folder_is_ignored_without_raising(tmp_path: Path) -> None:
+def test_drag_of_unreadable_folder_is_taken_without_reading_it(tmp_path: Path) -> None:
+    """The folder is not read while dragging; the import job reports that it cannot be read."""
     locked = tmp_path / "locked"
     locked.mkdir()
     (locked / "a.xml").write_text("<sbml/>")
@@ -194,11 +200,46 @@ def test_drag_of_unreadable_folder_is_ignored_without_raising(tmp_path: Path) ->
                             Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
     locked.chmod(0)
     try:
-        assert droppable_paths([QUrl.fromLocalFile(str(locked))]) == ([], 1)
-        sidebar.dragEnterEvent(enter)
+        assert droppable_paths([QUrl.fromLocalFile(str(locked))]) == ([locked], 0)
+        sidebar.dragEnterEvent(enter)  # raises nothing
     finally:
         locked.chmod(0o700)
-    assert not enter.isAccepted(), "an unreadable folder is not accepted and raises nothing"
+    assert enter.isAccepted()
+
+
+def _no_scanning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the test if anything lists a folder or parses a JSON file."""
+    import cmig.core.model_pool
+    import cmig.gui.sidebar
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a drag must not scan folders or parse model files")
+
+    for module, name in ((proj, "supported_model_paths"), (proj, "_files_under"),
+                         (cmig.gui.sidebar, "supported_model_paths"),
+                         (cmig.core.model_pool, "is_supported_model_file"),
+                         (cmig.core.model_pool, "_is_cobra_json_candidate")):
+        if hasattr(module, name):
+            monkeypatch.setattr(module, name, refuse)
+
+
+def test_drag_enter_on_a_folder_or_json_does_not_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = tmp_path / "pool"
+    (pool / "deep").mkdir(parents=True)
+    (pool / "deep" / "m.json").write_text('{"reactions": [], "metabolites": []}')
+    (tmp_path / "x.json").write_text("{}")
+    _no_scanning(monkeypatch)
+    sidebar = WorkspaceSidebar()
+    received: list[list[Path]] = []
+    sidebar.files_dropped.connect(received.append)
+    _mime, enter, move, drop = _drag_events(sidebar, pool, tmp_path / "x.json")
+    sidebar.dragEnterEvent(enter)
+    sidebar.dragMoveEvent(move)
+    sidebar.dropEvent(drop)
+    assert enter.isAccepted() and move.isAccepted() and drop.isAccepted()
+    assert received == [[pool, tmp_path / "x.json"]]
 
 
 def test_context_request_uses_selection_or_clicked_row(tmp_path: Path) -> None:

@@ -747,6 +747,31 @@ def _files_under(folder: Path, recursive: bool) -> list[Path]:
     return sorted(files)
 
 
+def model_import_candidates(paths: list[Path]) -> tuple[list[Path], int]:
+    """Folders, and files named like a GEM, among ``paths``; the count of everything else.
+
+    Nothing is listed or read (one ``stat`` per path), so this is safe on the GUI thread while
+    a drag is in progress. ``supported_model_paths`` does the real search (folder contents,
+    JSON that is not a model) in the import job.
+    """
+    found: list[Path] = []
+    skipped = 0
+    for raw in paths:
+        path = Path(raw)
+        try:
+            is_dir = path.is_dir()
+        except OSError:
+            is_dir = False
+        named_like_model = not path.name.startswith(".") and path.name.lower().endswith(
+            _MODEL_SUFFIXES
+        )
+        if is_dir or named_like_model:
+            found.append(path)
+        else:
+            skipped += 1
+    return found, skipped
+
+
 def supported_model_paths(
     paths: list[Path], *, recursive: bool = True
 ) -> tuple[list[Path], int]:

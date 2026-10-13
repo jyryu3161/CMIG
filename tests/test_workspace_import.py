@@ -168,16 +168,21 @@ def test_folder_without_models_and_unreadable_folder_report_in_the_status_bar(
     empty = tmp_path / "empty"
     empty.mkdir()
     (empty / "notes.txt").write_text("x")
-    assert window.add_model_paths([empty]) == ""
+    _wait(window, window.add_model_paths([empty]))  # folders are searched in the job
+    assert "No SBML, JSON or MAT model files found" in window.statusBar().currentMessage()
+    assert window.session.project.models == []
+    assert window.add_model_paths([empty / "notes.txt"]) == "", "no folder, no model suffix"
     assert "No SBML, JSON or MAT model files found" in window.statusBar().currentMessage()
 
     def unreadable(paths, *, recursive=True):
         raise proj.ProjectError(f"cannot read folder {paths[0]}: Permission denied")
 
     monkeypatch.setattr(proj, "supported_model_paths", unreadable)
-    assert window.add_model_paths([empty]) == ""
+    job = window.add_model_paths([empty])
+    _wait(window, job)
     assert "Permission denied" in window.statusBar().currentMessage()
     assert window._import_jobs == {} and window._pending_imports == []
+    assert window.runner.poll(job).status.value == "failed", "an unreadable folder is a failure"
 
 
 def test_pending_rows_show_while_importing_and_undo_removes_the_batch(
@@ -355,3 +360,76 @@ def test_completed_import_still_reads_done_in_activity(window, tmp_path: Path) -
     job = window.add_model_paths(_models(tmp_path / "in", ["a.xml", "b.xml"]))
     _wait(window, job)
     assert _job_row_status(window, job) == "done"
+
+
+# ── final review: folders are searched and JSON is parsed in the import job only ──────────
+def _cobra_json(folder: Path, names: list[str]) -> list[Path]:
+    folder.mkdir(parents=True, exist_ok=True)
+    out = []
+    for name in names:
+        path = folder / name
+        path.write_text(f'{{"id": "{name}", "reactions": [], "metabolites": [], "genes": []}}')
+        out.append(path)
+    return out
+
+
+def test_json_pool_import_scans_off_the_gui_thread_and_cancels(
+    window, tmp_path: Path, monkeypatch
+) -> None:
+    import cmig.core.model_pool as model_pool
+
+    main = threading.main_thread()
+    parsed_on: list[threading.Thread] = []
+    real = model_pool._is_cobra_json_candidate
+
+    def spy(path: Path) -> bool:
+        parsed_on.append(threading.current_thread())
+        return real(path)
+
+    monkeypatch.setattr(model_pool, "_is_cobra_json_candidate", spy)
+    pool = tmp_path / "pool"
+    _cobra_json(pool, [f"m{i:03d}.json" for i in range(200)])
+    (pool / "manifest.json").write_text('{"models": []}')  # JSON that is not a model: skipped
+    gate = _hold(monkeypatch, "m002.json")
+    job = window.add_model_paths([pool])
+    assert parsed_on == [] or main not in parsed_on, "nothing is parsed on the GUI thread"
+    assert window._pending_imports == ["pool"]
+    _wait_progress(window, job, 2)
+    assert window.runner.poll(job).progress[1] == 200
+    window._poll_completed_jobs()
+    assert len(window._pending_imports) == 200, "one placeholder per file once the scan is done"
+    window._cancel_job_id(job)
+    gate.set()
+    _wait(window, job)
+    assert main not in parsed_on and len(parsed_on) >= 201  # the scan, then each copy's check
+    count = len(window.session.project.models)
+    assert 2 <= count < 200
+    status = _job_row_status(window, job)
+    assert status == f"cancelled ({200 - count} of 200 not imported)"
+    assert "1 skipped" in window.statusBar().currentMessage()
+
+
+def test_drag_enter_on_the_window_does_not_scan(window, tmp_path: Path, monkeypatch) -> None:
+    from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
+    from PySide6.QtGui import QDragEnterEvent
+
+    import cmig.core.model_pool
+    import cmig.gui.sidebar
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a drag must not scan folders or parse model files")
+
+    for module, name in ((proj, "supported_model_paths"), (proj, "_files_under"),
+                         (proj, "is_supported_model_file"),
+                         (cmig.gui.sidebar, "supported_model_paths"),
+                         (cmig.core.model_pool, "_is_cobra_json_candidate")):
+        if hasattr(module, name):
+            monkeypatch.setattr(module, name, refuse)
+    pool = tmp_path / "pool"
+    _cobra_json(pool, ["a.json"])
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(pool))])
+    enter = QDragEnterEvent(QPoint(5, 5), Qt.DropAction.CopyAction, mime,
+                            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    window.dragEnterEvent(enter)
+    assert enter.isAccepted()
