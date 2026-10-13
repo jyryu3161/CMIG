@@ -184,13 +184,18 @@ my-study/
 ├── models/              copies of the GEMs you added (AGORA2: models/agora2/<timestamp>/)
 ├── media/               copies of the medium files you added
 └── runs/                one folder per run: <kind>-YYYYMMDD-HHMMSS
-    └── _inputs/         files the GUI wrote for the CLI, and failed/cancelled markers
+    └── _inputs/         files the GUI wrote for the CLI, and failed/cancelled/unreadable markers
 ```
 
 - **File > New Project…** (⌘N) creates the folder, which must be absent or empty.
   **Open Project…** (⌘O), **Open Recent** (the last ten, with Clear Menu) and
   **Close Project** (⌘W) do the rest. When the GUI starts it reopens the last project; if
   that fails (folder gone, locked or damaged) the start screen says why and changes nothing.
+- Opening or creating another project checks the new one first: if it cannot be opened or
+  created (a stale Open Recent entry, a locked or damaged project, a folder that is not
+  empty), the status bar says why and the open project and its running jobs are left alone.
+  While jobs are running, Close Project and a switch to another project first ask "N jobs
+  are running — close the project anyway?" (default No); Yes cancels them.
 - The project file locates every model and medium copy by a path relative to the project
   folder (`file`), so a project can be moved or copied and still opens. Each entry's
   `source_path` is different: it keeps the absolute path of the original file (or the AGORA2
@@ -210,24 +215,28 @@ my-study/
 - **Add Models…** (⇧⌘A) takes several files at once. **Add Models from Folder…** asks
   whether to include subfolders. With a project open, dropping files or folders anywhere on
   the window adds them too (folders are searched recursively; unsupported files are skipped
-  and counted).
+  and counted). A drop is accepted for any folder or model file name; the folder search, and
+  the check that a `.json` file is a model, run in the background with the import, which
+  reports a folder it cannot read.
   Supported: SBML (`.xml`, `.sbml`, also gzipped), JSON and MAT.
 - Each file is copied into `models/`, hashed (SHA-256) and read once to record its reaction,
   metabolite and gene counts, biomass reaction, BiGG namespace coverage and warnings. The
   work runs in the background, one import or download at a time; the sidebar shows a
-  placeholder row per file. A file that cannot be read stays in the list as failed, with the
-  reason, and the other files continue. Cancelling in Activity stops after the current file.
+  placeholder row per file (a dropped folder shows one row until its files are found). A file
+  that cannot be read stays in the list as failed, with the reason, and the other files
+  continue. Cancelling in Activity stops after the current file.
 - A file whose SHA-256 matches a model already in the project is refused as a duplicate.
   Model ids come from the file names; a clash gets a short digest suffix. **Edit > Rename…**
-  changes an id.
+  (one model selected) changes an id; analyses that remembered the model keep it selected
+  under the new id.
 - Marks in MODELS: ✓ readable, ⚠ readable with warnings or the project copy changed or went
   missing, ✗ failed to read, … still importing. A failed model, or a copy whose checksum no
   longer matches, cannot be picked for an analysis; it is greyed out with the reason.
 - The checksum of every copy is checked again when the project opens and once more just
   before a run uses it. A run that would include a changed or missing copy is refused.
-- **Edit > Remove from Project** (or Delete in the sidebar) only drops the list entry; the
-  copy stays in `models/` because earlier runs may refer to it. **Edit > Undo / Redo** cover
-  Add, Remove and Rename Model(s) and Add Medium.
+- **Edit > Remove from Project** (one or more models selected; or Delete in the sidebar)
+  only drops the list entry; the copy stays in `models/` because earlier runs may refer to
+  it. **Edit > Undo / Redo** cover Add, Remove and Rename Model(s) and Add Medium.
 - **File > Add Models from AGORA2…** searches the catalogue by strain or genus (a
   case-insensitive match on the strain id, for example `Roseburia` or
   `Roseburia intestinalis`) and downloads the strains you select with `cmig agora2-fetch`.
@@ -247,8 +256,9 @@ my-study/
   A command that cannot be used right now is greyed out, not hidden.
 - **Toolbar.** Sidebar toggle and project name, **Add Models…**, **New Analysis** (the
   Analysis menu), inspector toggle and **Run**. Every toolbar item is also in a menu. Run
-  starts the analysis on the centre page and is greyed out when the page has its own
-  buttons (Strain Growth & Ratio, Constraint Sandbox, Compare Runs) or no project is open.
+  presses the centre page's own Run button and is greyed out whenever that button is (its
+  job is running or being cancelled), when the page has its own buttons (Strain Growth &
+  Ratio, Constraint Sandbox, Compare Runs) or no project is open.
 - **Sidebar.** MODELS (several can be selected; right-click for Search with Selected…,
   Rename…, Remove from Project, Show in Finder), MEDIA (presets and project media),
   ANALYSES and RUNS, newest first, labelled `<analysis> · <target> · HH:MM`. Run marks: ✓
@@ -256,17 +266,21 @@ my-study/
   the same verdict as `cmig inspect-run`, and a run the GUI could not read back also shows ✗.
   A job that failed or was cancelled leaves its folder in place, and a small marker
   `runs/_inputs/<run>-state.json` keeps that mark after a restart; a marker can only make a
-  run look worse, never better.
+  run look worse, never better. A run the GUI could not read back gets an `unreadable`
+  marker the same way, removed when a later readback succeeds.
 - **Centre.** The page of the selected sidebar item: an analysis page, or the result viewer
   for a run (a community run offers Profile and Graph).
 - **Inspector** (right, follows the selection, read-only). A model shows its checks (size,
   biomass, BiGG namespace coverage, warnings, original path, SHA-256) and a filterable
-  exchange list that loads in the background. A medium shows its rows and source. A run
+  exchange list that loads in the background. Error and Warnings read "none" when the check
+  found none and "not recorded" when no check recorded them. A medium shows its rows and
+  source. A run
   shows its status, artifact integrity, `run_hash` and solver wording as the run recorded
   it (Gurobi full-flux, OSQP QP-only approximation, non-parsimonious or no flux), with
   **Copy Command** and **Show in Finder**. If the GUI cannot read a run's summary back, the
   inspector says so and the run is not treated as a loaded result.
-- **Activity** (bottom; opens when a job starts). Every job with kind, status and progress;
+- **Activity** (bottom; opens when a job starts). Every job you started (Search, Import
+  Models, AGORA2 Download, …) with status and progress;
   select one for its log or error and its `cmig` command. **Cancel** (⌘.) shows "cancelling"
   until the job actually stops. A running solve stops at its next boundary, an import
   after the current file, and an AGORA2 download cannot be interrupted (its files are then
@@ -289,7 +303,9 @@ New / Open / Close Project and Undo / Redo use the platform's standard keys (⌘
 
 - An analysis needs an open project: its models and media come from the project and its
   result goes to `runs/`. Model pickers ("Models: n selected") default to every model that
-  can run, so a model added later is included until you choose your own set. One-model
+  can run, so a model added later is included until you choose your own set (running an
+  analysis does not count as choosing). The list stays open while you tick models; type in
+  its filter field to narrow it, and Select All / Select None act on the rows shown. One-model
   inputs (the Host model, Dynamics, Minimal medium) use a single-choice picker; the Host
   microbes leave out the chosen host. Your picks are remembered per analysis in the
   project. A remembered model that can no longer run is left out and named in the status bar.
