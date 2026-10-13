@@ -1502,7 +1502,7 @@ class CmigMainWindow(QMainWindow):
                                                 QKeySequence.StandardKey.Open)
         self.recent_menu = QMenu("Open Recent", self)
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
-        self.close_project_action = self._action("Close Project", self.close_project,
+        self.close_project_action = self._action("Close Project", self._close_project_command,
                                                  QKeySequence.StandardKey.Close)
         self.add_models_action = self._action("Add Models…", self._add_models_dialog,
                                               "Ctrl+Shift+A")
@@ -1638,41 +1638,102 @@ class CmigMainWindow(QMainWindow):
             self.recent.add(current.root)
             self.refresh_workspace()
             return True
-        if current is not None:
-            self.close_project()
+        # The target is locked and read first: a stale recent entry, a locked or damaged
+        # project must not cost the open project or its running jobs anything.
         try:
             if not target.is_dir():
                 raise ProjectError(f"folder not found: {target}")
-            self.session.open(target)
+            project, lock = ProjectSession.lock_and_open(target)
         except (ProjectError, OSError) as exc:
-            self.welcome_message.setText(f"Could not open {target.name}: {exc}")
-            self._show_page(self.welcome_page)
+            self._project_refused(f"Could not open {target.name}: {exc}")
             return False
-        self.welcome_message.setText("")
+        if not self._switch_to(project, lock, f"{project.name} was not opened"):
+            return False
         self.recent.add(target)
         return True
 
     def create_project(self, path: Path, name: str | None = None) -> bool:
         target = Path(path)
-        if self.session.project is not None:
-            self.close_project()
         try:
-            self.session.create(target, name)
+            project, lock = ProjectSession.create_and_lock(target, name)
         except ProjectError as exc:
-            self.welcome_message.setText(f"Could not create the project: {exc}")
-            self._show_page(self.welcome_page)
+            self._project_refused(f"Could not create the project: {exc}")
             return False
-        self.welcome_message.setText("")
+        declined = f"{project.name} was created at {project.root} but not opened"
+        if not self._switch_to(project, lock, declined):
+            return False
         self.recent.add(target)
         return True
+
+    def _project_refused(self, message: str) -> None:
+        """Report a project that could not be opened or created; the open one stays as it is."""
+        if self.session.project is None:
+            self.welcome_message.setText(message)
+            self._show_page(self.welcome_page)
+        self.statusBar().showMessage(message, 15000)
+
+    def _switch_to(self, project: proj.Project, lock: proj.ProjectLock, declined: str) -> bool:
+        """Make an already locked and read project current, closing the open one first.
+
+        Asks before cancelling running jobs; a No gives the new project's lock back, leaves
+        everything as it was and says `declined` in the status bar.
+        """
+        if self.session.project is not None:
+            if not self._confirm_closing_with_jobs():
+                with suppress(OSError):
+                    lock.release()
+                self.statusBar().showMessage(
+                    f"{declined}; the current project and its jobs were kept.", 15000
+                )
+                return False
+            self._cancel_project_jobs()
+            self._close_session()
+        try:
+            self.session.attach(project, lock)
+        except (ProjectError, OSError) as exc:
+            self._project_refused(f"Could not open {project.name}: {exc}")
+            return False
+        self.welcome_message.setText("")
+        return True
+
+    def _active_job_ids(self) -> list[str]:
+        """Queued or running jobs that closing the project would cancel (not yet cancelling)."""
+        return [
+            job_id for job_id in self.bridge._job_ids
+            if job_id not in self.bridge.cancelling
+            and self.runner.poll(job_id).status in (JobStatus.PENDING, JobStatus.RUNNING)
+        ]
+
+    def _confirm_closing_with_jobs(self) -> bool:
+        """True when nothing runs, or the user agrees to cancel what does (default No)."""
+        count = len(self._active_job_ids())
+        if not count:
+            return True
+        running = "1 job is running" if count == 1 else f"{count} jobs are running"
+        answer = QMessageBox.question(
+            self, "Close Project",
+            f"{running} — close the project anyway?\n\nQueued jobs are cancelled; a solve "
+            "that is already running stops at its next checkpoint.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _cancel_project_jobs(self) -> None:
+        for job_id in list(self.bridge._job_ids):
+            if self.runner.poll(job_id).status in (JobStatus.PENDING, JobStatus.RUNNING):
+                self._cancel_job_id(job_id)
+
+    def _close_project_command(self) -> None:
+        """File > Close Project: asks first when jobs are running."""
+        if self.session.project is not None and self._confirm_closing_with_jobs():
+            self.close_project()
 
     def close_project(self) -> None:
         """Cancel queued/running jobs (cooperative; an in-flight solve finishes) and unlock."""
         if self.session.project is None:
             return
-        for job_id in list(self.bridge._job_ids):
-            if self.runner.poll(job_id).status in (JobStatus.PENDING, JobStatus.RUNNING):
-                self._cancel_job_id(job_id)
+        self._cancel_project_jobs()
         self._close_session()
 
     def _close_session(self) -> None:

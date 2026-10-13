@@ -261,7 +261,8 @@ class ProjectSession(QObject):
         self._run_cache.clear()
         self.opened.emit()
 
-    def _attach_or_release(self, project: proj.Project, lock: proj.ProjectLock) -> None:
+    def attach(self, project: proj.Project, lock: proj.ProjectLock) -> None:
+        """Close the current project (if any) and make `project`, locked by `lock`, current."""
         try:
             self._attach(project, lock)
         except Exception:
@@ -269,18 +270,29 @@ class ProjectSession(QObject):
                 lock.release()  # never keep the new project's lock when it was not attached
             raise
 
-    def open(self, root: Path) -> None:
+    @staticmethod
+    def lock_and_open(root: Path) -> tuple[proj.Project, proj.ProjectLock]:
+        """Lock and read a project without touching the open one (`attach` makes it current)."""
         lock = proj.ProjectLock.acquire(Path(root))
         try:
-            project = proj.open_project(Path(root))
+            return proj.open_project(Path(root)), lock
         except proj.ProjectError:
             lock.release()
             raise
-        self._attach_or_release(project, lock)
+
+    @staticmethod
+    def create_and_lock(
+        root: Path, name: str | None = None
+    ) -> tuple[proj.Project, proj.ProjectLock]:
+        """Create and lock a project without touching the open one (`attach` makes it current)."""
+        project = proj.create_project(Path(root), name)
+        return project, proj.ProjectLock.acquire(project.root)
+
+    def open(self, root: Path) -> None:
+        self.attach(*self.lock_and_open(root))
 
     def create(self, root: Path, name: str | None = None) -> None:
-        project = proj.create_project(Path(root), name)
-        self._attach_or_release(project, proj.ProjectLock.acquire(project.root))
+        self.attach(*self.create_and_lock(root, name))
 
     def close(self) -> None:
         """Save and close; the session is closed and unlocked even when the final save fails."""

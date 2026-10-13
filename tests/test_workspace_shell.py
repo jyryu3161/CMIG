@@ -542,3 +542,160 @@ def test_failed_exchange_lookup_is_shown_and_retried(
     window.sidebar.select("models", "a")
     _wait_for(window, lambda: not window._exchange_jobs)
     assert len(attempts) == 2  # a failure is not cached
+
+
+# ── final review: a failed switch keeps the current project; closing asks about jobs ──────
+def _running_job(window):
+    """A tracked job that runs until the returned gate is set; its context is in the box."""
+    import threading
+
+    gate, started, box = threading.Event(), threading.Event(), {}
+
+    def job(ctx):
+        box["ctx"] = ctx
+        started.set()
+        gate.wait(10)
+        return {"ok": True}
+
+    jid = window.submit_job("search_fixture", job)
+    assert started.wait(5)
+    return jid, gate, box
+
+
+def _answer(monkeypatch: pytest.MonkeyPatch, button) -> list[str]:
+    """Answer every QMessageBox.question with `button`; returns the questions asked."""
+    from PySide6.QtWidgets import QMessageBox
+
+    asked: list[str] = []
+
+    def question(_parent, _title, text, *args, **kwargs):
+        asked.append(text)
+        return button
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+    return asked
+
+
+def _assert_kept(window, root: Path, jid: str, box: dict) -> None:
+    assert window.session.project is not None
+    assert window.session.project.root == root.resolve()
+    assert (root / LOCK).exists()
+    assert not box["ctx"].cancelled, "the running job was not cancelled"
+    assert jid not in window.bridge.cancelling
+
+
+@pytest.mark.parametrize("kind", ["locked", "corrupt", "missing"])
+def test_open_that_fails_keeps_the_current_project_and_its_jobs(
+    window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    from cmig.io.project import ProjectLock
+
+    make_project(tmp_path / "cur", ["a"])
+    assert window.open_project(tmp_path / "cur")
+    window.show_analysis("host")
+    target = tmp_path / "target"
+    if kind == "locked":
+        make_project(target, ["b"])
+        ProjectLock.acquire(target)  # held by "another window" (a live pid)
+    elif kind == "corrupt":
+        target.mkdir()
+        (target / "cmig-project.json").write_text("{broken")
+    asked = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+    jid, gate, box = _running_job(window)
+    try:
+        assert not window.open_project(target)
+        _assert_kept(window, tmp_path / "cur", jid, box)
+        assert asked == [], "a switch that cannot happen asks nothing"
+        assert "Could not open target" in window.statusBar().currentMessage()
+        assert window.pages.currentWidget() is window.host_view
+        if kind == "locked":
+            assert (target / LOCK).exists(), "the other window's lock is left alone"
+    finally:
+        gate.set()
+
+
+def test_create_in_a_non_empty_folder_keeps_the_current_project_and_its_jobs(
+    window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    make_project(tmp_path / "cur", ["a"])
+    assert window.open_project(tmp_path / "cur")
+    full = tmp_path / "full"
+    full.mkdir()
+    (full / "notes.txt").write_text("x")
+    asked = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+    jid, gate, box = _running_job(window)
+    try:
+        assert not window.create_project(full)
+        _assert_kept(window, tmp_path / "cur", jid, box)
+        assert asked == []
+        assert "not empty" in window.statusBar().currentMessage()
+        assert sorted(p.name for p in full.iterdir()) == ["notes.txt"]
+    finally:
+        gate.set()
+
+
+def test_switch_with_a_running_job_asks_and_a_no_keeps_everything(
+    window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    make_project(tmp_path / "cur", ["a"])
+    make_project(tmp_path / "next", ["b"])
+    assert window.open_project(tmp_path / "cur")
+    asked = _answer(monkeypatch, QMessageBox.StandardButton.No)
+    jid, gate, box = _running_job(window)
+    try:
+        assert not window.open_project(tmp_path / "next")
+        assert len(asked) == 1 and "1 job is running" in asked[0]
+        _assert_kept(window, tmp_path / "cur", jid, box)
+        assert not (tmp_path / "next" / LOCK).exists(), "the target's lock is given back"
+    finally:
+        gate.set()
+
+
+def test_switch_with_a_running_job_cancels_it_when_confirmed(
+    window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    make_project(tmp_path / "cur", ["a"])
+    make_project(tmp_path / "next", ["b"])
+    assert window.open_project(tmp_path / "cur")
+    asked = _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+    jid, gate, box = _running_job(window)
+    try:
+        assert window.open_project(tmp_path / "next")
+        assert len(asked) == 1
+        assert window.session.project.name == "next"
+        assert box["ctx"].cancelled
+        assert not (tmp_path / "cur" / LOCK).exists()
+    finally:
+        gate.set()
+
+
+def test_close_project_asks_before_cancelling_running_jobs(
+    window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    make_project(tmp_path / "cur", ["a"])
+    assert window.open_project(tmp_path / "cur")
+    asked = _answer(monkeypatch, QMessageBox.StandardButton.No)
+    window.close_project_action.trigger()  # idle: closes without a question
+    assert asked == [] and window.session.project is None
+    assert window.open_project(tmp_path / "cur")
+    jid, gate, box = _running_job(window)
+    try:
+        window.close_project_action.trigger()
+        assert len(asked) == 1 and "1 job is running" in asked[0]
+        _assert_kept(window, tmp_path / "cur", jid, box)
+        _answer(monkeypatch, QMessageBox.StandardButton.Yes)
+        window.close_project_action.trigger()
+        assert window.session.project is None
+        assert box["ctx"].cancelled and jid in window.bridge.cancelling
+    finally:
+        gate.set()
