@@ -14,7 +14,7 @@ CMIG는 사용자 한 명이 자기 기계에서 쓰는 로컬 데스크톱/CLI 
 
 | 주체 | 허용 | 금지 |
 |---|---|---|
-| CMIG 프로세스 | 사용자가 지정한 입력 읽기, 지정한 `--out` 경계 안에 결과 게시, 폐기 가능한 모델 캐시 사본 작성. GUI의 프로젝트 상태·모델·배지 사본·run 입력과 결과는 사용자가 고른 프로젝트 폴더 안(`cmig-project.json`, `models/`, `media/`, `runs/`, `.cmig-project.lock`)에만 쓰고(그림 내보내기와 Try Demo Run은 사용자가 고른 경로), 원본 GEM·배지는 읽기만 한다. 예외: `--catalogue`·`--out` 없는 `agora2-list`/`agora2-fetch`는 카탈로그 캐시를 패키지 상위 `data/agora2/`(gitignore됨)에 쓴다 | 사용자 원본 GEM 수정, `--out` 경계(와 위 예외) 밖 파일 생성·덮어쓰기 |
+| CMIG 프로세스 | 사용자가 지정한 입력 읽기, 지정한 `--out` 경계 안에 결과 게시, 폐기 가능한 모델 캐시 사본 작성. GUI의 프로젝트 상태·모델·배지 사본·run 입력과 결과는 사용자가 고른 프로젝트 폴더 안(`cmig-project.json`, `models/`, `media/`, `runs/`, `.cmig-project.lock`)에만 쓰고(그림 내보내기와 Try Demo Run은 사용자가 고른 경로), 원본 GEM·배지는 읽기만 한다. 최근 프로젝트 경로 목록(최대 10개)은 프로젝트 밖의 OS 설정 저장소(QSettings, 조직·앱 이름 `CMIG`)에 남는다. 예외: `--catalogue`·`--out` 없는 `agora2-list`/`agora2-fetch`는 카탈로그 캐시를 패키지 상위 `data/agora2/`(gitignore됨)에 쓴다 | 사용자 원본 GEM 수정, `--out` 경계(와 위 예외) 밖 파일 생성·덮어쓰기 |
 | AGORA2 fetcher | `https://www.vmh.life/files/reconstructions/AGORA2/` 아래 허용 경로의 HTTPS 요청, 사용자가 고른 모델만 | 허용 origin·경로 밖 요청(리다이렉트의 각 다음 요청도 전송 전 검사), `../`·절대 경로·Windows 구분자·symlink로 출력 폴더를 벗어나는 파일명, `--all`(약 70 GB 전체 카탈로그)이나 8 GB 초과 선택을 `--yes` 확인 없이 받기 |
 | 인간 GEM 다운로드 스크립트 | 사용자가 직접 실행할 때만 BiGG에서 Recon3D/RECON1을 `data/gems/`로 받고 checksum·개수 검증 | 자동 실행, 모델 바이트의 git 커밋·재배포 |
 | R 렌더러 | 별도 subprocess에서 프로젝트 로컬 `.Rlib` 패키지로 실행 | CMIG 프로세스에 GPL 코드 적재, 전역 R 라이브러리 수정 |

@@ -191,9 +191,11 @@ my-study/
   **Open Project…** (⌘O), **Open Recent** (the last ten, with Clear Menu) and
   **Close Project** (⌘W) do the rest. When the GUI starts it reopens the last project; if
   that fails (folder gone, locked or damaged) the start screen says why and changes nothing.
-- The project file stores paths relative to the project folder, so a project can be moved
-  or copied and still opens. (The taxonomy files under `runs/_inputs/` keep the absolute
-  paths the run used.) It is saved after every edit.
+- The project file locates every model and medium copy by a path relative to the project
+  folder (`file`), so a project can be moved or copied and still opens. Each entry's
+  `source_path` is different: it keeps the absolute path of the original file (or the AGORA2
+  download URL) as provenance, and nothing is opened through it. The taxonomy files under
+  `runs/_inputs/` keep the absolute paths the run used. The project is saved after every edit.
 - An open project holds `.cmig-project.lock` (process id, host, time). A second window or
   process is refused with "already open in another window". A lock left by a process that
   no longer exists on the same host is replaced; if CMIG reports a lock but no other window
@@ -270,15 +272,18 @@ my-study/
   after the current file, and an AGORA2 download cannot be interrupted (its files are then
   not added).
 
-| Action | Shortcut (macOS; Ctrl replaces ⌘ elsewhere) |
-| --- | --- |
-| New / Open / Close Project | ⌘N / ⌘O / ⌘W |
-| Add Models… | ⇧⌘A |
-| Open Run… | ⇧⌘O |
-| Undo / Redo | ⌘Z / ⇧⌘Z |
-| Remove selected models (sidebar focused) | Delete |
-| Show or hide sidebar / inspector / activity | ⌃⌘S / ⌥⌘I / ⇧⌘Y |
-| Run / Cancel | ⌘R / ⌘. |
+New / Open / Close Project and Undo / Redo use the platform's standard keys (⌘N, ⌘O, ⌘W,
+⌘Z and ⇧⌘Z on macOS). The others are fixed:
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| Add Models… | ⇧⌘A | Ctrl+Shift+A |
+| Open Run… | ⇧⌘O | Ctrl+Shift+O |
+| Remove selected models (only while the sidebar has focus) | ⌦ (forward delete; fn+⌫ on a laptop keyboard) | Del |
+| Show or hide sidebar | ⌃⌘S | Ctrl+Meta+S (Meta is the Windows/Super key) |
+| Show or hide inspector | ⌥⌘I | Ctrl+Alt+I |
+| Show or hide activity | ⇧⌘Y | Ctrl+Shift+Y |
+| Run / Cancel | ⌘R / ⌘. | Ctrl+R / Ctrl+. |
 
 ### Analyses and runs
 
@@ -299,9 +304,17 @@ my-study/
   run folder, not inside it, because the CLI publishes the run folder as a whole.
   Single-model pages pass `--host` or `--model`; a medium built in the Medium Editor is
   written as `runs/_inputs/<run>-medium.json`.
-- Model choices and the medium are inputs that decide the answer, so changing them
-  invalidates a displayed result, like the other settings of that workflow.
-- Exact/merge medium mode and `--allow-unknown-medium` remain Search-only settings.
+- Model and medium choices decide the answer. On the Search page (Combination Search, Gene
+  Knockout, Strain Growth & Ratio), Host–Microbe and Dynamics, changing one invalidates the
+  displayed result, like the page's other settings. The Medium Editor clears only its
+  growth-delta overlay, and Sweep and Community Solve keep what their page shows; each run is
+  its own folder in RUNS, so check which run you are looking at.
+- Medium controls differ by page. Combination Search has the medium picker plus exact/merge
+  mode and `--allow-unknown-medium` under "Advanced search settings". Gene Knockout, Strain
+  Growth and Ratio use that same picker and always apply the medium as exact. Host–Microbe has
+  host and microbe medium pickers and an allow-unknown option. Sweep and the Medium Editor have
+  their own exact-medium and allow-unknown checkboxes. Community Solve and Dynamics have no
+  medium control.
 
 **Hash caveat.** Earlier GUI versions passed a model folder (`--model-dir`); the GUI now
 passes `--taxonomy`. The CLI contract and hash definition are unchanged, but a run started
@@ -310,11 +323,12 @@ this way can have a different `run_hash` from an earlier GUI run of the same mod
 
 ### Opening results
 
-**File > Open Run…** (⇧⌘O) opens any run folder. A run inside the project is selected in
-RUNS. A run outside it (also a Help > Try Demo Run output, which goes to a folder you choose)
-is shown read-only in RUNS marked "(opened)" for this session; it is not copied into the
-project. Every run view reads the run's summary and artifacts back; an unsupported or
-malformed run is reported as unreadable instead of being shown as a result.
+**File > Open Run…** (⇧⌘O) opens any run folder. The run opens in the centre and the
+inspector shows its status. A run inside the project is already listed in RUNS (the row is not
+highlighted by Open Run). A run outside it (also a Help > Try Demo Run output, which goes to a
+folder you choose) is added to RUNS marked "(opened)" once it loads, read-only and for this
+session only; it is not copied into the project. Every run view reads the run's summary and
+artifacts back; an unsupported or malformed run is reported instead of being shown as a result.
 
 ## Typical CLI Workflows
 
@@ -1209,7 +1223,7 @@ shared `--medium`/`--exact-medium`/`--allow-unknown-medium` contract):
 uv run cmig pair --taxonomy pair.csv --per-medium glucose.csv,acetate.csv \
   --exact-medium --assume-bigg-namespace --out runs/pair
 
-# CLI counterpart of the GUI Compare tab over two completed run directories.
+# CLI counterpart of the GUI Compare Runs page over two completed run directories.
 uv run cmig delta --baseline runs/solve_base --variant runs/solve_variant \
   --out runs/delta
 

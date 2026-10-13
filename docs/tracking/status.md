@@ -39,7 +39,7 @@
 
 ## 남은 작업 (우선순위 순)
 
-1. **GUI 2단계: 분석 화면 재구성(Search·Gene KO·Growth 분리 등)**: 1단계는 입력(모델·배지 선택기)과 출력(`runs/`)만 바꿨고 분석 화면 안쪽은 그대로다. Host 결과 표의 열 머리글 잘림(1280×800·1500×950 모두)도 이때 정리한다.
+1. **GUI 2단계: 분석 화면 재구성(Search·Gene KO·Growth 분리 등)**: 1단계는 입력(모델·배지 선택기)과 출력(`runs/`)만 바꿨고 분석 화면 안쪽은 그대로다. Host 결과 표의 열 머리글 잘림(1280×800·1500×950 모두), 1280 폭 Dynamics "Initial" 칸의 긴 기본값 잘림, 시작 화면 최근 프로젝트 목록 상자의 빈 공간도 이때 정리한다. `docs/cmig_hands_on_tutorial.html`은 아직 이전 UI(탭, Show Advanced Tools)를 설명하므로 새 화면 기준으로 다시 만든다.
 2. **GUI 3단계: 결과 보기·비교 통일**: 결과 화면과 run 비교를 하나의 보기 방식으로 맞춘다.
 3. **타깃별 임계값**: per-target threshold를 `MultiTargetConfig`·CLI·GUI에 공통 설계로 추가. 내부 epsilon slice는 이 기능이 아니다. hash 인자 추가이므로 envelope 재승인이 따른다.
 4. **탐색 방법 확장**: abundance 동시 최적화, 명시적 synergy/null-model fitness, 자동 MIP/MRO 사전선별, greedy/Bayesian 탐색. 각각 별도 과학 설계와 비교 벤치마크가 먼저 필요하다.

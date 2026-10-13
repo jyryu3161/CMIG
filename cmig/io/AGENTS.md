@@ -28,7 +28,7 @@
 - 원자적 쓰기가 실패하면 이전 파일이 그대로 남아야 한다. 임시 파일은 시스템 temp가 아니라 목적 디렉터리에 만든다(`os.replace`는 같은 파일시스템에서만 원자적).
 - legacy solve manifest의 `run_hash`는 `cmig.core.manifest.compute_run_hash`로만 만든다.
 - 모르는 확장자·파싱 실패는 명시적 예외(`ModelImportError`)다.
-- 프로젝트(`project.py`): `cmig-project.json`의 경로는 프로젝트 기준 상대 경로로 두어 폴더를 옮겨도 열린다(절대 경로는 실행 때 계산하며, run 입력 taxonomy만 사본의 절대 경로를 적는다). 파일이 없거나 손상됐거나 `format_version`이 1이 아니면(미래 형식 포함) 열기를 거부하고 파일에 쓰지 않는다. 모든 I/O 오류는 `ProjectError`로 바꿔 올린다.
+- 프로젝트(`project.py`): `cmig-project.json`의 사본 위치(`file`)는 프로젝트 기준 상대 경로로 두어 폴더를 옮겨도 열린다(절대 경로는 실행 때 계산하며, run 입력 taxonomy만 사본의 절대 경로를 적는다). `source_path`는 원본의 절대 경로(AGORA2는 다운로드 URL)를 출처 기록으로만 남기며 그 경로로 파일을 열지 않는다. 파일이 없거나 손상됐거나 `format_version`이 1이 아니면(미래 형식 포함) 열기를 거부하고 파일에 쓰지 않는다. 모든 I/O 오류는 `ProjectError`로 바꿔 올린다.
 - 프로젝트: 저장은 `atomic_write_text`·`atomic_write_binary`로만 한다. 원본 GEM·배지는 읽기만 하고, 사본은 `models/`·`media/`에 쓰며 기존 파일을 덮어쓰지 않는다. 모델 목록에서 빼도 사본은 지우지 않는다(run이 참조할 수 있다). 같은 sha256은 중복으로 거부한다.
 - 프로젝트: 열 때(`verify_checksums`)와 run 입력을 만들 때(`write_run_taxonomy`, 단일 경로 입력은 `refresh_integrity`) 사본의 sha256을 다시 계산한다. 다르거나 없는 사본(`integrity` `changed`/`missing`)과 점검에 실패한 모델은 run에 쓰지 않고 오류로 거부한다.
 - 프로젝트: run 폴더는 `runs/<kind>-YYYYMMDD-HHMMSS[-N]`이며 기존 폴더를 재사용하지 않는다. run 입력(`<run>-taxonomy.csv`, GUI의 `<run>-state.json`)은 `runs/_inputs/`에 두고 run 폴더 안에는 쓰지 않는다. 표식은 `failed`/`cancelled`만 기록한다.
