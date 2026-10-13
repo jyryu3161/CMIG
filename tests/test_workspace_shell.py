@@ -388,6 +388,30 @@ def test_auto_preview_after_a_bound_edit_stays_on_the_sandbox_page(
     assert window.profile_view.net_chart.delta_active  # Profile still carries the overlay
 
 
+def test_auto_preview_does_not_start_a_second_solve_while_one_is_in_flight(
+    window, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    gate = threading.Event()
+    calls = _fake_sandbox_engine(monkeypatch, gate)
+    view = _sandbox_with_bound(window)
+    view.auto_preview_requested.emit()  # the debounced preview starts a solve, held on the gate
+    assert len(window._sandbox_jobs) == 1
+    (first,) = window._sandbox_jobs
+    view.bound_table.item(0, 1).setText("-2.0")  # another bound edit while it is in flight
+    view._debounce.stop()
+    view.auto_preview_requested.emit()
+    assert list(window._sandbox_jobs) == [first], "still the one job"
+    gate.set()
+    _wait_for(window, lambda: not window._sandbox_jobs)
+    assert calls == [False], "the engine ran once"
+    assert view.preview_btn.isEnabled()
+    view.auto_preview_requested.emit()  # idle again: the next edit previews as before
+    _wait_for(window, lambda: len(calls) == 2 and not window._sandbox_jobs)
+    assert calls == [False, False]
+
+
 def test_explicit_preview_does_not_leave_a_cell_being_edited(
     window, monkeypatch: pytest.MonkeyPatch
 ) -> None:

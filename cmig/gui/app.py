@@ -23,6 +23,7 @@ import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -1070,6 +1071,11 @@ class CmigMainWindow(QMainWindow):
         self._following_sidebar = False
         #: run folder -> (status, detail) of the GUI's last failed readback of that run
         self._readback_failures: dict[str, tuple[str, str]] = {}
+        #: run folder -> "failed" | "cancelled": how the job that wrote it ended. A folder a
+        #: failed or cancelled job left behind must never read as a result in RUNS.
+        self._run_states: dict[str, str] = {}
+        #: job id -> the run folder it writes, until the job reaches a terminal state
+        self._job_runs: dict[str, Path] = {}
         #: (run folder, inspect-run payload) from the last _inspect_gui_run, for the inspector
         self._last_inspected: tuple[str, dict[str, Any]] | None = None
         #: what the inspector shows: a run folder, or a model's (id, sha256)
@@ -1211,7 +1217,8 @@ class CmigMainWindow(QMainWindow):
         from cmig.cli.main import _inspect_run_dir
 
         manifest_path = run_dir / "manifest.json"
-        self._readback_failures.pop(_run_key(run_dir), None)  # a failure below re-records it
+        # A failure below re-records it; one that no longer holds must leave RUNS as well.
+        cleared = self._readback_failures.pop(_run_key(run_dir), None) is not None
         try:
             manifest: dict[str, Any] = {}
             if manifest_path.exists():
@@ -1282,6 +1289,8 @@ class CmigMainWindow(QMainWindow):
             self._last_integrity = f"Integrity: {state}"
             self._integrity_detail = f"Run: {run_dir}\nState: {state}{detail}"
             self._last_inspected = (_run_key(run_dir), inspected)
+            if cleared:
+                self.refresh_workspace()
             return inspected
         except Exception as exc:
             self._last_integrity = "Integrity: invalid/unreadable"
@@ -1307,8 +1316,9 @@ class CmigMainWindow(QMainWindow):
         )
 
     def _readback_failed(self, run_dir: Path, status: str, detail: str) -> None:
-        """Remember why this run could not be shown and show that in the inspector."""
+        """Remember why this run could not be shown; the inspector and RUNS both say so."""
         self._readback_failures[_run_key(run_dir)] = (status, detail)
+        self.refresh_workspace()  # RUNS shows the run as unreadable, never as its folder says
         self._show_run_in_inspector(run_dir)
 
     def _show_run_in_inspector(self, run_dir: Path) -> None:
@@ -1331,15 +1341,33 @@ class CmigMainWindow(QMainWindow):
             inspected["status"] = status
             # The first detail line names the run folder, which the Folder row already shows.
             inspected["artifact_integrity"] = "; ".join(detail.splitlines()[1:]) or detail
+        elif key in self._run_states:
+            inspected["status"] = self._run_states[key]
         command = self._run_commands.get(key, "")
         self.inspector.show_run(self._run_entry(run_dir), inspected, command)
         self._inspector_run, self._inspected_model = key, None
 
     def _run_entry(self, run_dir: Path) -> RunEntry:
-        for entry in [*self.session.runs(), *self._external_runs]:
+        for entry in self._display_runs([*self.session.runs(), *self._external_runs]):
             if entry.path == run_dir:
                 return entry
-        return inspect_run(run_dir)
+        return self._display_runs([inspect_run(run_dir)])[0]
+
+    def _display_runs(self, entries: list[RunEntry]) -> list[RunEntry]:
+        """RUNS rows with the GUI's own verdict laid over what the folder says.
+
+        A summary the GUI rejected reads as unreadable, and a folder left by a job that failed
+        or was cancelled reads as failed or cancelled: neither may look like a result, whatever
+        status a half-written summary in the folder claims.
+        """
+        shown: list[RunEntry] = []
+        for entry in entries:
+            key = _run_key(entry.path)
+            status = (
+                "unreadable" if key in self._readback_failures else self._run_states.get(key)
+            )
+            shown.append(entry if status is None else replace(entry, status=status))
+        return shown
 
     def closeEvent(self, event: Any) -> None:
         """Stop the GUI's timers and the job pool so closing the window ends the session.
@@ -1676,7 +1704,9 @@ class CmigMainWindow(QMainWindow):
         self.sidebar.set_models([] if project is None else project.models,
                                 list(self._pending_imports))
         self.sidebar.set_media(installed_medium_presets(), [] if project is None else project.media)
-        self.sidebar.set_runs(self.session.runs(), self._external_runs)
+        self.sidebar.set_runs(
+            self._display_runs(self.session.runs()), self._display_runs(self._external_runs)
+        )
         self._restore_sidebar_selection(current, selected_models)
         self.welcome_recent.clear()
         for path in self.recent.paths():
@@ -1907,10 +1937,12 @@ class CmigMainWindow(QMainWindow):
         return proj.model_path(project, entry).resolve()
 
     def _record_command(self, job_id: str, out_dir: Path, argv: list[str]) -> None:
-        """Keep the equivalent `cmig` command for Activity and the run's Copy Command."""
+        """Keep the equivalent `cmig` command for Activity and the run's Copy Command, and
+        which run folder the job writes (see `_settle_run_jobs`)."""
         command = command_line(argv)
         self._job_commands[job_id] = command
         self._run_commands[str(out_dir)] = command
+        self._job_runs[job_id] = out_dir
 
     # ── selection → page + inspector ─────────────────────────────────────────────────────
     _RUNNERS = {
@@ -2776,7 +2808,13 @@ class CmigMainWindow(QMainWindow):
         self._run_sandbox(commit=True)
 
     def _run_sandbox_auto_preview(self) -> None:
-        """The debounced preview after a bound edit; its result stays on the sandbox page."""
+        """The debounced preview after a bound edit; its result stays on the sandbox page.
+
+        Nothing starts while a sandbox solve is in flight: another edit would otherwise queue a
+        second solve whose result lands on the wrong bound.
+        """
+        if self._sandbox_jobs or not self.sandbox_view.preview_btn.isEnabled():
+            return
         self._run_sandbox(commit=False, auto=True)
 
     def _run_sandbox(self, *, commit: bool, auto: bool = False) -> str:
@@ -4317,7 +4355,37 @@ class CmigMainWindow(QMainWindow):
             self.refresh_workspace()
         self._show_run_in_inspector(out_dir)  # status and integrity, as RUNS selection shows
 
+    def _settle_run_jobs(self) -> bool:
+        """Record how each ended job left its run folder. True when RUNS needs a refresh.
+
+        A failed job's folder is listed as failed and a cancelled job's as cancelled, kept for
+        the evidence in it. A cancelled job that published nothing left only the empty folder
+        the GUI claimed for it (and its taxonomy input): both are removed, with `rmdir`, so
+        nothing a run produced is ever deleted.
+        """
+        changed = False
+        for job_id, run_dir in list(self._job_runs.items()):
+            status = self.runner.poll(job_id).status
+            if status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+                continue
+            del self._job_runs[job_id]
+            if status is JobStatus.DONE:
+                continue  # a finished run is judged by what it holds
+            changed = True
+            if status is JobStatus.CANCELLED:
+                try:
+                    run_dir.rmdir()
+                except OSError:
+                    pass  # it holds something: keep it, listed as cancelled
+                else:
+                    with suppress(OSError):
+                        (run_dir.parent / "_inputs" / f"{run_dir.name}-taxonomy.csv").unlink()
+                    continue
+            self._run_states[_run_key(run_dir)] = status.value
+        return changed
+
     def _poll_completed_jobs(self) -> None:
+        settled = self._settle_run_jobs()
         self._finish_exchange_jobs()
         for jid in list(self._import_jobs):
             job = self.runner.poll(jid)
@@ -4871,6 +4939,11 @@ class CmigMainWindow(QMainWindow):
                     )
                 )
         self._show_search_cancel_pending()
+        for jid in list(self.bridge.cancelling):
+            if self.runner.poll(jid).status not in (JobStatus.PENDING, JobStatus.RUNNING):
+                self.bridge.cancelling.discard(jid)
+        if settled:
+            self.session.refresh_runs()
 
 
 def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:
