@@ -12,11 +12,13 @@ import csv
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
 import socket
 import sys
+from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -32,8 +34,9 @@ LOCK_FILE = ".cmig-project.lock"
 _SUBDIRS = ("models", "media", "runs", "runs/_inputs")
 MEDIUM_SUFFIXES = (".csv", ".json")
 _MODEL_SUFFIXES = (".xml.gz", ".sbml.gz", ".xml", ".sbml", ".json", ".mat")
-_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_KIND_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+_ID_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_KIND_RE = re.compile(r"[a-z][a-z0-9_-]*")
+_RUNNABLE_STATUSES = ("ok", "warning")
 
 
 class ProjectError(RuntimeError):
@@ -405,6 +408,23 @@ def _checksum(path: Path) -> str:
         raise ProjectError(f"cannot read {path}: {exc}") from exc
 
 
+def _resolve_source(source: Path) -> Path:
+    try:
+        return Path(source).expanduser().resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ProjectError(f"cannot read {source}: {exc}") from exc
+
+
+def _integrity(path: Path, sha256: str) -> str:
+    """``ok`` / ``changed`` / ``missing`` for one project copy; an unreadable copy is missing."""
+    try:
+        if not path.is_file():
+            return "missing"
+        return "ok" if _sha256(path) == sha256 else "changed"
+    except OSError:
+        return "missing"
+
+
 def _split_suffix(name: str, suffixes: Iterable[str]) -> tuple[str, str]:
     lower = name.lower()
     for suffix in suffixes:
@@ -417,9 +437,12 @@ def _free_name(folder: Path, stem: str, suffix: str) -> Path:
     safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._") or "file"
     candidate = folder / f"{safe_stem}{suffix}"
     n = 2
-    while candidate.exists():
-        candidate = folder / f"{safe_stem}-{n}{suffix}"
-        n += 1
+    try:
+        while candidate.exists():
+            candidate = folder / f"{safe_stem}-{n}{suffix}"
+            n += 1
+    except OSError as exc:
+        raise ProjectError(f"cannot inspect {folder}: {exc}") from exc
     return candidate
 
 
@@ -458,8 +481,12 @@ def add_model_file(
     check: Callable[[Path], ModelCheck] | None = check_model_file,
 ) -> ModelEntry:
     """Copy one GEM into ``models/`` and register it (caller saves the project)."""
-    source = Path(source).expanduser().resolve()
-    if not is_supported_model_file(source):
+    source = _resolve_source(source)
+    try:
+        supported = is_supported_model_file(source)
+    except OSError as exc:
+        raise ProjectError(f"cannot read {source}: {exc}") from exc
+    if not supported:
         raise ProjectError(f"not a supported model file: {source.name}")
     sha = _checksum(source)
     for entry in project.models:
@@ -469,7 +496,8 @@ def add_model_file(
     target = _free_name(project.models_dir, stem, suffix)
     _copy_into(source, target)
     if _checksum(target) != sha:
-        target.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            target.unlink(missing_ok=True)
         raise ProjectError(f"copy of {source.name} does not match its source checksum")
     entry = ModelEntry(
         id=_unique_id({m.id for m in project.models}, member_id_from_path(source), sha),
@@ -486,8 +514,12 @@ def add_model_file(
 
 
 def add_medium_file(project: Project, source: Path) -> MediumEntry:
-    source = Path(source).expanduser().resolve()
-    if source.suffix.lower() not in MEDIUM_SUFFIXES or not source.is_file():
+    source = _resolve_source(source)
+    try:
+        is_file = source.is_file()
+    except OSError as exc:
+        raise ProjectError(f"cannot read {source}: {exc}") from exc
+    if source.suffix.lower() not in MEDIUM_SUFFIXES or not is_file:
         raise ProjectError(f"a medium must be a CSV or JSON file: {source.name}")
     sha = _checksum(source)
     for entry in project.media:
@@ -520,7 +552,7 @@ def restore_model(project: Project, index: int, entry: ModelEntry) -> None:
 
 def rename_model(project: Project, model_id: str, new_id: str) -> None:
     entry = project.model(model_id)
-    if not _ID_RE.match(new_id):
+    if not _ID_RE.fullmatch(new_id):
         raise ProjectError("a model id starts with a letter or _ and uses letters, digits, _")
     if any(m.id == new_id for m in project.models if m is not entry):
         raise ProjectError(f"another model already uses the id {new_id!r}")
@@ -543,25 +575,15 @@ def verify_checksums(project: Project) -> list[str]:
     changed: list[str] = []
     items: list[ModelEntry | MediumEntry] = [*project.models, *project.media]
     for item in items:
-        path = project.root / item.file
-        try:
-            if not path.is_file():
-                state = "missing"
-            elif _sha256(path) != item.sha256:
-                state = "changed"
-            else:
-                state = "ok"
-        except OSError:
-            state = "missing"
-        item.integrity = state
-        if state != "ok":
+        item.integrity = _integrity(project.root / item.file, item.sha256)
+        if item.integrity != "ok":
             changed.append(item.id)
     return changed
 
 
 def selectable_models(project: Project) -> list[ModelEntry]:
     return [
-        m for m in project.models if m.status in ("ok", "warning") and m.integrity == "ok"
+        m for m in project.models if m.status in _RUNNABLE_STATUSES and m.integrity == "ok"
     ]
 
 
@@ -570,7 +592,7 @@ def _stamp() -> str:
 
 
 def new_run_dir(project: Project, kind: str) -> Path:
-    if not _KIND_RE.match(kind):
+    if not _KIND_RE.fullmatch(kind):
         raise ProjectError(f"invalid run kind {kind!r}")
     base = f"{kind}-{_stamp()}"
     n = 1
@@ -586,23 +608,63 @@ def new_run_dir(project: Project, kind: str) -> Path:
         return candidate
 
 
+def _abundance(model_id: str, value: object) -> float:
+    number = math.nan
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        with contextlib.suppress(OverflowError):  # an int too large for a float
+            number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ProjectError(
+            f"abundance for {model_id!r} must be a finite number greater than 0, got {value!r}"
+        )
+    return number
+
+
 def write_run_taxonomy(
     project: Project,
     run_dir: Path,
     model_ids: list[str],
     abundances: dict[str, float] | None = None,
 ) -> Path:
-    """Write ``runs/_inputs/<run>-taxonomy.csv`` (id,file,abundance) for the CLI."""
+    """Write ``runs/_inputs/<run>-taxonomy.csv`` (id,file,abundance) for the CLI.
+
+    Each chosen model's copy is re-hashed first (``integrity`` is refreshed), so a file edited
+    since the project was opened cannot reach a run.
+    """
     if not model_ids:
         raise ProjectError("no models selected for this run")
-    selectable = {m.id: m for m in selectable_models(project)}
+    duplicates = sorted(m for m, count in Counter(model_ids).items() if count > 1)
+    if duplicates:
+        raise ProjectError(f"duplicate model ids in this run: {', '.join(map(repr, duplicates))}")
+    stray = sorted(set(abundances or {}) - set(model_ids))
+    if stray:
+        raise ProjectError(
+            f"abundances given for models not in this run: {', '.join(map(repr, stray))}"
+        )
+    by_id = {m.id: m for m in project.models}
+    problems: list[str] = []
     rows: list[list[str]] = []
     for model_id in model_ids:
-        entry = selectable.get(model_id)
+        entry = by_id.get(model_id)
         if entry is None:
-            raise ProjectError(f"model {model_id!r} is not selectable (failed, changed or missing)")
-        abundance = (abundances or {}).get(model_id, 1.0)
-        rows.append([model_id, str(model_path(project, entry)), repr(float(abundance))])
+            problems.append(f"model {model_id!r} is not selectable: no such model in this project")
+            continue
+        entry.integrity = _integrity(model_path(project, entry), entry.sha256)
+        if entry.integrity == "changed":
+            problems.append(
+                f"model {model_id!r} is not selectable: its file changed since it was added"
+            )
+        elif entry.integrity == "missing":
+            problems.append(f"model {model_id!r} is not selectable: its file is missing")
+        elif entry.status not in _RUNNABLE_STATUSES:
+            problems.append(
+                f"model {model_id!r} is not selectable: its check status is {entry.status!r}"
+            )
+        else:
+            abundance = _abundance(model_id, (abundances or {}).get(model_id, 1.0))
+            rows.append([model_id, str(model_path(project, entry)), repr(abundance)])
+    if problems:
+        raise ProjectError("; ".join(problems))
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
     writer.writerow(["id", "file", "abundance"])
@@ -615,6 +677,22 @@ def write_run_taxonomy(
     return path
 
 
+def _files_under(folder: Path, recursive: bool) -> list[Path]:
+    """Sorted files in ``folder``; an unreadable folder (or subfolder) raises ``ProjectError``."""
+
+    def fail(exc: OSError) -> None:
+        raise ProjectError(
+            f"cannot read folder {exc.filename or folder}: {exc.strerror or exc}"
+        ) from exc
+
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(folder, onerror=fail):
+        files.extend(Path(dirpath) / name for name in filenames)
+        if not recursive:
+            dirnames.clear()
+    return sorted(files)
+
+
 def supported_model_paths(
     paths: list[Path], *, recursive: bool = True
 ) -> tuple[list[Path], int]:
@@ -623,17 +701,23 @@ def supported_model_paths(
     skipped = 0
     for raw in paths:
         path = Path(raw)
-        if path.is_dir():
-            candidates = sorted(path.rglob("*") if recursive else path.iterdir())
-            for item in candidates:
-                if not item.is_file():
-                    continue
-                if item.name.startswith(".") or not is_supported_model_file(item):
-                    skipped += 1
-                else:
-                    found.append(item)
-        elif path.is_file() and not path.name.startswith(".") and is_supported_model_file(path):
-            found.append(path)
-        else:
-            skipped += 1
+        try:
+            if path.is_dir():
+                for item in _files_under(path, recursive):
+                    if not item.is_file():
+                        continue
+                    if item.name.startswith(".") or not is_supported_model_file(item):
+                        skipped += 1
+                    else:
+                        found.append(item)
+            elif (
+                path.is_file()
+                and not path.name.startswith(".")
+                and is_supported_model_file(path)
+            ):
+                found.append(path)
+            else:
+                skipped += 1
+        except OSError as exc:
+            raise ProjectError(f"cannot read {path}: {exc}") from exc
     return found, skipped

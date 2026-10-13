@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import hashlib
 import json
 import os
 import shutil
 import socket
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -490,8 +492,8 @@ def test_write_run_taxonomy(tmp_path: Path) -> None:
     assert rows[1]["file"] == str(project.root / a.file)
     assert [float(r["abundance"]) for r in rows] == [1.0, 0.25]
     assert list(run.iterdir()) == [], "nothing is pre-written into the CLI's run folder"
-    with pytest.raises(proj.ProjectError, match="not selectable"):
-        project.model("a").integrity = "changed"
+    (project.root / a.file).write_text("tampered")
+    with pytest.raises(proj.ProjectError, match="not selectable.*changed since it was added"):
         proj.write_run_taxonomy(project, run, ["a"])
     with pytest.raises(proj.ProjectError, match="no models"):
         proj.write_run_taxonomy(project, run, [])
@@ -556,19 +558,179 @@ def test_create_mkdir_failure_is_project_error(tmp_path: Path) -> None:
         proj.create_project(blocker / "p")
 
 
-@pytest.mark.skipif(
+needs_posix_perms = pytest.mark.skipif(
     os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
     reason="needs POSIX permissions enforced for this user",
 )
+
+
+@contextlib.contextmanager
+def _unsearchable(folder: Path) -> Iterator[None]:
+    folder.chmod(0)
+    try:
+        yield
+    finally:
+        folder.chmod(0o700)
+
+
+@needs_posix_perms
 def test_open_unsearchable_folder_is_project_error(tmp_path: Path) -> None:
     root = tmp_path / "locked-folder"
     proj.create_project(root)
-    root.chmod(0)
-    try:
-        with pytest.raises(proj.ProjectError, match="cannot open project folder|no cmig-project"):
-            proj.open_project(root)
-    finally:
-        root.chmod(0o700)
+    with (
+        _unsearchable(root),
+        pytest.raises(proj.ProjectError, match="cannot open project folder|no cmig-project"),
+    ):
+        proj.open_project(root)
+
+
+@needs_posix_perms
+def test_create_unreadable_empty_folder_is_project_error(tmp_path: Path) -> None:
+    root = tmp_path / "empty-but-locked"
+    root.mkdir()
+    with _unsearchable(root), pytest.raises(proj.ProjectError, match="cannot create project"):
+        proj.create_project(root)
+    assert not (root / "cmig-project.json").exists()
+
+
+@needs_posix_perms
+def test_add_model_from_unsearchable_parent_is_project_error(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    src = _fake_model(tmp_path / "in" / "a.xml", "a")
+    with _unsearchable(src.parent), pytest.raises(proj.ProjectError, match="cannot read"):
+        proj.add_model_file(project, src, check=None)
+    assert project.models == [] and list(project.models_dir.iterdir()) == []
+
+
+@needs_posix_perms
+def test_add_medium_from_unsearchable_parent_is_project_error(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    src = tmp_path / "in" / "diet.csv"
+    src.parent.mkdir()
+    src.write_text("exchange,uptake\n")
+    with _unsearchable(src.parent), pytest.raises(proj.ProjectError, match="cannot read"):
+        proj.add_medium_file(project, src)
+    assert project.media == []
+
+
+@needs_posix_perms
+def test_add_model_into_unsearchable_models_folder_is_project_error(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    src = _fake_model(tmp_path / "a.xml", "a")
+    with _unsearchable(project.models_dir), pytest.raises(proj.ProjectError, match="cannot"):
+        proj.add_model_file(project, src, check=None)
+    assert project.models == []
+
+
+@needs_posix_perms
+def test_supported_model_paths_unreadable_folder_is_project_error(tmp_path: Path) -> None:
+    folder = tmp_path / "pool"
+    _fake_model(folder / "a.xml")
+    locked = folder / "locked"
+    _fake_model(locked / "b.xml")
+    inner = _fake_model(tmp_path / "shut" / "c.xml")
+    with _unsearchable(locked):
+        with pytest.raises(proj.ProjectError, match="locked"):
+            proj.supported_model_paths([folder])
+        with pytest.raises(proj.ProjectError, match="locked"):
+            proj.supported_model_paths([locked], recursive=False)
+        flat, _ = proj.supported_model_paths([folder], recursive=False)
+        assert [p.name for p in flat] == ["a.xml"], "a flat listing never enters the subfolder"
+    with _unsearchable(inner.parent), pytest.raises(proj.ProjectError, match="cannot read"):
+        proj.supported_model_paths([inner])
+
+
+def test_ids_and_run_kinds_reject_trailing_newline(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    proj.add_model_file(project, _fake_model(tmp_path / "a.xml", "a"), check=None)
+    with pytest.raises(proj.ProjectError):
+        proj.rename_model(project, "a", "abc\n")
+    assert project.model("a").id == "a"
+    with pytest.raises(proj.ProjectError, match="invalid run kind"):
+        proj.new_run_dir(project, "search\n")
+    assert list(project.runs_dir.iterdir()) == [project.inputs_dir]
+
+
+def _two_models(tmp_path: Path) -> proj.Project:
+    project = proj.create_project(tmp_path / "p")
+    proj.add_model_file(project, _fake_model(tmp_path / "a.xml", "a"), check=_ok_check)
+    proj.add_model_file(project, _fake_model(tmp_path / "b.xml", "b"), check=_ok_check)
+    return project
+
+
+def test_taxonomy_rejects_duplicate_model_ids(tmp_path: Path) -> None:
+    project = _two_models(tmp_path)
+    run = proj.new_run_dir(project, "community")
+    with pytest.raises(proj.ProjectError, match="duplicate.*'a'"):
+        proj.write_run_taxonomy(project, run, ["a", "b", "a"])
+    assert list(project.inputs_dir.iterdir()) == []
+
+
+def test_taxonomy_rejects_abundance_for_unselected_model(tmp_path: Path) -> None:
+    project = _two_models(tmp_path)
+    run = proj.new_run_dir(project, "community")
+    with pytest.raises(proj.ProjectError, match="not in this run.*'b'"):
+        proj.write_run_taxonomy(project, run, ["a"], abundances={"a": 1.0, "b": 2.0})
+    assert list(project.inputs_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0, 0.0, -1.0, float("nan"), float("inf"), -float("inf"), "abc", "0.5", None, True, 10**400],
+)
+def test_taxonomy_rejects_bad_abundances(tmp_path: Path, value: object) -> None:
+    project = _two_models(tmp_path)
+    run = proj.new_run_dir(project, "community")
+    with pytest.raises(proj.ProjectError, match="abundance.*'a'.*finite.*greater than 0"):
+        proj.write_run_taxonomy(project, run, ["a", "b"], abundances={"a": value})  # type: ignore[dict-item]
+    assert list(project.inputs_dir.iterdir()) == []
+
+
+def test_taxonomy_rehashes_files_so_a_stale_ok_flag_cannot_pass(tmp_path: Path) -> None:
+    project = _two_models(tmp_path)
+    run = proj.new_run_dir(project, "community")
+    (project.root / project.model("a").file).write_text("edited after it was added")
+    assert project.model("a").integrity == "ok", "nothing called verify_checksums"
+    with pytest.raises(proj.ProjectError, match="'a' is not selectable.*changed since it was"):
+        proj.write_run_taxonomy(project, run, ["a", "b"])
+    assert project.model("a").integrity == "changed"
+    assert list(project.inputs_dir.iterdir()) == []
+
+
+def test_taxonomy_refuses_missing_file_and_reports_every_bad_model(tmp_path: Path) -> None:
+    project = _two_models(tmp_path)
+    run = proj.new_run_dir(project, "community")
+    (project.root / project.model("a").file).write_text("edited")
+    (project.root / project.model("b").file).unlink()
+    with pytest.raises(proj.ProjectError) as info:
+        proj.write_run_taxonomy(project, run, ["a", "b"])
+    message = str(info.value)
+    assert "'a' is not selectable" in message and "changed since it was added" in message
+    assert "'b' is not selectable" in message and "file is missing" in message
+    assert project.model("a").integrity == "changed"
+    assert project.model("b").integrity == "missing"
+
+
+def test_taxonomy_refreshes_a_stale_changed_flag_when_the_file_is_intact(tmp_path: Path) -> None:
+    project = _two_models(tmp_path)
+    run = proj.new_run_dir(project, "community")
+    project.model("a").integrity = "changed"
+    path = proj.write_run_taxonomy(project, run, ["a"])
+    assert project.model("a").integrity == "ok"
+    assert [r["id"] for r in csv.DictReader(path.open())] == ["a"]
+
+
+def test_taxonomy_refuses_failed_pending_and_unknown_models(tmp_path: Path) -> None:
+    project = _two_models(tmp_path)
+    run = proj.new_run_dir(project, "community")
+    project.model("a").status = "failed"
+    project.model("b").status = "pending"
+    with pytest.raises(proj.ProjectError, match="'a' is not selectable.*'failed'"):
+        proj.write_run_taxonomy(project, run, ["a"])
+    with pytest.raises(proj.ProjectError, match="'b' is not selectable.*'pending'"):
+        proj.write_run_taxonomy(project, run, ["b"])
+    with pytest.raises(proj.ProjectError, match="'zzz' is not selectable"):
+        proj.write_run_taxonomy(project, run, ["zzz"])
 
 
 def test_verify_checksums_treats_unreadable_file_as_missing(
