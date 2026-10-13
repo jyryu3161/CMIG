@@ -147,13 +147,16 @@ class InspectorPanel(QWidget):
             None if entry.namespace_coverage_pct is None
             else f"{entry.namespace_coverage_pct:.1f}%"
         )
+        # A completed check that found no error or warning says "none"; a model never checked,
+        # or whose read failed before the review, keeps "not recorded".
+        checked = entry.status in ("ok", "warning")
         body = (
             _row("Check", entry.status)
-            + _row("Error", entry.error)
+            + _row("Error", entry.error or ("none" if checked else None))
             + _row("Size", counts)
             + _row("Biomass", ", ".join(entry.biomass))
             + _row("BiGG namespace coverage", coverage)
-            + _row("Warnings", "; ".join(entry.warnings))
+            + _row("Warnings", "; ".join(entry.warnings) or ("none" if checked else None))
             + _row("File", integrity)
             + _row("SHA-256", entry.sha256[:12] + "…" if entry.sha256 else None)
             + _row("Original", entry.source_path)

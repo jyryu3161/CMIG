@@ -246,3 +246,23 @@ def test_job_rows_name_the_job_for_people_not_by_its_internal_kind() -> None:
     kinds = [pane.jobs.item(row, 1).text() for row in range(len(jids))]
     assert kinds == ["Search", "Import Models", "AGORA2 Download", "Gene KO", "something_new"]
     runner.shutdown(wait=True)
+
+
+def test_model_inspector_says_none_when_the_check_found_nothing(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "p", ["fine", "waiting", "broken"])
+    panel = InspectorPanel()
+
+    def text(model_id: str, **fields) -> str:
+        entry = project.model(model_id)
+        for name, value in fields.items():
+            setattr(entry, name, value)
+        panel.show_model(project, entry, None)
+        return panel.details.toPlainText()
+
+    fine = text("fine")  # checked: ok, no error, no warnings
+    assert "Error: none" in fine and "Warnings: none" in fine
+    waiting = text("waiting", status="pending")  # never checked
+    assert "Error: not recorded" in waiting and "Warnings: not recorded" in waiting
+    broken = text("broken", status="failed", error="ValueError: bad SBML")
+    assert "Error: ValueError: bad SBML" in broken
+    assert "Warnings: not recorded" in broken, "a failed read never reached the review"
