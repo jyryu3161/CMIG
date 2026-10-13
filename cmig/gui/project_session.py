@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, Signal
+from PySide6.QtCore import QObject, QSettings, QTimer, Signal
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from cmig.io import project as proj
@@ -86,82 +88,133 @@ def inspect_run(run_dir: Path) -> RunEntry:
             status = "failed"
     except Exception:  # noqa: BLE001 - an unreadable run is listed, never raised
         inspected, kind, status = {}, "unknown", "unreadable"
+    try:
+        mtime = run_dir.stat().st_mtime
+    except OSError:
+        mtime, status = 0.0, "unreadable"
     return RunEntry(
         path=run_dir,
         name=run_dir.name,
         kind=kind,
         status=status,
         label=run_label(kind, run_dir.name, _summary_hint(inspected, run_dir)),
-        mtime=run_dir.stat().st_mtime,
+        mtime=mtime,
     )
 
 
-class _RemoveModels(QUndoCommand):
-    def __init__(self, session: ProjectSession, ids: list[str]) -> None:
-        super().__init__(f"Remove {len(ids)} Models" if len(ids) > 1 else "Remove Model")
+class _Command(QUndoCommand):
+    """A project change applied and saved *before* it is pushed on the undo stack.
+
+    ``execute`` applies, saves and only then pushes, so a failed save rolls the change back and
+    leaves the stack untouched. The push's own first ``redo`` is therefore a no-op.
+    """
+
+    models = True  # which change signal a successful save emits
+
+    def __init__(self, session: ProjectSession, text: str) -> None:
+        super().__init__(text)
         self._session = session
+        self._skip_redo = False
+
+    def apply(self) -> None:
+        raise NotImplementedError
+
+    def revert(self) -> None:
+        raise NotImplementedError
+
+    def _commit(self) -> None:
+        if self.models:
+            self._session.commit_models()
+        else:
+            self._session.commit_media()
+
+    def execute(self) -> None:
+        self.apply()
+        try:
+            self._commit()
+        except proj.ProjectError:
+            self.revert()
+            raise
+        self._skip_redo = True
+        self._session.undo_stack.push(self)
+
+    def _replay(self, do: Callable[[], None], rollback: Callable[[], None]) -> None:
+        do()
+        try:
+            self._commit()
+        except proj.ProjectError as exc:
+            rollback()
+            self._session.history_save_failed(exc)
+
+    def redo(self) -> None:
+        if self._skip_redo:
+            self._skip_redo = False
+            return
+        self._replay(self.apply, self.revert)
+
+    def undo(self) -> None:
+        self._replay(self.revert, self.apply)
+
+
+class _RemoveModels(_Command):
+    def __init__(self, session: ProjectSession, ids: list[str]) -> None:
+        super().__init__(session, f"Remove {len(ids)} Models" if len(ids) > 1 else "Remove Model")
         self._ids = ids
         self._removed: list[tuple[int, proj.ModelEntry]] = []
 
-    def redo(self) -> None:
+    def apply(self) -> None:
         project = self._session.require()
         self._removed = [proj.remove_model(project, model_id) for model_id in self._ids]
-        self._session.commit_models()
 
-    def undo(self) -> None:
+    def revert(self) -> None:
         project = self._session.require()
         for index, entry in reversed(self._removed):
             proj.restore_model(project, index, entry)
-        self._session.commit_models()
 
 
-class _AddModels(QUndoCommand):
+class _AddModels(_Command):
     def __init__(self, session: ProjectSession, entries: list[proj.ModelEntry]) -> None:
-        super().__init__(f"Add {len(entries)} Models" if len(entries) > 1 else "Add Model")
-        self._session, self._entries = session, entries
+        super().__init__(session, f"Add {len(entries)} Models" if len(entries) > 1 else "Add Model")
+        self._entries = entries
 
-    def redo(self) -> None:
+    def apply(self) -> None:
         project = self._session.require()
         for entry in self._entries:
             if entry not in project.models:
                 project.models.append(entry)
-        self._session.commit_models()
 
-    def undo(self) -> None:
+    def revert(self) -> None:
         project = self._session.require()
         project.models[:] = [m for m in project.models if m not in self._entries]
-        self._session.commit_models()
 
 
-class _AddMedium(QUndoCommand):
+class _AddMedium(_Command):
+    models = False
+
     def __init__(self, session: ProjectSession, entry: proj.MediumEntry) -> None:
-        super().__init__("Add Medium")
-        self._session, self._entry = session, entry
+        super().__init__(session, "Add Medium")
+        self._entry = entry
 
-    def redo(self) -> None:
+    def apply(self) -> None:
         project = self._session.require()
         if self._entry not in project.media:
             project.media.append(self._entry)
-        self._session.commit_media()
 
-    def undo(self) -> None:
+    def revert(self) -> None:
         project = self._session.require()
         project.media[:] = [m for m in project.media if m is not self._entry]
-        self._session.commit_media()
 
 
-class _RenameModel(QUndoCommand):
+class _RenameModel(_Command):
     def __init__(self, session: ProjectSession, old: str, new: str) -> None:
-        super().__init__("Rename Model")
-        self._session, self._old, self._new = session, old, new
+        super().__init__(session, "Rename Model")
+        self._old, self._new = old, new
 
-    def redo(self) -> None:
+    def apply(self) -> None:
         proj.rename_model(self._session.require(), self._old, self._new)
-        self._session.commit_models()
 
-    def undo(self) -> None:
+    def revert(self) -> None:
         proj.rename_model(self._session.require(), self._new, self._old)
-        self._session.commit_models()
 
 
 class ProjectSession(QObject):
@@ -170,6 +223,7 @@ class ProjectSession(QObject):
     models_changed = Signal()
     media_changed = Signal()
     runs_changed = Signal()
+    save_failed = Signal(str)  # a save failed while undoing/redoing; the change was rolled back
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -190,6 +244,14 @@ class ProjectSession(QObject):
         self._run_cache.clear()
         self.opened.emit()
 
+    def _attach_or_release(self, project: proj.Project, lock: proj.ProjectLock) -> None:
+        try:
+            self._attach(project, lock)
+        except Exception:
+            with contextlib.suppress(OSError):
+                lock.release()  # never keep the new project's lock when it was not attached
+            raise
+
     def open(self, root: Path) -> None:
         lock = proj.ProjectLock.acquire(Path(root))
         try:
@@ -197,21 +259,32 @@ class ProjectSession(QObject):
         except proj.ProjectError:
             lock.release()
             raise
-        self._attach(project, lock)
+        self._attach_or_release(project, lock)
 
     def create(self, root: Path, name: str | None = None) -> None:
         project = proj.create_project(Path(root), name)
-        self._attach(project, proj.ProjectLock.acquire(project.root))
+        self._attach_or_release(project, proj.ProjectLock.acquire(project.root))
 
     def close(self) -> None:
+        """Save and close; the session is closed and unlocked even when the final save fails."""
         if self.project is None:
             return
-        self.save()
-        if self._lock is not None:
-            self._lock.release()
-        self.project, self._lock = None, None
-        self.undo_stack.clear()
-        self.closed.emit()
+        try:
+            self.save()
+        finally:
+            lock = self._lock
+            self.project, self._lock = None, None
+            self.undo_stack.clear()
+            try:
+                if lock is not None:
+                    try:
+                        lock.release()
+                    except OSError as exc:
+                        raise proj.ProjectError(
+                            f"cannot remove project lock {lock.path}: {exc}"
+                        ) from exc
+            finally:
+                self.closed.emit()
 
     def save(self) -> None:
         if self.project is not None:
@@ -225,27 +298,31 @@ class ProjectSession(QObject):
         self.save()
         self.media_changed.emit()
 
+    def history_save_failed(self, exc: proj.ProjectError) -> None:
+        """Undo/redo could not save: the change was rolled back, so the history is stale."""
+        QTimer.singleShot(0, self.undo_stack.clear)
+        self.save_failed.emit(str(exc))
+
     def add_entries(self, entries: list[proj.ModelEntry]) -> None:
         if entries:
-            self.undo_stack.push(_AddModels(self, list(entries)))
+            _AddModels(self, list(entries)).execute()
 
     def remove_models(self, ids: list[str]) -> None:
-        if ids:
-            self.undo_stack.push(_RemoveModels(self, list(ids)))
+        if not ids:
+            return
+        known = {m.id for m in self.require().models}
+        for model_id in ids:
+            if model_id not in known:
+                raise proj.ProjectError(f"no model {model_id!r} in this project")
+        if len(set(ids)) != len(ids):
+            raise proj.ProjectError("a model can only be removed once per request")
+        _RemoveModels(self, list(ids)).execute()
 
     def rename_model(self, old: str, new: str) -> None:
-        project = self.require()
-        probe = proj.Project(
-            project.root,
-            project.name,
-            project.created,
-            [proj.ModelEntry(**vars(m)) for m in project.models],
-        )
-        proj.rename_model(probe, old, new)  # validate before pushing an undo step
-        self.undo_stack.push(_RenameModel(self, old, new))
+        _RenameModel(self, old, new).execute()
 
     def add_medium(self, entry: proj.MediumEntry) -> None:
-        self.undo_stack.push(_AddMedium(self, entry))
+        _AddMedium(self, entry).execute()
 
     def settings(self, analysis: str) -> dict[str, object]:
         if self.project is None:
@@ -260,16 +337,26 @@ class ProjectSession(QObject):
     def runs(self) -> list[RunEntry]:
         if self.project is None:
             return []
+        try:
+            run_dirs = list(self.project.runs_dir.iterdir())
+        except OSError:
+            self._run_cache.clear()
+            return []  # a missing or unreadable runs/ folder is an empty list, not a crash
         entries: list[RunEntry] = []
-        for run_dir in self.project.runs_dir.iterdir():
-            if not run_dir.is_dir() or run_dir.name.startswith(("_", ".")):
-                continue
-            mtime = run_dir.stat().st_mtime
+        seen: dict[Path, tuple[float, RunEntry]] = {}
+        for run_dir in run_dirs:
+            try:
+                if not run_dir.is_dir() or run_dir.name.startswith(("_", ".")):
+                    continue
+                mtime = run_dir.stat().st_mtime
+            except OSError:
+                continue  # vanished or unreadable while listing
             cached = self._run_cache.get(run_dir)
             if cached is None or cached[0] != mtime:
                 cached = (mtime, inspect_run(run_dir))
-                self._run_cache[run_dir] = cached
+            seen[run_dir] = cached
             entries.append(cached[1])
+        self._run_cache = seen
         return sorted(entries, key=lambda entry: (entry.mtime, entry.name), reverse=True)
 
     def refresh_runs(self) -> None:
