@@ -62,6 +62,26 @@ def test_remove_and_rename_are_undoable_and_saved(tmp_path: Path) -> None:
     session.close()
 
 
+def test_rename_and_undo_keep_remembered_selections(tmp_path: Path) -> None:
+    make_project(tmp_path / "p", ["a", "b"])
+    session = ProjectSession()
+    session.open(tmp_path / "p")
+    session.store_settings("search", {"models": ["a", "b"], "medium": "preset:western_diet"})
+    session.store_settings("dynamics", {"models": ["b"]})
+    session.rename_model("b", "Bifido")
+    assert session.settings("search")["models"] == ["a", "Bifido"]
+    assert session.settings("dynamics") == {"models": ["Bifido"]}
+    saved = proj.open_project(tmp_path / "p").analysis_settings
+    assert saved["dynamics"] == {"models": ["Bifido"]}, "saved together with the rename"
+    session.undo_stack.undo()
+    assert session.settings("search") == {"models": ["a", "b"], "medium": "preset:western_diet"}
+    assert session.settings("dynamics") == {"models": ["b"]}
+    assert proj.open_project(tmp_path / "p").analysis_settings["dynamics"] == {"models": ["b"]}
+    session.undo_stack.redo()
+    assert session.settings("dynamics") == {"models": ["Bifido"]}
+    session.close()
+
+
 def test_adding_models_and_media_is_undoable(tmp_path: Path) -> None:
     make_project(tmp_path / "p", ["a"])
     session = ProjectSession()

@@ -457,6 +457,28 @@ def test_remove_restore_rename(tmp_path: Path) -> None:
             proj.rename_model(project, "Bifido_longum", bad)
 
 
+def test_rename_rewrites_remembered_selections(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    proj.add_model_file(project, _fake_model(tmp_path / "a.xml", "a"), check=_ok_check)
+    proj.add_model_file(project, _fake_model(tmp_path / "b.xml", "b"), check=_ok_check)
+    project.analysis_settings = {
+        "search": {"models": ["a", "b"], "medium": "preset:western_diet"},
+        "dynamics": {"models": ["b"]},
+        "host_model": {"models": ["a"]},
+        "sweep": {"medium": "medium:b"},  # a medium ref, not a model id: left alone
+    }
+    proj.rename_model(project, "b", "Bifido")
+    assert project.analysis_settings == {
+        "search": {"models": ["a", "Bifido"], "medium": "preset:western_diet"},
+        "dynamics": {"models": ["Bifido"]},
+        "host_model": {"models": ["a"]},
+        "sweep": {"medium": "medium:b"},
+    }
+    with pytest.raises(proj.ProjectError):
+        proj.rename_model(project, "Bifido", "a")  # refused: nothing is rewritten
+    assert project.analysis_settings["search"]["models"] == ["a", "Bifido"]
+
+
 def test_add_medium(tmp_path: Path) -> None:
     project = proj.create_project(tmp_path / "p")
     src = tmp_path / "diet.csv"

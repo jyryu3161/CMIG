@@ -3484,7 +3484,6 @@ class CmigMainWindow(QMainWindow):
                 "choose a checkpoint path outside it."
             )
             return ""
-        self._remember("search", self.search_view.model_picker)
         argv = ["search", "--taxonomy", str(taxonomy), *base_argv[1:], "--out", str(out_dir)]
         warning = self.search_view.reference_warning()
         _install_stderr_router()

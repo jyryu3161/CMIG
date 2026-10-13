@@ -350,3 +350,35 @@ def test_choosing_a_host_unticks_it_from_microbes(setup) -> None:
     w.host_view.model_picker.set_selected(["a", "b"])  # re-ticked on purpose: refused at run
     assert w.run_host_microbe_bigg() == ""
     assert "also selected as a microbe" in w.host_view.run_status.text()
+
+
+# ── final review: remembered selections do not go stale ───────────────────────────────────
+def test_renamed_model_stays_selected_where_it_was_remembered(setup) -> None:
+    w, _calls = setup
+    w.search_view.model_picker.set_selected(["a", "b"])
+    w.dynamics_view.model_picker.set_selected(["b"])
+    w.session.rename_model("b", "Bifido")
+    assert w.search_view.model_picker.selected_ids() == ["a", "Bifido"]
+    assert w.dynamics_view.model_picker.selected_ids() == ["Bifido"]
+    assert "left out" not in w.statusBar().currentMessage()
+    w.session.undo_stack.undo()
+    assert w.search_view.model_picker.selected_ids() == ["a", "b"]
+    assert w.dynamics_view.model_picker.selected_ids() == ["b"]
+
+
+def test_search_run_does_not_freeze_the_default_selection(setup, tmp_path: Path) -> None:
+    from gui_project_helpers import ok_check
+
+    from cmig.io import project as proj
+
+    w, calls = setup
+    assert "search" not in w.session.project.analysis_settings
+    assert w.run_search_fixture()
+    _wait_calls(w, calls)
+    assert "search" not in w.session.project.analysis_settings, "a run is not a choice"
+    source = tmp_path / "late.xml"
+    source.write_text("<sbml id='late'/>")
+    entry = proj.add_model_file(w.session.project, source, check=ok_check)
+    w.session.project.models.remove(entry)  # add it the way an import does
+    w.session.add_entries([entry])
+    assert w.search_view.model_picker.selected_ids() == ["a", "b", "host", "late"]

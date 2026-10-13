@@ -551,12 +551,17 @@ def restore_model(project: Project, index: int, entry: ModelEntry) -> None:
 
 
 def rename_model(project: Project, model_id: str, new_id: str) -> None:
+    """Rename a model and every remembered analysis selection of it (`models` id lists)."""
     entry = project.model(model_id)
     if not _ID_RE.fullmatch(new_id):
         raise ProjectError("a model id starts with a letter or _ and uses letters, digits, _")
     if any(m.id == new_id for m in project.models if m is not entry):
         raise ProjectError(f"another model already uses the id {new_id!r}")
     entry.id = new_id
+    for values in project.analysis_settings.values():
+        chosen = values.get("models")
+        if isinstance(chosen, list) and model_id in chosen:
+            values["models"] = [new_id if item == model_id else item for item in chosen]
 
 
 def model_path(project: Project, entry: ModelEntry) -> Path:
