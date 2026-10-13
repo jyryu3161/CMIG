@@ -90,7 +90,7 @@ from cmig.gui.views import (
     ExternalProfileView,
     SweepView,
 )
-from cmig.io.project import ProjectError
+from cmig.io.project import ModelEntry, ProjectError
 from cmig.service import JobRunner, JobStatus
 
 I18N: dict[str, dict[str, str]] = {
@@ -948,6 +948,9 @@ def _search_temp_root() -> Path:
 
 
 CHECKPOINT_EXISTS = "checkpoint exists; enable Resume or choose a new path"
+_UNREADABLE_RESULT = (
+    "{kind} finished, but its result could not be read back — see the inspector ({out_dir})"
+)
 SEARCH_CANCEL_PENDING = "Cancellation requested — the solve in progress will finish first."
 
 
@@ -1029,6 +1032,10 @@ def _read_target_summary(run_dir: Path) -> list[dict[str, Any]] | None:
 _SIDEBAR_GROUPS = ("models", "media", "analyses", "runs")
 
 
+def _run_key(run_dir: Path) -> str:
+    return str(Path(run_dir).resolve())
+
+
 def _same_folder(a: Path, b: Path) -> bool:
     try:
         return a.resolve() == b.expanduser().resolve()
@@ -1073,6 +1080,16 @@ class CmigMainWindow(QMainWindow):
         self._shown_root: Path | None = None
         #: True while a sidebar selection drives the centre page (see _show_page)
         self._following_sidebar = False
+        #: run folder -> (status, detail) of the GUI's last failed readback of that run
+        self._readback_failures: dict[str, tuple[str, str]] = {}
+        #: (run folder, inspect-run payload) from the last _inspect_gui_run, for the inspector
+        self._last_inspected: tuple[str, dict[str, Any]] | None = None
+        #: what the inspector shows: a run folder, or a model's (id, sha256)
+        self._inspector_run: str | None = None
+        self._inspected_model: tuple[str, str] | None = None
+        #: model sha256 -> exchange ids (successful loads only); job id -> (model id, sha256)
+        self._exchange_cache: dict[str, list[str]] = {}
+        self._exchange_jobs: dict[str, tuple[str, str]] = {}
         self.bridge = JobsBridge(self.runner, self.jobs_panel)
         self._fixture_jobs: dict[str, Path] = {}
         # Each Search-tab map holds (out_dir, the answer-determining inputs at submit time)
@@ -1206,6 +1223,7 @@ class CmigMainWindow(QMainWindow):
         from cmig.cli.main import _inspect_run_dir
 
         manifest_path = run_dir / "manifest.json"
+        self._readback_failures.pop(_run_key(run_dir), None)  # a failure below re-records it
         try:
             manifest: dict[str, Any] = {}
             if manifest_path.exists():
@@ -1275,11 +1293,13 @@ class CmigMainWindow(QMainWindow):
                 detail = f" ({inspected.get('result_digest_absent_reason')})"
             self._last_integrity = f"Integrity: {state}"
             self._integrity_detail = f"Run: {run_dir}\nState: {state}{detail}"
+            self._last_inspected = (_run_key(run_dir), inspected)
             return inspected
         except Exception as exc:
             self._last_integrity = "Integrity: invalid/unreadable"
             self._integrity_detail = f"Run: {run_dir}\nInvalid or unreadable: {exc}"
             self._show_status("status_run_load_failed", error=exc)
+            self._readback_failed(run_dir, "invalid/unreadable", self._integrity_detail)
             return None
 
     def _reject_gui_summary(self, run_dir: Path, error: Exception | str) -> None:
@@ -1290,6 +1310,48 @@ class CmigMainWindow(QMainWindow):
             f"Run: {run_dir}\nReadback: invalid/unreadable ({error})\n"
             f"Artifact digest: {digest_state}"
         )
+        self._readback_failed(run_dir, "readback invalid/unreadable", self._integrity_detail)
+
+    def _summary_missing(self, run_dir: Path, summary_path: Path) -> None:
+        self._readback_failed(
+            run_dir, "readback invalid/unreadable",
+            f"Run: {run_dir}\nReadback: invalid/unreadable ({summary_path.name} not found)",
+        )
+
+    def _readback_failed(self, run_dir: Path, status: str, detail: str) -> None:
+        """Remember why this run could not be shown and show that in the inspector."""
+        self._readback_failures[_run_key(run_dir)] = (status, detail)
+        self._show_run_in_inspector(run_dir)
+
+    def _show_run_in_inspector(self, run_dir: Path) -> None:
+        """Show a run as RUNS selection does; a failed GUI readback overrides its rows."""
+        from cmig.cli.main import _inspect_run_dir
+
+        run_dir = Path(run_dir).resolve()
+        key = str(run_dir)
+        cached, self._last_inspected = self._last_inspected, None
+        inspected: dict[str, Any]
+        try:
+            fresh = cached[1] if cached is not None and cached[0] == key else None
+            inspected = dict(fresh if fresh is not None else _inspect_run_dir(run_dir))
+            inspected["artifact_integrity"] = _integrity_text(inspected)
+        except Exception as exc:  # noqa: BLE001 - an unreadable run is shown as unreadable
+            inspected = {"artifact_integrity": f"unreadable ({exc})"}
+        failure = self._readback_failures.get(key)
+        if failure is not None:
+            status, detail = failure
+            inspected["status"] = status
+            # The first detail line names the run folder, which the Folder row already shows.
+            inspected["artifact_integrity"] = "; ".join(detail.splitlines()[1:]) or detail
+        command = getattr(self, "_run_commands", {}).get(key, "")
+        self.inspector.show_run(self._run_entry(run_dir), inspected, command)
+        self._inspector_run, self._inspected_model = key, None
+
+    def _run_entry(self, run_dir: Path) -> RunEntry:
+        for entry in [*self.session.runs(), *self._external_runs]:
+            if entry.path == run_dir:
+                return entry
+        return inspect_run(run_dir)
 
     def closeEvent(self, event: Any) -> None:
         """Stop the GUI's timers and the job pool so closing the window ends the session.
@@ -1380,6 +1442,11 @@ class CmigMainWindow(QMainWindow):
                 QModelIndex(), QItemSelectionModel.SelectionFlag.NoUpdate
             )
         self._update_run_action()
+
+    def _show_profile(self) -> None:
+        """The community result page with Profile current; whatever it holds stays drawn."""
+        self._show_page(self.community_result_page)
+        self.community_result_page.setCurrentWidget(self.profile_view)
 
     def _show_models_overview(self) -> None:
         project = self.session.project
@@ -1633,6 +1700,7 @@ class CmigMainWindow(QMainWindow):
             self._shown_root = root
             self.current_analysis = None
             self.inspector.clear()
+            self._inspector_run, self._inspected_model = None, None
             self._show_models_overview()
         elif project is not None and self.pages.currentWidget() in (
             self.welcome_page, self.empty_models_page, self.model_manager
@@ -1712,6 +1780,7 @@ class CmigMainWindow(QMainWindow):
         title = dict(ANALYSES)[key]
         description, cli = self._DESCRIPTIONS[key]
         self.inspector.show_analysis(title, description, cli)
+        self._inspector_run, self._inspected_model = None, None
         self._update_run_action()
 
     def _update_run_action(self) -> None:
@@ -1740,8 +1809,7 @@ class CmigMainWindow(QMainWindow):
             if group == "analyses":
                 self.show_analysis(key)
             elif group == "models" and project is not None:
-                entry = project.model(key)
-                self.inspector.show_model(project, entry, self._model_exchanges(entry))
+                self._inspect_model(project.model(key))
                 self.current_analysis = None
                 self._show_models_overview()
             elif group == "media":
@@ -1752,22 +1820,59 @@ class CmigMainWindow(QMainWindow):
         finally:
             self._following_sidebar = False
 
-    def _model_exchanges(self, entry: Any) -> list[str] | None:
-        from cmig.io.model_import import import_model
+    def _inspect_model(self, entry: ModelEntry) -> None:
+        """Show a model at once; its exchange list is parsed in a job (a GEM takes seconds)."""
         from cmig.io.project import model_path
 
-        if self.session.project is None or entry.status == "failed" or entry.integrity != "ok":
-            return None
-        cache: dict[str, list[str] | None] = getattr(self, "_exchange_cache", {})
-        self._exchange_cache = cache
-        if entry.sha256 not in cache:
-            try:
-                cache[entry.sha256] = list(
-                    import_model(model_path(self.session.project, entry)).exchanges
-                )
-            except Exception:  # noqa: BLE001 - inspector shows what it can
-                cache[entry.sha256] = None
-        return cache[entry.sha256]
+        project = self.session.require()
+        if entry.status == "failed" or entry.integrity != "ok":
+            self.inspector.show_model(project, entry, None)
+        elif entry.sha256 in self._exchange_cache:
+            self.inspector.show_model(project, entry, self._exchange_cache[entry.sha256])
+        else:
+            self.inspector.show_model(project, entry, [])
+            self._exchange_placeholder("Loading exchanges…")
+            if all(sha != entry.sha256 for _id, sha in self._exchange_jobs.values()):
+                path = model_path(project, entry)
+
+                def _job(ctx: Any) -> list[str]:
+                    from cmig.io.model_import import import_model
+
+                    ctx.raise_if_cancelled()
+                    return [str(exchange) for exchange in import_model(path).exchanges]
+
+                jid = self.submit_job("model_exchanges", _job, show_activity=False)
+                self._exchange_jobs[jid] = (entry.id, entry.sha256)
+        self._inspector_run, self._inspected_model = None, (entry.id, entry.sha256)
+
+    def _exchange_placeholder(self, text: str) -> None:
+        listing = self.inspector.exchange_list
+        listing.clear()
+        item = QListWidgetItem(text)
+        item.setFlags(Qt.ItemFlag.NoItemFlags)  # a note, not an exchange id
+        listing.addItem(item)
+
+    def _finish_exchange_jobs(self) -> None:
+        for jid, (model_id, sha) in list(self._exchange_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status in (JobStatus.PENDING, JobStatus.RUNNING):
+                continue
+            self._exchange_jobs.pop(jid, None)
+            if job.status is JobStatus.DONE and isinstance(job.result, list):
+                self._exchange_cache[sha] = job.result  # failures are not cached: retried
+            self.runner.release_payload(jid)
+            project = self.session.project
+            if project is None or self._inspected_model != (model_id, sha):
+                continue  # the user moved on; the cache serves the next selection
+            if sha in self._exchange_cache:
+                try:
+                    entry = project.model(model_id)
+                except ProjectError:
+                    continue
+                self.inspector.show_model(project, entry, self._exchange_cache[sha])
+            else:
+                reason = job.error or job.status.value
+                self._exchange_placeholder(f"Exchange list unavailable: {reason}")
 
     def _inspect_medium(self, key: str) -> None:
         from cmig.io.project import medium_path
@@ -1792,20 +1897,14 @@ class CmigMainWindow(QMainWindow):
             self.statusBar().showMessage(f"Cannot read medium {name}: {exc}", 8000)
             return
         self.inspector.show_medium(title, rows[1:] if rows else rows, str(path))
+        self._inspector_run, self._inspected_model = None, None
 
     def _open_run_entry(self, run_dir: Path) -> None:
-        from cmig.cli.main import _inspect_run_dir
-
         run_dir = Path(run_dir).resolve()
+        self._inspector_run = None
         self.load_run_dir(run_dir)
-        inspected: dict[str, Any]
-        try:
-            inspected = dict(_inspect_run_dir(run_dir))
-            inspected["artifact_integrity"] = _integrity_text(inspected)
-        except Exception as exc:  # noqa: BLE001 - an unreadable run is shown as unreadable
-            inspected = {"artifact_integrity": f"unreadable ({exc})"}
-        command = getattr(self, "_run_commands", {}).get(str(run_dir), "")
-        self.inspector.show_run(inspect_run(run_dir), inspected, command)
+        if self._inspector_run != str(run_dir):  # e.g. a run kind without a viewer
+            self._show_run_in_inspector(run_dir)
 
     def _show_sidebar_menu(self, group: str, keys: list[str]) -> None:
         if group != "models" or not keys:
@@ -2262,10 +2361,13 @@ class CmigMainWindow(QMainWindow):
         self.central_stack.addWidget(widget)
         self.central_stack.setCurrentWidget(widget)
 
-    def submit_job(self, kind: str, fn: Any) -> str:
-        """facade 작업을 JobRunner 로 제출 + bridge 추적(실 소비)."""
+    def submit_job(self, kind: str, fn: Any, *, show_activity: bool = True) -> str:
+        """facade 작업을 JobRunner 로 제출 + bridge 추적(실 소비). Opens the Activity pane."""
         jid = self.runner.submit(kind, fn)
         self.bridge.track(jid)
+        if show_activity:
+            self.activity.expand()
+            self.toggle_activity_action.setText("Hide Activity")
         return jid
 
     def import_model_file(self, path: str | Path) -> bool:
@@ -2294,24 +2396,24 @@ class CmigMainWindow(QMainWindow):
         )
         return True
 
-    def load_run_dir(self, path: str | Path) -> None:
-        """Load a tidy community run into both first-class Graph and Profile tabs."""
+    def load_run_dir(self, path: str | Path) -> bool:
+        """Show a run in its viewer; a tidy community run goes to Profile and Graph.
+
+        Returns True only when the run is now on screen. A failed readback (reported in the
+        status bar and the inspector) and a kind without a viewer give False.
+        """
         from cmig.core.tidy import TidyBundle
         from cmig.gui.graph_data import graph_payload
 
         run_dir = Path(path).resolve()
         if (run_dir / "dfba_summary.json").exists():
-            self.load_dfba_dir(run_dir)
-            return
+            return self.load_dfba_dir(run_dir)
         if (run_dir / "spatial_summary.json").exists():
-            self.load_spatial_dir(run_dir)
-            return
+            return self.load_spatial_dir(run_dir)
         if (run_dir / "host_microbe_bigg_summary.json").exists():
-            self.load_host_microbe_bigg_dir(run_dir)
-            return
+            return self.load_host_microbe_bigg_dir(run_dir)
         if (run_dir / "search_summary.json").exists():
-            self.load_search_dir(run_dir)
-            return
+            return self.load_search_dir(run_dir)
         manifest_path = run_dir / "manifest.json"
         if manifest_path.exists() and not (run_dir / "nodes.parquet").exists():
             # A *complete* run of a kind with no viewer here (search / sweep / strain-growth /
@@ -2322,12 +2424,16 @@ class CmigMainWindow(QMainWindow):
             kind = "unknown"
             inspected = self._inspect_gui_run(run_dir)
             if inspected is None:
-                return
+                return False
             kind = str(inspected.get("kind") or kind)
-            if kind == "unknown":
-                legacy_manifest = json.loads(manifest_path.read_text())
-                kind = str(legacy_manifest.get("kind") or kind)
-            if kind in ("tidy", "community", "solve", "fixture"):
+            legacy_manifest = json.loads(manifest_path.read_text())
+            # inspect-run reads any manifest that names no workflow_kind as a community solve;
+            # only one outside workflow scope really is one (and then needs its tidy bundle).
+            if kind == "unknown" or (
+                kind == "community_solve" and legacy_manifest.get("manifest_scope") == "workflow"
+            ):
+                kind = str(legacy_manifest.get("kind") or "unknown")
+            if kind in ("tidy", "community", "solve", "fixture", "community_solve"):
                 self._reject_gui_summary(run_dir, "missing essential nodes.parquet")
                 self.current_manifest = None
                 self.current_graph_payload = None
@@ -2336,9 +2442,9 @@ class CmigMainWindow(QMainWindow):
                 self.profile_view.load_profile([])
                 self.profile_view.load_targets(None)
                 self._show_status("status_run_load_failed", error="missing essential nodes.parquet")
-                return
+                return False
             self._show_status("status_run_no_viewer", kind=kind, run_dir=run_dir)
-            return
+            return False
         inspected = self._inspect_gui_run(run_dir)
         if inspected is None:
             self.current_manifest = None
@@ -2347,7 +2453,7 @@ class CmigMainWindow(QMainWindow):
             self.graph_gate_badge.set_unavailable()
             self.profile_view.load_profile([])
             self.profile_view.load_targets(None)
-            return
+            return False
         try:
             bundle = TidyBundle.read(run_dir)
             manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else None
@@ -2363,7 +2469,7 @@ class CmigMainWindow(QMainWindow):
             self.profile_view.load_profile([])
             self.profile_view.load_targets(None)
             self._show_status("status_run_load_failed", error=e)
-            return
+            return False
         self.current_manifest = manifest
         self.current_graph_payload = payload
         self.graph_view.set_bundle(bundle)
@@ -2378,11 +2484,11 @@ class CmigMainWindow(QMainWindow):
         self.profile_view.load_bundle(bundle)
         self.profile_view.load_targets(_read_target_summary(run_dir))
         self._register_run_output(run_dir)
-        self._show_page(self.community_result_page)
-        self.community_result_page.setCurrentWidget(self.profile_view)
+        self._show_profile()
         run_hash = None if self.current_manifest is None else self.current_manifest.get("run_hash")
         suffix = "" if run_hash is None else f" (run_hash {str(run_hash)[:12]})"
         self._show_status("status_loaded_run", run_dir=run_dir, suffix=suffix)
+        return True
 
     def load_search_dir(self, path: str | Path) -> bool:
         run_dir = Path(path).resolve()
@@ -2439,6 +2545,7 @@ class CmigMainWindow(QMainWindow):
                 kind=self.tr_map["kind_host_microbe"],
                 path=summary_path,
             )
+            self._summary_missing(run_dir, summary_path)
             return False
         previous_integrity = self._last_integrity
         previous_detail = self._integrity_detail
@@ -2520,6 +2627,10 @@ class CmigMainWindow(QMainWindow):
         except (OSError, ValueError, TypeError, KeyError) as e:
             self._last_integrity = previous_integrity
             self._integrity_detail = previous_detail
+            self._readback_failed(
+                run_dir, "readback invalid/unreadable",
+                f"Run: {run_dir}\nReadback: invalid/unreadable ({e})",
+            )
             self._show_status(
                 "status_load_failed", kind=self.tr_map["kind_host_microbe"],
                 error=f"{run_dir}: {e}",
@@ -2530,6 +2641,11 @@ class CmigMainWindow(QMainWindow):
             # Absence of the host block is missing data, not a biological finding. Defaulting
             # to viable=False rendered a red "non-viable — microbiome support insufficient",
             # i.e. a scientific conclusion manufactured from an incomplete file.
+            self._readback_failed(
+                run_dir, "readback invalid/unreadable",
+                f"Run: {run_dir}\nReadback: invalid/unreadable (no host block in "
+                f"{summary_path.name})",
+            )
             self._show_status(
                 "status_host_block_missing",
                 summary=summary_path.name,
@@ -2581,6 +2697,7 @@ class CmigMainWindow(QMainWindow):
             self._show_status(
                 "status_summary_missing", kind=self.tr_map["kind_dfba"], path=summary_path
             )
+            self._summary_missing(run_dir, summary_path)
             return False
         inspected = self._inspect_gui_run(run_dir)
         if inspected is None:
@@ -2630,6 +2747,7 @@ class CmigMainWindow(QMainWindow):
             self._show_status(
                 "status_summary_missing", kind=self.tr_map["kind_spatial"], path=summary_path
             )
+            self._summary_missing(run_dir, summary_path)
             return False
         inspected = self._inspect_gui_run(run_dir)
         if inspected is None:
@@ -2692,8 +2810,7 @@ class CmigMainWindow(QMainWindow):
             return False
         outcome = job.result
         if outcome.status == "ok" and outcome.manifest_path is not None:
-            self.load_run_dir(outcome.manifest_path.parent)
-            return True
+            return self.load_run_dir(outcome.manifest_path.parent)
         self._show_status("status_fixture_failed", diagnostic=outcome.diagnostic)
         return False
 
@@ -3696,6 +3813,7 @@ class CmigMainWindow(QMainWindow):
             baseline_label=self._message("profile_scenario_baseline", name=path_a.name),
             variant_label=self._message("profile_scenario_variant", name=path_b.name),
         )
+        self._show_profile()
         self.scenario_compare.status.setText(
             f"compare complete: {dir_a} vs {dir_b} · {self.tr_map['profile_overlay_available']}"
         )
@@ -3711,12 +3829,14 @@ class CmigMainWindow(QMainWindow):
         project = self.session.project
         if project is not None and out_dir.parent == project.runs_dir.resolve():
             self.session.refresh_runs()
-            return
-        if all(entry.path != out_dir for entry in self._external_runs):
-            self._external_runs.append(inspect_run(out_dir))
-        self.refresh_workspace()
+        else:
+            if all(entry.path != out_dir for entry in self._external_runs):
+                self._external_runs.append(inspect_run(out_dir))
+            self.refresh_workspace()
+        self._show_run_in_inspector(out_dir)  # status and integrity, as RUNS selection shows
 
     def _poll_completed_jobs(self) -> None:
+        self._finish_exchange_jobs()
         for jid, (commit, constraint) in list(self._sandbox_jobs.items()):
             job = self.runner.poll(jid)
             if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
@@ -3748,6 +3868,7 @@ class CmigMainWindow(QMainWindow):
                 baseline_label=self.tr_map["profile_sandbox_baseline"],
                 variant_label=variant_label,
             )
+            self._show_profile()
             self.sandbox_view.status.setText(
                 f"{self.sandbox_view.status.text()} · {self.tr_map['profile_overlay_available']}"
             )
@@ -3877,10 +3998,14 @@ class CmigMainWindow(QMainWindow):
             if job.status is JobStatus.DONE:
                 self._host_microbe_jobs.pop(jid, None)
                 self.host_view.run_btn.setEnabled(True)
-                self.load_host_microbe_bigg_dir(out_dir)
-                self._show_status(
-                    "status_complete", kind=self.tr_map["kind_host_microbe"], job_id=jid
-                )
+                # A completion message must not cover a failed readback (status bar + inspector).
+                if self.load_host_microbe_bigg_dir(out_dir):
+                    self._show_status(
+                        "status_complete", kind=self.tr_map["kind_host_microbe"], job_id=jid
+                    )
+                else:
+                    self.host_view.run_status.setText(_UNREADABLE_RESULT.format(
+                        kind="host-microbe", out_dir=out_dir))
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._host_microbe_jobs.pop(jid, None)
                 self.host_view.run_btn.setEnabled(True)
@@ -4025,8 +4150,11 @@ class CmigMainWindow(QMainWindow):
             if job.status is JobStatus.DONE:
                 self._dfba_jobs.pop(jid, None)
                 self.dynamics_view.run_dfba_btn.setEnabled(True)
-                self.load_dfba_dir(out_dir)
-                self._show_status("status_complete", kind=self.tr_map["kind_dfba"], job_id=jid)
+                if self.load_dfba_dir(out_dir):
+                    self._show_status("status_complete", kind=self.tr_map["kind_dfba"], job_id=jid)
+                else:
+                    self.dynamics_view.status.setText(_UNREADABLE_RESULT.format(
+                        kind="dFBA", out_dir=out_dir))
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._dfba_jobs.pop(jid, None)
                 self.dynamics_view.run_dfba_btn.setEnabled(True)
@@ -4036,8 +4164,13 @@ class CmigMainWindow(QMainWindow):
             if job.status is JobStatus.DONE:
                 self._spatial_jobs.pop(jid, None)
                 self.dynamics_view.run_spatial_btn.setEnabled(True)
-                self.load_spatial_dir(out_dir)
-                self._show_status("status_complete", kind=self.tr_map["kind_spatial"], job_id=jid)
+                if self.load_spatial_dir(out_dir):
+                    self._show_status(
+                        "status_complete", kind=self.tr_map["kind_spatial"], job_id=jid
+                    )
+                else:
+                    self.dynamics_view.status.setText(_UNREADABLE_RESULT.format(
+                        kind="spatial preview", out_dir=out_dir))
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._spatial_jobs.pop(jid, None)
                 self.dynamics_view.run_spatial_btn.setEnabled(True)
@@ -4054,13 +4187,16 @@ class CmigMainWindow(QMainWindow):
                 )
                 run_hash = manifest.get("run_hash") if isinstance(manifest, dict) else None
                 suffix = f" (run_hash {str(run_hash)[:12]})" if run_hash else ""
-                self.community_builder.status.setText(f"community solve complete{suffix}")
-                self.load_run_dir(out_dir)
-                self._show_status(
-                    "status_complete",
-                    kind=self.tr_map["kind_community_solve"],
-                    job_id=jid,
-                )
+                if self.load_run_dir(out_dir):
+                    self.community_builder.status.setText(f"community solve complete{suffix}")
+                    self._show_status(
+                        "status_complete",
+                        kind=self.tr_map["kind_community_solve"],
+                        job_id=jid,
+                    )
+                else:
+                    self.community_builder.status.setText(_UNREADABLE_RESULT.format(
+                        kind="community solve", out_dir=out_dir))
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._community_jobs.pop(jid, None)
                 self.community_builder.run_btn.setEnabled(True)
@@ -4152,7 +4288,12 @@ class CmigMainWindow(QMainWindow):
                     )
 
                 previous = self._last_medium_growth_check
-                self.load_run_dir(out_dir)
+                if not self.load_run_dir(out_dir):
+                    # The growth figure came from files the GUI could not read back: do not
+                    # present it, and keep the failure in the status bar and the inspector.
+                    self.medium_editor.growth_label.setText(_UNREADABLE_RESULT.format(
+                        kind="growth check", out_dir=out_dir))
+                    continue
                 cli_succeeded = int(job.result.get("cli_rc", 1)) == 0 and status == "optimal"
                 if cli_succeeded and previous is not None:
                     previous_dir, previous_request = previous

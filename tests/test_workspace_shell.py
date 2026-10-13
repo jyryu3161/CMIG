@@ -269,3 +269,153 @@ def test_media_lists_presets_but_not_their_provenance_table(window) -> None:
     assert not any("provenance" in key for key in keys)
     window.sidebar.select("media", "preset:western_diet")
     assert window.inspector.title_label.text() == "Medium · western_diet"
+
+
+# ── fix round 1: overlays reachable, exchanges off the GUI thread, activity opens ─────────
+def _wait_for(window, condition, timeout: float = 10.0) -> None:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        window._poll_completed_jobs()
+        APP.processEvents()
+        time.sleep(0.01)
+    window._poll_completed_jobs()
+    assert condition()
+
+
+def _exchange_texts(window) -> list[str]:
+    listing = window.inspector.exchange_list
+    return [listing.item(i).text() for i in range(listing.count())]
+
+
+def _profile_overlay_shown(window) -> bool:
+    return (window.pages.currentWidget() is window.community_result_page
+            and window.community_result_page.currentWidget() is window.profile_view
+            and window.profile_view.net_chart.delta_active
+            and not window.profile_view.delta_note.isHidden())
+
+
+def test_compare_runs_overlay_is_shown_on_profile(window, tmp_path: Path) -> None:
+    from cmig.core.engine import SolveResult
+    from cmig.core.interactions import build_tidy
+
+    def result(growth: float, ac: float) -> SolveResult:
+        return SolveResult(
+            objective=growth, member_growth={"A": growth}, abundances={"A": 1.0},
+            external_exchange={"ac": ac}, member_exchange={"A": {"ac": ac}},
+            status="optimal", flux_report_status="full", growth_solver="gurobi",
+            flux_solver="gurobi", members=["A"],
+        )
+
+    build_tidy(result(0.5, 5.0)).write(tmp_path / "a")
+    build_tidy(result(0.8, 2.0)).write(tmp_path / "b")
+    window.show_analysis("compare")
+    window.scenario_compare.run_a_input.setText(str(tmp_path / "a"))
+    window.scenario_compare.run_b_input.setText(str(tmp_path / "b"))
+    window.run_scenario_compare()
+    assert _profile_overlay_shown(window)
+
+
+def test_sandbox_overlay_is_shown_on_profile(window, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    import cmig.service
+    from cmig.core.delta import DeltaResult, MetaboliteDelta
+
+    class FakeEngineService:
+        def sandbox_fixture(self, *, reaction_id, lower, upper, commit, out_dir):
+            return SimpleNamespace(delta=DeltaResult([MetaboliteDelta("ac", 1.0, 2.0, 1.0)],
+                                                     [], [], 0.0), run_hash=None)
+
+    monkeypatch.setattr(cmig.service, "EngineService", FakeEngineService)
+    window.show_analysis("sandbox")
+    window.sandbox_view.add_bound("EX_glc__D_e", -1.0, 1000.0)
+    window.sandbox_view.preview_btn.click()
+    _wait_for(window, lambda: not window._sandbox_jobs)
+    assert _profile_overlay_shown(window)
+
+
+def test_starting_a_job_opens_the_activity_pane(window) -> None:
+    assert window.activity.isHidden()
+    window.submit_job("calc", lambda ctx: 21 * 2)
+    assert not window.activity.isHidden()
+    assert window.toggle_activity_action.text() == "Hide Activity"
+
+
+def test_model_exchanges_load_in_the_background(
+    window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    import cmig.io.model_import as model_import
+
+    gate = threading.Event()
+    calls: list[Path] = []
+
+    def slow_import(path):
+        calls.append(path)
+        assert gate.wait(10)
+        return SimpleNamespace(exchanges=["EX_ac_e", "EX_but_e"])
+
+    monkeypatch.setattr(model_import, "import_model", slow_import)
+    make_project(tmp_path / "s", ["a"])
+    window.open_project(tmp_path / "s")
+    started = time.monotonic()
+    window.sidebar.select("models", "a")
+    assert time.monotonic() - started < 1.0  # selection does not wait for the parse
+    assert _exchange_texts(window) == ["Loading exchanges…"]
+    assert window.activity.isHidden()  # a background lookup does not pop the pane open
+    gate.set()
+    _wait_for(window, lambda: not window._exchange_jobs)
+    assert _exchange_texts(window) == ["EX_ac_e", "EX_but_e"]
+    window.sidebar.select("media", "preset:western_diet")
+    window.sidebar.select("models", "a")
+    assert _exchange_texts(window) == ["EX_ac_e", "EX_but_e"]  # cached by checksum
+    assert len(calls) == 1
+
+
+def test_model_exchanges_fill_only_the_model_still_shown(
+    window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    from types import SimpleNamespace
+
+    import cmig.io.model_import as model_import
+
+    gate = threading.Event()
+    monkeypatch.setattr(model_import, "import_model",
+                        lambda path: gate.wait(10) and SimpleNamespace(exchanges=["EX_ac_e"]))
+    make_project(tmp_path / "s", ["a"])
+    window.open_project(tmp_path / "s")
+    window.sidebar.select("models", "a")
+    window.sidebar.select("media", "preset:western_diet")  # the user moved on
+    gate.set()
+    _wait_for(window, lambda: not window._exchange_jobs)
+    assert window.inspector.title_label.text() == "Medium · western_diet"
+
+
+def test_failed_exchange_lookup_is_shown_and_retried(
+    window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cmig.io.model_import as model_import
+
+    attempts: list[Path] = []
+
+    def broken_import(path):
+        attempts.append(path)
+        raise ValueError("not a model")
+
+    monkeypatch.setattr(model_import, "import_model", broken_import)
+    make_project(tmp_path / "s", ["a"])
+    window.open_project(tmp_path / "s")
+    window.sidebar.select("models", "a")
+    _wait_for(window, lambda: not window._exchange_jobs)
+    [note] = _exchange_texts(window)
+    assert note.startswith("Exchange list unavailable:") and "not a model" in note
+    window.sidebar.select("media", "preset:western_diet")
+    window.sidebar.select("models", "a")
+    _wait_for(window, lambda: not window._exchange_jobs)
+    assert len(attempts) == 2  # a failure is not cached

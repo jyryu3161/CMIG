@@ -745,9 +745,12 @@ def test_community_solve_button_writes_taxonomy_and_overrides_abundance(monkeypa
     seen = {"argv": []}
 
     def fake_main(argv):
+        from cmig.core.tidy import empty_bundle
+
         seen["argv"] = list(argv)
         out = Path(argv[argv.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
+        empty_bundle().write(out)  # a community run the GUI can read back
         (out / "manifest.json").write_text(json.dumps({"run_hash": "abc123def456"}))
         return 0
 
