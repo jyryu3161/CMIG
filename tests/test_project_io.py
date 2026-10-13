@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import csv
+import hashlib
 import json
 import os
+import shutil
 import socket
 from pathlib import Path
 
@@ -30,7 +33,7 @@ def test_create_refuses_non_empty_folder(tmp_path: Path) -> None:
     root = tmp_path / "busy"
     root.mkdir()
     (root / "notes.txt").write_text("mine")
-    with pytest.raises(proj.ProjectError, match="not empty"):
+    with pytest.raises(proj.ProjectError, match="^project folder is not empty"):
         proj.create_project(root)
     assert (root / "notes.txt").read_text() == "mine"
     assert not (root / "cmig-project.json").exists()
@@ -317,3 +320,296 @@ def test_open_unpreparable_folder_is_project_error(tmp_path: Path) -> None:
     (root / "models").write_text("a file where a folder belongs")
     with pytest.raises(proj.ProjectError, match="cannot prepare"):
         proj.open_project(root)
+
+
+def _fake_model(path: Path, body: str = "<sbml/>") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+    return path
+
+
+def _ok_check(_path: Path) -> proj.ModelCheck:
+    return proj.ModelCheck(
+        status="ok", error=None, n_reactions=10, n_metabolites=8, n_genes=3,
+        biomass=["BIOMASS"], namespace_coverage_pct=97.5, warnings=[],
+    )
+
+
+def test_add_model_copies_and_never_touches_source(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    src = _fake_model(tmp_path / "in" / "E_rectale.xml", "<sbml>rectale</sbml>")
+    before = src.read_bytes()
+    entry = proj.add_model_file(project, src, check=_ok_check)
+    assert entry.id == "E_rectale"
+    assert entry.file == "models/E_rectale.xml"
+    assert entry.sha256 == hashlib.sha256(before).hexdigest()
+    assert entry.status == "ok" and entry.n_reactions == 10
+    assert (project.root / entry.file).read_bytes() == before
+    assert src.read_bytes() == before
+    assert proj.model_path(project, entry) == project.root / "models" / "E_rectale.xml"
+
+
+def test_duplicate_content_is_refused(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    a = _fake_model(tmp_path / "a" / "x.xml", "same")
+    b = _fake_model(tmp_path / "b" / "y.xml", "same")
+    proj.add_model_file(project, a, check=_ok_check)
+    with pytest.raises(proj.DuplicateModelError) as info:
+        proj.add_model_file(project, b, check=_ok_check)
+    assert info.value.existing_id == "x"
+    assert len(project.models) == 1
+
+
+def test_ids_unique_for_same_stem_and_odd_names(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    first = proj.add_model_file(
+        project, _fake_model(tmp_path / "1" / "model.xml", "1"), check=None
+    )
+    second = proj.add_model_file(
+        project, _fake_model(tmp_path / "2" / "model.xml", "2"), check=None
+    )
+    odd = proj.add_model_file(
+        project, _fake_model(tmp_path / "3" / "B. longum 이름.json.xml", "3"), check=None
+    )
+    gz = proj.add_model_file(project, _fake_model(tmp_path / "4" / "Akk.xml.gz", "4"), check=None)
+    ids = [first.id, second.id, odd.id, gz.id]
+    assert len(set(ids)) == 4
+    assert first.id == "model" and second.id.startswith("model_")
+    assert all(i[0].isalpha() or i[0] == "_" for i in ids)
+    assert second.file != first.file and second.file.endswith(".xml")
+    assert gz.file.endswith(".xml.gz")
+    assert first.status == "pending" and first.integrity == "ok"
+
+
+def test_unsupported_model_suffix_is_refused(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    with pytest.raises(proj.ProjectError, match="not a supported model file"):
+        proj.add_model_file(project, _fake_model(tmp_path / "notes.txt"), check=None)
+
+
+def test_copy_failure_leaves_no_partial_file(tmp_path: Path, monkeypatch) -> None:
+    project = proj.create_project(tmp_path / "p")
+    src = _fake_model(tmp_path / "big.xml", "x" * 1000)
+
+    def boom(path, writer):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(proj, "atomic_write_binary", boom)
+    with pytest.raises(proj.ProjectError, match="disk full"):
+        proj.add_model_file(project, src, check=None)
+    assert list(project.models_dir.iterdir()) == []
+    assert project.models == []
+
+
+def test_check_model_file_never_raises(tmp_path: Path) -> None:
+    result = proj.check_model_file(_fake_model(tmp_path / "broken.xml", "not sbml"))
+    assert result.status == "failed"
+    assert result.error
+
+
+def test_verify_checksums_flags_changed_and_missing(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    a = proj.add_model_file(project, _fake_model(tmp_path / "a.xml", "a"), check=_ok_check)
+    b = proj.add_model_file(project, _fake_model(tmp_path / "b.xml", "b"), check=_ok_check)
+    (project.root / a.file).write_text("tampered")
+    (project.root / b.file).unlink()
+    changed = proj.verify_checksums(project)
+    assert sorted(changed) == ["a", "b"]
+    assert project.model("a").integrity == "changed"
+    assert project.model("b").integrity == "missing"
+    assert proj.selectable_models(project) == []
+
+
+def test_selectable_excludes_failed_and_pending(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    ok = proj.add_model_file(project, _fake_model(tmp_path / "ok.xml", "1"), check=_ok_check)
+    warn = proj.add_model_file(project, _fake_model(tmp_path / "w.xml", "2"), check=_ok_check)
+    warn.status = "warning"
+    bad = proj.add_model_file(project, _fake_model(tmp_path / "bad.xml", "3"), check=None)
+    bad.status = "failed"
+    proj.add_model_file(project, _fake_model(tmp_path / "pend.xml", "4"), check=None)
+    assert [m.id for m in proj.selectable_models(project)] == [ok.id, warn.id]
+
+
+def test_open_project_reverifies_checksums(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    entry = proj.add_model_file(project, _fake_model(tmp_path / "a.xml", "a"), check=_ok_check)
+    proj.save_project(project)
+    (project.root / entry.file).write_text("edited elsewhere")
+    assert proj.open_project(project.root).model("a").integrity == "changed"
+
+
+def test_remove_restore_rename(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    proj.add_model_file(project, _fake_model(tmp_path / "a.xml", "a"), check=_ok_check)
+    b = proj.add_model_file(project, _fake_model(tmp_path / "b.xml", "b"), check=_ok_check)
+    index, removed = proj.remove_model(project, "a")
+    assert [m.id for m in project.models] == ["b"]
+    assert (project.root / removed.file).exists(), "files stay on disk for run references"
+    proj.restore_model(project, index, removed)
+    assert [m.id for m in project.models] == ["a", "b"]
+    proj.rename_model(project, "b", "Bifido_longum")
+    assert project.model("Bifido_longum").sha256 == b.sha256
+    for bad in ("a", "1abc", "has space", ""):
+        with pytest.raises(proj.ProjectError):
+            proj.rename_model(project, "Bifido_longum", bad)
+
+
+def test_add_medium(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    src = tmp_path / "diet.csv"
+    src.write_text("exchange,uptake\nEX_glc__D_e,10\n")
+    entry = proj.add_medium_file(project, src)
+    assert entry.id == "diet" and entry.file == "media/diet.csv"
+    assert proj.medium_path(project, entry).read_text() == src.read_text()
+    with pytest.raises(proj.ProjectError, match="CSV or JSON"):
+        proj.add_medium_file(project, _fake_model(tmp_path / "x.xml"))
+
+
+def test_new_run_dir_never_reuses(tmp_path: Path, monkeypatch) -> None:
+    project = proj.create_project(tmp_path / "p")
+    monkeypatch.setattr(proj, "_stamp", lambda: "20261013-103100")
+    first = proj.new_run_dir(project, "search")
+    second = proj.new_run_dir(project, "search")
+    assert first.name == "search-20261013-103100"
+    assert second.name == "search-20261013-103100-2"
+    assert first.is_dir() and second.is_dir()
+    with pytest.raises(proj.ProjectError):
+        proj.new_run_dir(project, "../escape")
+
+
+def test_write_run_taxonomy(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    a = proj.add_model_file(project, _fake_model(tmp_path / "a.xml", "a"), check=_ok_check)
+    proj.add_model_file(project, _fake_model(tmp_path / "b.xml", "b"), check=_ok_check)
+    run = proj.new_run_dir(project, "community")
+    path = proj.write_run_taxonomy(project, run, ["b", "a"], abundances={"a": 0.25})
+    assert path == project.inputs_dir / f"{run.name}-taxonomy.csv"
+    rows = list(csv.DictReader(path.open()))
+    assert [r["id"] for r in rows] == ["b", "a"]
+    assert rows[1]["file"] == str(project.root / a.file)
+    assert [float(r["abundance"]) for r in rows] == [1.0, 0.25]
+    assert list(run.iterdir()) == [], "nothing is pre-written into the CLI's run folder"
+    with pytest.raises(proj.ProjectError, match="not selectable"):
+        project.model("a").integrity = "changed"
+        proj.write_run_taxonomy(project, run, ["a"])
+    with pytest.raises(proj.ProjectError, match="no models"):
+        proj.write_run_taxonomy(project, run, [])
+
+
+def test_project_survives_move(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "old")
+    proj.add_model_file(project, _fake_model(tmp_path / "a.xml", "a"), check=_ok_check)
+    proj.save_project(project)
+    (tmp_path / "old").rename(tmp_path / "new")
+    moved = proj.open_project(tmp_path / "new")
+    assert moved.model("a").integrity == "ok"
+    run = proj.new_run_dir(moved, "search")
+    rows = list(csv.DictReader(proj.write_run_taxonomy(moved, run, ["a"]).open()))
+    assert rows[0]["file"].startswith(str(tmp_path / "new"))
+
+
+def test_supported_model_paths_filters_and_counts(tmp_path: Path) -> None:
+    folder = tmp_path / "pool"
+    _fake_model(folder / "a.xml")
+    _fake_model(folder / "sub" / "b.mat")
+    _fake_model(folder / "readme.txt")
+    _fake_model(folder / ".hidden.xml")
+    (folder / "notcobra.json").write_text('{"hello": 1}')
+    files, skipped = proj.supported_model_paths([folder])
+    assert sorted(p.name for p in files) == ["a.xml", "b.mat"]
+    assert skipped == 3
+    flat, _ = proj.supported_model_paths([folder], recursive=False)
+    assert [p.name for p in flat] == ["a.xml"]
+
+
+# --- filesystem failures surface as ProjectError, never a raw OSError -------------------------
+
+
+def _deny_write(*_args: object, **_kwargs: object) -> None:
+    raise OSError("disk full")
+
+
+def test_save_write_failure_is_project_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = proj.create_project(tmp_path / "p")
+    before = project.project_file.read_text()
+    monkeypatch.setattr(proj, "atomic_write_text", _deny_write)
+    with pytest.raises(proj.ProjectError, match="cannot save.*disk full"):
+        proj.save_project(project)
+    assert project.project_file.read_text() == before
+
+
+def test_create_first_save_failure_is_project_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(proj, "atomic_write_text", _deny_write)
+    with pytest.raises(proj.ProjectError, match="cannot save"):
+        proj.create_project(tmp_path / "p")
+
+
+def test_create_mkdir_failure_is_project_error(tmp_path: Path) -> None:
+    blocker = tmp_path / "a-file"
+    blocker.write_text("not a folder")
+    with pytest.raises(proj.ProjectError, match="cannot create project"):
+        proj.create_project(blocker / "p")
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs POSIX permissions enforced for this user",
+)
+def test_open_unsearchable_folder_is_project_error(tmp_path: Path) -> None:
+    root = tmp_path / "locked-folder"
+    proj.create_project(root)
+    root.chmod(0)
+    try:
+        with pytest.raises(proj.ProjectError, match="cannot open project folder|no cmig-project"):
+            proj.open_project(root)
+    finally:
+        root.chmod(0o700)
+
+
+def test_verify_checksums_treats_unreadable_file_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = proj.create_project(tmp_path / "p")
+    proj.add_model_file(project, _fake_model(tmp_path / "a.xml", "a"), check=_ok_check)
+    monkeypatch.setattr(proj, "_sha256", _deny_write)
+    assert proj.verify_checksums(project) == ["a"]
+    assert project.model("a").integrity == "missing"
+
+
+def test_unreadable_source_is_project_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = proj.create_project(tmp_path / "p")
+    src = _fake_model(tmp_path / "a.xml", "a")
+    monkeypatch.setattr(proj, "_sha256", _deny_write)
+    with pytest.raises(proj.ProjectError, match="cannot read.*disk full"):
+        proj.add_model_file(project, src, check=None)
+    csv_src = tmp_path / "d.csv"
+    csv_src.write_text("exchange,uptake\n")
+    with pytest.raises(proj.ProjectError, match="cannot read.*disk full"):
+        proj.add_medium_file(project, csv_src)
+    assert project.models == [] and project.media == []
+
+
+def test_new_run_dir_mkdir_failure_is_project_error(tmp_path: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    shutil.rmtree(project.runs_dir)
+    project.runs_dir.write_text("a file where the runs folder belongs")
+    with pytest.raises(proj.ProjectError, match="cannot create run folder"):
+        proj.new_run_dir(project, "search")
+
+
+def test_write_run_taxonomy_write_failure_is_project_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = proj.create_project(tmp_path / "p")
+    proj.add_model_file(project, _fake_model(tmp_path / "a.xml", "a"), check=_ok_check)
+    run = proj.new_run_dir(project, "search")
+    monkeypatch.setattr(proj, "atomic_write_text", _deny_write)
+    with pytest.raises(proj.ProjectError, match="cannot write run inputs"):
+        proj.write_run_taxonomy(project, run, ["a"])
