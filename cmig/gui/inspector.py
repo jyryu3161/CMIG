@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -24,11 +25,50 @@ _SOLVER_TEXT = {
     "gurobi": "Gurobi full-flux",
     "osqp": "OSQP QP-only approximation",
 }
+# `flux_report_status` as a solve manifest records it (see cmig.core.engine.FluxReportStatus).
+# Only "full" may read as Gurobi full-flux; the two degraded tiers must not borrow that label.
+_FLUX_REPORT_TEXT = {
+    "full": _SOLVER_TEXT["gurobi"],
+    "qp_only_approximate": _SOLVER_TEXT["osqp"],
+    "fba_non_parsimonious": "Full flux, NON-parsimonious (pFBA stage failed)",
+    "none": "No flux (solve failed)",
+}
 
 
 def _row(label: str, value: object) -> str:
     shown = "not recorded" if value in (None, "", []) else value
     return f"<b>{html.escape(label)}</b>: {html.escape(str(shown))}<br>"
+
+
+def _component(components: object, name: str) -> object:
+    """One entry of a workflow manifest's `components` (a list of [name, value] pairs)."""
+    if isinstance(components, dict):
+        return components.get(name)
+    if isinstance(components, list):
+        for item in components:
+            if isinstance(item, (list, tuple)) and len(item) == 2 and item[0] == name:
+                return item[1]
+    return None
+
+
+def _solver_label(manifest: object) -> str | None:
+    """The solver wording for a run, or None when the manifest does not record one.
+
+    Solve manifests keep a dict (`flux_report_status`, `flux_solver`, `growth_solver`);
+    workflow manifests only keep the requested solver inside the `solver_setting` component.
+    Never returns a raw repr of whatever the manifest holds.
+    """
+    if not isinstance(manifest, dict):
+        return None
+    setting = manifest.get("solver")
+    if setting is None:
+        setting = _component(manifest.get("components"), "solver_setting")
+    if isinstance(setting, dict):
+        status = setting.get("flux_report_status")
+        if isinstance(status, str) and status in _FLUX_REPORT_TEXT:
+            return _FLUX_REPORT_TEXT[status]
+        setting = setting.get("solver")
+    return _SOLVER_TEXT.get(setting) if isinstance(setting, str) else None
 
 
 class InspectorPanel(QWidget):
@@ -38,6 +78,8 @@ class InspectorPanel(QWidget):
         self.setMaximumWidth(420)
         self.title_label = QLabel("Nothing selected")
         self.title_label.setWordWrap(True)
+        # Titles carry file- and run-derived names; never let them render as markup.
+        self.title_label.setTextFormat(Qt.TextFormat.PlainText)
         self.details = QTextBrowser()
         self.details.setOpenExternalLinks(False)
         self.exchange_filter = QLineEdit("")
@@ -113,7 +155,7 @@ class InspectorPanel(QWidget):
             + _row("BiGG namespace coverage", coverage)
             + _row("Warnings", "; ".join(entry.warnings))
             + _row("File", integrity)
-            + _row("SHA-256", entry.sha256[:12] + "…")
+            + _row("SHA-256", entry.sha256[:12] + "…" if entry.sha256 else None)
             + _row("Original", entry.source_path)
             + _row("Format", entry.format)
         )
@@ -135,13 +177,11 @@ class InspectorPanel(QWidget):
 
     def show_run(self, entry: RunEntry, inspected: dict[str, object], command: str) -> None:
         self.title_label.setText(f"Run · {entry.label}")
-        manifest = inspected.get("manifest")
-        solver = manifest.get("solver") if isinstance(manifest, dict) else None
         body = (
             _row("Status", inspected.get("status", entry.status))
             + _row("Artifact integrity", inspected.get("artifact_integrity"))
             + _row("run_hash", inspected.get("run_hash"))
-            + _row("Solver", _SOLVER_TEXT.get(str(solver), solver))
+            + _row("Solver", _solver_label(inspected.get("manifest")))
             + _row("Folder", entry.path)
         )
         self.details.setHtml(body)
