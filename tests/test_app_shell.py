@@ -281,21 +281,6 @@ def test_run_spatial_preview_passes_dt_to_cli(monkeypatch, tmp_path):
     runner.shutdown()
 
 
-def test_import_model_file_updates_model_manager(monkeypatch):
-    from cmig.io.model_import import ModelSummary
-
-    _app()
-    w = build_main_window()
-
-    def fake_import_model(path):
-        return ModelSummary("toy", "sbml", str(path), 2, 2, 0, ["EX_ac_e"], ["BIOMASS"])
-
-    monkeypatch.setattr("cmig.io.model_import.import_model", fake_import_model)
-    assert w.import_model_file("/tmp/toy.xml") is True
-    assert "toy" in w.model_manager.summary_label.text()
-    assert w.current_model_review["model"]["model_id"] == "toy"
-
-
 def test_run_fixture_uses_jobrunner_and_loads_completed_run(tmp_path, monkeypatch):
     """Run Fixture 워크플로는 GUI thread 직접 solve 대신 JobRunner 를 사용한다."""
     from types import SimpleNamespace

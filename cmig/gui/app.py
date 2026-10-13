@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -91,6 +92,7 @@ from cmig.gui.views import (
     ExternalProfileView,
     SweepView,
 )
+from cmig.io import project as proj
 from cmig.io.project import ModelEntry, ProjectError
 from cmig.service import JobRunner, JobStatus
 
@@ -239,8 +241,6 @@ I18N: dict[str, dict[str, str]] = {
         "status_started": "{kind} 시작: {job_id}",
         "status_complete": "{kind} 완료: {job_id}",
         "status_complete_out": "{kind} 완료: {job_id} → {out_dir}",
-        "status_model_import_failed": "모델 가져오기 실패: {error}",
-        "status_imported_model": "{model_id} 가져옴; namespace 범위 {coverage:.0f}%",
         "status_run_load_failed": "실행 불러오기 실패: {error}",
         "status_run_no_viewer": (
             "이 실행 종류({kind})는 GUI 뷰어가 없습니다: {run_dir} — "
@@ -515,8 +515,6 @@ I18N: dict[str, dict[str, str]] = {
         "status_started": "Started {kind}: {job_id}",
         "status_complete": "{kind} complete: {job_id}",
         "status_complete_out": "{kind} complete: {job_id} → {out_dir}",
-        "status_model_import_failed": "Model import failed: {error}",
-        "status_imported_model": "Imported {model_id}; namespace coverage {coverage:.0f}%",
         "status_run_load_failed": "Run load failed: {error}",
         "status_run_no_viewer": (
             "No GUI viewer for this run kind ({kind}): {run_dir} — "
@@ -1077,6 +1075,16 @@ class CmigMainWindow(QMainWindow):
         self.activity = ActivityPane(self.tr_map)
         self.jobs_panel = self.activity.jobs
         self._external_runs: list[RunEntry] = []
+        #: import job id -> the model files it was given; at most one import runs at a time
+        #: (two would race for the same models/ file names)
+        self._import_jobs: dict[str, list[Path]] = {}
+        #: import job id -> root of the project it imports into
+        self._import_roots: dict[str, Path] = {}
+        #: file names shown as placeholder rows in MODELS while an import runs
+        self._pending_imports: list[str] = []
+        #: job id -> equivalent command / log text shown in Activity for that job
+        self._job_commands: dict[str, str] = {}
+        self._job_logs: dict[str, str] = {}
         #: root of the project the centre page was last laid out for (see refresh_workspace)
         self._shown_root: Path | None = None
         #: True while a sidebar selection drives the centre page (see _show_page)
@@ -1119,7 +1127,6 @@ class CmigMainWindow(QMainWindow):
         self._sandbox_jobs: dict[str, tuple[bool, Any, bool]] = {}
         self.current_manifest: dict[str, Any] | None = None
         self.current_graph_payload: dict[str, Any] | None = None
-        self.current_model_review: dict[str, Any] | None = None
         self.current_search_dir: Path | None = None
         self.current_host_microbe_dir: Path | None = None
 
@@ -1681,11 +1688,13 @@ class CmigMainWindow(QMainWindow):
         self.project_title.setText("No Project" if project is None else project.name)
         root = None if project is None else project.root
         switched = root != self._shown_root
+        if switched:
+            self._pending_imports = []  # placeholders belong to the project they were queued in
         # Rebuilding a group drops its rows' selection; put it back unless the project changed.
         current = None if switched else self._sidebar_current()
         selected_models = [] if switched else self.sidebar.selected_keys("models")
-        pending = list(getattr(self, "_pending_imports", []))
-        self.sidebar.set_models([] if project is None else project.models, pending)
+        self.sidebar.set_models([] if project is None else project.models,
+                                list(self._pending_imports))
         self.sidebar.set_media(installed_medium_presets(), [] if project is None else project.media)
         self.sidebar.set_runs(self.session.runs(), self._external_runs)
         self._restore_sidebar_selection(current, selected_models)
@@ -1708,6 +1717,7 @@ class CmigMainWindow(QMainWindow):
             self.welcome_page, self.empty_models_page, self.model_manager
         ):
             self._show_models_overview()
+        self.model_manager.show_project_models([] if project is None else project.models)
         self._update_run_action()
 
     def _sidebar_current(self) -> tuple[str, str] | None:
@@ -1966,7 +1976,8 @@ class CmigMainWindow(QMainWindow):
         log = job.error or ""
         if isinstance(job.result, dict):
             log = str(job.result.get("cli_error") or job.result.get("input_diagnostic") or log)
-        self.activity.set_job_detail(log, getattr(self, "_job_commands", {}).get(job_id, ""))
+        self.activity.set_job_detail(self._job_logs.get(job_id) or log,
+                                     self._job_commands.get(job_id, ""))
 
     def _refresh_solver_label(self) -> None:
         try:
@@ -1990,18 +2001,170 @@ class CmigMainWindow(QMainWindow):
             self.add_model_paths(local)
             event.acceptProposedAction()
 
-    def add_model_paths(self, paths: list[Path]) -> str:
-        """Implemented in Task 7 (background import)."""
-        return ""
+    def add_model_paths(self, paths: list[Path], *, recursive: bool = True) -> str:
+        """Copy model files, and the models under folders, into the project in the background.
+
+        Returns the import job's id, or "" when nothing was started (the status bar says why).
+        The worker only copies and checks files against a private snapshot of the project; the
+        entries it produces are added through the session on the GUI thread when it is done.
+        """
+        from cmig.service import JobContext
+
+        project = self.session.project
+        if project is None:
+            self.statusBar().showMessage("Open or create a project before adding models.", 8000)
+            return ""
+        if self._import_jobs:
+            self.statusBar().showMessage(
+                "A model import is already running; wait for it or cancel it in Activity.", 8000
+            )
+            return ""
+        try:
+            files, skipped = proj.supported_model_paths(
+                [Path(p) for p in paths], recursive=recursive
+            )
+        except ProjectError as exc:
+            self.statusBar().showMessage(str(exc), 15000)
+            return ""
+        if not files:
+            self.statusBar().showMessage(
+                f"No SBML, JSON or MAT model files found ({skipped} skipped).", 8000
+            )
+            return ""
+        working = proj.Project(project.root, project.name, project.created,
+                               list(project.models), list(project.media),
+                               dict(project.analysis_settings))
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            added: list[ModelEntry] = []
+            failed: list[tuple[str, str]] = []
+            duplicates: list[tuple[str, str]] = []
+            total = len(files)
+            for index, path in enumerate(files):
+                if ctx.cancelled:
+                    return {"added": added, "failed": failed, "duplicates": duplicates,
+                            "skipped": skipped, "cancelled_remaining": total - index}
+                ctx.report_progress(index, total)
+                try:
+                    added.append(proj.add_model_file(working, path, check=proj.check_model_file))
+                except proj.DuplicateModelError as exc:
+                    duplicates.append((path.name, exc.existing_id))
+                except proj.ProjectError as exc:
+                    failed.append((path.name, str(exc)))
+                except Exception as exc:  # one odd file must not lose the models already copied
+                    failed.append((path.name, f"{type(exc).__name__}: {exc}"))
+            ctx.report_progress(total, total)
+            return {"added": added, "failed": failed, "duplicates": duplicates,
+                    "skipped": skipped, "cancelled_remaining": 0}
+
+        job_id = self.submit_job("import_models", _job)
+        self._import_jobs[job_id] = files
+        self._import_roots[job_id] = project.root
+        self._pending_imports.extend(path.name for path in files)
+        self._job_commands[job_id] = f"Add {len(files)} model file(s) to {project.name}"
+        self.refresh_workspace()
+        return job_id
+
+    def _finish_import(self, job_id: str, result: dict[str, Any] | None, status: str) -> None:
+        """Add what an import job produced to the project it was started for."""
+        files = self._import_jobs.pop(job_id, [])
+        root = self._import_roots.pop(job_id, None)
+        self.bridge.cancelling.discard(job_id)
+        names = {path.name for path in files}
+        self._pending_imports = [n for n in self._pending_imports if n not in names]
+        project = self.session.project
+        if result is None:
+            self.statusBar().showMessage(f"Model import {status}; nothing was added.", 8000)
+        elif project is None or root is None or not _same_folder(project.root, root):
+            self.statusBar().showMessage(
+                f"The project was closed during the import; {len(result['added'])} copied "
+                "model(s) were not added.", 15000,
+            )
+        else:
+            self._add_imported(job_id, project, result)
+        self.runner.release_payload(job_id)
+        self.refresh_workspace()
+
+    def _add_imported(self, job_id: str, project: proj.Project, result: dict[str, Any]) -> None:
+        # The project may have changed (a rename, an undo) since the worker took its snapshot.
+        # An id taken meanwhile would make the project file unreadable, so that model is
+        # reported instead of added; its copy stays in models/.
+        taken = {m.id for m in project.models}
+        added: list[ModelEntry] = []
+        failed: list[tuple[str, str]] = list(result["failed"])
+        for entry in result["added"]:
+            if entry.id in taken:
+                reason = f"id {entry.id!r} was taken during the import"
+                failed.append((Path(entry.file).name, reason))
+            else:
+                taken.add(entry.id)
+                added.append(entry)
+        details = [f"{name}: {reason}" for name, reason in failed]
+        details += [f"{name}: already in the project as {eid}"
+                    for name, eid in result["duplicates"]]
+        if details:
+            self._job_logs[job_id] = "\n".join(details)
+            self._show_job_in_activity(job_id)
+        try:
+            self.session.add_entries(added)
+        except ProjectError as exc:
+            self.statusBar().showMessage(
+                f"Could not save the project, so {len(added)} imported model(s) were not added: "
+                f"{exc}", 15000,
+            )
+            return
+        n_failed = sum(1 for e in added if e.status == "failed") + len(failed)
+        duplicates = len(result["duplicates"])
+        parts = [f"{len(added)} added"]
+        if duplicates:
+            parts.append(f"{duplicates} duplicate" + ("" if duplicates == 1 else "s"))
+        if n_failed:
+            parts.append(f"{n_failed} failed")
+        if result["skipped"]:
+            parts.append(f"{result['skipped']} skipped")
+        if result["cancelled_remaining"]:
+            parts.append(f"cancelled with {result['cancelled_remaining']} not imported")
+        self.statusBar().showMessage("Models: " + ", ".join(parts), 15000)
+
+    def _show_job_in_activity(self, job_id: str) -> None:
+        """Select the job's row in Activity so its log and command are on show."""
+        self.bridge.refresh()
+        for row in range(self.jobs_panel.rowCount()):
+            item = self.jobs_panel.item(row, 0)
+            if item is not None and item.text() == job_id:
+                self.jobs_panel.selectRow(row)
+                break
+        self._show_selected_job_detail()
 
     def _add_models_dialog(self) -> None:
-        """Implemented in Task 7."""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Add Models", "", "Models (*.xml *.sbml *.xml.gz *.sbml.gz *.json *.mat)"
+        )
+        if paths:
+            self.add_model_paths([Path(p) for p in paths])
 
     def _add_models_folder_dialog(self) -> None:
-        """Implemented in Task 7."""
+        path = QFileDialog.getExistingDirectory(self, "Add Models from Folder")
+        if path:
+            include = QMessageBox.question(
+                self, "Add Models from Folder", "Include subfolders?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            ) == QMessageBox.StandardButton.Yes
+            self.add_model_paths([Path(path)], recursive=include)
 
     def _add_medium_dialog(self) -> None:
-        """Implemented in Task 7."""
+        project = self.session.project
+        if project is None:
+            return
+        paths, _ = QFileDialog.getOpenFileNames(self, "Add Medium", "", "Media (*.csv *.json)")
+        errors: list[str] = []
+        for path in paths:
+            try:
+                self.session.add_medium(proj.add_medium_file(project, Path(path)))
+            except ProjectError as exc:
+                errors.append(f"{Path(path).name}: {exc}")
+        if errors:
+            self.statusBar().showMessage("; ".join(errors), 15000)
 
     def _agora2_dialog(self) -> None:
         """Implemented in Task 8."""
@@ -2376,32 +2539,6 @@ class CmigMainWindow(QMainWindow):
             self.activity.expand()
             self.toggle_activity_action.setText("Hide Activity")
         return jid
-
-    def import_model_file(self, path: str | Path) -> bool:
-        """모델 파일 import + namespace review 를 Model 화면에 반영."""
-        from cmig.io.model_import import build_import_review, import_model
-
-        try:
-            summary = import_model(path)
-            review = build_import_review(summary)
-        except Exception as e:
-            self._show_status("status_model_import_failed", error=e)
-            return False
-        self.model_manager.load_summary(summary)
-        self.current_model_review = {
-            "model": review.model,
-            "inferred_origin": review.inferred_origin,
-            "namespace": review.namespace,
-            "warnings": review.warnings,
-            "next_actions": review.next_actions,
-        }
-        ns = review.namespace
-        self._show_status(
-            "status_imported_model",
-            model_id=summary.model_id,
-            coverage=ns["coverage_pct"],
-        )
-        return True
 
     def load_run_dir(self, path: str | Path) -> bool:
         """Show a run in its viewer; a tidy community run goes to Profile and Graph.
@@ -3844,6 +3981,11 @@ class CmigMainWindow(QMainWindow):
 
     def _poll_completed_jobs(self) -> None:
         self._finish_exchange_jobs()
+        for jid in list(self._import_jobs):
+            job = self.runner.poll(jid)
+            if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+                done = job.status is JobStatus.DONE and isinstance(job.result, dict)
+                self._finish_import(jid, job.result if done else None, job.status.value)
         for jid, (commit, constraint, auto) in list(self._sandbox_jobs.items()):
             job = self.runner.poll(jid)
             if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):

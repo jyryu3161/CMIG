@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from cmig.core.medium_spec import MediumSpec, load_medium
 from cmig.gui.builder import make_read_only, read_only_item
 from cmig.io.model_import import ModelSummary
+from cmig.io.project import ModelEntry
 
 _NUTRIENT_ROLE = "nutrient"
 _POOL_CLOSURE_ROLE = "pool_closure"
@@ -787,6 +788,19 @@ class ModelManagerPanel(QWidget):
             self.exchange_table.setItem(i, 0, read_only_item(ex))
         bio = ", ".join(summary.biomass_reactions) or "(not detected)"
         self.biomass_label.setText(f"Biomass: {bio}")
+
+    def show_project_models(self, models: list[ModelEntry]) -> None:
+        """Overview of the project's models (id, check status, size, file)."""
+        self.summary_label.setText(f"{len(models)} models in this project")
+        self.exchange_table.setColumnCount(4)
+        self.exchange_table.setHorizontalHeaderLabels(["Model", "Check", "Reactions", "File"])
+        self.exchange_table.setRowCount(len(models))
+        for row, entry in enumerate(models):
+            values = [entry.id, entry.status if entry.integrity == "ok" else entry.integrity,
+                      "—" if entry.n_reactions is None else str(entry.n_reactions), entry.file]
+            for col, value in enumerate(values):
+                self.exchange_table.setItem(row, col, read_only_item(value))
+        self.biomass_label.setText("Select a model in the sidebar for its details.")
 
 
 _PRESET_METADATA = "provenance_rows.csv"  # shipped beside the presets; not a medium
