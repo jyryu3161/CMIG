@@ -785,3 +785,26 @@ def test_exchange_lookups_are_hidden_and_cancelled_when_the_selection_moves_on(
     _wait_for(window, lambda: not window._exchange_jobs)
     assert calls == ["a", "b"] and _exchange_texts(window) == ["EX_ac_e"]
     window.close_project()
+
+
+# ── final review: Edit > Rename / Remove follow the MODELS selection ──────────────────────
+def test_rename_and_remove_are_enabled_only_for_a_fitting_model_selection(
+    window, tmp_path: Path
+) -> None:
+    make_project(tmp_path / "s", ["a", "b"])
+    assert window.open_project(tmp_path / "s")
+
+    def state() -> tuple[bool, bool]:
+        return window.rename_action.isEnabled(), window.remove_action.isEnabled()
+
+    assert state() == (False, False), "nothing selected"
+    window.sidebar.select("models", "a")
+    assert state() == (True, True)
+    window.sidebar.topLevelItem(0).child(1).setSelected(True)
+    assert state() == (False, True), "Rename takes exactly one model"
+    window.session.refresh_runs()  # a rebuild keeps the selection and the states
+    assert state() == (False, True)
+    window.sidebar.select("analyses", "host")
+    assert state() == (False, False)
+    window.close_project()
+    assert state() == (False, False)

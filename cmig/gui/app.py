@@ -1200,6 +1200,7 @@ class CmigMainWindow(QMainWindow):
         self.sidebar.selection_changed.connect(self._on_sidebar_selection)
         self.sidebar.files_dropped.connect(self.add_model_paths)
         self.sidebar.context_requested.connect(self._show_sidebar_menu)
+        self.sidebar.itemSelectionChanged.connect(self._update_model_actions)
         self.activity.cancel_requested.connect(self._cancel_job_id)
         self.jobs_panel.itemSelectionChanged.connect(self._show_selected_job_detail)
         self.session.opened.connect(self.refresh_workspace)
@@ -1777,7 +1778,7 @@ class CmigMainWindow(QMainWindow):
         has_project = project is not None
         for action in (self.add_models_action, self.add_models_folder_action,
                        self.add_agora2_action, self.add_medium_action, self.close_project_action,
-                       self.show_project_action, self.rename_action, self.remove_action):
+                       self.show_project_action):
             action.setEnabled(has_project)
         for action in self.analysis_actions.values():
             action.setEnabled(has_project)
@@ -1798,6 +1799,7 @@ class CmigMainWindow(QMainWindow):
             self._display_runs(self.session.runs()), self._display_runs(self._external_runs)
         )
         self._restore_sidebar_selection(current, selected_models)
+        self._update_model_actions()
         self.welcome_recent.clear()
         for path in self.recent.paths():
             item = QListWidgetItem(f"{path.name}  —  {path.parent}")
@@ -1819,6 +1821,12 @@ class CmigMainWindow(QMainWindow):
             self._show_models_overview()
         self.model_manager.show_project_models([] if project is None else project.models)
         self._update_run_action()
+
+    def _update_model_actions(self) -> None:
+        """Rename… needs exactly one selected model; Remove from Project at least one."""
+        keys = self.sidebar.selected_keys("models") if self.session.project is not None else []
+        self.rename_action.setEnabled(len(keys) == 1)
+        self.remove_action.setEnabled(bool(keys))
 
     def _sidebar_current(self) -> tuple[str, str] | None:
         item = self.sidebar.currentItem()
