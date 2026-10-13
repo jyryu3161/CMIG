@@ -40,6 +40,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QAction, QCursor, QKeySequence
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -1113,8 +1114,9 @@ class CmigMainWindow(QMainWindow):
         #: The most recent completed Check Growth is the baseline for a later medium edit.
         self._last_medium_growth_check: tuple[Path, dict[str, Any]] | None = None
         self._medium_delta_active = False
-        #: sandbox job id -> (commit?, the bound constraint the result will belong to)
-        self._sandbox_jobs: dict[str, tuple[bool, Any]] = {}
+        #: sandbox job id -> (commit?, the bound constraint the result will belong to,
+        #: automatic preview after a bound edit?)
+        self._sandbox_jobs: dict[str, tuple[bool, Any, bool]] = {}
         self.current_manifest: dict[str, Any] | None = None
         self.current_graph_payload: dict[str, Any] | None = None
         self.current_model_review: dict[str, Any] | None = None
@@ -2007,6 +2009,7 @@ class CmigMainWindow(QMainWindow):
     def _connect_view_actions(self) -> None:
         self.sandbox_view.preview_btn.clicked.connect(self._run_sandbox_preview)
         self.sandbox_view.commit_btn.clicked.connect(self._run_sandbox_commit)
+        self.sandbox_view.auto_preview_requested.connect(self._run_sandbox_auto_preview)
         self.search_view.browse_pool_btn.clicked.connect(self._browse_search_model_dir)
         self.search_view.browse_output_btn.clicked.connect(self._browse_search_output_dir)
         self.search_view.browse_medium_btn.clicked.connect(self._browse_search_medium)
@@ -2298,7 +2301,11 @@ class CmigMainWindow(QMainWindow):
     def _run_sandbox_commit(self) -> None:
         self._run_sandbox(commit=True)
 
-    def _run_sandbox(self, *, commit: bool) -> str:
+    def _run_sandbox_auto_preview(self) -> None:
+        """The debounced preview after a bound edit; its result stays on the sandbox page."""
+        self._run_sandbox(commit=False, auto=True)
+
+    def _run_sandbox(self, *, commit: bool, auto: bool = False) -> str:
         """Submit the sandbox baseline+constrained solve through JobRunner.
 
         This slot used to call `EngineService().sandbox_fixture()` directly — 2190 ms of a
@@ -2349,7 +2356,7 @@ class CmigMainWindow(QMainWindow):
         jid = self.submit_job("sandbox_fixture", _job)
         # Remember which bound this result will belong to: the table is still editable while
         # the solve runs, so the delta must be able to name its own request on arrival.
-        self._sandbox_jobs[jid] = (commit, c)
+        self._sandbox_jobs[jid] = (commit, c, auto)
         self.sandbox_view.preview_btn.setEnabled(False)
         self.sandbox_view.commit_btn.setEnabled(False)
         self.sandbox_view.status.setText(f"sandbox solve started: {jid}")
@@ -3837,7 +3844,7 @@ class CmigMainWindow(QMainWindow):
 
     def _poll_completed_jobs(self) -> None:
         self._finish_exchange_jobs()
-        for jid, (commit, constraint) in list(self._sandbox_jobs.items()):
+        for jid, (commit, constraint, auto) in list(self._sandbox_jobs.items()):
             job = self.runner.poll(jid)
             if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
                 continue
@@ -3868,7 +3875,16 @@ class CmigMainWindow(QMainWindow):
                 baseline_label=self.tr_map["profile_sandbox_baseline"],
                 variant_label=variant_label,
             )
-            self._show_profile()
+            # Only an explicit Preview / Commit moves the centre to Profile. A debounced preview
+            # fires while the user is still typing bounds, and leaving the page would hide the
+            # delta table and its "table has changed" warning — and commit a half-typed cell.
+            editing = (
+                self.pages.currentWidget() is self.sandbox_view
+                and self.sandbox_view.bound_table.state()
+                == QAbstractItemView.State.EditingState
+            )
+            if not auto and not editing:
+                self._show_profile()
             self.sandbox_view.status.setText(
                 f"{self.sandbox_view.status.text()} · {self.tr_map['profile_overlay_available']}"
             )

@@ -317,23 +317,95 @@ def test_compare_runs_overlay_is_shown_on_profile(window, tmp_path: Path) -> Non
     assert _profile_overlay_shown(window)
 
 
-def test_sandbox_overlay_is_shown_on_profile(window, monkeypatch: pytest.MonkeyPatch) -> None:
+def _fake_sandbox_engine(monkeypatch: pytest.MonkeyPatch, gate=None) -> list[bool]:
+    """Patch the sandbox solve; returns the list of `commit` flags it was called with."""
     from types import SimpleNamespace
 
     import cmig.service
     from cmig.core.delta import DeltaResult, MetaboliteDelta
 
+    calls: list[bool] = []
+
     class FakeEngineService:
         def sandbox_fixture(self, *, reaction_id, lower, upper, commit, out_dir):
+            calls.append(commit)
+            if gate is not None:
+                assert gate.wait(10)
             return SimpleNamespace(delta=DeltaResult([MetaboliteDelta("ac", 1.0, 2.0, 1.0)],
-                                                     [], [], 0.0), run_hash=None)
+                                                     [], [], 0.0),
+                                   run_hash="commithash" if commit else None)
 
     monkeypatch.setattr(cmig.service, "EngineService", FakeEngineService)
+    return calls
+
+
+def _sandbox_with_bound(window):
     window.show_analysis("sandbox")
-    window.sandbox_view.add_bound("EX_glc__D_e", -1.0, 1000.0)
-    window.sandbox_view.preview_btn.click()
+    view = window.sandbox_view
+    view.add_bound("EX_glc__D_e", -1.0, 1000.0)
+    view._debounce.stop()  # these tests press the buttons themselves
+    return view
+
+
+def test_sandbox_overlay_is_shown_on_profile(window, monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_sandbox_engine(monkeypatch)
+    _sandbox_with_bound(window).preview_btn.click()
     _wait_for(window, lambda: not window._sandbox_jobs)
     assert _profile_overlay_shown(window)
+
+
+def test_sandbox_commit_shows_profile(
+    window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PySide6.QtWidgets import QFileDialog
+
+    calls = _fake_sandbox_engine(monkeypatch)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_a, **_k: str(tmp_path))
+    _sandbox_with_bound(window).commit_btn.click()
+    _wait_for(window, lambda: not window._sandbox_jobs)
+    assert calls == [True]
+    assert _profile_overlay_shown(window)
+
+
+def test_auto_preview_after_a_bound_edit_stays_on_the_sandbox_page(
+    window, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    calls = _fake_sandbox_engine(monkeypatch)
+    window.show_analysis("sandbox")
+    view = window.sandbox_view
+    view._debounce.setInterval(20)
+    loop = QEventLoop()
+    view._debounce.timeout.connect(loop.quit)
+    QTimer.singleShot(2000, loop.quit)
+    view.add_bound("EX_glc__D_e", -1.0, 1000.0)  # an edit arms the debounced preview
+    loop.exec()
+    _wait_for(window, lambda: bool(calls) and not window._sandbox_jobs)
+    assert calls == [False]
+    assert window.pages.currentWidget() is view  # the delta table and its warning stay visible
+    assert "preview" in view.status.text()
+    assert window.profile_view.net_chart.delta_active  # Profile still carries the overlay
+
+
+def test_explicit_preview_does_not_leave_a_cell_being_edited(
+    window, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from PySide6.QtWidgets import QAbstractItemView
+
+    gate = threading.Event()
+    _fake_sandbox_engine(monkeypatch, gate)
+    window.show()
+    view = _sandbox_with_bound(window)
+    view.preview_btn.click()
+    view.bound_table.editItem(view.bound_table.item(0, 1))  # the user starts typing a bound
+    assert view.bound_table.state() == QAbstractItemView.State.EditingState
+    gate.set()
+    _wait_for(window, lambda: not window._sandbox_jobs)
+    assert window.pages.currentWidget() is view
+    assert view.bound_table.state() == QAbstractItemView.State.EditingState
 
 
 def test_starting_a_job_opens_the_activity_pane(window) -> None:

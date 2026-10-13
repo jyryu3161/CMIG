@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QModelIndex, QPersistentModelIndex, Qt, QTimer, QUrl
+from PySide6.QtCore import QModelIndex, QPersistentModelIndex, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -355,6 +355,9 @@ class DeltaTable(QTableWidget):
 class ConstraintSandboxView(QWidget):
     """G1 Constraint Sandbox — bound 제약 + preview/commit + debounce 재solve(JobRunner)."""
 
+    #: the debounce after a bound edit expired: an automatic preview, not a Preview click
+    auto_preview_requested = Signal()
+
     def __init__(self, debounce_ms: int = 500) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
@@ -383,12 +386,13 @@ class ConstraintSandboxView(QWidget):
         layout.addWidget(self.delta_view)
         layout.addWidget(self.status)
         # debounce: bound 편집 연속 변경 → 마지막만 재solve (OD-54). itemChanged 마다 재무장하고,
-        # 타이머 만료 시 preview_btn 을 프로그램적으로 click() 해 app.py 의 기존 preview 배선을
-        # 그대로 재사용한다(뷰는 Qt 전용 — JobRunner/EngineService 는 app.py 가 소유).
+        # 타이머 만료 시 auto_preview_requested 를 내보내 app.py 가 preview 를 실행한다. 명시적
+        # Preview 클릭과 구분해야 자동 preview 가 화면을 바꾸지 않는다(뷰는 Qt 전용 —
+        # JobRunner/EngineService 는 app.py 가 소유).
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(debounce_ms)
-        self._debounce.timeout.connect(self.preview_btn.click)
+        self._debounce.timeout.connect(self.auto_preview_requested.emit)
         self.bound_table.itemChanged.connect(self._on_bound_edited)
 
     def _on_bound_edited(self, _item: QTableWidgetItem) -> None:
