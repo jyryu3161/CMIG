@@ -311,7 +311,7 @@ def test_single_picker_never_holds_two_models_after_reopen(setup, tmp_path: Path
     _action(picker, "host").trigger()  # the user picks another model from the menu
     assert picker.selected_ids() == ["host"]
     assert picker.text() == "Model: host"
-    assert w.session.settings("dynamics")["models"] == ["host"]
+    assert w.session.settings("dfba")["models"] == ["host"]
     picker.set_selected(["c", "a", "b"])  # c failed: the first runnable one is kept
     assert picker.selected_ids() == ["a"]
 

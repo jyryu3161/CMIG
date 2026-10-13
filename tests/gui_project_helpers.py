@@ -64,6 +64,15 @@ def taxonomy_ids(argv: list[str]) -> list[str]:
         return [row["id"] for row in csv.DictReader(handle)]
 
 
+def textbook_sbml(path: Path) -> Path:
+    """cobra's bundled e_coli_core ("textbook") written as SBML at `path` (no network)."""
+    import cobra
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cobra.io.write_sbml_model(cobra.io.load_model("textbook"), str(path))
+    return path
+
+
 @pytest.fixture(autouse=True)
 def _deterministic_qt_teardown():
     """Close and delete top-level Qt widgets after each test (avoids macOS exit segfaults)."""

@@ -72,10 +72,12 @@ def test_open_missing_project_file(tmp_path: Path) -> None:
 
 def test_save_is_atomic_and_round_trips_settings(tmp_path: Path) -> None:
     project = proj.create_project(tmp_path / "s")
-    project.analysis_settings["search"] = {"models": ["a", "b"], "medium": "preset:western"}
+    project.analysis_settings["community"] = {"models": ["a", "b"], "medium": "preset:western"}
     proj.save_project(project)
     again = proj.open_project(tmp_path / "s")
-    assert again.analysis_settings == {"search": {"models": ["a", "b"], "medium": "preset:western"}}
+    assert again.analysis_settings == {
+        "community": {"models": ["a", "b"], "medium": "preset:western"}
+    }
     leftovers = [p.name for p in (tmp_path / "s").iterdir() if p.name.endswith(".tmp")]
     assert leftovers == []
 

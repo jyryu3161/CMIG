@@ -64,6 +64,9 @@ class ModelEntry:
     namespace_coverage_pct: float | None = None
     warnings: list[str] = field(default_factory=list)
     integrity: str = "ok"
+    namespace_mappings: dict[str, int] | None = None
+    objective_warning: str | None = None
+    namespace_confirmed: dict[str, str] | None = None
 
 
 @dataclass
@@ -241,7 +244,7 @@ def open_project(root: Path) -> Project:
             created=str(raw["created"]),
             models=[_model_from_json(item) for item in models],
             media=[_medium_from_json(item) for item in media],
-            analysis_settings=settings,
+            analysis_settings=migrate_analysis_settings(settings),
         )
     except (TypeError, ValueError) as exc:
         raise ProjectError(f"{path} has malformed entries: {exc}") from exc
@@ -356,6 +359,10 @@ class ModelCheck:
     biomass: list[str]
     namespace_coverage_pct: float | None
     warnings: list[str]
+    namespace_mappings: dict[str, int] | None = None
+    objective_warning: str | None = None
+    #: the model index built from the same read (Task 3); never saved in the project file
+    index: dict[str, Any] | None = field(default=None, repr=False, compare=False)
 
 
 def check_model_file(path: Path) -> ModelCheck:
@@ -369,6 +376,14 @@ def check_model_file(path: Path) -> ModelCheck:
         return ModelCheck("failed", f"{type(exc).__name__}: {exc}", None, None, None, [], None, [])
     warnings = [str(w) for w in review.warnings]
     coverage = review.namespace.get("coverage_pct")
+    decisions = review.namespace.get("decisions") or []
+    mappings = {
+        "total": int(review.namespace.get("n_decisions", len(decisions))),
+        "resolved": sum(1 for d in decisions if d.get("status") == "resolved"),
+        "unresolved_high": int(review.namespace.get("n_unresolved_high", 0)),
+        "warned_low": int(review.namespace.get("n_warned_low", 0)),
+    }
+    objective_warning = review.model.get("objective_warning")
     return ModelCheck(
         status="warning" if warnings else "ok",
         error=None,
@@ -378,6 +393,8 @@ def check_model_file(path: Path) -> ModelCheck:
         biomass=list(summary.biomass_reactions),
         namespace_coverage_pct=None if coverage is None else float(coverage),
         warnings=warnings,
+        namespace_mappings=mappings,
+        objective_warning=None if objective_warning is None else str(objective_warning),
     )
 
 
@@ -390,6 +407,10 @@ def apply_check(entry: ModelEntry, check: ModelCheck) -> None:
     entry.biomass = list(check.biomass)
     entry.namespace_coverage_pct = check.namespace_coverage_pct
     entry.warnings = list(check.warnings)
+    entry.namespace_mappings = (
+        None if check.namespace_mappings is None else dict(check.namespace_mappings)
+    )
+    entry.objective_warning = check.objective_warning
 
 
 def _sha256(path: Path) -> str:
@@ -560,8 +581,11 @@ def rename_model(project: Project, model_id: str, new_id: str) -> None:
     entry.id = new_id
     for values in project.analysis_settings.values():
         chosen = values.get("models")
-        if isinstance(chosen, list) and model_id in chosen:
-            values["models"] = [new_id if item == model_id else item for item in chosen]
+        if isinstance(chosen, list):
+            # `new_id` names no current model (checked above): a remembered `new_id` is a
+            # removed model's leftover, and must not start meaning the renamed one.
+            kept = [item for item in chosen if item != new_id]
+            values["models"] = [new_id if item == model_id else item for item in kept]
 
 
 def model_path(project: Project, entry: ModelEntry) -> Path:
@@ -820,3 +844,183 @@ def supported_model_paths(
         except OSError as exc:
             raise ProjectError(f"cannot read {path}: {exc}") from exc
     return found, skipped
+
+
+# ── namespace review and the user's per-model confirmation ─────────────────────────────────
+_NS_BLOCKED_TEXT = "unresolved high-confidence namespace mappings block solve"
+_NS_REVIEW_TEXT = "low-confidence normalized candidates require review"
+
+
+def namespace_review_state(entry: ModelEntry) -> str:
+    """"blocked" | "review" | "clear" | "unknown" from the import review of this copy.
+
+    Phase-1 entries carry no structured counts; their state is read once from the warning
+    text `cmig.io.model_import.build_import_review` wrote.
+    """
+    counts = entry.namespace_mappings
+    if counts is not None:
+        if int(counts.get("unresolved_high", 0)) > 0:
+            return "blocked"
+        return "review" if int(counts.get("warned_low", 0)) > 0 else "clear"
+    if entry.status not in _RUNNABLE_STATUSES:
+        return "unknown"
+    text = " ".join(entry.warnings)
+    if _NS_BLOCKED_TEXT in text:
+        return "blocked"
+    return "review" if _NS_REVIEW_TEXT in text else "clear"
+
+
+def objective_warning_of(entry: ModelEntry) -> str | None:
+    """Why this model's objective is not a growth rate, or None (also for phase-1 entries)."""
+    if entry.objective_warning is not None:
+        return entry.objective_warning
+    if not entry.biomass:
+        return None
+    from cmig.io.model_import import objective_structure_warning
+
+    return objective_structure_warning(len(entry.biomass), entry.biomass)
+
+
+def confirmation_state(entry: ModelEntry) -> str:
+    """"confirmed" (this exact file), "changed" (confirmed for another file) or "none"."""
+    record = entry.namespace_confirmed
+    if not isinstance(record, dict):
+        return "none"
+    if record.get("sha256") == entry.sha256 and entry.integrity == "ok":
+        return "confirmed"
+    return "changed"
+
+
+def namespace_confirmed(entry: ModelEntry) -> bool:
+    return confirmation_state(entry) == "confirmed"
+
+
+def confirm_namespace(project: Project, model_id: str, *, at: str | None = None) -> None:
+    """Record the user's confirmation that this copy's exchange ids are BiGG (caller saves)."""
+    entry = project.model(model_id)
+    state = refresh_integrity(project, entry)
+    if state != "ok":
+        reason = "changed since it was added" if state == "changed" else "is missing"
+        raise ProjectError(f"model {model_id!r} cannot be confirmed: its file {reason}")
+    entry.namespace_confirmed = {"sha256": entry.sha256, "at": at or _now()}
+
+
+def revoke_namespace(project: Project, model_id: str) -> None:
+    project.model(model_id).namespace_confirmed = None
+
+
+def confirmation_summary(project: Project, ids: list[str]) -> tuple[bool, list[str]]:
+    """(every id confirmed, the ids that are not). No ids is never "all confirmed"."""
+    unconfirmed = [i for i in ids if not namespace_confirmed(project.model(i))]
+    return bool(ids) and not unconfirmed, unconfirmed
+
+
+def check_reasons(entry: ModelEntry) -> list[tuple[str, str]]:
+    """Every reason this model is not plainly ready, worst first; ("✓", …) when there is none."""
+    if entry.status == "failed":
+        return [("✗", "Unreadable")]
+    if entry.status == "pending":
+        return [("…", "Checking")]
+    reasons: list[tuple[str, str]] = []
+    if entry.integrity == "changed":
+        reasons.append(("⚠", "File changed"))
+    elif entry.integrity == "missing":
+        reasons.append(("⚠", "File missing"))
+    confirmed = namespace_confirmed(entry)
+    if namespace_review_state(entry) in ("blocked", "review") and not confirmed:
+        reasons.append(("⚠", "Namespace not reviewed"))
+    if not entry.biomass:
+        reasons.append(("⚠", "No objective"))
+    elif objective_warning_of(entry):
+        reasons.append(("⚠", "Objective is not growth"))
+    if reasons:
+        return reasons
+    return [("✓", "Ready · namespace confirmed" if confirmed else "Ready")]
+
+
+def check_reason(entry: ModelEntry) -> tuple[str, str]:
+    return check_reasons(entry)[0]
+
+
+# ── the GUI's record of a run's on-screen inputs (never part of the CLI's run folder) ──────
+REQUEST_SCHEMA_VERSION = 1
+
+
+def run_request_path(run_dir: Path) -> Path:
+    run_dir = Path(run_dir)
+    return run_dir.parent / "_inputs" / f"{run_dir.name}-request.json"
+
+
+def write_run_request(
+    run_dir: Path,
+    analysis: str,
+    values: dict[str, Any],
+    *,
+    models: list[str],
+    media: list[str],
+    cmig_version: str,
+) -> Path:
+    payload = {
+        "schema_version": REQUEST_SCHEMA_VERSION,
+        "analysis": analysis,
+        "values": values,
+        "models": list(models),
+        "media": list(media),
+        "created": _now(),
+        "cmig_version": cmig_version,
+    }
+    try:
+        text = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    except (TypeError, ValueError) as exc:
+        raise ProjectError(f"cannot record the inputs of {Path(run_dir).name}: {exc}") from exc
+    path = run_request_path(run_dir)
+    try:
+        atomic_write_text(path, text)
+    except OSError as exc:
+        raise ProjectError(f"cannot write run inputs {path}: {exc}") from exc
+    return path
+
+
+def read_run_request(run_dir: Path) -> tuple[dict[str, Any] | None, str]:
+    """(record, "") — or (None, "") when there is none, or (None, why it cannot be used)."""
+    path = run_request_path(run_dir)
+    if not path.exists():
+        return None, ""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
+        return None, f"the input record could not be read ({exc})"
+    if not isinstance(payload, dict):
+        return None, "the input record is malformed"
+    version = payload.get("schema_version")
+    if version != REQUEST_SCHEMA_VERSION:
+        return None, (f"the input record has schema {version}; this CMIG reads "
+                      f"{REQUEST_SCHEMA_VERSION}")
+    if not isinstance(payload.get("analysis"), str) or not isinstance(payload.get("values"), dict):
+        return None, "the input record is malformed"
+    return payload, ""
+
+
+# ── phase-1 analysis settings → the phase-2 pages ───────────────────────────────────────────
+#: an old key's remembered choice seeds each page that took over its inputs
+_SETTINGS_COPIES: dict[str, tuple[str, ...]] = {
+    "search": ("gene_ko", "strain_growth", "ratio_impact"),
+    "growth": ("strain_growth", "ratio_impact"),
+    "dynamics": ("dfba",),
+    "host": ("host_search",),
+    "host_model": ("host_search_model",),
+}
+_SETTINGS_RETIRED = ("growth", "dynamics")
+
+
+def migrate_analysis_settings(
+    settings: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    out = {key: json.loads(json.dumps(values)) for key, values in settings.items()}
+    for old, new_keys in _SETTINGS_COPIES.items():
+        if old in settings:
+            for new in new_keys:
+                out.setdefault(new, json.loads(json.dumps(settings[old])))
+    for old in _SETTINGS_RETIRED:
+        out.pop(old, None)
+    return out

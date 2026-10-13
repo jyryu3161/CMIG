@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -226,12 +227,40 @@ class _RenameModel(_Command):
     def __init__(self, session: ProjectSession, old: str, new: str) -> None:
         super().__init__(session, "Rename Model")
         self._old, self._new = old, new
+        self._settings: dict[str, dict[str, object]] | None = None
 
     def apply(self) -> None:
-        proj.rename_model(self._session.require(), self._old, self._new)
+        project = self._session.require()
+        self._settings = copy.deepcopy(project.analysis_settings)
+        proj.rename_model(project, self._old, self._new)
 
     def revert(self) -> None:
-        proj.rename_model(self._session.require(), self._new, self._old)
+        project = self._session.require()
+        project.model(self._new).id = self._old
+        if self._settings is not None:
+            project.analysis_settings = copy.deepcopy(self._settings)
+
+
+class _SetNamespaceConfirmation(_Command):
+    def __init__(self, session: ProjectSession, model_id: str, confirmed: bool) -> None:
+        super().__init__(
+            session, "Confirm Namespace" if confirmed else "Revoke Namespace Confirmation"
+        )
+        self._id, self._confirmed = model_id, confirmed
+        self._before: dict[str, str] | None = None
+
+    def apply(self) -> None:
+        project = self._session.require()
+        before = project.model(self._id).namespace_confirmed
+        self._before = None if before is None else dict(before)
+        if self._confirmed:
+            proj.confirm_namespace(project, self._id)
+        else:
+            proj.revoke_namespace(project, self._id)
+
+    def revert(self) -> None:
+        entry = self._session.require().model(self._id)
+        entry.namespace_confirmed = None if self._before is None else dict(self._before)
 
 
 class ProjectSession(QObject):
@@ -349,6 +378,12 @@ class ProjectSession(QObject):
 
     def rename_model(self, old: str, new: str) -> None:
         _RenameModel(self, old, new).execute()
+
+    def confirm_namespace(self, model_id: str) -> None:
+        _SetNamespaceConfirmation(self, model_id, True).execute()
+
+    def revoke_namespace(self, model_id: str) -> None:
+        _SetNamespaceConfirmation(self, model_id, False).execute()
 
     def add_medium(self, entry: proj.MediumEntry) -> None:
         _AddMedium(self, entry).execute()
