@@ -233,6 +233,8 @@ def test_import_finishing_after_its_project_closed_adds_nothing(
     assert window._pending_imports == []
     other = make_project(tmp_path / "other", ["keep"])
     assert window.open_project(other.root)
+    window._poll_completed_jobs()  # the job's folder search is done: still nothing shown here
+    assert window._pending_imports == []
     gate.set()
     _wait(window, job)
     assert [m.id for m in window.session.project.models] == ["keep"]

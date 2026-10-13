@@ -2090,6 +2090,7 @@ class CmigMainWindow(QMainWindow):
         ):
             self._update_run_action()  # a page Run button changed: Run follows it
         return super().eventFilter(watched, event)
+
     _DESCRIPTIONS = {
         "search": ("Rank model combinations by a target metabolite.", "cmig search"),
         "gene_ko": ("Rank single-gene knockouts of a fixed combination.", "cmig gene-ko-search"),
@@ -2487,15 +2488,20 @@ class CmigMainWindow(QMainWindow):
         return job_id
 
     def _take_import_scan(self, job_id: str) -> bool:
-        """Once the job has searched its folders, show one placeholder row per model file."""
+        """Once the job has searched its folders, show one placeholder row per model file.
+
+        Only in the project the job imports into: after a switch, its rows are not shown.
+        """
         box = self._import_found.get(job_id)
         if not box:
             return False
         files = box.pop()
+        self._job_commands[job_id] = f"Add {len(files)} model file(s)"
+        project, root = self.session.project, self._import_roots.get(job_id)
+        if project is None or root is None or not _same_folder(project.root, root):
+            return False
         self._pending_imports = [path.name for path in files]
-        project = self.session.project
-        name = project.name if project is not None else "the project"
-        self._job_commands[job_id] = f"Add {len(files)} model file(s) to {name}"
+        self._job_commands[job_id] += f" to {project.name}"
         return True
 
     def _finish_import(
@@ -2526,7 +2532,7 @@ class CmigMainWindow(QMainWindow):
             )
             if reason:
                 self._job_logs[job_id] = reason
-        elif not total and not result["cancelled_remaining"]:
+        elif not total:
             self.statusBar().showMessage(
                 f"No SBML, JSON or MAT model files found ({result['skipped']} skipped).", 8000
             )
