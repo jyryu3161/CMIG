@@ -25,10 +25,12 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSlider,
     QSpinBox,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -40,7 +42,7 @@ from cmig.core.delta import DeltaResult
 from cmig.core.sandbox import BoundConstraint
 from cmig.core.targets import TARGET_PRESETS, preset_targets
 from cmig.gui.pickers import MediumPicker, ModelPicker
-from cmig.gui.search_results import (  # noqa: F401  (re-exports)
+from cmig.gui.search_results import (
     MERGE_MEDIUM_WARNING,
     SEARCH_COLUMNS,
     SearchResultsPanel,
@@ -50,6 +52,18 @@ from cmig.gui.search_results import (  # noqa: F401  (re-exports)
     read_only_item,
     validate_search_summary,
 )
+
+# The result-table helpers moved to cmig.gui.search_results; these names stay importable from
+# here, and the explicit __all__ entries make them public re-exports for strict mypy.
+__all__ = [
+    "MERGE_MEDIUM_WARNING",
+    "SEARCH_COLUMNS",
+    "_matching_evaluation",
+    "make_read_only",
+    "medium_mode_text",
+    "read_only_item",
+    "validate_search_summary",
+]
 
 #: The four `--direction` / `--target-directions` choices of `cmig search`, in CLI order.
 TARGET_DIRECTIONS = ("max_secretion", "min_secretion", "max_uptake", "min_uptake")
@@ -584,10 +598,17 @@ class SearchView(QWidget):
         workflow_note.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.results_panel = SearchResultsPanel(self.request_fields)
         panel = self.results_panel
-        for name in ("status", "details", "table", "pareto_label", "inspector_label",
-                     "inspector", "figure_mode_combo", "export_figure_btn", "figure_view",
-                     "figure_placeholder", "figure_stack"):
-            setattr(self, name, getattr(panel, name))
+        self.status: QLabel = panel.status
+        self.details: QPlainTextEdit = panel.details
+        self.table: QTableWidget = panel.table
+        self.pareto_label: QLabel = panel.pareto_label
+        self.inspector_label: QLabel = panel.inspector_label
+        self.inspector: QPlainTextEdit = panel.inspector
+        self.figure_mode_combo: QComboBox = panel.figure_mode_combo
+        self.export_figure_btn: QPushButton = panel.export_figure_btn
+        self.figure_view: QWidget = panel.figure_view
+        self.figure_placeholder: QLabel = panel.figure_placeholder
+        self.figure_stack: QStackedWidget = panel.figure_stack
         layout.addWidget(self.title)
         layout.addLayout(pool_row)
         layout.addWidget(target_note)
