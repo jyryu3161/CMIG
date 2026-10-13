@@ -687,6 +687,45 @@ def write_run_taxonomy(
     return path
 
 
+#: how a job can end without a result; the only states a run marker may record
+RUN_STATE_STATUSES = ("failed", "cancelled")
+
+
+def run_state_path(run_dir: Path) -> Path:
+    """``runs/_inputs/<run>-state.json``: beside the run's inputs, never inside the CLI's folder."""
+    run_dir = Path(run_dir)
+    return run_dir.parent / "_inputs" / f"{run_dir.name}-state.json"
+
+
+def write_run_state(run_dir: Path, status: str, job_kind: str) -> Path:
+    """Record that the job writing ``run_dir`` ended ``failed`` or ``cancelled``.
+
+    The marker lets a later session list the folder as failed or cancelled instead of unknown.
+    It only ever records a bad ending: it never makes a run look better than its own summary.
+    """
+    if status not in RUN_STATE_STATUSES:
+        raise ProjectError(f"a run state must be one of {RUN_STATE_STATUSES}, got {status!r}")
+    if not Path(run_dir).is_dir():
+        raise ProjectError(f"run folder {run_dir} does not exist")
+    path = run_state_path(run_dir)
+    payload = {"status": status, "job_kind": job_kind, "recorded": _now()}
+    try:
+        atomic_write_text(path, json.dumps(payload, indent=2) + "\n")
+    except OSError as exc:
+        raise ProjectError(f"cannot record the state of {run_dir}: {exc}") from exc
+    return path
+
+
+def read_run_state(run_dir: Path) -> str | None:
+    """``failed`` or ``cancelled`` when a marker says so; anything else is no marker."""
+    try:
+        payload = json.loads(run_state_path(run_dir).read_text())
+    except (OSError, ValueError):
+        return None
+    status = payload.get("status") if isinstance(payload, dict) else None
+    return status if status in RUN_STATE_STATUSES else None
+
+
 def _files_under(folder: Path, recursive: bool) -> list[Path]:
     """Sorted files in ``folder``; an unreadable folder (or subfolder) raises ``ProjectError``."""
 

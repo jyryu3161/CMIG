@@ -111,6 +111,53 @@ def test_runs_listing_newest_first_with_status(tmp_path: Path) -> None:
     session.close()
 
 
+def test_run_state_marker_lists_a_bad_ending_and_never_upgrades(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "p", ["a"])
+
+    def run(name: str, summary: str | None) -> Path:
+        folder = project.runs_dir / name
+        folder.mkdir()
+        if summary is not None:
+            (folder / "search_summary.json").write_text(summary)
+        return folder
+
+    bare = run("search-20261013-090000", None)
+    claims_ok = run("search-20261013-090100", '{"status": "ok", "targets": ["but"]}')
+    failed = run("search-20261013-090200", '{"status": "failed", "top_ranked": []}')
+    fine = run("search-20261013-090300", '{"status": "ok", "targets": ["ac"]}')
+    for folder, status in ((bare, "cancelled"), (claims_ok, "failed"), (failed, "cancelled")):
+        proj.write_run_state(folder, status, "search_fixture")
+    assert sorted(p.name for p in bare.iterdir()) == [], "nothing is written into the run folder"
+    session = ProjectSession()
+    session.open(tmp_path / "p")
+    by_name = {r.name: r.status for r in session.runs()}
+    assert by_name == {
+        bare.name: "cancelled",      # an unknown folder is now known to be cancelled
+        claims_ok.name: "failed",    # a marker that is worse than the summary wins
+        failed.name: "failed",       # the summary's failure is not softened to cancelled
+        fine.name: "ok",             # no marker, no change
+    }
+    session.close()
+
+
+def test_run_state_marker_ignores_garbage_and_rejects_other_states(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "p", ["a"])
+    folder = project.runs_dir / "search-20261013-090000"
+    folder.mkdir()
+    (folder / "search_summary.json").write_text('{"status": "ok", "targets": ["but"]}')
+    with pytest.raises(proj.ProjectError, match="failed.*cancelled"):
+        proj.write_run_state(folder, "ok", "search_fixture")
+    with pytest.raises(proj.ProjectError, match="does not exist"):
+        proj.write_run_state(project.runs_dir / "gone", "failed", "search_fixture")
+    for text in ("not json", "[]", '{"status": "ok"}', '{"status": 3}'):
+        proj.run_state_path(folder).write_text(text)
+        assert proj.read_run_state(folder) is None, text
+    session = ProjectSession()
+    session.open(tmp_path / "p")
+    assert [r.status for r in session.runs()] == ["ok"], "a marker that says ok upgrades nothing"
+    session.close()
+
+
 def test_run_label_fallbacks() -> None:
     assert run_label("gene_ko_search", "gene-ko-20261013-091502", "") == "Gene KO · 09:15"
     assert run_label("unknown", "odd-name", "") == "odd-name"

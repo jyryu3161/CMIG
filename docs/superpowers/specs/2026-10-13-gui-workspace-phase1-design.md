@@ -167,6 +167,7 @@
 
 - 실행할 때 GUI가 `runs/_inputs/<run 이름>-taxonomy.csv`를 원자적으로 쓴다. 열은 `id`(프로젝트 모델 id), `file`(사본의 절대 경로), `abundance`(기본 1)이다.
   - run 폴더 안에 미리 쓰지 않는다. CLI가 run 폴더를 통째로 게시하기 때문이다.
+  - 작업이 실패하거나 취소로 끝나면 GUI가 `runs/_inputs/<run 이름>-state.json`(`status`는 `failed`|`cancelled`, `job_kind`, `recorded`)을 원자적으로 쓴다. 재시작 뒤에도 RUNS가 ✗/⊘로 보이게 하는 표식이며 run 폴더 안에는 쓰지 않는다. 표식은 run 요약보다 나쁜 쪽으로만 반영하고 ✓로 올리지 않는다.
 - 배지 입력칸은 MEDIA 선택기로 바꾼다. 설치 preset은 자원 경로를, 프로젝트 배지는 사본 경로를 `--medium`으로 넘긴다.
 - 출력은 항상 새 `runs/<분석>-YYYYMMDD-HHMMSS[-N]/`이고 `--out`으로 넘긴다.
   - 지난 주기에 넣은 Search Output folder 칸과 다른 화면의 Output 칸은 없앤다.

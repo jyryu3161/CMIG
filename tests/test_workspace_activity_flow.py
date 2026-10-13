@@ -15,10 +15,12 @@ from gui_project_helpers import (  # noqa: E402
     _deterministic_qt_teardown,  # noqa: F401
     open_test_project,
 )
+from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.core.workflow_manifest import artifact_result_digest  # noqa: E402
 from cmig.gui.app import build_main_window  # noqa: E402
+from cmig.gui.project_session import RecentProjects  # noqa: E402
 from cmig.service import JobRunner, JobStatus  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
@@ -134,6 +136,27 @@ def test_readback_rejection_shows_failed_in_runs_and_clears_when_fixed(
     assert _runs(w) == ["✓ Search · but · 12:00"], "a rejection that no longer holds is cleared"
 
 
+def _inputs(w) -> list[str]:
+    return sorted(p.name for p in w.session.project.inputs_dir.iterdir())
+
+
+def _only_run(w, prefix: str) -> Path:
+    (run,) = w.session.project.runs_dir.glob(f"{prefix}-*")
+    return run
+
+
+def _reopen(w, tmp_path: Path):
+    """Close `w` and open the same project in a new window, as after a restart."""
+    root = w.session.project.root
+    w.close_project()
+    fresh = build_main_window(runner=JobRunner(max_workers=1))
+    fresh.recent = RecentProjects(
+        QSettings(str(tmp_path / "reopen-recent.ini"), QSettings.Format.IniFormat)
+    )
+    assert fresh.open_project(root)
+    return fresh
+
+
 def test_failed_job_leaves_a_failed_run_never_a_question_mark(
     w, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -146,6 +169,12 @@ def test_failed_job_leaves_a_failed_run_never_a_question_mark(
     [row] = _runs(w)
     assert row.startswith("✗ "), row
     assert jid not in w.bridge.cancelling
+    run = _only_run(w, "gene-ko")
+    assert sorted(p.name for p in run.iterdir()) == ["half.tmp"], "nothing added to the CLI folder"
+    assert _inputs(w) == [f"{run.name}-state.json", f"{run.name}-taxonomy.csv"]
+    marker = json.loads((w.session.project.inputs_dir / f"{run.name}-state.json").read_text())
+    assert marker["status"] == "failed" and marker["job_kind"] == "gene_ko_search"
+    assert marker["recorded"]
 
 
 def test_failed_job_with_an_empty_folder_still_shows_failed(
@@ -158,7 +187,7 @@ def test_failed_job_with_an_empty_folder_still_shows_failed(
     _settle(w, jid)
     [row] = _runs(w)
     assert row.startswith("✗ "), row
-    assert next(w.session.project.runs_dir.glob("gene-ko-*")).is_dir(), "evidence is not removed"
+    assert _only_run(w, "gene-ko").is_dir(), "evidence is not removed"
 
 
 def test_cancelled_job_with_partial_output_shows_cancelled(
@@ -175,10 +204,32 @@ def test_cancelled_job_with_partial_output_shows_cancelled(
     assert w.runner.poll(jid).status is JobStatus.CANCELLED
     [row] = _runs(w)
     assert row.startswith("⊘ "), row
-    assert (next(w.session.project.runs_dir.glob("search-*")) / "half.tmp").read_text() == "partial"
+    run = _only_run(w, "search")
+    assert (run / "half.tmp").read_text() == "partial"
+    assert (w.session.project.inputs_dir / f"{run.name}-taxonomy.csv").is_file(), "input kept"
 
 
-def test_job_cancelled_before_it_starts_leaves_no_empty_run(
+def test_cancelled_search_that_published_nothing_still_shows_cancelled(
+    w, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI discards its staged output on rc 130: the folder is empty but the run was tried."""
+    main = _Main(monkeypatch, rc=130)
+    main.release.clear()
+    w.search_view.model_picker.set_selected(["a"])
+    jid = w.run_search_fixture()
+    assert main.started.wait(10)
+    w._cancel_job_id(jid)
+    main.release.set()
+    _settle(w, jid)
+    assert w.runner.poll(jid).status is JobStatus.CANCELLED
+    [row] = _runs(w)
+    assert row.startswith("⊘ "), row
+    run = _only_run(w, "search")
+    assert list(run.iterdir()) == [], "the folder is kept, empty"
+    assert _inputs(w) == [f"{run.name}-state.json", f"{run.name}-taxonomy.csv"]
+
+
+def test_job_cancelled_before_it_starts_is_listed_cancelled(
     w, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     main = _Main(monkeypatch, rc=0)
@@ -194,8 +245,38 @@ def test_job_cancelled_before_it_starts_leaves_no_empty_run(
     _settle(w, jid)
     assert w.runner.poll(jid).status is JobStatus.CANCELLED
     assert not main.started.is_set(), "the CLI never ran"
-    assert _runs(w) == [], "an empty folder from a job that never started is removed"
-    assert sorted(p.name for p in w.session.project.runs_dir.iterdir()) == ["_inputs"]
+    [row] = _runs(w)
+    assert row.startswith("⊘ "), row
+    run = _only_run(w, "gene-ko")
+    assert list(run.iterdir()) == []
+    assert (w.session.project.inputs_dir / f"{run.name}-taxonomy.csv").is_file(), "input kept"
+
+
+@pytest.mark.parametrize(
+    ("rc", "symbol"), [(1, "✗"), (130, "⊘")], ids=["failed", "cancelled"]
+)
+def test_failed_and_cancelled_marks_survive_a_restart(
+    w, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rc: int, symbol: str
+) -> None:
+    main = _Main(monkeypatch, rc=rc)
+    w.search_view.model_picker.set_selected(["a"])
+    if rc == 130:
+        main.release.clear()
+        jid = w.run_search_fixture()
+        assert main.started.wait(10)
+        w._cancel_job_id(jid)
+        main.release.set()
+    else:
+        w.search_view.ko_members_input.setText("a")
+        jid = w.run_gene_ko_search()
+    _settle(w, jid)
+    [before] = _runs(w)
+    assert before.startswith(f"{symbol} ")
+    fresh = _reopen(w, tmp_path)
+    try:
+        assert _runs(fresh) == [before], "the marker keeps the mark after a restart"
+    finally:
+        fresh.close_project()
 
 
 def test_refused_run_leaves_nothing_in_runs(w) -> None:
@@ -204,3 +285,20 @@ def test_refused_run_leaves_nothing_in_runs(w) -> None:
     w.search_view.model_picker.set_selected(["a", "b"])
     assert w.run_search_fixture() == ""
     assert _runs(w) == []
+    assert sorted(p.name for p in project.runs_dir.iterdir()) == ["_inputs"]
+    assert _inputs(w) == []
+
+
+def test_run_refused_after_its_folder_was_claimed_is_removed_with_its_input(
+    w, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checkpoint inside the run folder is refused after the folder and taxonomy exist."""
+    monkeypatch.setattr("cmig.io.project._stamp", lambda: "20261013-120000")
+    project = w.session.project
+    w.search_view.model_picker.set_selected(["a"])
+    w.search_view.checkpoint_input.setText(str(project.runs_dir / "search-20261013-120000" / "ck"))
+    assert w.run_search_fixture() == ""
+    assert "inside this run's output folder" in w.search_view.status.text()
+    assert _runs(w) == []
+    assert sorted(p.name for p in project.runs_dir.iterdir()) == ["_inputs"]
+    assert _inputs(w) == [], "the refused run's taxonomy goes with its folder"

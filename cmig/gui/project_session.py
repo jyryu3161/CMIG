@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, QTimer, Signal
@@ -55,6 +55,23 @@ class RunEntry:
     status: str
     label: str
     mtime: float
+
+
+#: how bad a run's status is when two sources disagree; anything else ranks 0
+_STATUS_SEVERITY = {"cancelled": 1, "failed": 2, "unreadable": 2}
+
+
+def merge_run_status(status: str, marker: str | None) -> str:
+    """The worse of a run's own status and the state a job marker recorded for it.
+
+    A marker only ever makes a run look worse: it never turns a failed run into a cancelled one
+    or any run into an ok one.
+    """
+    if marker is None:
+        return status
+    if _STATUS_SEVERITY.get(marker, 0) > _STATUS_SEVERITY.get(status, 0):
+        return marker
+    return status
 
 
 def _summary_hint(inspected: dict[str, object], run_dir: Path) -> str:
@@ -355,7 +372,10 @@ class ProjectSession(QObject):
             if cached is None or cached[0] != mtime:
                 cached = (mtime, inspect_run(run_dir))
             seen[run_dir] = cached
-            entries.append(cached[1])
+            entry = cached[1]
+            # The marker sits in runs/_inputs, so the folder's mtime does not see it change.
+            status = merge_run_status(entry.status, proj.read_run_state(run_dir))
+            entries.append(entry if status == entry.status else replace(entry, status=status))
         self._run_cache = seen
         return sorted(entries, key=lambda entry: (entry.mtime, entry.name), reverse=True)
 

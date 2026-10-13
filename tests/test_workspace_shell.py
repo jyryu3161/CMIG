@@ -388,28 +388,45 @@ def test_auto_preview_after_a_bound_edit_stays_on_the_sandbox_page(
     assert window.profile_view.net_chart.delta_active  # Profile still carries the overlay
 
 
-def test_auto_preview_does_not_start_a_second_solve_while_one_is_in_flight(
+def test_auto_preview_waits_for_the_solve_in_flight_then_follows_the_latest_bound(
     window, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import threading
 
+    import cmig.service
+
     gate = threading.Event()
     calls = _fake_sandbox_engine(monkeypatch, gate)
+    fake = cmig.service.EngineService  # the fake the helper installed
+    lowers: list[float] = []
+    solve = fake.sandbox_fixture
+
+    def recording(self, *, reaction_id, lower, upper, commit, out_dir):
+        lowers.append(lower)
+        return solve(self, reaction_id=reaction_id, lower=lower, upper=upper,
+                     commit=commit, out_dir=out_dir)
+
+    monkeypatch.setattr(fake, "sandbox_fixture", recording)
     view = _sandbox_with_bound(window)
+    view._debounce.setInterval(60_000)  # these tests fire the debounce themselves
     view.auto_preview_requested.emit()  # the debounced preview starts a solve, held on the gate
-    assert len(window._sandbox_jobs) == 1
     (first,) = window._sandbox_jobs
     view.bound_table.item(0, 1).setText("-2.0")  # another bound edit while it is in flight
     view._debounce.stop()
-    view.auto_preview_requested.emit()
+    view.auto_preview_requested.emit()  # its debounce expires: dropped, but re-armed
     assert list(window._sandbox_jobs) == [first], "still the one job"
+    assert view._debounce.isActive(), "the preview is postponed, not lost"
     gate.set()
     _wait_for(window, lambda: not window._sandbox_jobs)
     assert calls == [False], "the engine ran once"
     assert view.preview_btn.isEnabled()
-    view.auto_preview_requested.emit()  # idle again: the next edit previews as before
+    assert "table has changed" in view.status.text(), "the first delta says it is stale"
+    view._debounce.stop()
+    view.auto_preview_requested.emit()  # the re-armed debounce expires with the job done
     _wait_for(window, lambda: len(calls) == 2 and not window._sandbox_jobs)
     assert calls == [False, False]
+    assert lowers == [-1.0, -2.0], "the second preview is for the latest bound"
+    assert "table has changed" not in view.status.text()
 
 
 def test_explicit_preview_does_not_leave_a_cell_being_edited(

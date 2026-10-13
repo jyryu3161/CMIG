@@ -87,7 +87,13 @@ from cmig.gui.graph_view import GateBadge, InteractionGraphView
 from cmig.gui.host_view import HostImpactView
 from cmig.gui.inspector import InspectorPanel
 from cmig.gui.pickers import MediumPicker, ModelPicker
-from cmig.gui.project_session import ProjectSession, RecentProjects, RunEntry, inspect_run
+from cmig.gui.project_session import (
+    ProjectSession,
+    RecentProjects,
+    RunEntry,
+    inspect_run,
+    merge_run_status,
+)
 from cmig.gui.sidebar import (
     ANALYSES,
     ANALYSIS_SEPARATOR_AFTER,
@@ -1072,7 +1078,9 @@ class CmigMainWindow(QMainWindow):
         #: run folder -> (status, detail) of the GUI's last failed readback of that run
         self._readback_failures: dict[str, tuple[str, str]] = {}
         #: run folder -> "failed" | "cancelled": how the job that wrote it ended. A folder a
-        #: failed or cancelled job left behind must never read as a result in RUNS.
+        #: failed or cancelled job left behind must never read as a result in RUNS. The same is
+        #: written to a marker beside the run's inputs so it survives a restart; this copy
+        #: covers a marker that could not be written.
         self._run_states: dict[str, str] = {}
         #: job id -> the run folder it writes, until the job reaches a terminal state
         self._job_runs: dict[str, Path] = {}
@@ -1341,10 +1349,14 @@ class CmigMainWindow(QMainWindow):
             inspected["status"] = status
             # The first detail line names the run folder, which the Folder row already shows.
             inspected["artifact_integrity"] = "; ".join(detail.splitlines()[1:]) or detail
-        elif key in self._run_states:
-            inspected["status"] = self._run_states[key]
+        entry = self._run_entry(run_dir)
+        if failure is None and entry.status in proj.RUN_STATE_STATUSES:
+            # A failed or cancelled job's folder, whatever its own summary claims.
+            inspected["status"] = merge_run_status(
+                str(inspected.get("status", entry.status)), entry.status
+            )
         command = self._run_commands.get(key, "")
-        self.inspector.show_run(self._run_entry(run_dir), inspected, command)
+        self.inspector.show_run(entry, inspected, command)
         self._inspector_run, self._inspected_model = key, None
 
     def _run_entry(self, run_dir: Path) -> RunEntry:
@@ -1364,9 +1376,10 @@ class CmigMainWindow(QMainWindow):
         for entry in entries:
             key = _run_key(entry.path)
             status = (
-                "unreadable" if key in self._readback_failures else self._run_states.get(key)
+                "unreadable" if key in self._readback_failures
+                else merge_run_status(entry.status, self._run_states.get(key))
             )
-            shown.append(entry if status is None else replace(entry, status=status))
+            shown.append(entry if status == entry.status else replace(entry, status=status))
         return shown
 
     def closeEvent(self, event: Any) -> None:
@@ -2811,9 +2824,13 @@ class CmigMainWindow(QMainWindow):
         """The debounced preview after a bound edit; its result stays on the sandbox page.
 
         Nothing starts while a sandbox solve is in flight: another edit would otherwise queue a
-        second solve whose result lands on the wrong bound.
+        second solve whose result lands on the wrong bound. The preview is re-armed instead.
         """
         if self._sandbox_jobs or not self.sandbox_view.preview_btn.isEnabled():
+            if self._sandbox_jobs:
+                # Not dropped, only postponed: once the solve ends the preview follows the
+                # latest bound, still one job at a time.
+                self.sandbox_view._debounce.start()
             return
         self._run_sandbox(commit=False, auto=True)
 
@@ -4358,30 +4375,25 @@ class CmigMainWindow(QMainWindow):
     def _settle_run_jobs(self) -> bool:
         """Record how each ended job left its run folder. True when RUNS needs a refresh.
 
-        A failed job's folder is listed as failed and a cancelled job's as cancelled, kept for
-        the evidence in it. A cancelled job that published nothing left only the empty folder
-        the GUI claimed for it (and its taxonomy input): both are removed, with `rmdir`, so
-        nothing a run produced is ever deleted.
+        A failed job's folder is listed as failed and a cancelled job's as cancelled, whether
+        or not it holds anything: the CLI discards its staged output when it is cancelled, and
+        the empty folder is still the record that the run was tried. The state is also written
+        beside the run's inputs (never into the CLI's folder) so a restart lists it the same.
         """
         changed = False
         for job_id, run_dir in list(self._job_runs.items()):
-            status = self.runner.poll(job_id).status
-            if status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+            job = self.runner.poll(job_id)
+            if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
                 continue
             del self._job_runs[job_id]
-            if status is JobStatus.DONE:
+            if job.status is JobStatus.DONE:
                 continue  # a finished run is judged by what it holds
             changed = True
-            if status is JobStatus.CANCELLED:
-                try:
-                    run_dir.rmdir()
-                except OSError:
-                    pass  # it holds something: keep it, listed as cancelled
-                else:
-                    with suppress(OSError):
-                        (run_dir.parent / "_inputs" / f"{run_dir.name}-taxonomy.csv").unlink()
-                    continue
-            self._run_states[_run_key(run_dir)] = status.value
+            self._run_states[_run_key(run_dir)] = job.status.value
+            try:
+                proj.write_run_state(run_dir, job.status.value, job.kind)
+            except ProjectError as exc:
+                self.statusBar().showMessage(str(exc), 8000)
         return changed
 
     def _poll_completed_jobs(self) -> None:
