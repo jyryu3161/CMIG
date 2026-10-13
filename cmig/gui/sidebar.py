@@ -28,18 +28,33 @@ _GROUPS = ("models", "media", "analyses", "runs")
 _ROLE = Qt.ItemDataRole.UserRole
 
 
+_STATUS_SYMBOLS = {
+    "ok": "✓",
+    "warning": "⚠",
+    "degraded": "⚠",
+    "failed": "✗",
+    "unreadable": "✗",
+    "cancelled": "⊘",
+    "pending": "…",
+}
+_INTEGRITY_TIPS = {
+    "changed": "File changed since it was added",
+    "missing": "File missing from the project",
+}
+
+
 def status_symbol(status: str, integrity: str = "ok") -> str:
-    if integrity != "ok":
+    """Worst of status and integrity: a failure stays ✗, any other file problem shows ⚠."""
+    symbol = _STATUS_SYMBOLS.get(status, "?")
+    if symbol != "✗" and integrity != "ok":
         return "⚠"
-    return {
-        "ok": "✓",
-        "warning": "⚠",
-        "degraded": "⚠",
-        "failed": "✗",
-        "unreadable": "✗",
-        "cancelled": "⊘",
-        "pending": "…",
-    }.get(status, "?")
+    return symbol
+
+
+def _integrity_tip(integrity: str) -> str | None:
+    if integrity == "ok":
+        return None
+    return _INTEGRITY_TIPS.get(integrity, f"File integrity: {integrity}")
 
 
 def droppable_paths(urls: list[QUrl]) -> tuple[list[Path], int]:
@@ -72,6 +87,7 @@ class WorkspaceSidebar(QTreeWidget):
         self.setMinimumWidth(200)
         self.setMaximumWidth(360)
         self._groups: dict[str, QTreeWidgetItem] = {}
+        self._drag_ok = False
         bold = QFont()
         bold.setBold(True)
         for name in _GROUPS:
@@ -109,7 +125,8 @@ class WorkspaceSidebar(QTreeWidget):
         for entry in entries:
             item = QTreeWidgetItem([f"{status_symbol(entry.status, entry.integrity)} {entry.id}"])
             item.setData(0, _ROLE, entry.id)
-            item.setToolTip(0, entry.error or entry.source_path)
+            problems = [_integrity_tip(entry.integrity), entry.error]
+            item.setToolTip(0, "\n".join(p for p in problems if p) or entry.source_path)
             group.addChild(item)
         for name in pending:
             item = QTreeWidgetItem([f"… {name}"])
@@ -127,7 +144,7 @@ class WorkspaceSidebar(QTreeWidget):
         for entry in user:
             item = QTreeWidgetItem([f"{status_symbol('ok', entry.integrity)} {entry.id}"])
             item.setData(0, _ROLE, f"medium:{entry.id}")
-            item.setToolTip(0, entry.source_path)
+            item.setToolTip(0, _integrity_tip(entry.integrity) or entry.source_path)
             group.addChild(item)
 
     def set_runs(self, entries: list[RunEntry], external: list[RunEntry]) -> None:
@@ -183,17 +200,25 @@ class WorkspaceSidebar(QTreeWidget):
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 - Qt override
         files, _skipped = droppable_paths(list(event.mimeData().urls()))
-        if files:
+        self._drag_ok = bool(files)
+        if self._drag_ok:
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802 - Qt override
-        event.acceptProposedAction()
+        # Keep the decision made on enter: re-accepting here would make a rejected drag droppable.
+        if self._drag_ok:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802 - Qt override
-        local = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
-        if local:
+        urls = list(event.mimeData().urls())
+        files, _skipped = droppable_paths(urls)
+        local = [Path(url.toLocalFile()) for url in urls if url.isLocalFile()]
+        self._drag_ok = False
+        if files:
             self.files_dropped.emit(local)
             event.acceptProposedAction()
         else:
