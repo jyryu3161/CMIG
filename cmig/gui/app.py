@@ -60,7 +60,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cmig.gui.activity import ActivityPane, RuntimeJobsPanel
+from cmig.core.diagnostics import parse_diagnostic
+from cmig.gui.activity import ActivityPane, RuntimeJobsPanel, command_line
+from cmig.gui.agora2_dialog import SEARCH_LIMIT, Agora2Dialog
 from cmig.gui.builder import (
     WEIGHTED_METRICS,
     CommunityBuilderView,
@@ -93,8 +95,9 @@ from cmig.gui.views import (
     SweepView,
 )
 from cmig.io import project as proj
+from cmig.io.agora2 import CATALOGUE_FILENAME
 from cmig.io.project import ModelEntry, ProjectError
-from cmig.service import JobRunner, JobStatus
+from cmig.service import Job, JobRunner, JobStatus
 
 I18N: dict[str, dict[str, str]] = {
     "ko": {
@@ -1046,6 +1049,26 @@ def _same_folder(a: Path, b: Path) -> bool:
         return False
 
 
+def _parse_catalogue(text: str) -> list[str]:
+    """Strain ids from the JSON `agora2-list --format json` prints.
+
+    The ids are under `models` (a list of objects with an `id`); a bare list of strings or
+    objects is accepted too. An output with no strain list, or an entry without an id, is an
+    error: it must not read as "no strain matched".
+    """
+    payload = json.loads(text)
+    items = payload.get("models") if isinstance(payload, dict) else payload
+    if not isinstance(items, list):
+        raise ValueError("agora2-list printed no list of strains")
+    ids: list[str] = []
+    for item in items:
+        strain = item.get("id") if isinstance(item, dict) else item
+        if not isinstance(strain, str) or not strain:
+            raise ValueError(f"agora2-list printed an entry without a strain id: {item!r}")
+        ids.append(strain)
+    return ids
+
+
 def _integrity_text(inspected: dict[str, Any]) -> object:
     """Inspector integrity row: the digest state plus which artifacts differ or why none."""
     state = inspected.get("artifact_integrity")
@@ -1084,6 +1107,10 @@ class CmigMainWindow(QMainWindow):
         self._import_jobs: dict[str, list[Path]] = {}
         #: import job id -> root of the project it imports into
         self._import_roots: dict[str, Path] = {}
+        #: AGORA2 download job id -> (project root, folder it downloads into). A download holds
+        #: the same one-at-a-time gate as an import, from the fetch until its files are
+        #: handed to `add_model_paths` in `_finish_agora2`.
+        self._agora2_jobs: dict[str, tuple[Path, Path]] = {}
         #: file names shown as placeholder rows in MODELS while an import runs
         self._pending_imports: list[str] = []
         #: job id -> equivalent command / log text shown in Activity for that job
@@ -1975,6 +2002,15 @@ class CmigMainWindow(QMainWindow):
                 "Cancelling import — the file being copied will finish first.", 8000
             )
             return
+        if job_id in self._agora2_jobs:
+            # The download is one in-process CLI call with no cancel checks inside it.
+            self.bridge.status_labels[job_id] = "cancelling (download cannot be interrupted)"
+            self.bridge.refresh()
+            self.statusBar().showMessage(
+                "Cancelling the AGORA2 download — it cannot be interrupted; it will finish and "
+                "its files will not be added to the project.", 8000,
+            )
+            return
         self.bridge.refresh()
         # Cancellation is cooperative and GUI jobs only check it at run boundaries, so saying
         # just "Cancel requested" let the user believe the solve had stopped when it had not.
@@ -2013,6 +2049,18 @@ class CmigMainWindow(QMainWindow):
             self.add_model_paths(local)
             event.acceptProposedAction()
 
+    def _import_gate_busy(self) -> str:
+        """Why no model import or AGORA2 download may start now, or "" when one may.
+
+        Two writers into `models/` at once would race for the same file names, so an import
+        and a download take turns.
+        """
+        if self._import_jobs:
+            return "A model import is already running; wait for it or cancel it in Activity."
+        if self._agora2_jobs:
+            return "An AGORA2 download is already running; wait for it or cancel it in Activity."
+        return ""
+
     def add_model_paths(self, paths: list[Path], *, recursive: bool = True) -> str:
         """Copy model files, and the models under folders, into the project in the background.
 
@@ -2026,10 +2074,9 @@ class CmigMainWindow(QMainWindow):
         if project is None:
             self.statusBar().showMessage("Open or create a project before adding models.", 8000)
             return ""
-        if self._import_jobs:
-            self.statusBar().showMessage(
-                "A model import is already running; wait for it or cancel it in Activity.", 8000
-            )
+        busy = self._import_gate_busy()
+        if busy:
+            self.statusBar().showMessage(busy, 8000)
             return ""
         try:
             files, skipped = proj.supported_model_paths(
@@ -2190,7 +2237,139 @@ class CmigMainWindow(QMainWindow):
             self.statusBar().showMessage("; ".join(errors), 15000)
 
     def _agora2_dialog(self) -> None:
-        """Implemented in Task 8."""
+        if self.session.project is None:
+            return
+        busy = self._import_gate_busy()
+        if busy:  # the pick would be refused at the end, after the user had made it
+            self.statusBar().showMessage(busy, 8000)
+            return
+        dialog = Agora2Dialog(self._agora2_list)
+        if dialog.exec() and dialog.selected_strains():
+            self._agora2_fetch(dialog.selected_strains())
+
+    def _agora2_list(self, query: str) -> list[str]:
+        """Strain ids matching `query`, from `cmig agora2-list` run in this process.
+
+        Runs on the GUI thread (the dialog calls it on Search): `redirect_stdout` swaps the
+        process-wide stream, so it must not be used from a job thread. The catalogue cache is
+        the project's, never the package data folder. A first lookup downloads the index.
+        """
+        import contextlib
+        import io
+
+        from cmig.cli.main import main
+
+        project = self.session.require()
+        argv = ["agora2-list", "--format", "json", "--limit", str(SEARCH_LIMIT),
+                "--catalogue", str(project.models_dir / "agora2" / CATALOGUE_FILENAME)]
+        argv += ["--genus", query] if query[:1].isupper() and "_" not in query else [
+            "--match", query]
+        _install_stderr_router()
+        buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buffer), _captured_job_stderr() as stderr_chunks:
+                rc = main(argv)
+        except SystemExit as exc:  # argparse rejected the query
+            rc = exc.code if isinstance(exc.code, int) else 2
+        if rc != 0:
+            lines = "".join(stderr_chunks).strip().splitlines()
+            raise RuntimeError(lines[-1].strip() if lines else f"agora2-list exited {rc}")
+        return _parse_catalogue(buffer.getvalue())
+
+    def _agora2_fetch(self, strains: list[str]) -> str:
+        """Download `strains` into the project's `models/agora2/`, then add them as models.
+
+        Returns the job id, or "" when nothing was started (the status bar says why). The
+        download holds the import gate; `_finish_agora2` passes the files on to
+        `add_model_paths` in the same GUI-thread step that releases it.
+        """
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+        from cmig.service.jobrunner import ArtifactJobFailure
+
+        project = self.session.project
+        if project is None:
+            self.statusBar().showMessage("Open or create a project before adding models.", 8000)
+            return ""
+        busy = self._import_gate_busy()
+        if busy:
+            self.statusBar().showMessage(busy, 8000)
+            return ""
+        if not strains:
+            self.statusBar().showMessage("Choose at least one AGORA2 strain.", 8000)
+            return ""
+        out_dir = project.models_dir / "agora2"
+        argv = ["agora2-fetch", "--strain", ",".join(strains), "--out", str(out_dir),
+                "--catalogue", str(out_dir / CATALOGUE_FILENAME), "--format", "json", "--yes"]
+        expected = [out_dir / f"{strain}.json" for strain in strains]
+        _install_stderr_router()
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            error = ""
+            rc = 0
+            with _captured_job_stderr() as stderr_chunks:
+                try:
+                    rc = main(argv)
+                except SystemExit as exc:
+                    rc = exc.code if isinstance(exc.code, int) else 2
+                except Exception as exc:  # reported as this job's failure, not raised into Qt
+                    rc, error = 1, f"{type(exc).__name__}: {exc}"
+            # A cancel during the call cannot stop it; it discards the result instead.
+            ctx.raise_if_cancelled()
+            stderr = "".join(stderr_chunks).strip()
+            # Exit 1 is a partial fetch: the strains that arrived are real, the rest are named
+            # on stderr. Anything else says nothing trustworthy about the files on disk.
+            files = [str(p) for p in expected if p.is_file()] if not error and rc in (0, 1) else []
+            if rc == 0 and files:
+                ctx.report_progress(1, 1)
+                return {"files": files}
+            if not error:
+                error = (f"agora2-fetch finished but wrote no model file to {out_dir}" if rc == 0
+                         else f"agora2-fetch exited {rc}")
+                if rc != 0 and stderr:
+                    error += f": {stderr.splitlines()[-1].strip()}"
+            message = "\n".join(part for part in (error, stderr) if part)
+            raise ArtifactJobFailure(
+                message, {"files": files, "message": message, "headline": error}
+            )
+
+        job_id = self.submit_job("agora2_fetch", _job)
+        self._agora2_jobs[job_id] = (project.root, out_dir)
+        self._job_commands[job_id] = command_line(argv)
+        self.statusBar().showMessage(
+            f"Downloading {len(strains)} AGORA2 strain(s) into {out_dir}…", 8000
+        )
+        return job_id
+
+    def _finish_agora2(self, job_id: str, job: Job) -> None:
+        """Register a finished download's files, or say why there are none."""
+        root, out_dir = self._agora2_jobs.pop(job_id)  # the gate opens; nothing yields below
+        self.bridge.cancelling.discard(job_id)
+        self.bridge.status_labels.pop(job_id, None)
+        result = job.result if isinstance(job.result, dict) else {}
+        files = [Path(f) for f in result.get("files", []) if Path(f).is_file()]
+        project = self.session.project
+        problem = ""
+        if job.status is JobStatus.CANCELLED:
+            files, problem = [], "AGORA2 download cancelled; nothing was added to the project"
+            self._job_logs[job_id] = f"Cancelled; any files already downloaded stay in {out_dir}"
+        elif job.status is JobStatus.FAILED:
+            reason = str(result.get("message") or (parse_diagnostic(job.error) or {}).get(
+                "message") or "unknown error")
+            self._job_logs[job_id] = reason
+            headline = str(result.get("headline") or reason.splitlines()[0])
+            problem = f"AGORA2 download failed: {headline}"
+        if files and (project is None or not _same_folder(project.root, root)):
+            problem = (f"The project was closed during the AGORA2 download; {len(files)} "
+                       f"downloaded file(s) were not added (they are in {out_dir})")
+            files = []
+        if files:
+            self.add_model_paths(files)  # takes the gate on the spot: _agora2_jobs is empty now
+        if problem:
+            self.statusBar().showMessage(problem, 15000)
+            self._show_job_in_activity(job_id)
 
     def _connect_view_actions(self) -> None:
         self.sandbox_view.preview_btn.clicked.connect(self._run_sandbox_preview)
@@ -4009,6 +4188,10 @@ class CmigMainWindow(QMainWindow):
             if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
                 done = job.status is JobStatus.DONE and isinstance(job.result, dict)
                 self._finish_import(jid, job.result if done else None, job.status.value)
+        for jid in list(self._agora2_jobs):
+            job = self.runner.poll(jid)
+            if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+                self._finish_agora2(jid, job)
         for jid, (commit, constraint, auto) in list(self._sandbox_jobs.items()):
             job = self.runner.poll(jid)
             if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
