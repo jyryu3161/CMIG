@@ -802,7 +802,9 @@ def _files_under(folder: Path, recursive: bool) -> list[Path]:
     files: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(folder, onerror=fail):
         files.extend(Path(dirpath) / name for name in filenames)
-        if not recursive:
+        if recursive:
+            dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+        else:
             dirnames.clear()
     return sorted(files)
 

@@ -95,3 +95,26 @@ def test_index_write_failure_does_not_fail_the_import(
     entry = proj.add_model_file(project, textbook)
     assert entry.status in ("ok", "warning")
     assert mi.load_index(project.root, entry.sha256) is None
+
+
+def test_index_files_are_not_discovered_as_models(tmp_path: Path, textbook: Path) -> None:
+    project = proj.create_project(tmp_path / "p")
+    entry = proj.add_model_file(project, textbook)
+    assert mi.index_path(project.root, entry.sha256).is_file()
+    found, _skipped = proj.supported_model_paths([project.root], recursive=True)
+    assert found == [project.root / entry.file]
+
+
+def test_is_supported_model_file_rejects_an_index_but_keeps_cobra_json(
+    tmp_path: Path, textbook: Path
+) -> None:
+    import cobra
+
+    from cmig.core.model_pool import is_supported_model_file
+    from cmig.io.model_import import load_cobra_model
+
+    index = mi.build_index_file(tmp_path, textbook, "sha1", "textbook")
+    assert not is_supported_model_file(index)
+    model_json = tmp_path / "model.json"
+    cobra.io.save_json_model(load_cobra_model(textbook), str(model_json))
+    assert is_supported_model_file(model_json)
