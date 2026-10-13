@@ -155,7 +155,7 @@ def test_picker_choices_follow_project_changes(setup) -> None:
     w.session.remove_models(["b"])
     assert "b" not in w.search_view.model_picker.selected_ids()
     w.session.undo_stack.undo()
-    labels = [a.text() for a in w.search_view.model_picker.menu().actions() if a.isCheckable()]
+    labels = w.search_view.model_picker.choice_ids()
     assert "b" in labels
 
 
