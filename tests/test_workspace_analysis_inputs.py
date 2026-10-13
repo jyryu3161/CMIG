@@ -291,3 +291,62 @@ def test_refused_community_abundance_keeps_runs_clean(setup) -> None:
     assert "greater than 0" in w.community_builder.status.text()
     assert calls == []
     assert _runs_listing(project) == ["_inputs"]
+
+
+def _reopen(w, tmp_path: Path) -> None:
+    w.close_project()
+    w.open_project(tmp_path / "p")
+
+
+def _action(picker, model_id: str):
+    return next(a for a in picker.menu().actions() if a.isCheckable() and a.text() == model_id)
+
+
+def test_single_picker_never_holds_two_models_after_reopen(setup, tmp_path: Path) -> None:
+    w, _calls = setup
+    w.dynamics_view.model_picker.set_selected(["b"])
+    _reopen(w, tmp_path)
+    picker = w.dynamics_view.model_picker
+    assert picker.selected_ids() == ["b"]
+    _action(picker, "host").trigger()  # the user picks another model from the menu
+    assert picker.selected_ids() == ["host"]
+    assert picker.text() == "Model: host"
+    assert w.session.settings("dynamics")["models"] == ["host"]
+    picker.set_selected(["c", "a", "b"])  # c failed: the first runnable one is kept
+    assert picker.selected_ids() == ["a"]
+
+
+def test_remembered_model_that_stops_running_is_reported(setup, tmp_path: Path) -> None:
+    w, _calls = setup
+    project = w.session.project
+    w.search_view.model_picker.set_selected(["a", "b"])
+    w.dynamics_view.model_picker.set_selected(["b"])
+    w.close_project()
+    (project.root / project.model("b").file).write_text("<sbml id='edited'/>")
+    w.open_project(tmp_path / "p")
+    assert w.search_view.model_picker.selected_ids() == ["a"]
+    assert w.dynamics_view.model_picker.selected_ids() == []
+    message = w.statusBar().currentMessage()
+    assert "b (Search)" in message and "b (Dynamics)" in message
+    w.statusBar().clearMessage()
+    w.refresh_workspace()  # reported once, not on every refresh
+    assert w.statusBar().currentMessage() == ""
+
+
+def test_host_model_is_not_a_default_microbe(setup, tmp_path: Path) -> None:
+    w, _calls = setup
+    w.host_view.host_picker.set_selected(["host"])
+    _reopen(w, tmp_path)  # nothing remembered for Microbes: the default leaves the host out
+    assert w.host_view.host_picker.selected_ids() == ["host"]
+    assert w.host_view.model_picker.selected_ids() == ["a", "b"]
+
+
+def test_choosing_a_host_unticks_it_from_microbes(setup) -> None:
+    w, _calls = setup
+    assert "a" in w.host_view.model_picker.selected_ids()
+    w.host_view.host_picker.set_selected(["a"])
+    assert w.host_view.model_picker.selected_ids() == ["b", "host"]
+    assert w.session.settings("host")["models"] == ["b", "host"]
+    w.host_view.model_picker.set_selected(["a", "b"])  # re-ticked on purpose: refused at run
+    assert w.run_host_microbe_bigg() == ""
+    assert "also selected as a microbe" in w.host_view.run_status.text()

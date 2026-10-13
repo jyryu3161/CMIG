@@ -1062,6 +1062,8 @@ class CmigMainWindow(QMainWindow):
         self._run_commands: dict[str, str] = {}
         #: True while _refresh_pickers rebuilds the pickers: those changes are not user choices
         self._refreshing_pickers = False
+        #: picker key -> remembered models already reported as no longer runnable
+        self._reported_unrunnable: dict[str, set[str]] = {}
         #: root of the project the centre page was last laid out for (see refresh_workspace)
         self._shown_root: Path | None = None
         #: True while a sidebar selection drives the centre page (see _show_page)
@@ -1667,6 +1669,7 @@ class CmigMainWindow(QMainWindow):
         switched = root != self._shown_root
         if switched:
             self._pending_imports = []  # placeholders belong to the project they were queued in
+            self._reported_unrunnable = {}
         # Rebuilding a group drops its rows' selection; put it back unless the project changed.
         current = None if switched else self._sidebar_current()
         selected_models = [] if switched else self.sidebar.selected_keys("models")
@@ -1724,13 +1727,23 @@ class CmigMainWindow(QMainWindow):
         finally:
             self.sidebar.blockSignals(blocked)
 
+    #: what each model picker is called in status messages
+    _PICKER_LABELS = {
+        "search": "Search", "community": "Community", "host_model": "Host model",
+        "host": "Host microbes", "dynamics": "Dynamics", "sweep": "Sweep",
+        "medium": "Medium growth check", "medium_single": "Minimal medium",
+    }
+
     def _model_pickers(self) -> dict[str, ModelPicker]:
-        """Every model picker, keyed by the analysis setting that remembers its choice."""
+        """Every model picker, keyed by the analysis setting that remembers its choice.
+
+        The host model comes before the microbes: the microbes' default leaves it out.
+        """
         return {
             "search": self.search_view.model_picker,
             "community": self.community_builder.model_picker,
-            "host": self.host_view.model_picker,
             "host_model": self.host_view.host_picker,
+            "host": self.host_view.model_picker,
             "dynamics": self.dynamics_view.model_picker,
             "sweep": self.sweep_view.model_picker,
             "medium": self.medium_editor.model_picker,
@@ -1748,25 +1761,35 @@ class CmigMainWindow(QMainWindow):
     def _refresh_pickers(self) -> None:
         """Offer the project's models and media; restore each analysis' remembered choice.
 
-        Without a remembered choice a multi-model picker selects every runnable model, so a
-        model added later is included until the user picks for themselves.
+        Without a remembered choice a multi-model picker selects every runnable model (the
+        Host microbes leave out the chosen host model), so a model added later is included
+        until the user picks for themselves. A remembered model that can no longer run is left
+        out and named in the status bar, once.
         """
         project = self.session.project
         models = [] if project is None else project.models
         choices = [(m.id, not _not_runnable(m), _not_runnable(m)) for m in models]
         runnable = [model_id for model_id, ok, _reason in choices if ok]
+        known = {m.id for m in models}
         presets = installed_medium_presets()
         media = [] if project is None else [(m.id, m.integrity == "ok") for m in project.media]
         missing: list[str] = []
+        left_out: list[str] = []
         self._refreshing_pickers = True
         try:
             for key, picker in self._model_pickers().items():
                 picker.set_choices(choices)
                 saved = self.session.settings(key).get("models")
                 if isinstance(saved, list):
-                    picker.set_selected([str(x) for x in saved])
+                    wanted = [str(x) for x in saved]
+                    picker.set_selected(wanted)
+                    lost = {m for m in wanted if m in known and m not in runnable}
+                    new = sorted(lost - self._reported_unrunnable.get(key, set()))
+                    left_out += [f"{m} ({self._PICKER_LABELS[key]})" for m in new]
+                    self._reported_unrunnable[key] = lost
                 elif not picker.single:
-                    picker.set_selected(runnable)
+                    host = self.host_view.host_picker.selected_ids() if key == "host" else []
+                    picker.set_selected([m for m in runnable if m not in host])
             for (key, field), medium_picker in self._medium_pickers().items():
                 medium_picker.set_choices(presets, media)
                 ref = self.session.settings(key).get(field)
@@ -1777,11 +1800,23 @@ class CmigMainWindow(QMainWindow):
                         missing.append(ref.partition(":")[2])
         finally:
             self._refreshing_pickers = False
+        notes = []
+        if left_out:
+            notes.append(f"Remembered models that cannot run were left out: {', '.join(left_out)}")
         if missing:
-            self.statusBar().showMessage(
-                f"Remembered medium no longer available: {', '.join(sorted(set(missing)))}; "
-                "the model default is selected instead.", 15000,
-            )
+            notes.append(f"Remembered medium no longer available: {', '.join(sorted(set(missing)))}"
+                         "; the model default is selected instead")
+        if notes:
+            self.statusBar().showMessage("; ".join(notes) + ".", 15000)
+
+    def _host_model_changed(self) -> None:
+        """A newly chosen host model is unticked from Microbes; re-ticking it is refused at run."""
+        if self._refreshing_pickers:
+            return
+        host = self.host_view.host_picker.selected_ids()
+        microbes = self.host_view.model_picker.selected_ids()
+        if host and host[0] in microbes:
+            self.host_view.model_picker.set_selected([m for m in microbes if m != host[0]])
 
     def _store_settings(self, key: str, values: dict[str, object]) -> None:
         try:
@@ -2579,6 +2614,7 @@ class CmigMainWindow(QMainWindow):
         self.scenario_compare.compare_btn.clicked.connect(self.run_scenario_compare)
         for key, picker in self._model_pickers().items():
             picker.selection_changed.connect(lambda k=key, p=picker: self._remember(k, p))
+        self.host_view.host_picker.selection_changed.connect(self._host_model_changed)
         for (key, field), medium_picker in self._medium_pickers().items():
             medium_picker.currentIndexChanged.connect(
                 lambda _index, k=key, f=field, p=medium_picker: self._remember_medium(k, f, p)

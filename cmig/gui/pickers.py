@@ -75,16 +75,20 @@ class ModelPicker(QToolButton):
         self._sync()
 
     def selected_ids(self) -> list[str]:
-        return [k for k, a in self._actions.items() if a.isChecked() and a.isEnabled()]
+        chosen = [k for k, a in self._actions.items() if a.isChecked() and a.isEnabled()]
+        return chosen[:1] if self._single else chosen
 
     def set_selected(self, ids: list[str]) -> None:
+        """Check exactly these runnable ids (single mode: the first runnable one only).
+
+        Signals are not blocked: the exclusive action group tracks its checked action through
+        them. Only `triggered` (a user click) is connected, so nothing else reacts here.
+        """
         wanted = [i for i in ids if i in self._actions and self._actions[i].isEnabled()]
         if self._single:
             wanted = wanted[:1]
         for model_id, action in self._actions.items():
-            action.blockSignals(True)
             action.setChecked(model_id in wanted)
-            action.blockSignals(False)
         self._sync()
 
     def _sync(self, *_args: object) -> None:
