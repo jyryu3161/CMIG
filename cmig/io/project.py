@@ -367,10 +367,10 @@ class ModelCheck:
 
 def check_model_file(path: Path) -> ModelCheck:
     """Read a GEM with the existing importer and review; never raises."""
-    from cmig.io.model_import import build_import_review, import_model
+    from cmig.io.model_import import build_import_review, load_and_summarize
 
     try:
-        summary = import_model(path)
+        summary, model = load_and_summarize(path)
         review = build_import_review(summary)
     except Exception as exc:  # noqa: BLE001 - one bad file must not stop a batch
         return ModelCheck("failed", f"{type(exc).__name__}: {exc}", None, None, None, [], None, [])
@@ -384,6 +384,13 @@ def check_model_file(path: Path) -> ModelCheck:
         "warned_low": int(review.namespace.get("n_warned_low", 0)),
     }
     objective_warning = review.model.get("objective_warning")
+    index: dict[str, Any] | None
+    try:
+        from cmig.io.model_index import index_from_model
+
+        index = index_from_model(model)
+    except Exception:  # noqa: BLE001 - the index is a browse cache; the check stands without it
+        index = None
     return ModelCheck(
         status="warning" if warnings else "ok",
         error=None,
@@ -395,6 +402,7 @@ def check_model_file(path: Path) -> ModelCheck:
         warnings=warnings,
         namespace_mappings=mappings,
         objective_warning=None if objective_warning is None else str(objective_warning),
+        index=index,
     )
 
 
@@ -529,7 +537,13 @@ def add_model_file(
         added=_now(),
     )
     if check is not None:
-        apply_check(entry, check(target))
+        result = check(target)
+        apply_check(entry, result)
+        if result.index is not None:
+            from cmig.io import model_index
+
+            with contextlib.suppress(OSError, ValueError):
+                model_index.write_index(project.root, sha, entry.id, result.index)
     project.models.append(entry)
     return entry
 
