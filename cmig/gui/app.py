@@ -30,6 +30,7 @@ from types import SimpleNamespace
 from typing import Any, TextIO, cast
 
 from PySide6.QtCore import (
+    QEvent,
     QEventLoop,
     QItemSelectionModel,
     QModelIndex,
@@ -39,6 +40,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QAction, QCursor, QKeySequence
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QAbstractItemView,
     QFileDialog,
     QHBoxLayout,
@@ -1189,6 +1191,8 @@ class CmigMainWindow(QMainWindow):
         self._refresh_solver_label()
         self._install_workflow_actions()
         self._connect_view_actions()
+        for button in self._run_buttons().values():
+            button.installEventFilter(self)
         self.sidebar.selection_changed.connect(self._on_sidebar_selection)
         self.sidebar.files_dropped.connect(self.add_model_paths)
         self.sidebar.context_requested.connect(self._show_sidebar_menu)
@@ -2025,15 +2029,28 @@ class CmigMainWindow(QMainWindow):
         self._job_runs[job_id] = out_dir
 
     # ── selection → page + inspector ─────────────────────────────────────────────────────
-    _RUNNERS = {
-        "search": "run_search_fixture",
-        "gene_ko": "run_gene_ko_search",
-        "host": "run_host_microbe_bigg",
-        "dynamics": "run_dfba",
-        "community": "run_community_solve",
-        "medium": "run_medium_growth_check",
-        "sweep": "run_sweep_from_view",
-    }
+    def _run_buttons(self) -> dict[str, QAbstractButton]:
+        """The page button Run (⌘R) presses for each analysis with one main run.
+
+        Run goes through the button so the page's own guards hold: a page disables its button
+        while its job runs or its cancel is pending, and Run is disabled with it.
+        """
+        return {
+            "search": self.search_view.run_btn,
+            "gene_ko": self.search_view.run_ko_btn,
+            "host": self.host_view.run_btn,
+            "dynamics": self.dynamics_view.run_dfba_btn,
+            "community": self.community_builder.run_btn,
+            "medium": self.medium_editor.check_growth_btn,
+            "sweep": self.sweep_view.run_btn,
+        }
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt override
+        if event.type() == QEvent.Type.EnabledChange and any(
+            watched is button for button in self._run_buttons().values()
+        ):
+            self._update_run_action()  # a page Run button changed: Run follows it
+        return super().eventFilter(watched, event)
     _DESCRIPTIONS = {
         "search": ("Rank model combinations by a target metabolite.", "cmig search"),
         "gene_ko": ("Rank single-gene knockouts of a fixed combination.", "cmig gene-ko-search"),
@@ -2069,15 +2086,26 @@ class CmigMainWindow(QMainWindow):
         self._inspector_run, self._inspected_model = None, None
         self._update_run_action()
 
+    def _current_run_button(self) -> QAbstractButton | None:
+        """The current analysis page's Run button, when that page is on show."""
+        key = self.current_analysis
+        if key is None or self.pages.currentWidget() is not self.analysis_pages.get(key):
+            return None
+        return self._run_buttons().get(key)
+
     def _update_run_action(self) -> None:
         key = self.current_analysis
         on_page = key is not None and self.pages.currentWidget() is self.analysis_pages.get(key)
-        enabled = self.session.project is not None and on_page and key in self._RUNNERS
+        button = self._current_run_button()
+        busy = button is not None and not button.isEnabled()
+        enabled = self.session.project is not None and button is not None and not busy
         self.run_action.setEnabled(enabled)
         if enabled:
             tip = "Run this analysis (⌘R)"
         elif self.session.project is None:
             tip = "Open a project to run an analysis"
+        elif busy:
+            tip = "This analysis is already running"
         elif on_page:
             tip = "Use the buttons on this page"
         else:
@@ -2085,8 +2113,10 @@ class CmigMainWindow(QMainWindow):
         self.run_action.setToolTip(tip)
 
     def _run_current_analysis(self) -> None:
-        if self.current_analysis in self._RUNNERS:
-            getattr(self, self._RUNNERS[self.current_analysis])()
+        """Press the page's own Run button; nothing happens while that button is disabled."""
+        button = self._current_run_button()
+        if self.session.project is not None and button is not None and button.isEnabled():
+            button.click()
 
     def _on_sidebar_selection(self, group: str, key: str) -> None:
         self._following_sidebar = True

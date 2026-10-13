@@ -699,3 +699,46 @@ def test_close_project_asks_before_cancelling_running_jobs(
         assert box["ctx"].cancelled and jid in window.bridge.cancelling
     finally:
         gate.set()
+
+
+# ── final review: ⌘R follows the page's own Run button ───────────────────────────────────
+def test_run_shortcut_is_refused_while_the_page_run_is_busy(
+    window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    import time
+
+    import cmig.cli.main
+
+    started, release = threading.Event(), threading.Event()
+
+    def blocking_main(argv: list[str]) -> int:
+        started.set()
+        release.wait(10)
+        return 130
+
+    monkeypatch.setattr(cmig.cli.main, "main", blocking_main)
+    make_project(tmp_path / "s", ["a"])
+    assert window.open_project(tmp_path / "s")
+    window.show_analysis("search")
+    assert window.run_action.isEnabled()
+    window.run_action.trigger()
+    assert started.wait(10)
+    (jid,) = window._search_jobs
+    assert not window.run_action.isEnabled(), "Run follows the page's disabled Run button"
+    window._run_current_analysis()  # ⌘R reaching the slot anyway starts nothing
+    assert list(window._search_jobs) == [jid]
+    window._cancel_job_id(jid)  # cancel pending: still running, still refused
+    assert not window.run_action.isEnabled()
+    window._run_current_analysis()
+    assert list(window._search_jobs) == [jid]
+    release.set()
+    deadline = time.monotonic() + 10
+    while window._search_jobs and time.monotonic() < deadline:
+        window._poll_completed_jobs()
+        APP.processEvents()
+        time.sleep(0.01)
+    assert not window._search_jobs
+    assert window.run_action.isEnabled(), "enabled again once the job has ended"
+    window.show_analysis("host")
+    assert window.run_action.isEnabled()
