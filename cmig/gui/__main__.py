@@ -42,6 +42,10 @@ def main(argv: list[str] | None = None) -> int:
     window = build_main_window(lang=args.lang)
     window.resize(args.width, args.height)
     window.show()
+    # Reopen the last project; if it cannot be opened the welcome page says why.
+    recents = window.recent.paths()
+    if recents:
+        window.open_project(recents[0])
     return int(app.exec())
 
 

@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QModelIndex, QPersistentModelIndex, Qt, QTimer, QUrl
+from PySide6.QtCore import QModelIndex, QPersistentModelIndex, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 from cmig.core.delta import DeltaResult
 from cmig.core.sandbox import BoundConstraint
 from cmig.core.targets import TARGET_PRESETS, preset_targets
+from cmig.gui.pickers import MediumPicker, ModelPicker
 
 #: Default SearchView column labels. Adapters may override them per workflow so a growth
 #: rate is never displayed under a header that says "Flux" (round-5 P2 F7/F21).
@@ -209,16 +210,13 @@ class CommunityBuilderView(QWidget):
         layout = QVBoxLayout(self)
         self.title = QLabel("Community Builder")
         self.status = QLabel(
-            "Advanced preview: point Model Folder at prepared GEMs, then Run Community."
+            "Pick members, set abundances below (default 1), then Run Community."
         )
-        pool_row = QHBoxLayout()
-        self.model_dir_input = QLineEdit("")
-        self.model_dir_input.setPlaceholderText("Folder of user-prepared microbial models")
-        self.browse_model_dir_btn = QPushButton("Browse")
         self.run_btn = QPushButton("Run Community")
-        pool_row.addWidget(QLabel("Model Folder"))
-        pool_row.addWidget(self.model_dir_input)
-        pool_row.addWidget(self.browse_model_dir_btn)
+        pool_row = QHBoxLayout()
+        self.model_picker = ModelPicker("Members")
+        pool_row.addWidget(self.model_picker)
+        pool_row.addStretch(1)
         pool_row.addWidget(self.run_btn)
         # `cmig solve` refuses to run without an explicit namespace decision. Mirror that gate
         # here instead of failing at rc=2 with the real reason hidden on the process's stdout.
@@ -355,6 +353,9 @@ class DeltaTable(QTableWidget):
 class ConstraintSandboxView(QWidget):
     """G1 Constraint Sandbox — bound 제약 + preview/commit + debounce 재solve(JobRunner)."""
 
+    #: the debounce after a bound edit expired: an automatic preview, not a Preview click
+    auto_preview_requested = Signal()
+
     def __init__(self, debounce_ms: int = 500) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
@@ -383,12 +384,13 @@ class ConstraintSandboxView(QWidget):
         layout.addWidget(self.delta_view)
         layout.addWidget(self.status)
         # debounce: bound 편집 연속 변경 → 마지막만 재solve (OD-54). itemChanged 마다 재무장하고,
-        # 타이머 만료 시 preview_btn 을 프로그램적으로 click() 해 app.py 의 기존 preview 배선을
-        # 그대로 재사용한다(뷰는 Qt 전용 — JobRunner/EngineService 는 app.py 가 소유).
+        # 타이머 만료 시 auto_preview_requested 를 내보내 app.py 가 preview 를 실행한다. 명시적
+        # Preview 클릭과 구분해야 자동 preview 가 화면을 바꾸지 않는다(뷰는 Qt 전용 —
+        # JobRunner/EngineService 는 app.py 가 소유).
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(debounce_ms)
-        self._debounce.timeout.connect(self.preview_btn.click)
+        self._debounce.timeout.connect(self.auto_preview_requested.emit)
         self.bound_table.itemChanged.connect(self._on_bound_edited)
 
     def _on_bound_edited(self, _item: QTableWidgetItem) -> None:
@@ -534,12 +536,11 @@ class SearchView(QWidget):
         outer.addWidget(self.scroll_area)
         self.title = QLabel("Find Best Model Combination")
         pool_row = QHBoxLayout()
-        self.model_dir_input = QLineEdit("")
-        self.model_dir_input.setPlaceholderText("Folder of user-prepared microbial models")
-        self.browse_pool_btn = QPushButton("Browse")
-        pool_row.addWidget(QLabel("Model Folder"))
-        pool_row.addWidget(self.model_dir_input)
-        pool_row.addWidget(self.browse_pool_btn)
+        self.model_picker = ModelPicker("Models")
+        self.medium_picker = MediumPicker()
+        pool_row.addWidget(self.model_picker)
+        pool_row.addWidget(QLabel("Medium"))
+        pool_row.addWidget(self.medium_picker, 1)
         # Per-target rows replace the old comma box + shared Direction + References inputs:
         # every row carries its own direction, weight and fixed reference, exactly like the
         # CLI's --targets/--target-directions/--target-weights/--target-scales.
@@ -622,9 +623,6 @@ class SearchView(QWidget):
         figure_row.addWidget(self.export_figure_btn)
         figure_row.addStretch(1)
         settings = QHBoxLayout()
-        self.medium_input = QLineEdit("")
-        self.medium_input.setPlaceholderText("Defined medium CSV/JSON (blank: model default)")
-        self.browse_medium_btn = QPushButton("Browse")
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(0, 2_000_000_000)
         self.workers_spin = QSpinBox()
@@ -637,12 +635,10 @@ class SearchView(QWidget):
         self.min_member_growth_spin.setRange(0, 100)
         self.min_member_growth_spin.setDecimals(5)
         growth_settings = QHBoxLayout()
-        settings.addWidget(QLabel("Medium"))
-        settings.addWidget(self.medium_input)
-        settings.addWidget(self.browse_medium_btn)
         for label, widget in (("Seed", self.seed_spin), ("Workers", self.workers_spin)):
             settings.addWidget(QLabel(label))
             settings.addWidget(widget)
+        settings.addStretch(1)
         # Medium mode lives in the collapsed advanced box; this line keeps the exact/merge
         # choice visible on screen at all times.
         self.medium_mode_summary = QLabel("")
@@ -665,23 +661,6 @@ class SearchView(QWidget):
         checkpoint_row.addWidget(self.resume_check)
         checkpoint_row.addWidget(self.cancel_btn)
         checkpoint_row.addStretch(1)
-        # Output folder (Search only). Not an answer-determining input: it is left out of
-        # REQUEST_FIELDS, so changing it never invalidates or supersedes a result.
-        self.output_dir_input = QLineEdit("")
-        self.output_dir_input.setPlaceholderText(
-            "Blank: OS temp folder. Each run writes a new search-YYYYMMDD-HHMMSS subfolder."
-        )
-        self.browse_output_btn = QPushButton("Browse")
-        self.output_dir_label = QLabel("Output folder (Search only)")
-        output_row = QHBoxLayout()
-        output_row.addWidget(self.output_dir_label)
-        output_row.addWidget(self.output_dir_input)
-        output_row.addWidget(self.browse_output_btn)
-        self.output_dir_note = QLabel(
-            "Each Search run gets a new subfolder; existing folders are never reused. "
-            "Gene KO, Strain Growth and Ratio Impact always write to an OS temp folder."
-        )
-        self.output_dir_note.setWordWrap(True)
         limits = QHBoxLayout()
         self.validation_top_spin = QSpinBox()
         self.validation_top_spin.setRange(0, 100)
@@ -746,10 +725,10 @@ class SearchView(QWidget):
         growth_action_row.addWidget(self.run_abundance_btn)
         growth_action_row.addStretch(1)
         workflow_note = QLabel(
-            "Gene KO: model folder, medium (exact), the single target row's target and "
-            "direction, target growth fraction and KO Top K apply. "
-            "Strain Growth / Ratio: model folder, medium (exact) and cooperative tradeoff "
-            "apply; Search strategy, GA and advanced search settings do not."
+            "Gene KO: the selected models, medium (exact), the single target row's target "
+            "and direction, target growth fraction and KO Top K apply. "
+            "Strain Growth / Ratio: the selected models, medium (exact) and cooperative "
+            "tradeoff apply; Search strategy, GA and advanced search settings do not."
         )
         workflow_note.setWordWrap(True)
         workflow_note.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -811,8 +790,6 @@ class SearchView(QWidget):
         layout.addLayout(settings)
         layout.addWidget(self.medium_mode_summary)
         layout.addLayout(growth_settings)
-        layout.addLayout(output_row)
-        layout.addWidget(self.output_dir_note)
         layout.addLayout(checkpoint_row)
         layout.addLayout(limits)
         layout.addWidget(self.advanced_toggle)
@@ -842,15 +819,12 @@ class SearchView(QWidget):
         # Any edit to an answer-determining input invalidates the displayed ranking: a table
         # computed for pool/target/size A must never sit under inputs that now say B.
         for line_edit in (
-            self.model_dir_input,
             self.ko_members_input,
             self.ko_member_input,
             self.ko_genes_input,
             self.growth_member_input,
             self.abundance_fractions_input,
-            self.medium_input,
             self.checkpoint_input,
-            self.taxonomy_input,
         ):
             line_edit.textChanged.connect(self.invalidate_results)
         for spin in (
@@ -885,7 +859,6 @@ class SearchView(QWidget):
         for check in (
             self.robustness_check,
             self.resume_check,
-            self.recursive_check,
             self.ga_preserve_common_check,
             self.allow_unknown_medium_check,
         ):
@@ -893,21 +866,23 @@ class SearchView(QWidget):
         for combo in (
             self.strategy_combo,
             self.multi_metric_combo,
-            self.model_source_combo,
             self.medium_mode_combo,
         ):
             combo.currentTextChanged.connect(self.invalidate_results)
         self.cooperative_tradeoff_spin.valueChanged.connect(self.invalidate_results)
+        # The model and medium choice determine the answer like any other input. Passing an
+        # argument makes the invalidation compare the request, so a picker rebuild that keeps
+        # the same choice never clears a result.
+        self.model_picker.selection_changed.connect(lambda: self.invalidate_results(True))
+        self.medium_picker.currentIndexChanged.connect(self.invalidate_results)
         self.target_table.itemChanged.connect(self._on_target_item_changed)
         self.multi_metric_combo.currentTextChanged.connect(self._refresh_target_notes)
         self.strategy_combo.currentTextChanged.connect(self._refresh_target_notes)
-        self.model_source_combo.currentIndexChanged.connect(self._refresh_model_source)
-        self.medium_input.textChanged.connect(self._refresh_medium_notes)
+        self.medium_picker.currentIndexChanged.connect(self._refresh_medium_notes)
         self.medium_mode_combo.currentIndexChanged.connect(self._refresh_medium_notes)
         self.allow_unknown_medium_check.toggled.connect(self._refresh_medium_notes)
         self.advanced_toggle.toggled.connect(self._toggle_advanced)
         self._refresh_target_notes()
-        self._refresh_model_source()
         self._refresh_medium_notes()
 
     def _build_advanced_settings(self) -> None:
@@ -947,24 +922,6 @@ class SearchView(QWidget):
             spin.setSingleStep(0.05)
             spin.setValue(value)
             return spin
-
-        # Model input: --model-dir (the Model Folder field above) or --taxonomy.
-        self.model_source_combo = QComboBox()
-        self.model_source_combo.addItem("Model folder", "model_dir")
-        self.model_source_combo.addItem("Taxonomy CSV", "taxonomy")
-        self.taxonomy_input = QLineEdit("")
-        self.taxonomy_input.setPlaceholderText("MICOM-compatible pool taxonomy CSV")
-        self.recursive_check = QCheckBox("Scan model folder recursively")
-        source_row = QHBoxLayout()
-        source_row.addWidget(QLabel("Model input"))
-        source_row.addWidget(self.model_source_combo)
-        source_row.addWidget(self.taxonomy_input)
-        source_row.addWidget(self.recursive_check)
-        box.addLayout(source_row)
-        box.addWidget(note(
-            "Search only. Gene KO, Strain Growth and Ratio Impact always use the Model "
-            "Folder field."
-        ))
 
         # Strategy-specific limits.
         self.exhaustive_max_spin = int_spin(1, 2_000_000_000, 100)
@@ -1057,13 +1014,8 @@ class SearchView(QWidget):
             Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
         )
 
-    def _refresh_model_source(self, *_args: object) -> None:
-        taxonomy = self.model_source_combo.currentData() == "taxonomy"
-        self.taxonomy_input.setEnabled(taxonomy)
-        self.recursive_check.setEnabled(not taxonomy)
-
     def _refresh_medium_notes(self, *_args: object) -> None:
-        if not self.medium_input.text().strip():
+        if not self.medium_picker.current_ref():
             self.medium_mode_note.setText(
                 "Medium mode is not applied: no medium file is set (model default medium)."
             )
@@ -1075,7 +1027,7 @@ class SearchView(QWidget):
             )
         self.allow_unknown_note.setVisible(self.allow_unknown_medium_check.isChecked())
         self.medium_mode_summary.setText(
-            "Search " + medium_mode_text(self.medium_input.text().strip(),
+            "Search " + medium_mode_text(self.medium_picker.current_ref(),
                                          str(self.medium_mode_combo.currentData()))
         )
 
@@ -1202,23 +1154,22 @@ class SearchView(QWidget):
     #: user when an arriving result was computed for a request they have since edited —
     #: scoped per workflow so an irrelevant edit never raises a false alarm.
     REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
-        "search": ("pool", "model_source", "taxonomy", "recursive", "target", "direction",
-                   "target_weights", "target_scales", "min_size", "max_size", "strategy",
-                   "top_k", "fva", "medium", "medium_mode", "allow_unknown_medium", "seed",
-                   "workers", "solver_threads", "growth_fraction", "min_member_growth",
-                   "multi_metric", "pareto_resolution", "exhaustive_max", "n_samples",
-                   "ga_pop_size", "ga_generations", "ga_mutation_rate",
-                   "ga_immigrant_fraction", "ga_tournament_k", "ga_elitism", "ga_budget",
-                   "ga_patience", "ga_restart_after", "ga_local_search_fraction",
-                   "ga_preserve_common", "checkpoint", "resume", "min_community_growth",
-                   "validate_top", "timeout"),
+        "search": ("models", "target", "direction", "target_weights", "target_scales",
+                   "min_size", "max_size", "strategy", "top_k", "fva", "medium",
+                   "medium_mode", "allow_unknown_medium", "seed", "workers",
+                   "solver_threads", "growth_fraction", "min_member_growth", "multi_metric",
+                   "pareto_resolution", "exhaustive_max", "n_samples", "ga_pop_size",
+                   "ga_generations", "ga_mutation_rate", "ga_immigrant_fraction",
+                   "ga_tournament_k", "ga_elitism", "ga_budget", "ga_patience",
+                   "ga_restart_after", "ga_local_search_fraction", "ga_preserve_common",
+                   "checkpoint", "resume", "min_community_growth", "validate_top", "timeout"),
         "gene_ko": (
-            "pool", "target", "ko_members", "ko_member", "ko_genes", "max_genes",
+            "models", "target", "ko_members", "ko_member", "ko_genes", "max_genes",
             "ko_top_k", "medium", "direction", "growth_fraction",
         ),
-        "strain_growth": ("pool", "medium", "cooperative_tradeoff"),
+        "strain_growth": ("models", "medium", "cooperative_tradeoff"),
         "abundance_impact": (
-            "pool", "target", "growth_member", "fractions", "medium",
+            "models", "target", "growth_member", "fractions", "medium",
             "cooperative_tradeoff",
         ),
         "host_search": (),  # driven by the Host tab's own controls, not these
@@ -1228,10 +1179,7 @@ class SearchView(QWidget):
         """Snapshot the answer-determining inputs for one workflow."""
         rows = self.target_rows()
         snapshot = {
-            "pool": self.model_dir_input.text().strip(),
-            "model_source": str(self.model_source_combo.currentData()),
-            "taxonomy": self.taxonomy_input.text().strip(),
-            "recursive": str(self.recursive_check.isChecked()),
+            "models": ",".join(self.model_picker.selected_ids()),
             "target": ",".join(row[0] for row in rows),
             "direction": ",".join(row[1] for row in rows),
             "target_weights": ",".join(row[2] for row in rows),
@@ -1248,7 +1196,7 @@ class SearchView(QWidget):
             "max_genes": str(self.ko_max_genes_spin.value()),
             "growth_member": self.growth_member_input.text().strip(),
             "fractions": self.abundance_fractions_input.text().strip(),
-            "medium": self.medium_input.text().strip(),
+            "medium": self.medium_picker.current_ref(),
             "medium_mode": str(self.medium_mode_combo.currentData()),
             "allow_unknown_medium": str(self.allow_unknown_medium_check.isChecked()),
             "seed": str(self.seed_spin.value()),

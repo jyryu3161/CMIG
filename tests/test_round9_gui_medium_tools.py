@@ -9,6 +9,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
 
+from gui_project_helpers import open_test_project, taxonomy_ids  # noqa: E402
 from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 import cmig.gui.app as app_module  # noqa: E402
@@ -100,12 +101,6 @@ def _write_solve_run(
     )
 
 
-def _taxonomy(path: Path) -> Path:
-    taxonomy = path / "taxonomy.csv"
-    taxonomy.write_text("id,file,abundance\nA,A.xml,1.0\n")
-    return taxonomy
-
-
 def test_preset_picker_roles_filter_and_file_integrity(monkeypatch, tmp_path):
     _app()
     preset = tmp_path / "role_preset.csv"
@@ -181,7 +176,6 @@ def test_check_growth_runs_solve_with_explicit_medium_mode_and_dropped_ids(
 
     _app()
     _stub_graph(monkeypatch)
-    taxonomy = _taxonomy(tmp_path)
     seen: dict[str, list[str]] = {}
 
     def fake_main(argv):
@@ -193,8 +187,8 @@ def test_check_growth_runs_solve_with_explicit_medium_mode_and_dropped_ids(
     monkeypatch.setattr(cmig.cli.main, "main", fake_main)
     runner = JobRunner(max_workers=1)
     window = build_main_window(runner=runner)
+    project = open_test_project(window, tmp_path / "p", ["A"])
     editor = window.medium_editor
-    editor.taxonomy_input.setText(str(taxonomy))
     editor.assume_bigg_check.setChecked(True)
     editor.exact_medium_check.setChecked(True)
     editor.allow_unknown_check.setChecked(True)
@@ -206,12 +200,13 @@ def test_check_growth_runs_solve_with_explicit_medium_mode_and_dropped_ids(
 
     argv = seen["argv"]
     assert argv[0] == "solve"
-    assert argv[argv.index("--taxonomy") + 1] == str(taxonomy)
+    assert taxonomy_ids(argv) == ["A"]
     assert "--exact-medium" in argv
     assert "--allow-unknown-medium" in argv
     assert "--assume-bigg-namespace" in argv
     medium_path = Path(argv[argv.index("--medium") + 1])
     assert json.loads(medium_path.read_text()) == {"EX_glc__D_m": 3.0}
+    assert medium_path.parent == project.inputs_dir
     assert "0.73" in editor.growth_label.text()
     assert "optimal" in editor.growth_label.text()
     assert "EX_unknown_m" in editor.dropped_ids_label.text()
@@ -227,7 +222,6 @@ def test_modified_medium_activates_previous_check_profile_delta_then_clears(
 
     _app()
     _stub_graph(monkeypatch)
-    taxonomy = _taxonomy(tmp_path)
     invocation = 0
 
     def fake_main(argv):
@@ -244,8 +238,8 @@ def test_modified_medium_activates_previous_check_profile_delta_then_clears(
     monkeypatch.setattr(cmig.cli.main, "main", fake_main)
     runner = JobRunner(max_workers=1)
     window = build_main_window(runner=runner)
+    open_test_project(window, tmp_path / "p", ["A"])
     editor = window.medium_editor
-    editor.taxonomy_input.setText(str(taxonomy))
     editor.assume_bigg_check.setChecked(True)
     editor.exact_medium_check.setChecked(True)
     editor.add_row("EX_glc__D_m", 1.0)
@@ -280,8 +274,6 @@ def test_minimal_medium_button_wires_current_medium_and_displays_cli_result(
 
     _app()
     _stub_graph(monkeypatch)
-    model = tmp_path / "model.xml"
-    model.write_text("<sbml/>")
     seen: dict[str, list[str]] = {}
 
     def fake_main(argv):
@@ -306,8 +298,10 @@ def test_minimal_medium_button_wires_current_medium_and_displays_cli_result(
     monkeypatch.setattr(cmig.cli.main, "main", fake_main)
     runner = JobRunner(max_workers=1)
     window = build_main_window(runner=runner)
+    project = open_test_project(window, tmp_path / "p", ["model", "other"])
+    model = project.root / project.model("model").file
     editor = window.medium_editor
-    editor.model_path_input.setText(str(model))
+    editor.single_model_picker.set_selected(["model"])
     editor.assume_bigg_check.setChecked(True)
     editor.exact_medium_check.setChecked(True)
     editor.min_growth_spin.setValue(0.2)
@@ -322,6 +316,10 @@ def test_minimal_medium_button_wires_current_medium_and_displays_cli_result(
     assert argv[argv.index("--model") + 1] == str(model)
     assert argv[argv.index("--min-growth") + 1] == "0.2"
     assert "--medium" in argv and "--exact-medium" in argv
+    out = Path(argv[argv.index("--out") + 1])
+    assert out.parent == project.runs_dir and out.name.startswith("minimal-medium-")
+    assert Path(argv[argv.index("--medium") + 1]) == (
+        project.inputs_dir / f"{out.name}-medium.json")
     assert editor.minimal_table.rowCount() == 2
     assert editor.minimal_table.item(0, 2).text() == "Yes"
     assert "2 components" in editor.minimal_status.text()

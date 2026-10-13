@@ -62,3 +62,10 @@
 - 영향: 종료 코드만 보는 스크립트나 hook은 통과한 실행을 실패로 본다. 반대로 rc=139를 "원래 그렇다"고 넘기면 진짜 crash를 놓칠 수 있다.
 - 지금 못 푸는 이유: QtWebEngine 그래프 화면(`graph_view.py`) 객체가 Python 종료 시점까지 남아 있는 문제로 보이며, 원인 객체를 특정하려면 macOS에서 테스트 파일 단위 이분 탐색이 필요하다. 새 GUI 테스트 파일에 autouse `_deterministic_qt_teardown` fixture를 두면 그 파일 단독 실행에서는 사라진다.
 - 방향: 판정은 요약 줄과 `--junitxml`의 failures/errors로 한다. 전체 실행에서 WebEngine 객체를 명시적으로 정리하는 공용 fixture(`conftest.py`)를 검토한다.
+
+## `agora2-fetch`를 같은 `--out`에 반복하면 이전 출처 기록이 사라짐
+
+- 증상: `cmig agora2-fetch`는 호출마다 `--out`의 `agora2_manifest.json`을 그 호출이 고른 균주만으로 다시 쓴다. 이미 받은 균주는 같은 호출에서 다시 고른 경우에만 기록에 남고(`already fetched, skipping`), 이전 호출에서 받은 다른 균주의 파일은 폴더에 남아 있어도 manifest 항목(원 URL, 인코딩 수리 횟수, 시각)이 빠진다.
+- 영향: 한 폴더에 여러 번 나눠 받으면 일부 모델 파일이 출처 기록 없이 남는다. 그 폴더를 `--model-dir`로 쓰는 분석의 재현성·인용 기록이 불완전해진다.
+- 지금 못 푸는 이유: manifest를 합치도록 바꾸면 CLI 산출물 계약(`agora2_manifest.json`의 내용과 `n_models`)이 달라지고, GUI 작업 공간 1단계의 범위(CLI 옵션·산출물 불변)를 벗어난다.
+- 방향: GUI는 다운로드마다 `models/agora2/<YYYYMMDD-HHMMSS>/` 새 폴더를 써서 각 호출의 manifest를 보존한다. CLI는 기존 manifest를 읽어 `models`를 균주 id 기준으로 합쳐 쓰는 방식을 별도 변경으로 검토하고, 그 전까지 같은 `--out`에 나눠 받지 않는 것을 사용 설명서에 안내한다.

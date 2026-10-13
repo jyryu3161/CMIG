@@ -36,7 +36,9 @@ from PySide6.QtWidgets import (
 
 from cmig.core.medium_spec import MediumSpec, load_medium
 from cmig.gui.builder import make_read_only, read_only_item
+from cmig.gui.pickers import ModelPicker
 from cmig.io.model_import import ModelSummary
+from cmig.io.project import ModelEntry
 
 _NUTRIENT_ROLE = "nutrient"
 _POOL_CLOSURE_ROLE = "pool_closure"
@@ -149,18 +151,9 @@ class MediumEditor(QWidget):
         self.status.setWordWrap(True)
 
         taxonomy_row = QHBoxLayout()
-        self.taxonomy_input = QLineEdit("")
-        self.taxonomy_input.setPlaceholderText(
-            _editor_text(self.strings, "medium_taxonomy_placeholder", "Community taxonomy CSV")
-        )
-        self.browse_taxonomy_btn = QPushButton(
-            _editor_text(self.strings, "medium_browse_taxonomy", "Taxonomy…")
-        )
-        taxonomy_row.addWidget(
-            QLabel(_editor_text(self.strings, "medium_taxonomy_label", "Taxonomy"))
-        )
-        taxonomy_row.addWidget(self.taxonomy_input, 1)
-        taxonomy_row.addWidget(self.browse_taxonomy_btn)
+        self.model_picker = ModelPicker("Models")
+        taxonomy_row.addWidget(self.model_picker)
+        taxonomy_row.addStretch(1)
 
         namespace_row = QHBoxLayout()
         self.assume_bigg_check = QCheckBox(
@@ -216,17 +209,7 @@ class MediumEditor(QWidget):
         self.profile_delta_label.setWordWrap(True)
 
         model_row = QHBoxLayout()
-        self.model_path_input = QLineEdit("")
-        self.model_path_input.setPlaceholderText(
-            _editor_text(
-                self.strings,
-                "medium_model_placeholder",
-                "Single SBML/JSON/MAT model for minimal-medium",
-            )
-        )
-        self.browse_model_btn = QPushButton(
-            _editor_text(self.strings, "medium_browse_model", "Model…")
-        )
+        self.single_model_picker = ModelPicker("Model", single=True)
         self.min_growth_spin = QDoubleSpinBox()
         self.min_growth_spin.setDecimals(6)
         self.min_growth_spin.setRange(0.000001, 1_000_000.0)
@@ -241,9 +224,8 @@ class MediumEditor(QWidget):
         self.minimal_medium_btn = QPushButton(
             _editor_text(self.strings, "medium_run_minimal", "Find Minimal Medium")
         )
-        model_row.addWidget(QLabel(_editor_text(self.strings, "medium_model_label", "Model")))
-        model_row.addWidget(self.model_path_input, 1)
-        model_row.addWidget(self.browse_model_btn)
+        model_row.addWidget(self.single_model_picker)
+        model_row.addStretch(1)
         model_row.addWidget(
             QLabel(_editor_text(self.strings, "medium_min_growth", "Minimum growth"))
         )
@@ -787,3 +769,36 @@ class ModelManagerPanel(QWidget):
             self.exchange_table.setItem(i, 0, read_only_item(ex))
         bio = ", ".join(summary.biomass_reactions) or "(not detected)"
         self.biomass_label.setText(f"Biomass: {bio}")
+
+    def show_project_models(self, models: list[ModelEntry]) -> None:
+        """Overview of the project's models (id, check status, size, file)."""
+        self.summary_label.setText(f"{len(models)} models in this project")
+        self.exchange_table.setColumnCount(4)
+        self.exchange_table.setHorizontalHeaderLabels(["Model", "Check", "Reactions", "File"])
+        self.exchange_table.setRowCount(len(models))
+        for row, entry in enumerate(models):
+            values = [entry.id, entry.status if entry.integrity == "ok" else entry.integrity,
+                      "—" if entry.n_reactions is None else str(entry.n_reactions), entry.file]
+            for col, value in enumerate(values):
+                self.exchange_table.setItem(row, col, read_only_item(value))
+        self.biomass_label.setText("Select a model in the sidebar for its details.")
+
+
+_PRESET_METADATA = "provenance_rows.csv"  # shipped beside the presets; not a medium
+
+
+def installed_medium_presets() -> list[str]:
+    """Names (file stems) of the medium presets shipped inside the package."""
+    folder = resources.files("cmig.resources").joinpath("medium_presets")
+    return sorted(
+        item.name[:-4]
+        for item in folder.iterdir()
+        if item.is_file() and item.name.endswith(".csv") and item.name != _PRESET_METADATA
+    )
+
+
+def installed_medium_preset_path(name: str) -> Path:
+    if name not in installed_medium_presets():
+        raise ValueError(f"unknown medium preset {name!r}")
+    folder = resources.files("cmig.resources").joinpath("medium_presets")
+    return Path(str(folder.joinpath(f"{name}.csv")))

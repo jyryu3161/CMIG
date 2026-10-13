@@ -82,9 +82,11 @@ def test_open_run_feeds_first_class_graph_badge_and_both_profile_charts(tmp_path
     window = build_main_window()
     window.load_run_dir(tmp_path)
 
-    labels = [window.tabs.tabText(index) for index in range(window.tabs.count())]
+    result = window.community_result_page
+    labels = [result.tabText(index) for index in range(result.count())]
     assert "Graph" in labels
-    assert window.tabs.indexOf(window.graph_tab) >= 0
+    assert result.indexOf(window.graph_tab) >= 0
+    assert window.pages.currentWidget() is result
     assert window.graph_view._base_payload is not None
     assert window.graph_view._base_payload["elements"]
     assert "CONFIRMED" in window.graph_gate_badge.text()
@@ -160,14 +162,15 @@ def test_qt_native_charts_paint_offscreen():
     assert not members.grab().isNull()
 
 
-def test_korean_tabs_toolbar_and_loaded_status_are_translated(tmp_path, monkeypatch):
+def test_korean_loaded_status_is_translated_and_chrome_stays_english(tmp_path, monkeypatch):
     _app()
     _stub_graph_views(monkeypatch)
     _community_bundle().write(tmp_path)
     window = build_main_window(lang="ko")
     window.load_run_dir(tmp_path)
-    labels = [window.tabs.tabText(index) for index in range(window.tabs.count())]
-    assert labels == ["모델", "탐색", "숙주", "동역학", "그래프", "외부 프로필"]
-    assert window.open_run_action.text() == "실행 열기"
-    assert window.advanced_tools_action.text() == "고급 도구 표시"
+    # Workspace chrome (menus, result views) is English in every language: localisation is
+    # frozen. Catalogue messages keep their existing Korean text.
+    result = window.community_result_page
+    assert [result.tabText(index) for index in range(result.count())] == ["Profile", "Graph"]
+    assert window.open_run_action.text() == "Open Run…"
     assert window.statusBar().currentMessage().startswith("실행 불러옴:")

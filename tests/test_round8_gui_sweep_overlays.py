@@ -12,6 +12,7 @@ pytest.importorskip("PySide6.QtWidgets")
 
 import pyarrow as pa  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
+from gui_project_helpers import open_test_project, taxonomy_ids  # noqa: E402
 from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 import cmig.gui.app as app_module  # noqa: E402
@@ -108,7 +109,8 @@ def test_sweep_view_exposes_real_axes_and_fixture_is_opt_in():
     _app()
     view = SweepView()
     assert view.fixture_check.isChecked() is False
-    assert view.taxonomy_input.placeholderText() == "Taxonomy CSV"
+    assert not hasattr(view, "taxonomy_input") and not hasattr(view, "model_dir_input")
+    assert view.model_picker.text() == "Models: 0 selected"
     assert view.mediums_input is not None
     assert view.abundance_variants_input is not None
     assert view.member_sets_input is not None
@@ -132,12 +134,10 @@ def test_real_sweep_launches_cli_with_every_axis(monkeypatch, tmp_path):
         return 0
 
     monkeypatch.setattr(cmig.cli.main, "main", fake_main)
-    taxonomy = tmp_path / "taxonomy.csv"
-    taxonomy.write_text("id,file\nA,A.xml\n")
     runner = JobRunner(max_workers=1)
     window = build_main_window(runner=runner)
+    open_test_project(window, tmp_path / "p", ["A", "B"])
     view = window.sweep_view
-    view.taxonomy_input.setText(str(taxonomy))
     view.mediums_input.setText("western.csv,eastern.json")
     view.abundance_variants_input.setText("abundance.json")
     view.member_sets_input.setText("A+B;A+C")
@@ -157,8 +157,8 @@ def test_real_sweep_launches_cli_with_every_axis(monkeypatch, tmp_path):
 
     argv = seen["argv"]
     assert argv[0] == "sweep"
+    assert taxonomy_ids(argv) == ["A", "B"]
     expected = {
-        "--taxonomy": str(taxonomy),
         "--mediums": "western.csv,eastern.json",
         "--abundance-variants": "abundance.json",
         "--member-sets": "A+B;A+C",
@@ -179,23 +179,12 @@ def test_real_sweep_launches_cli_with_every_axis(monkeypatch, tmp_path):
     runner.shutdown()
 
 
-def test_model_folder_source_is_converted_to_taxonomy_in_worker(monkeypatch, tmp_path):
-    import pandas as pd
-
+def test_selected_models_become_the_sweep_taxonomy(monkeypatch, tmp_path):
     import cmig.cli.main
-    import cmig.core.model_pool
 
     _app()
     _stub_graph(monkeypatch)
     seen: dict[str, list[str]] = {}
-
-    monkeypatch.setattr(
-        cmig.core.model_pool,
-        "taxonomy_from_model_dir",
-        lambda _path, recursive=False: pd.DataFrame(
-            [{"id": "A", "file": str(tmp_path / "A.xml"), "abundance": 1.0}]
-        ),
-    )
 
     def fake_main(argv):
         seen["argv"] = list(argv)
@@ -207,12 +196,20 @@ def test_model_folder_source_is_converted_to_taxonomy_in_worker(monkeypatch, tmp
     monkeypatch.setattr(cmig.cli.main, "main", fake_main)
     runner = JobRunner(max_workers=1)
     window = build_main_window(runner=runner)
-    window.sweep_view.model_dir_input.setText(str(tmp_path))
+    project = open_test_project(window, tmp_path / "p", ["A", "B"])
     window.sweep_view.assume_bigg_check.setChecked(True)
+    window.sweep_view.model_picker.set_selected([])
+    assert window.run_sweep() == ""
+    assert window.sweep_view.status.text() == "Select at least one model."
+    window.sweep_view.model_picker.set_selected(["A"])
     jid = window.run_sweep()
     runner.result(jid, timeout=5)
     window._poll_completed_jobs()
-    assert seen["argv"][0] == "sweep"
+    argv = seen["argv"]
+    assert argv[0] == "sweep" and taxonomy_ids(argv) == ["A"]
+    out = Path(argv[argv.index("--out") + 1])
+    assert out.parent == project.runs_dir and out.name.startswith("sweep-")
+    assert Path(argv[argv.index("--taxonomy") + 1]).parent == project.inputs_dir
     runner.shutdown()
 
 
@@ -227,11 +224,9 @@ def test_failed_real_sweep_keeps_failed_job_and_displays_recorded_diagnostic(mon
         return 3
 
     monkeypatch.setattr(cmig.cli.main, "main", fake_main)
-    taxonomy = tmp_path / "taxonomy.csv"
-    taxonomy.write_text("id,file\nA,A.xml\n")
     runner = JobRunner(max_workers=1)
     window = build_main_window(runner=runner)
-    window.sweep_view.taxonomy_input.setText(str(taxonomy))
+    open_test_project(window, tmp_path / "p", ["A"])
     window.sweep_view.assume_bigg_check.setChecked(True)
     jid = window.run_sweep()
     with pytest.raises(RuntimeError, match="rc=3"):

@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -35,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from cmig.gui.builder import make_read_only, read_only_item
+from cmig.gui.pickers import ModelPicker
 from cmig.service import JobRunner, make_sweep_job
 
 # sign 라벨 → UI 색 (secretion=초록 / uptake=보라, §11 diverging)
@@ -733,40 +733,14 @@ class SweepView(QWidget):
             _view_text(
                 self.strings,
                 "sweep_status_ready",
-                "Advanced result view: choose a taxonomy or model folder, configure axes, "
-                "then run.",
+                "Advanced result view: pick models, configure the axes, then run.",
             )
         )
 
-        source_grid = QGridLayout()
-        self.taxonomy_input = QLineEdit("")
-        self.taxonomy_input.setPlaceholderText(
-            _view_text(self.strings, "sweep_taxonomy_placeholder", "Taxonomy CSV")
-        )
-        self.browse_taxonomy_btn = QPushButton(
-            _view_text(self.strings, "sweep_browse_taxonomy", "Taxonomy…")
-        )
-        self.model_dir_input = QLineEdit("")
-        self.model_dir_input.setPlaceholderText(
-            _view_text(
-                self.strings,
-                "sweep_model_dir_placeholder",
-                "Or a folder of user-prepared microbial models",
-            )
-        )
-        self.browse_model_dir_btn = QPushButton(
-            _view_text(self.strings, "sweep_browse_models", "Model folder…")
-        )
-        source_grid.addWidget(
-            QLabel(_view_text(self.strings, "sweep_taxonomy_label", "Taxonomy")), 0, 0
-        )
-        source_grid.addWidget(self.taxonomy_input, 0, 1)
-        source_grid.addWidget(self.browse_taxonomy_btn, 0, 2)
-        source_grid.addWidget(
-            QLabel(_view_text(self.strings, "sweep_model_dir_label", "Model source")), 1, 0
-        )
-        source_grid.addWidget(self.model_dir_input, 1, 1)
-        source_grid.addWidget(self.browse_model_dir_btn, 1, 2)
+        source_row = QHBoxLayout()
+        self.model_picker = ModelPicker("Models")
+        source_row.addWidget(self.model_picker)
+        source_row.addStretch(1)
 
         axis_grid = QGridLayout()
         self.mediums_input = QLineEdit("")
@@ -925,7 +899,7 @@ class SweepView(QWidget):
         make_read_only(self.table)
         layout.addWidget(self.title)
         layout.addWidget(self.status)
-        layout.addLayout(source_grid)
+        layout.addLayout(source_row)
         layout.addLayout(axis_grid)
         layout.addLayout(namespace_row)
         layout.addLayout(options_row)
@@ -935,8 +909,7 @@ class SweepView(QWidget):
     def request(self) -> dict[str, Any]:
         """Snapshot the real CLI inputs before a background job is submitted."""
         return {
-            "taxonomy": self.taxonomy_input.text().strip(),
-            "model_dir": self.model_dir_input.text().strip(),
+            "models": self.model_picker.selected_ids(),
             "mediums": self.mediums_input.text().strip(),
             "abundance_variants": self.abundance_variants_input.text().strip(),
             "member_sets": self.member_sets_input.text().strip(),
@@ -1214,19 +1187,13 @@ class DfbaSpatialView(QWidget):
         self.title = QLabel("Dynamics")
 
         model_row = QHBoxLayout()
-        self.model_path_input = QLineEdit("")
-        self.model_path_input.setPlaceholderText("SBML model for well-mixed dFBA")
-        self.browse_model_btn = QPushButton("Model")
-        self.out_dir_input = QLineEdit("")
-        self.out_dir_input.setPlaceholderText("Optional output folder")
-        self.browse_out_btn = QPushButton("Output")
+        self.model_picker = ModelPicker("Model", single=True)
         model_row.addWidget(QLabel("dFBA"))
-        model_row.addWidget(self.model_path_input)
-        model_row.addWidget(self.browse_model_btn)
-        model_row.addWidget(self.out_dir_input)
-        model_row.addWidget(self.browse_out_btn)
+        model_row.addWidget(self.model_picker)
+        model_row.addStretch(1)
 
-        dfba_row = QHBoxLayout()
+        # Two-row grids keep every input visible at a 1280-px window.
+        dfba_row = QGridLayout()
         self.initial_input = QLineEdit("EX_glc__D_e=10,EX_o2_e=20,EX_ac_e=0,EX_lac__D_e=0")
         self.initial_input.setPlaceholderText("EX_glc__D_e=10,EX_o2_e=20,EX_ac_e=0")
         self.t_end_spin = QDoubleSpinBox()
@@ -1254,18 +1221,18 @@ class DfbaSpatialView(QWidget):
             "substrate/Km experiment is actually controlled."
         )
         self.run_dfba_btn = QPushButton("Run dFBA")
-        dfba_row.addWidget(QLabel("Initial (mmol L⁻¹)"))
-        dfba_row.addWidget(self.initial_input)
-        dfba_row.addWidget(QLabel("T end"))
-        dfba_row.addWidget(self.t_end_spin)
-        dfba_row.addWidget(QLabel("dt"))
-        dfba_row.addWidget(self.dt_spin)
-        dfba_row.addWidget(QLabel("Biomass"))
-        dfba_row.addWidget(self.biomass_spin)
-        dfba_row.addWidget(self.close_untracked_check)
-        dfba_row.addWidget(self.run_dfba_btn)
+        dfba_row.addWidget(QLabel("Initial (mmol L⁻¹)"), 0, 0)
+        dfba_row.addWidget(self.initial_input, 0, 1, 1, 3)
+        dfba_row.addWidget(self.close_untracked_check, 0, 4, 1, 3)
+        dfba_row.addWidget(QLabel("T end"), 1, 0)
+        dfba_row.addWidget(self.t_end_spin, 1, 1)
+        dfba_row.addWidget(QLabel("dt"), 1, 2)
+        dfba_row.addWidget(self.dt_spin, 1, 3)
+        dfba_row.addWidget(QLabel("Biomass"), 1, 4)
+        dfba_row.addWidget(self.biomass_spin, 1, 5)
+        dfba_row.addWidget(self.run_dfba_btn, 1, 6)
 
-        spatial_row = QHBoxLayout()
+        spatial_row = QGridLayout()
         self.spatial_metabolite_input = QLineEdit("EX_glc__D_e")
         self.spatial_metabolite_input.setPlaceholderText("Metabolite")
         self.grid_size_spin = QSpinBox()
@@ -1287,21 +1254,21 @@ class DfbaSpatialView(QWidget):
         self.sink_combo = QComboBox()
         self.sink_combo.addItems(["right", "left", "top", "bottom", "center", "none"])
         self.run_spatial_btn = QPushButton("Preview Spatial Medium")
-        spatial_row.addWidget(QLabel("Spatial"))
-        spatial_row.addWidget(self.spatial_metabolite_input)
-        spatial_row.addWidget(QLabel("Grid"))
-        spatial_row.addWidget(self.grid_size_spin)
-        spatial_row.addWidget(QLabel("Steps"))
-        spatial_row.addWidget(self.steps_spin)
-        spatial_row.addWidget(QLabel("dt"))
-        spatial_row.addWidget(self.spatial_dt_spin)
-        spatial_row.addWidget(QLabel("Diffusion"))
-        spatial_row.addWidget(self.diffusion_spin)
-        spatial_row.addWidget(QLabel("Source"))
-        spatial_row.addWidget(self.source_combo)
-        spatial_row.addWidget(QLabel("Sink"))
-        spatial_row.addWidget(self.sink_combo)
-        spatial_row.addWidget(self.run_spatial_btn)
+        spatial_row.addWidget(QLabel("Spatial"), 0, 0)
+        spatial_row.addWidget(self.spatial_metabolite_input, 0, 1)
+        spatial_row.addWidget(QLabel("Grid"), 0, 2)
+        spatial_row.addWidget(self.grid_size_spin, 0, 3)
+        spatial_row.addWidget(QLabel("Steps"), 0, 4)
+        spatial_row.addWidget(self.steps_spin, 0, 5)
+        spatial_row.addWidget(QLabel("dt"), 0, 6)
+        spatial_row.addWidget(self.spatial_dt_spin, 0, 7)
+        spatial_row.addWidget(QLabel("Diffusion"), 1, 0)
+        spatial_row.addWidget(self.diffusion_spin, 1, 1)
+        spatial_row.addWidget(QLabel("Source"), 1, 2)
+        spatial_row.addWidget(self.source_combo, 1, 3)
+        spatial_row.addWidget(QLabel("Sink"), 1, 4)
+        spatial_row.addWidget(self.sink_combo, 1, 5)
+        spatial_row.addWidget(self.run_spatial_btn, 1, 6, 1, 2)
 
         self.status = QLabel("")
         self.warning_label = QLabel("")
@@ -1326,7 +1293,8 @@ class DfbaSpatialView(QWidget):
         layout.addWidget(self.warning_label)
         layout.addWidget(self.table)
         layout.addWidget(self.figure_label)
-        for line_edit in (self.model_path_input, self.initial_input, self.spatial_metabolite_input):
+        self.model_picker.selection_changed.connect(self.invalidate_results)
+        for line_edit in (self.initial_input, self.spatial_metabolite_input):
             line_edit.textChanged.connect(self.invalidate_results)
         for spin in (
             self.t_end_spin,
@@ -1353,22 +1321,9 @@ class DfbaSpatialView(QWidget):
         self.figure_label.setText("Inputs changed — previous result cleared; re-run to update.")
         self.status.setText("Inputs changed — previous result cleared; re-run to update.")
 
-    def browse_model(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select dFBA Model", "", "Models (*.xml *.sbml *.xml.gz *.sbml.gz)"
-        )
-        if path:
-            self.model_path_input.setText(path)
-
-    def browse_out(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select Dynamics Output Folder")
-        if path:
-            self.out_dir_input.setText(path)
-
     def dfba_request(self) -> dict[str, Any]:
         return {
-            "model": self.model_path_input.text().strip(),
-            "out_dir": self.out_dir_input.text().strip(),
+            "model": (self.model_picker.selected_ids() or [""])[0],
             "initial": self.initial_input.text().strip(),
             "t_end": self.t_end_spin.value(),
             "dt": self.dt_spin.value(),
@@ -1380,7 +1335,6 @@ class DfbaSpatialView(QWidget):
         size = self.grid_size_spin.value()
         return {
             "metabolite": self.spatial_metabolite_input.text().strip() or "EX_glc__D_e",
-            "out_dir": self.out_dir_input.text().strip(),
             "width": size,
             "height": size,
             "steps": self.steps_spin.value(),

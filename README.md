@@ -78,6 +78,10 @@ uv run cmig solve --taxonomy tax.csv \
 uv run cmig inspect-run --run-dir runs/solve       # read the run back
 ```
 
+The GUI works on a project folder: create one with **File > New Project…**, add models
+with **Add Models…**, drag and drop or AGORA2, pick models and media in an analysis, and
+every run is written to the project's `runs/` folder.
+
 Full installation options, the GUI tour, worked command examples and the
 developer workflow are in **[docs/USAGE.md](docs/USAGE.md)**.
 

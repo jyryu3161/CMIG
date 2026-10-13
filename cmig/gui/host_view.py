@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from cmig.core.host_impact import identified_transfer_point
 from cmig.gui.builder import make_read_only, read_only_item
+from cmig.gui.pickers import MediumPicker, ModelPicker
 
 _IFACE_COLOR = {"lumen": "#2c7fb8", "blood": "#d95f0e", "bigg_external": "#2b8cbe"}
 _LABEL_COLOR = {"secretion": "#31a354", "uptake": "#756bb1"}
@@ -56,46 +57,24 @@ class HostImpactView(QWidget):
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(6)
         self.title = QLabel("Host-Microbe Interaction")
-        file_row = QHBoxLayout()
-        self.host_path_input = QLineEdit("")
-        self.host_path_input.setPlaceholderText("Human/host SBML/XML model")
-        self.browse_host_btn = QPushButton("Host")
+        self.host_picker = ModelPicker("Host model", single=True)
+        self.model_picker = ModelPicker("Microbes")
+        self.host_medium_picker = MediumPicker()
+        self.microbe_medium_picker = MediumPicker()
+        models_row = QHBoxLayout()
+        models_row.addWidget(self.host_picker)
+        models_row.addWidget(self.model_picker)
+        models_row.addStretch(1)
+        media_row = QHBoxLayout()
+        media_row.addWidget(QLabel("Host medium"))
+        media_row.addWidget(self.host_medium_picker, 1)
+        media_row.addWidget(QLabel("Microbe medium"))
+        media_row.addWidget(self.microbe_medium_picker, 1)
         self.host_objective_input = QLineEdit("")
         self.host_objective_input.setPlaceholderText("Optional host objective reaction")
-        self.model_dir_input = QLineEdit("")
-        self.model_dir_input.setPlaceholderText("Folder of user-prepared microbial models")
-        self.browse_model_dir_btn = QPushButton("Models")
-        file_row.addWidget(QLabel("Input"))
-        file_row.addWidget(self.host_path_input)
-        file_row.addWidget(self.browse_host_btn)
         objective_row = QHBoxLayout()
         objective_row.addWidget(QLabel("Host objective"))
         objective_row.addWidget(self.host_objective_input)
-        model_row = QHBoxLayout()
-        model_row.addWidget(QLabel("Microbial models"))
-        model_row.addWidget(self.model_dir_input)
-        model_row.addWidget(self.browse_model_dir_btn)
-        medium_row = QHBoxLayout()
-        self.host_medium_input = QLineEdit("")
-        self.host_medium_input.setPlaceholderText("Host medium CSV/JSON")
-        self.browse_host_medium_btn = QPushButton("Host Medium")
-        self.microbe_medium_input = QLineEdit("")
-        self.microbe_medium_input.setPlaceholderText("Microbe medium CSV/JSON")
-        self.browse_microbe_medium_btn = QPushButton("Microbe Medium")
-        self.out_dir_input = QLineEdit("")
-        self.out_dir_input.setPlaceholderText("Output folder")
-        self.browse_out_dir_btn = QPushButton("Output")
-        medium_row.addWidget(QLabel("Host medium"))
-        medium_row.addWidget(self.host_medium_input)
-        medium_row.addWidget(self.browse_host_medium_btn)
-        microbe_medium_row = QHBoxLayout()
-        microbe_medium_row.addWidget(QLabel("Microbe medium"))
-        microbe_medium_row.addWidget(self.microbe_medium_input)
-        microbe_medium_row.addWidget(self.browse_microbe_medium_btn)
-        output_row = QHBoxLayout()
-        output_row.addWidget(QLabel("Output"))
-        output_row.addWidget(self.out_dir_input)
-        output_row.addWidget(self.browse_out_dir_btn)
         run_row = QHBoxLayout()
         self.tradeoff_spin = QDoubleSpinBox()
         self.tradeoff_spin.setRange(0.01, 1.0)
@@ -120,7 +99,6 @@ class HostImpactView(QWidget):
         self.biomass_basis_source_input.setPlaceholderText(
             "Biomass measurement record or literature citation"
         )
-        self.recursive_check = QCheckBox("Recursive")
         self.keep_host_uptake_check = QCheckBox("Keep host uptake")
         self.include_currency_check = QCheckBox("Currency metabolites")
         # Round 7: the GUI already offered both media, so it inherited the CLI's over-constraint
@@ -146,7 +124,6 @@ class HostImpactView(QWidget):
         basis_row.addWidget(self.biomass_basis_kind_combo)
         basis_row.addWidget(self.biomass_basis_source_input)
         policy_row = QHBoxLayout()
-        policy_row.addWidget(self.recursive_check)
         policy_row.addWidget(self.keep_host_uptake_check)
         policy_row.addWidget(self.include_currency_check)
         policy_row.addWidget(self.allow_unknown_medium_check)
@@ -234,12 +211,9 @@ class HostImpactView(QWidget):
         splitter.addWidget(self.figure_stack)
         splitter.setSizes([450, 760])
         layout.addWidget(self.title)
-        layout.addLayout(file_row)
+        layout.addLayout(models_row)
+        layout.addLayout(media_row)
         layout.addLayout(objective_row)
-        layout.addLayout(model_row)
-        layout.addLayout(medium_row)
-        layout.addLayout(microbe_medium_row)
-        layout.addLayout(output_row)
         layout.addLayout(run_row)
         layout.addLayout(basis_row)
         layout.addLayout(policy_row)
@@ -250,22 +224,19 @@ class HostImpactView(QWidget):
         layout.addWidget(splitter, 1)
         # Any edit to an answer-determining input invalidates the displayed result: a host
         # viability verdict computed for model/medium A must not sit under inputs saying B.
-        for line_edit in (
-            self.host_path_input,
-            self.host_objective_input,
-            self.model_dir_input,
-            self.host_medium_input,
-            self.microbe_medium_input,
-            self.search_target_input,
-        ):
+        for line_edit in (self.host_objective_input, self.search_target_input):
             line_edit.textChanged.connect(self.invalidate_results)
+        for picker in (self.host_picker, self.model_picker):
+            picker.selection_changed.connect(self.invalidate_results)
+        for medium_picker in (self.host_medium_picker, self.microbe_medium_picker):
+            medium_picker.currentIndexChanged.connect(self.invalidate_results)
         for spin in (
             self.tradeoff_spin, self.microbial_biomass_spin, self.host_biomass_spin,
             self.min_size_spin, self.max_size_spin,
         ):
             spin.valueChanged.connect(self.invalidate_results)
         for check in (
-            self.recursive_check, self.keep_host_uptake_check, self.include_currency_check,
+            self.keep_host_uptake_check, self.include_currency_check,
             self.allow_unknown_medium_check,
         ):
             check.toggled.connect(self.invalidate_results)
@@ -290,12 +261,11 @@ class HostImpactView(QWidget):
     def request(self) -> dict[str, Any]:
         """Return the current host-microbe run request from GUI controls."""
         return {
-            "host": self.host_path_input.text().strip(),
+            "host_id": (self.host_picker.selected_ids() or [""])[0],
             "host_objective": self.host_objective_input.text().strip(),
-            "model_dir": self.model_dir_input.text().strip(),
-            "host_medium": self.host_medium_input.text().strip(),
-            "microbe_medium": self.microbe_medium_input.text().strip(),
-            "out_dir": self.out_dir_input.text().strip(),
+            "models": self.model_picker.selected_ids(),
+            "host_medium": self.host_medium_picker.current_ref(),
+            "microbe_medium": self.microbe_medium_picker.current_ref(),
             "tradeoff_f": self.tradeoff_spin.value(),
             "microbial_biomass_gdw": self.microbial_biomass_spin.value(),
             "host_biomass_gdw": self.host_biomass_spin.value(),
@@ -309,7 +279,6 @@ class HostImpactView(QWidget):
             "search_metric": self.search_metric_combo.currentText(),
             "min_size": self.min_size_spin.value(),
             "max_size": self.max_size_spin.value(),
-            "recursive": self.recursive_check.isChecked(),
             "keep_host_uptake": self.keep_host_uptake_check.isChecked(),
             "include_currency_metabolites": self.include_currency_check.isChecked(),
             "allow_unknown_medium": self.allow_unknown_medium_check.isChecked(),

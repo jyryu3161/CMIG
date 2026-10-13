@@ -56,25 +56,31 @@ be inspected on a machine with no solver at all.
 
 ```bash
 uv run cmig gui              # equivalently: uv run cmig-gui
-uv run cmig gui --lang ko    # Korean interface
+uv run cmig gui --lang ko    # older panels use Korean strings; the workspace stays English
 ```
 
-| Tab | Purpose |
-| --- | --- |
-| **Models** | Import a GEM, review its structure, and see the namespace audit |
-| **Search** | Best-producing model combinations, per-strain growth, abundance sweeps, gene-knockout ranking |
-| **Host** | Host-microbe coupling and its interface map |
-| **Dynamics** | Well-mixed dFBA and the spatial medium preview |
-| **Graph** | Interaction network of a completed community solve |
-| **Profile** | Open a finished run: charts, heatmap and comparison overlays |
+The window works on a **project** folder (`cmig-project.json`, `models/`, `media/`,
+`runs/`). Create or open one from the File menu, add GEMs with **Add Models…**, drag and
+drop, or **Add Models from AGORA2…**, then pick an analysis from the sidebar. Each analysis
+chooses its models and medium from the project and writes a new `runs/<kind>-YYYYMMDD-HHMMSS`
+folder. The sidebar lists MODELS, MEDIA, ANALYSES and RUNS; the inspector on the right
+follows the selection; the Activity pane at the bottom shows running jobs.
 
-Less common tools — community builder, medium editor, parameter sweep,
-constraint sandbox and scenario compare — sit behind **Show Advanced Tools**.
+| Analysis | Purpose |
+| --- | --- |
+| **Combination Search** | Best-producing model combinations for a target metabolite |
+| **Gene Knockout**, **Strain Growth & Ratio** | Gene-knockout ranking, per-strain growth, abundance sweeps |
+| **Host–Microbe** | Host-microbe coupling and its interface map |
+| **Dynamics** | Well-mixed dFBA and the spatial medium preview |
+| **Community Solve**, **Medium Editor**, **Sweep**, **Constraint Sandbox**, **Compare Runs** | Community FBA, medium editing and growth checks, parameter sweeps, bound previews, run comparison |
+
+Finished runs appear in RUNS and reopen from there; **File > Open Run…** opens a run folder
+from anywhere. The full tour is in [USER_GUIDE.md](USER_GUIDE.md#desktop-gui).
 
 The analysis buttons launch CLI workflows and record run artifacts. Check the
 selected workflow's summary and manifest before reusing a result: GUI readback
 supports the run types and artifacts implemented by that view, rather than every
-CLI artifact in every tab. Search settings apply by workflow: for example,
+CLI artifact in every view. Search settings apply by workflow: for example,
 cooperative tradeoff belongs to Strain Growth and Ratio, while Search uses its
 target direction, growth floors, budget and multi-target controls. Changing a
 setting used by the displayed workflow invalidates its result.
@@ -82,7 +88,7 @@ setting used by the displayed workflow invalidates its result.
 Search offers only figures present in the loaded run. Single-target runs can
 provide Ranking and Scatter; multi-target runs provide Ranking. A missing or
 unreadable file clears the preview and disables export. The status bar separates
-the scientific outcome from artifact integrity; **Integrity details** explains
+the scientific outcome from artifact integrity; the inspector explains
 verified, mismatch, not-recorded and invalid/unreadable readback states. A
 failed scientific run may still provide diagnostic artifacts.
 

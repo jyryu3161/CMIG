@@ -15,6 +15,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets")
 
+from gui_project_helpers import open_test_project  # noqa: E402
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -353,16 +354,14 @@ def test_just_finished_run_matches_reopened_run(window, tmp_path, monkeypatch):
 
     monkeypatch.setattr(cmig.cli.main, "main", fake_main)
     view = window.search_view
-    pool = tmp_path / "pool"
-    pool.mkdir()
-    view.model_dir_input.setText(str(pool))
+    project = open_test_project(window, tmp_path / "p", ["a", "b"])
     view.set_target_rows([("ac",), ("but",)])
     jid = window.run_search_fixture()
     assert jid
     window.runner.result(jid, timeout=10)
     window._poll_completed_jobs()
     out = window.current_search_dir
-    assert out is not None
+    assert out is not None and out.parent == project.runs_dir
     assert "search_pareto.svg" in [data for _, data in _choices(view)]
     fresh = [_inspect(view, _row_for(view, rank)) for rank in (1, 2, 3)]
     view.invalidate_results()
@@ -398,7 +397,7 @@ def test_window_fits_with_inspector_content(tmp_path):
         window.load_run_dir(run)
         view = window.search_view
         _inspect(view, _row_for(view, 1))
-        window.tabs.setCurrentWidget(view)
+        window._show_page(view)
         for size in ((1280, 800), (1500, 950)):
             window.resize(*size)
             window.show()

@@ -137,7 +137,8 @@ def test_search_view_loads_advanced_summary(tmp_path):
     assert view.target_rows() == [("but", "max_secretion", "1", "")]
     assert view.strategy_combo.currentText() == "auto"
     assert view.run_btn.text() == "Run Search"
-    assert view.model_dir_input.placeholderText() == "Folder of user-prepared microbial models"
+    assert view.model_picker.text() == "Models: 0 selected"
+    assert view.medium_picker.current_ref() == ""
     assert view.min_size_spin.value() == 2
     assert view.max_size_spin.value() == 2
     view.min_size_spin.setValue(200)

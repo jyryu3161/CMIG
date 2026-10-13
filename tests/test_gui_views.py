@@ -101,8 +101,13 @@ def test_dynamics_view_requests_and_summaries():
     """Dynamics view exposes runnable dFBA/spatial requests and result summaries."""
     _app()
     view = DfbaSpatialView()
-    view.model_path_input.setText("/tmp/model.xml")
-    assert view.dfba_request()["model"] == "/tmp/model.xml"
+    assert view.dfba_request()["model"] == ""
+    view.model_picker.set_choices([("e_coli", True, ""), ("broken", False, "its file is missing")])
+    view.model_picker.set_selected(["broken"])
+    assert view.dfba_request()["model"] == ""  # a model that cannot run is never picked
+    view.model_picker.set_selected(["e_coli"])
+    assert view.dfba_request()["model"] == "e_coli"
+    assert "out_dir" not in view.dfba_request() and "out_dir" not in view.spatial_request()
     assert view.spatial_request()["width"] == view.spatial_request()["height"]
     view.spatial_dt_spin.setValue(0.25)
     assert view.spatial_request()["dt"] == 0.25
