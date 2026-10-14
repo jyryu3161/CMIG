@@ -61,11 +61,13 @@ def analysis_for_run(run_dir: Path) -> tuple[str | None, dict[str, Any] | None, 
     for name, key in _SUMMARY_PAGES.items():
         if (run_dir / name).exists():
             return key, None, problem
-    if (run_dir / "nodes.parquet").exists():
-        return "community", None, problem
     match = _STAMP.search(run_dir.name)
     prefix = run_dir.name[: match.start()] if match else ""
-    return _FOLDER_PAGES.get(prefix), None, problem
+    if prefix in _FOLDER_PAGES:  # a GUI-named run folder says which page made it
+        return _FOLDER_PAGES[prefix], None, problem
+    if (run_dir / "nodes.parquet").exists():
+        return "community", None, problem
+    return None, None, problem
 
 
 def banner_text(run_name: str, record: dict[str, Any] | None, problem: str,

@@ -2502,15 +2502,20 @@ class CmigMainWindow(QMainWindow):
         self.show_analysis(key, select=False)  # the opened run stays selected in RUNS
         notes = page.restore(record["values"]) if record is not None else []  # type: ignore[attr-defined]
         self._empty_run_result(key)  # inputs changed above; nothing older stays on show
-        if not self._load_run_into_page(key, run_dir):
+        inputs_known = record is not None and not notes
+        if not self._load_run_into_page(key, run_dir, inputs_known=inputs_known):
             self._empty_run_result(key, keep_status=True)
             status = self._run_status_label(key)
             if not status.text():  # the loader gave no reason of its own
                 failure = self._readback_failures.get(_run_key(run_dir))
-                reason = (
-                    "; ".join(failure[1].splitlines()[1:]) or failure[0]
-                    if failure is not None else "it has no result this page can show"
-                )
+                state = (proj.read_run_state(run_dir) if self._in_project_runs(run_dir)
+                         else None)
+                if failure is not None:
+                    reason = "; ".join(failure[1].splitlines()[1:]) or failure[0]
+                elif state is not None:
+                    reason = f"the run {state}"
+                else:
+                    reason = "it has no result this page can show"
                 status.setText(f"No result shown for {run_dir.name}: {reason}")
         page.show_banner(banner_text(run_dir.name, record, problem, notes))  # type: ignore[attr-defined]
         self._show_run_in_inspector(run_dir)
@@ -2547,12 +2552,16 @@ class CmigMainWindow(QMainWindow):
         if not keep_status:
             self._run_status_label(key).clear()
 
-    def _load_run_into_page(self, key: str, run_dir: Path) -> bool:
-        """Show a run's result on its page; inputs are restored first, so it is not stale."""
+    def _load_run_into_page(self, key: str, run_dir: Path, *, inputs_known: bool) -> bool:
+        """Show a run's result on its page; inputs are restored first, so it is not stale.
+
+        `inputs_known`: the run's recorded inputs are all back on screen, so they may label
+        the result as its executed request.
+        """
         if key == "search":
             return self.load_search_dir(run_dir)
         if key in ("gene_ko", "strain_growth", "ratio_impact", "host_search"):
-            return self.load_ranked_dir(key, run_dir)
+            return self.load_ranked_dir(key, run_dir, inputs_known=inputs_known)
         if key in ("community", "medium") and (run_dir / "nodes.parquet").exists():
             return self.load_run_dir(run_dir, host_key=key)
         if key == "medium" and (run_dir / "minimal_medium_summary.json").exists():
@@ -2564,13 +2573,15 @@ class CmigMainWindow(QMainWindow):
         if key == "spatial":
             return self.load_spatial_dir(run_dir)
         if key == "sweep" and (run_dir / "sweep.parquet").exists():
-            self.sweep_view.load_results(_load_sweep_rows(run_dir / "sweep.parquet"))
-            self._show_page(self.sweep_page)
-            return True
+            return self._load_sweep_dir(run_dir)
         return False
 
-    def load_ranked_dir(self, key: str, run_dir: Path) -> bool:
-        """Show a Gene KO / Strain Growth / Ratio Impact / Host Search run on its page."""
+    def load_ranked_dir(self, key: str, run_dir: Path, *, inputs_known: bool = False) -> bool:
+        """Show a Gene KO / Strain Growth / Ratio Impact / Host Search run on its page.
+
+        Only with `inputs_known` (the run's record restored in full) are the inputs on screen
+        shown as the run's executed request.
+        """
         summary_name, _adapter, kind, _label = self._ranked_spec(key)
         page = self.analysis_pages[key]
         if self._inspect_gui_run(run_dir) is None:
@@ -2581,14 +2592,58 @@ class CmigMainWindow(QMainWindow):
             payload = json.loads((run_dir / summary_name).read_text())
             if not isinstance(payload, dict):
                 raise ValueError(f"{summary_name} is not a JSON object")
-            self._show_ranked(key, payload, run_dir,
-                              page.request_fields(kind))  # type: ignore[attr-defined]
+            requested = page.request_fields(kind) if inputs_known else None  # type: ignore[attr-defined]
+            self._show_ranked(key, payload, run_dir, requested)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             self._reject_gui_summary(run_dir, exc)
             self._clear_ranked(page)
             page.status.setText(f"Readback invalid/unreadable: {exc}")  # type: ignore[attr-defined]
             return False
+        if not inputs_known:
+            status = page.status  # type: ignore[attr-defined]
+            status.setText(
+                f"Inputs for {run_dir.name} are not known — labels show only what the run "
+                f"recorded. {status.text()}"
+            )
         self._register_run_output(run_dir)
+        return True
+
+    def _load_sweep_dir(self, run_dir: Path) -> bool:
+        """Show a sweep run's rows, with the run's own status: a failed or cancelled job's
+        rows are labelled partial, never shown as a complete sweep."""
+        view = self.sweep_view
+        if self._inspect_gui_run(run_dir) is None:
+            view.load_results([])
+            view.status.setText(f"Readback invalid/unreadable: {run_dir}")
+            return False
+        summary_path = run_dir / "sweep_summary.json"
+        try:
+            rows = _load_sweep_rows(run_dir / "sweep.parquet")
+            summary = json.loads(summary_path.read_text()) if summary_path.exists() else None
+            if summary is not None and not isinstance(summary, dict):
+                raise ValueError("sweep_summary.json is not a JSON object")
+        except Exception as exc:  # pyarrow raises its own error types for a damaged file
+            self._reject_gui_summary(run_dir, exc)
+            view.load_results([])
+            view.status.setText(f"Readback invalid/unreadable: {exc}")
+            return False
+        view.load_results(rows)
+        job_state = proj.read_run_state(run_dir) if self._in_project_runs(run_dir) else None
+        if job_state in ("failed", "cancelled"):
+            text = (f"Sweep {run_dir.name} {job_state}: showing {len(rows)} condition(s) it "
+                    "recorded before it stopped — partial, not a complete sweep.")
+        elif summary is None:
+            text = (f"Sweep {run_dir.name}: no sweep_summary.json — showing {len(rows)} "
+                    "recorded condition(s); the sweep may be partial.")
+        else:
+            warnings = summary.get("warnings") or []
+            text = (f"Sweep {run_dir.name}: status {summary.get('status', 'unknown')} · "
+                    f"{len(rows)} condition(s)")
+            if isinstance(warnings, list) and warnings:
+                text += " · " + "; ".join(str(warning) for warning in warnings)
+        view.status.setText(text)
+        self._register_run_output(run_dir)
+        self._show_page(self.sweep_page)
         return True
 
     def _load_minimal_medium_dir(self, run_dir: Path) -> bool:
@@ -5405,8 +5460,11 @@ class CmigMainWindow(QMainWindow):
         }[key]
 
     def _show_ranked(
-        self, key: str, payload: dict[str, Any], out_dir: Path, requested: dict[str, str]
+        self, key: str, payload: dict[str, Any], out_dir: Path,
+        requested: dict[str, str] | None,
     ) -> None:
+        """Show a ranked result; `requested` None = the run's inputs are not known, so nothing
+        is labelled as executed (the screen's inputs may belong to another run)."""
         _file, adapter, kind, _label = self._ranked_spec(key)
         page = self.analysis_pages[key]
         panel = page.results_panel  # type: ignore[attr-defined]
@@ -5414,8 +5472,9 @@ class CmigMainWindow(QMainWindow):
         panel.load_summary(
             _with_search_conditions(adapter(payload), payload),
             run_dir=out_dir,
-            request_note=(panel.effective_note(requested, kind)
-                          + panel.superseded_note(requested, kind)),
+            request_note="" if requested is None else (
+                panel.effective_note(requested, kind) + panel.superseded_note(requested, kind)
+            ),
             workflow_kind=kind,
             executed_request=requested,
             source_summary=payload,

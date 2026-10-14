@@ -10,6 +10,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
+from argv_drivers import DRIVERS  # noqa: E402
 from gui_project_helpers import _deterministic_qt_teardown, make_project  # noqa: E402,F401
 from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
@@ -24,7 +25,7 @@ APP = QApplication.instance() or QApplication([])
 
 @pytest.fixture
 def window(tmp_path: Path, monkeypatch):
-    make_project(tmp_path / "p", ["a", "b", "c"])
+    make_project(tmp_path / "p", ["a", "b", "c", "host"])
     w = build_main_window()
     w.recent = RecentProjects(QSettings(str(tmp_path / "r.ini"), QSettings.Format.IniFormat))
     assert w.open_project(tmp_path / "p")
@@ -47,7 +48,7 @@ def _wait(calls: list[list[str]], n: int = 1) -> list[str]:
     return calls[-1]
 
 
-def test_every_run_records_its_inputs(window) -> None:
+def test_a_search_run_records_its_inputs(window) -> None:
     w, calls = window
     w.search_view.model_picker.set_selected(["a", "b"])
     w.search_view.min_size_spin.setValue(1)
@@ -58,6 +59,25 @@ def test_every_run_records_its_inputs(window) -> None:
     assert record["values"]["models"] == ["a", "b"]
     assert record["values"]["min_size"] == 1
     assert record["models"] == ["a", "b"]
+
+
+_DRIVER_PAGES = {
+    "search_default": "search", "search_advanced": "search", "gene_ko": "gene_ko",
+    "strain_growth": "strain_growth", "ratio_impact": "ratio_impact", "community": "community",
+    "host": "host", "host_search": "host_search", "dfba": "dfba", "spatial": "spatial",
+    "medium_growth": "medium", "minimal_medium": "medium", "sweep": "sweep",
+}
+
+
+@pytest.mark.parametrize("name", sorted(DRIVERS))
+def test_every_run_records_its_inputs(window, name: str) -> None:
+    w, calls = window
+    assert DRIVERS[name](w), f"{name}: the page refused to run"
+    run_dir = _out(_wait(calls))
+    record, problem = proj.read_run_request(run_dir)
+    assert problem == "" and record is not None
+    assert record["analysis"] == _DRIVER_PAGES[name]
+    assert record["values"] == w.analysis_pages[_DRIVER_PAGES[name]].snapshot()
 
 
 def test_reopening_a_run_restores_its_page_and_inputs(window) -> None:
@@ -122,11 +142,14 @@ def test_record_failure_refuses_the_run_and_leaves_nothing(window, monkeypatch) 
         raise proj.ProjectError("disk full")
 
     monkeypatch.setattr(proj, "write_run_request", refuse)
-    before = sorted(p.name for p in w.session.require().runs_dir.iterdir())
+    project = w.session.require()
+    before = sorted(p.name for p in project.runs_dir.iterdir())
+    inputs_before = sorted(p.name for p in project.inputs_dir.iterdir())
     w.strain_growth_page.model_picker.set_selected(["a"])
     assert w.run_strain_growth_report() == ""
     assert "disk full" in w.strain_growth_page.status.text()
-    assert sorted(p.name for p in w.session.require().runs_dir.iterdir()) == before
+    assert sorted(p.name for p in project.runs_dir.iterdir()) == before
+    assert sorted(p.name for p in project.inputs_dir.iterdir()) == inputs_before
     assert calls == []
 
 
@@ -156,6 +179,17 @@ def test_analysis_for_run_falls_back_to_the_folder_name(tmp_path: Path) -> None:
     assert run_restore.analysis_for_run(run_dir) == ("host_search", None, "")
     (run_dir / "manifest.json").write_text(json.dumps({"workflow_kind": "strain_growth"}))
     assert run_restore.analysis_for_run(run_dir)[0] == "strain_growth"
+
+
+def test_a_gui_named_folder_wins_over_the_community_fallback(tmp_path: Path) -> None:
+    run_dir = tmp_path / "runs" / "medium-growth-20261014-101010"
+    run_dir.mkdir(parents=True)
+    (run_dir / "nodes.parquet").write_bytes(b"")
+    assert run_restore.analysis_for_run(run_dir) == ("medium", None, "")
+    other = tmp_path / "runs" / "my-solve"
+    other.mkdir()
+    (other / "nodes.parquet").write_bytes(b"")
+    assert run_restore.analysis_for_run(other)[0] == "community"
 
 
 def _gene_ko_summary(run_dir: Path) -> None:
@@ -214,3 +248,78 @@ def test_opening_another_page_clears_the_banner(window) -> None:
     w.show_analysis("search")
     w.show_analysis("dfba")
     assert not w.dynamics_view.banner.isVisibleTo(w.dynamics_view)
+
+
+def test_reopened_run_without_a_record_never_claims_the_screen_as_executed(
+    window, monkeypatch
+) -> None:
+    w, calls = window
+    page = w.gene_ko_page
+    run_dir = w.session.require().runs_dir / "legacy-ko"
+    _gene_ko_summary(run_dir)
+    (run_dir / "manifest.json").write_text(json.dumps({"workflow_kind": "gene_ko_search"}))
+    monkeypatch.setattr(w, "_inspect_gui_run", lambda _d: {"artifact_integrity": "verified"})
+    page.target_input.setText("ac")
+    w._open_run_entry(run_dir)
+    assert w.pages.currentWidget() is page
+    assert page.results.has_results()
+    details = page.results_panel.details.toPlainText()
+    assert "Executed request" not in details and "'target': 'ac'" not in details
+    assert "Executed Gene KO" not in details
+    assert "Inputs for legacy-ko are not known" in page.status.text()
+    assert "superseded" not in page.status.text()
+
+
+def test_fully_restored_ranked_run_shows_its_executed_request(window, monkeypatch) -> None:
+    w, calls = window
+    page = w.gene_ko_page
+    page.model_picker.set_selected(["a", "b"])
+    page.members_picker.set_selected(["a"])
+    page.target_input.setText("but")
+    assert w.run_gene_ko_search()
+    run_dir = _out(_wait(calls))
+    _gene_ko_summary(run_dir)
+    monkeypatch.setattr(w, "_inspect_gui_run", lambda _d: {"artifact_integrity": "verified"})
+    page.target_input.setText("ac")
+    w._open_run_entry(run_dir)
+    details = page.results_panel.details.toPlainText()
+    assert "Executed request" in details and "'target': 'but'" in details
+    assert "not known" not in page.status.text()
+
+
+def _sweep_run(w, name: str) -> Path:
+    run_dir = w.session.require().runs_dir / name
+    run_dir.mkdir()
+    return run_dir
+
+
+def test_corrupt_sweep_parquet_is_reported_and_cleared(window) -> None:
+    from cmig.core.sweep import SweepRow
+
+    w, _calls = window
+    w.sweep_view.load_results([SweepRow(
+        condition_id="old", axis_values={}, metric="growth", value=1.0, run_hash="h",
+        status="ok", diagnostic=None, cache_hit=False,
+    )])
+    run_dir = _sweep_run(w, "sweep-20261014-101010")
+    (run_dir / "sweep.parquet").write_bytes(b"not a parquet file")
+    w._open_run_entry(run_dir)
+    assert w.pages.currentWidget() is w.sweep_page
+    assert w.sweep_view.table.rowCount() == 0
+    assert "Readback invalid/unreadable" in w.sweep_view.status.text()
+
+
+def test_failed_sweep_with_partial_rows_says_it_failed(window) -> None:
+    from cmig.core.sweep import SweepRow, write_sweep_parquet
+
+    w, _calls = window
+    run_dir = _sweep_run(w, "sweep-20261014-101010")
+    write_sweep_parquet([SweepRow(
+        condition_id="c1", axis_values={"tradeoff_f": 0.3}, metric="growth", value=0.5,
+        run_hash="h", status="ok", diagnostic=None, cache_hit=False,
+    )], run_dir / "sweep.parquet")
+    proj.write_run_state(run_dir, "failed", "sweep")
+    w._open_run_entry(run_dir)
+    assert w.sweep_view.table.rowCount() == 1
+    status = w.sweep_view.status.text()
+    assert "failed" in status and "partial" in status
