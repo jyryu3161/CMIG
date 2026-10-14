@@ -90,16 +90,33 @@ def test_pool_coverage_names_the_ids_no_pool_model_can_take_up():
     assert coverage.by_model["a"] == frozenset({"EX_glc__D_m", "EX_ac_m"})
 
 
-def test_a_candidate_missing_a_pool_id_has_it_as_not_applicable_not_unknown():
+def test_a_candidate_missing_ids_splits_them_into_community_and_pool_not_applicable():
     from cmig.core.medium_spec import pool_medium_coverage
 
     spec = MediumSpec(uptake={**_POOL_MEDIUM.uptake, "EX_notreal_m": 1.0})
     coverage = pool_medium_coverage(_pool_models(), spec)
-    not_applicable, unknown = coverage.split(
+    community, pool, unknown = coverage.split(
         ["EX_but_m", "EX_fru_m", "EX_notreal_m"], members=("a",)
     )
-    assert not_applicable == ("EX_but_m", "EX_fru_m")
-    assert unknown == ("EX_notreal_m",)
+    assert community == ("EX_but_m", "EX_fru_m")       # other pool models have them
+    assert pool == ("EX_notreal_m",)                   # no pool model has it; others match
+    assert unknown == ()
+    assert coverage.pool_not_applicable == ("EX_notreal_m",)
+    assert coverage.require_some_match() is None
+
+
+def test_a_medium_that_matches_no_pool_model_at_all_is_refused():
+    """The namespace-mismatch signature: not one id of the medium reaches any pool model."""
+    from cmig.core.medium_spec import pool_medium_coverage
+
+    nonsense = MediumSpec(uptake={"EX_glc_D(e)": 10.0, "EX_notreal_m": 1.0})
+    coverage = pool_medium_coverage(_pool_models(), nonsense)
+    assert coverage.pool_not_applicable == ()
+    assert coverage.split(["EX_glc_D(e)", "EX_notreal_m"], members=("a",)) == (
+        (), (), ("EX_glc_D(e)", "EX_notreal_m"),
+    )
+    with pytest.raises(ValueError, match="none of the medium's 2 exchange ids matches"):
+        coverage.require_some_match()
 
 
 def test_an_id_a_member_has_but_the_community_lacks_is_refused_not_hidden():
@@ -151,11 +168,30 @@ def test_without_pool_knowledge_the_old_refusal_still_holds():
     assert all("no counterpart" in (row.diagnostic or "") for row in result.unevaluated)
 
 
-def test_allow_unknown_keeps_its_meaning_for_ids_no_pool_model_has():
+def test_a_pool_unknown_id_is_not_applicable_to_the_pool_with_or_without_the_flag():
+    """`--allow-unknown-medium` has nothing left to drop when some ids match."""
     from cmig.core.medium_spec import pool_medium_coverage
     from cmig.core.search_product import UNAPPLIED_MEDIUM_PREFIX, SearchConfig, search_model_pool
 
     spec = MediumSpec(uptake={**_POOL_MEDIUM.uptake, "EX_notreal_m": 1.0})
+    coverage = pool_medium_coverage(_pool_models(), spec)
+    for strict in (True, False):
+        result = search_model_pool(
+            _StubEngine(), _TAXONOMY, SearchConfig(target="ac", min_size=2, max_size=2),
+            medium_spec=spec, strict_medium=strict, medium_pool=coverage,
+        )
+        assert not any(UNAPPLIED_MEDIUM_PREFIX in w for w in result.warnings), result.warnings
+        rows = {row.members: row for row in list(result.ranks) + list(result.unevaluated)}
+        assert rows[("a", "b")].medium_not_applicable == ("EX_fru_m",)   # community level only
+        for row in rows.values():
+            assert "no counterpart" not in (row.diagnostic or ""), row.diagnostic
+
+
+def test_allow_unknown_keeps_todays_behaviour_when_nothing_matches():
+    from cmig.core.medium_spec import pool_medium_coverage
+    from cmig.core.search_product import UNAPPLIED_MEDIUM_PREFIX, SearchConfig, search_model_pool
+
+    spec = MediumSpec(uptake={"EX_notreal_m": 1.0, "EX_alsonot_m": 2.0})
     coverage = pool_medium_coverage(_pool_models(), spec)
     result = search_model_pool(
         _StubEngine(), _TAXONOMY, SearchConfig(target="ac", min_size=2, max_size=2),
@@ -163,14 +199,9 @@ def test_allow_unknown_keeps_its_meaning_for_ids_no_pool_model_has():
     )
     unapplied = [w for w in result.warnings if UNAPPLIED_MEDIUM_PREFIX in w]
     assert unapplied and all("EX_notreal_m" in w for w in unapplied)
-    # only the pool-unknown id is "not applied"; the pool-known one is "not applicable"
-    assert not any("EX_fru_m" in w for w in unapplied)
-    rows = {row.members: row for row in list(result.ranks) + list(result.unevaluated)}
-    assert rows[("a", "b")].medium_not_applicable == ("EX_fru_m",)
 
 
-def test_strict_search_refuses_a_pool_unknown_id_before_any_evaluation(tmp_path):
-    """Namespace safety: an id no pool model has is an input error, raised before evaluating."""
+def test_only_a_medium_that_matches_nothing_is_refused_from_the_model_files(tmp_path):
     from cmig.core.medium_spec import pool_medium_coverage_from_taxonomy
 
     paths = {}
@@ -179,11 +210,10 @@ def test_strict_search_refuses_a_pool_unknown_id_before_any_evaluation(tmp_path)
         cobra.io.save_json_model(model, str(paths[member]))
     taxonomy = _TAXONOMY.assign(file=[str(paths[m]) for m in _TAXONOMY["id"]])
     spec = MediumSpec(uptake={**_POOL_MEDIUM.uptake, "EX_notreal_m": 1.0})
-    coverage = pool_medium_coverage_from_taxonomy(taxonomy, spec)
-    assert coverage.unknown == ("EX_notreal_m",)
-    with pytest.raises(ValueError, match="no counterpart in any model of the selected pool"):
-        coverage.require_known()
-    assert pool_medium_coverage_from_taxonomy(taxonomy, _POOL_MEDIUM).require_known() is None
+    assert pool_medium_coverage_from_taxonomy(taxonomy, spec).require_some_match() is None
+    nonsense = MediumSpec(uptake={"EX_notreal_m": 1.0})
+    with pytest.raises(ValueError, match="none of the medium's 1 exchange ids matches"):
+        pool_medium_coverage_from_taxonomy(taxonomy, nonsense).require_some_match()
 
 
 # ── the claim the rule rests on: dropping an id the community lacks leaves the LP identical ────
@@ -214,9 +244,12 @@ def test_full_pool_medium_gives_the_same_lp_as_the_medium_prefiltered_to_the_can
     exchange (EX_glc__D_m offered at 10); each is asked for a target it can make.
     """
     taxonomy = _pair_pool(tmp_path)
-    medium = MediumSpec(uptake={"EX_glc__D_m": 10.0, "EX_ac_m": 5.0, "EX_but_m": 3.0})
+    medium = MediumSpec(uptake={
+        "EX_glc__D_m": 10.0, "EX_ac_m": 5.0, "EX_but_m": 3.0,
+        "EX_notreal_m": 7.0,   # no pool model has it: not applicable to the pool
+    })
     coverage = pool_medium_coverage_from_taxonomy(taxonomy, medium)
-    assert coverage.unknown == ()
+    assert coverage.pool_not_applicable == ("EX_notreal_m",)
     engine = MicomEngine()
     compared = 0
     with cli_exact_medium(True):
@@ -240,7 +273,8 @@ def test_full_pool_medium_gives_the_same_lp_as_the_medium_prefiltered_to_the_can
             dropped = tuple(sorted(set(medium.uptake) - set(prefiltered.uptake)))
             assert dropped and all(medium.uptake[row] > 0 for row in dropped)
             assert new.target_flux > 0
-            assert new.medium_not_applicable == dropped
+            assert "EX_notreal_m" in dropped
+            assert new.medium_not_applicable == tuple(r for r in dropped if r != "EX_notreal_m")
             assert old.medium_not_applicable == ()
             assert new.target_flux == pytest.approx(old.target_flux, abs=1e-6)
             assert new.community_growth == pytest.approx(old.community_growth, abs=1e-6)
@@ -293,7 +327,7 @@ def test_cli_search_ranks_single_members_on_a_pool_medium_and_records_the_scope(
     assert manifest["medium_policy"] == MEDIUM_POLICY
 
 
-def test_cli_search_refuses_an_id_no_pool_model_has_with_exit_2(tmp_path, capsys):
+def test_cli_search_records_an_id_no_pool_model_has_as_not_applicable_to_the_pool(tmp_path):
     pytest.importorskip("micom")
     pytest.importorskip("gurobipy")
     from cmig.cli.main import main
@@ -303,15 +337,69 @@ def test_cli_search_refuses_an_id_no_pool_model_has_with_exit_2(tmp_path, capsys
     taxonomy.to_csv(tax_path, index=False)
     medium = tmp_path / "medium.csv"
     medium.write_text("exchange_id,uptake_limit\nEX_glc__D_m,10\nEX_notreal_m,1\n")
+    out = tmp_path / "search"
+    rc = main([
+        "search", "--taxonomy", str(tax_path), "--target", "ac",
+        "--min-size", "1", "--max-size", "1", "--medium", str(medium), "--out", str(out),
+    ])
+    assert rc in (0, 3)
+    summary = json.loads((out / "search_summary.json").read_text())
+    assert summary["medium_not_applicable_to_pool"] == ["EX_notreal_m"]
+    assert not any("EX_notreal_m" in w for w in summary["warnings"])
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["summary"]["medium_not_applicable_to_pool"] == ["EX_notreal_m"]
+
+
+@pytest.mark.parametrize("rows", [
+    "EX_notreal_m,1\nEX_alsonot_m,2\n",              # nonsense ids
+    "EX_glc_D(e),10\nEX_ac(e),5\nEX_but(e),1\n",   # AGORA namespace, untranslated
+])
+def test_cli_search_refuses_a_medium_that_matches_no_pool_model(tmp_path, capsys, rows):
+    pytest.importorskip("micom")
+    pytest.importorskip("gurobipy")
+    from cmig.cli.main import main
+
+    taxonomy = _pair_pool(tmp_path)
+    tax_path = tmp_path / "taxonomy.csv"
+    taxonomy.to_csv(tax_path, index=False)
+    medium = tmp_path / "medium.csv"
+    medium.write_text("exchange_id,uptake_limit\n" + rows)
     rc = main([
         "search", "--taxonomy", str(tax_path), "--target", "ac",
         "--min-size", "1", "--max-size", "1", "--medium", str(medium),
         "--out", str(tmp_path / "search"),
     ])
     assert rc == 2
-    err = capsys.readouterr().err
-    assert "no counterpart in any model of the selected pool" in err
-    assert "EX_notreal_m" in err
+    assert "none of the medium's" in capsys.readouterr().err
+
+
+def test_bundled_three_model_pool_on_the_gut_overlay_now_evaluates(tmp_path):
+    """The user's case: {iAF987, iHN637, iYO844} lack 19 overlay rows (iML1515/iSFV_1184 only)."""
+    pytest.importorskip("micom")
+    pytest.importorskip("gurobipy")
+    from _gem_fixtures import ROOT, bundled_model_path
+
+    from cmig.cli.main import main
+
+    pool = ("iAF987", "iHN637", "iYO844")
+    tax_path = tmp_path / "taxonomy.csv"
+    pd.DataFrame({
+        "id": list(pool), "file": [str(bundled_model_path(f"{m}.xml")) for m in pool],
+        "abundance": [1.0] * 3,
+    }).to_csv(tax_path, index=False)
+    out = tmp_path / "search"
+    rc = main([
+        "search", "--taxonomy", str(tax_path), "--target", "but", "--min-size", "2",
+        "--max-size", "2", "--medium",
+        str(ROOT / "medium_presets" / "gut_overlay_agora_high_fiber.csv"), "--out", str(out),
+    ])
+    assert rc == 0
+    summary = json.loads((out / "search_summary.json").read_text())
+    assert summary["n_candidates_ranked"] >= 1
+    pool_na = summary["medium_not_applicable_to_pool"]
+    assert len(pool_na) == 19 and "EX_26dap__M_m" in pool_na and "EX_pheme_m" in pool_na
+    for row in summary["unevaluated"]:
+        assert "no counterpart" not in str(row["diagnostic"]), row
 
 
 # ── provenance and checkpoint identity ─────────────────────────────────────────────────────────
@@ -484,24 +572,29 @@ def test_host_search_cli_evaluates_single_members_on_a_pool_medium(tmp_path):
     assert rc in (0, 3)
 
 
-def test_host_search_cli_still_refuses_an_id_no_pool_model_has(tmp_path, capsys):
+def test_host_search_cli_records_an_id_no_pool_model_has(tmp_path):
     pytest.importorskip("micom")
+    pytest.importorskip("gurobipy")
     from cmig.cli.main import main
 
-    tax_path, medium = _pair_files(tmp_path, "EX_glc__D_m,10\nEX_notreal_m,1\n")
+    tax_path, medium = _pair_files(tmp_path, "EX_glc__D_m,10\nEX_ac_m,5\nEX_notreal_m,1\n")
     host = _model("bigg_style_host", ["EX_ac_e"])
     host_path = tmp_path / "host.xml"
     cobra.io.write_sbml_model(host, str(host_path))
+    out = tmp_path / "out"
     rc = main([
         "host-search-bigg", "--host", str(host_path), "--taxonomy", str(tax_path),
         "--min-size", "1", "--max-size", "1",
         "--microbial-biomass-gdw", "1.0", "--host-biomass-gdw", "1.0",
         "--biomass-basis-kind", "validation", "--biomass-basis-source", "pool scope fixture",
         "--microbe-medium", str(medium), "--target", "ac", "--metric", "objective_value",
-        "--out", str(tmp_path / "out"),
+        "--out", str(out),
     ])
-    assert rc == 2
-    assert "no counterpart in any model of the selected pool" in capsys.readouterr().err
+    assert rc in (0, 3)
+    summary = json.loads((out / "host_search_summary.json").read_text())
+    assert summary["medium_not_applicable_to_pool"] == ["EX_notreal_m"]
+    for row in summary["top_ranked"] + summary["unevaluated"]:
+        assert "no counterpart" not in str(row["diagnostic"]), row
 
 
 def test_sweep_member_sets_are_evaluated_on_a_pool_medium(tmp_path):
@@ -509,7 +602,9 @@ def test_sweep_member_sets_are_evaluated_on_a_pool_medium(tmp_path):
     pytest.importorskip("gurobipy")
     from cmig.cli.main import main
 
-    tax_path, medium = _pair_files(tmp_path, "EX_glc__D_m,10\nEX_ac_m,5\nEX_but_m,0\n")
+    tax_path, medium = _pair_files(
+        tmp_path, "EX_glc__D_m,10\nEX_ac_m,5\nEX_but_m,0\nEX_notreal_m,1\n"
+    )
     out = tmp_path / "sweep"
     rc = main([
         "sweep", "--taxonomy", str(tax_path), "--tradeoff-fs", "0.5", "--solvers", "gurobi",
@@ -525,13 +620,19 @@ def test_sweep_member_sets_are_evaluated_on_a_pool_medium(tmp_path):
         for path in manifests
     )
     assert recorded == [("EX_but_m",), ("EX_glc__D_m",)]
+    assert {
+        tuple(json.loads(path.read_text())["provenance"]["medium_not_applicable_to_pool"])
+        for path in manifests
+    } == {("EX_notreal_m",)}
 
 
 def test_medium_gap_surveys_each_pool_model_on_a_pool_medium(tmp_path):
     pytest.importorskip("gurobipy")
     from cmig.cli.main import main
 
-    tax_path, medium = _pair_files(tmp_path, "EX_glc__D_m,10\nEX_ac_m,5\nEX_but_m,0\n")
+    tax_path, medium = _pair_files(
+        tmp_path, "EX_glc__D_m,10\nEX_ac_m,5\nEX_but_m,0\nEX_notreal_m,1\n"
+    )
     out = tmp_path / "gap"
     rc = main([
         "medium-gap", "--taxonomy", str(tax_path), "--medium", str(medium),
@@ -542,6 +643,7 @@ def test_medium_gap_surveys_each_pool_model_on_a_pool_medium(tmp_path):
     by_id = {row["id"]: row for row in payload["models"]}
     assert by_id["producer"]["medium_not_applicable"] == "EX_but_m"
     assert by_id["consumer"]["medium_not_applicable"] == "EX_glc__D_m"
+    assert payload["medium_not_applicable_to_pool"] == ["EX_notreal_m"]
     assert {row["status"] for row in payload["models"]} <= {"sufficient", "supplement_required"}
 
 
@@ -568,8 +670,9 @@ def test_coverage_leaves_an_unreadable_model_out_and_names_it():
     coverage = pool_medium_coverage_from_taxonomy(taxonomy, _POOL_MEDIUM)
     assert coverage.by_model == {}
     assert coverage.unreadable == ("broken",)
+    # Zero matches among readable models: refused, naming the models that were not consulted.
     with pytest.raises(ValueError, match="could not be read and were not consulted: broken"):
-        coverage.require_known()
+        coverage.require_some_match()
 
 
 def test_medium_gap_survey_keeps_its_load_failed_row_for_an_unreadable_model(tmp_path):
@@ -630,7 +733,7 @@ def test_gene_ko_coverage_reads_only_the_consortium_models(tmp_path, capsys):
         "--out", str(tmp_path / "ko"),
     ])
     assert rc in (0, 3), capsys.readouterr().err
-    # A row only a non-member can take up is outside the consortium's scope: input error.
+    # A row only a non-member can take up is not applicable to the consortium's scope.
     _tax, but_medium = _pair_files(tmp_path / "b", "EX_glc__D_m,10\nEX_but_m,1\n")
     rc = main([
         "gene-ko-search", "--taxonomy", str(tax_path), "--members", "producer",
@@ -638,8 +741,9 @@ def test_gene_ko_coverage_reads_only_the_consortium_models(tmp_path, capsys):
         "--target", "ac", "--medium", str(but_medium), "--exact-medium",
         "--out", str(tmp_path / "ko2"),
     ])
-    assert rc == 2
-    assert "EX_but_m" in capsys.readouterr().err
+    assert rc in (0, 3), capsys.readouterr().err
+    summary = json.loads((tmp_path / "ko2" / "gene_ko_summary.json").read_text())
+    assert summary["medium_not_applicable_to_pool"] == ["EX_but_m"]
 
 
 def test_an_unresolvable_exchange_names_the_pool_model_and_its_file(tmp_path):

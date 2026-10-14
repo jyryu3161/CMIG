@@ -354,3 +354,26 @@ def test_the_stderr_router_is_not_installed_over_a_missing_stderr(monkeypatch):
     monkeypatch.setattr(sys, "stderr", None)
     gui_app._install_stderr_router()
     assert sys.stderr is None
+
+
+# ── fix round 2: both "not applicable" records reach the result details ───────────────────────
+
+
+def test_result_details_show_both_not_applicable_records(w):
+    summary = {
+        "status": "ok", "strategy": "exhaustive", "top_ranked": [], "warnings": [],
+        "medium_not_applicable": {"ids": ["EX_but_m"], "n_candidates": 1},
+        "medium_not_applicable_to_pool": ["EX_notreal_m"],
+    }
+    w.search_view.load_summary(summary, workflow_kind="search")
+    details = w.search_view.details.toPlainText()
+    assert "medium_not_applicable: {'ids': ['EX_but_m'], 'n_candidates': 1}" in details
+    assert "medium_not_applicable_to_pool: ['EX_notreal_m']" in details
+
+
+def test_ranked_pages_carry_the_pool_record_through_their_adapter():
+    from cmig.gui.app import _host_search_summary_for_search_view, _with_search_conditions
+
+    payload = {"top_ranked": [], "warnings": [], "medium_not_applicable_to_pool": ["EX_x_m"]}
+    shown = _with_search_conditions(_host_search_summary_for_search_view(payload), payload)
+    assert shown["medium_not_applicable_to_pool"] == ["EX_x_m"]

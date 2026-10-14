@@ -35,7 +35,7 @@
 - 계약 변경(구성요소 추가, canonical 직렬화 변경, 새 hash 인자 추가)은 envelope golden 재승인, `WORKFLOW_MANIFEST_SCHEMA_VERSION` 판단, `CHANGELOG.md` 기록을 한 변경 안에서 함께 한다. `cmig golden verify-envelope` drift를 재승인 없이 통과시키지 않는다.
 - 결과 값을 바꾸지만 입력은 바꾸지 않는 정책 변경은 `NON_HASHED_PROVENANCE_MARKERS`의 해당 표식 값을 올린다(예: `..._v2` → `_v3`). 표식 없이 결과 의미를 바꾸지 않는다.
 - 탐색·GA 의미가 바뀌면 `SEARCH_POLICY_VERSION`(현재 `consortium_search_v2`)과 GA 정책 이름을 올린다. checkpoint identity가 바뀌면 이전 checkpoint는 새 경로를 요구해야 한다.
-  - 예외 기록(2026-10-14, `medium_policy` v3): 배지 적용 규칙만 바뀌고 점수·GA·순위 규칙은 그대로인 변경(pool 단위 배지 판정)은 `SEARCH_POLICY_VERSION`을 올리지 않았다. 이 버전은 hash되는 `search_spec` 구성요소 안에 있어 올리면 입력이 같은 모든 탐색의 `run_hash`가 움직이기 때문이다. 대신 hash 밖 `medium_policy` 표식을 올리고 탐색 checkpoint identity(`search_identity`)에 `medium_policy`를 넣어 이전 checkpoint 재개를 막았다. 탐색 자체의 의미가 바뀌는 변경에는 이 예외를 쓰지 않는다.
+  - 예외 기록(2026-10-14, `medium_policy` v3; 2026-10-15 출시 전에 v3의 의미를 "일부만 없으면 빼고 진행"으로 재정의하고 값은 그대로 둠): 배지 적용 규칙만 바뀌고 점수·GA·순위 규칙은 그대로인 변경(pool 단위 배지 판정)은 `SEARCH_POLICY_VERSION`을 올리지 않았다. 이 버전은 hash되는 `search_spec` 구성요소 안에 있어 올리면 입력이 같은 모든 탐색의 `run_hash`가 움직이기 때문이다. 대신 hash 밖 `medium_policy` 표식을 올리고 탐색 checkpoint identity(`search_identity`)에 `medium_policy`를 넣어 이전 checkpoint 재개를 막았다. 탐색 자체의 의미가 바뀌는 변경에는 이 예외를 쓰지 않는다.
 - tidy 스키마(현재 1.3)나 AggregationStore 컬럼이 바뀌면 `schema_version`을 올리고 이전 번들 읽기를 유지한다.
 - golden 허용오차·반올림 자릿수를 완화하지 않는다.
 

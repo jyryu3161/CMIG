@@ -30,11 +30,13 @@ _DECIMALS = 6
 # **non-hashed** `provenance` block instead: enough to tell the two eras apart mechanically,
 # without touching the frozen contract. See the CHANGELOG entry.
 #
-# Round 11 (v3): in workflows that evaluate sub-communities of a selected pool, a medium id some
-# pool model can take up but this candidate cannot is no longer a per-candidate refusal; it is
-# recorded as `medium_not_applicable` (the LP is identical without it — see the pool-scoped
-# section below). Candidates the v2 rule refused now have answers under an unchanged
-# `run_hash`; numbers v2 did produce are unchanged.
+# Round 11 (v3): in workflows that evaluate sub-communities of a selected pool, medium ids a
+# candidate cannot take up are dropped and recorded instead of refusing it —
+# `medium_not_applicable` (another pool model has them) or `medium_not_applicable_to_pool` (no
+# pool model has them); only a medium none of whose ids matches the pool is refused (see the
+# pool-scoped section below). Candidates the v2 rule refused now have answers under an unchanged
+# `run_hash`; numbers v2 did produce are unchanged. (v3 was redefined once before any release:
+# the intermediate branch-only meaning refused any pool-unknown id.)
 MEDIUM_POLICY = "exchange_reactions_by_metabolite_pool_scoped_v3"
 # was: exchange_reactions_by_metabolite_v2 (round 5), open_uptakes_exact_key_v1 (before)
 
@@ -405,14 +407,19 @@ def translate_medium_for_model(model: object, spec: MediumSpec) -> MediumTransla
 # sub-community lacked some ids and every candidate failed. MICOM's own workflows filter the
 # medium to the community's exchanges before applying it (micom 0.39 `workflows/grow.py` and
 # `workflows/tradeoff.py`): an id with no exchange in the community cannot enter any member, so
-# dropping it leaves the LP identical. The namespace-safety purpose of the strict rule is kept
-# at the pool level instead: an id no pool model can take up is still an input error.
-MEDIUM_POOL_UNKNOWN = (
-    "medium exchange has no counterpart in any model of the selected pool (matched on metabolite)"
+# dropping it leaves the LP identical. That holds for an id no pool model has, too ("일부만 없으면
+# 빼고 진행" — the user's decision): it is "not applicable to this pool", recorded once per run.
+# What is kept of the strict rule is its namespace-safety purpose: a medium of which NOT ONE id
+# matches any pool model is almost certainly in another namespace, and is refused.
+MEDIUM_ZERO_MATCH = (
+    "none of the medium's {n} exchange ids matches an exchange of any model of the selected "
+    "pool (matched on metabolite), so the medium and the models are probably in different "
+    "namespaces (e.g. AGORA `EX_x(e)` vs BiGG `EX_x_e`/`EX_x_m`)"
 )
-MEDIUM_POOL_UNKNOWN_HINT = (
-    "allow unknown medium ids (--allow-unknown-medium) to drop them; the dropped ids are then "
-    "listed as not applied"
+MEDIUM_ZERO_MATCH_HINT = (
+    "translate the medium to the models' namespace; or allow unknown medium ids "
+    "(--allow-unknown-medium) to run without any of its rows (they are then listed as not "
+    "applied)"
 )
 
 
@@ -442,25 +449,41 @@ class PoolMediumCoverage:
 
     @property
     def unknown(self) -> tuple[str, ...]:
+        """Requested ids no (readable) pool model has an exchange for."""
         known = self.known
         return tuple(sorted(source for source in self.requested if source not in known))
 
-    def require_known(self) -> None:
-        """Refuse ids no pool model can take up — the namespace-safety half of the rule."""
-        if self.unknown:
+    @property
+    def matches_nothing(self) -> bool:
+        """Not one requested id reaches any pool model — the namespace-mismatch signature."""
+        return bool(self.requested) and not self.known
+
+    @property
+    def pool_not_applicable(self) -> tuple[str, ...]:
+        """Ids no pool model can take up while others match: dropped, LP unchanged."""
+        return () if self.matches_nothing else self.unknown
+
+    def require_some_match(self) -> None:
+        """Refuse a medium none of whose ids matches any pool model (strict mode only)."""
+        if self.matches_nothing:
             unread = (
                 f" (pool models that could not be read and were not consulted: "
                 f"{', '.join(self.unreadable)})" if self.unreadable else ""
             )
+            shown = list(self.requested[:10]) + (["…"] if len(self.requested) > 10 else [])
             raise ValueError(
-                f"{MEDIUM_POOL_UNKNOWN}: {list(self.unknown)}{unread}. {MEDIUM_POOL_UNKNOWN_HINT}"
+                MEDIUM_ZERO_MATCH.format(n=len(self.requested))
+                + f": {shown}{unread}. {MEDIUM_ZERO_MATCH_HINT}"
             )
 
     def split(
         self, unmatched: Any, members: Any
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Split one candidate community's unmatched ids into (not applicable, unknown).
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        """Split one candidate's unmatched ids: (not applicable to this community, not
+        applicable to this pool, unknown).
 
+        "Unknown" is only non-empty when the medium matches no pool model at all (strict mode
+        refuses that before any candidate runs; `--allow-unknown-medium` drops them as before).
         Refuses an id that one of the candidate's own members can take up: that would mean the
         community dropped an exchange its member has, and calling it "not applicable" would hide
         a medium that silently did not apply.
@@ -470,7 +493,8 @@ class PoolMediumCoverage:
         for member in sorted(str(m) for m in members):
             for source in self.by_model.get(member, frozenset()):
                 own.setdefault(source, member)
-        not_applicable: list[str] = []
+        community: list[str] = []
+        pool: list[str] = []
         unknown: list[str] = []
         for source in sorted(str(s) for s in unmatched):
             if source in own:
@@ -479,8 +503,13 @@ class PoolMediumCoverage:
                     f"{own[source]} but not in the community built from it; refusing to treat "
                     "it as not applicable"
                 )
-            (not_applicable if source in known else unknown).append(source)
-        return tuple(not_applicable), tuple(unknown)
+            if source in known:
+                community.append(source)
+            elif self.matches_nothing:
+                unknown.append(source)
+            else:
+                pool.append(source)
+        return tuple(community), tuple(pool), tuple(unknown)
 
 
 def pool_medium_coverage(

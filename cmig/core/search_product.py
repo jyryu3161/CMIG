@@ -89,6 +89,9 @@ class PoolSearchResult:
     evaluations: list[PoolRank] = field(default_factory=list)
     validation_report: dict[str, Any] = field(default_factory=dict)
     profile: dict[str, Any] = field(default_factory=dict, compare=False)
+    #: Medium ids no model of the selected pool can take up (others match): dropped for every
+    #: candidate, LP unchanged. Filled by `SearchService` from the pool's coverage.
+    medium_not_applicable_to_pool: tuple[str, ...] = ()
 
     @property
     def n_candidates_ranked(self) -> int:
@@ -381,7 +384,7 @@ def _apply_candidate_medium(
 
     unmatched = translate_medium_for_model(community, medium_spec).unmatched
     if medium_pool is not None:
-        not_applicable, unknown = medium_pool.split(unmatched, members)
+        not_applicable, _pool, unknown = medium_pool.split(unmatched, members)
     else:
         not_applicable, unknown = (), tuple(unmatched)
     if strict_medium and unknown:
@@ -982,6 +985,7 @@ class MultiTargetSearchResult:
     profile: dict[str, Any] = field(default_factory=dict, compare=False)
     pareto_attempts: list[dict[str, Any]] = field(default_factory=list)
     candidate_sampling_status: dict[str, str] = field(default_factory=dict)
+    medium_not_applicable_to_pool: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

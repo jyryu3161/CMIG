@@ -163,7 +163,7 @@ class EngineService:
                 if spec is not None and medium_pool is not None:
                     from cmig.core.medium_spec import translate_medium_for_model
 
-                    not_applicable, unknown = medium_pool.split(
+                    not_applicable, _pool, unknown = medium_pool.split(
                         translate_medium_for_model(community, spec).unmatched,
                         [str(member) for member in taxonomy["id"]],
                     )
@@ -177,6 +177,7 @@ class EngineService:
                     medium_application = {
                         **translation.as_provenance(),
                         "medium_not_applicable": list(not_applicable),
+                        "medium_not_applicable_to_pool": list(medium_pool.pool_not_applicable),
                     }
                 elif spec is not None:
                     # Round 6 (track B, instance 1): the same single application path, but the

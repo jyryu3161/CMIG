@@ -550,6 +550,7 @@ class SearchResultsPanel(QWidget):
             "n_pareto_points", "n_pareto_attempts", "n_pareto_resolved_attempts",
             "n_pareto_failed_attempts", "pareto_attempts", "candidate_sampling_status",
             "cli_exit_code", "cli_error", "input_diagnostic", "output_dir",
+            "medium_not_applicable", "medium_not_applicable_to_pool",
         ):
             if key in summary:
                 details.append(f"{key}: {summary[key]}")

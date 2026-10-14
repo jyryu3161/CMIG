@@ -574,12 +574,15 @@ def test_host_search_bigg_cli_degrades_and_names_the_dropped_exchange(tmp_path):
     ])
     assert rc == 0
     manifest = json.loads((out / "manifest.json").read_text())
-    assert manifest["status"] == "degraded", manifest["status"]
-    assert any("EX_n2_m" in warning for warning in manifest["warnings"]), manifest["warnings"]
+    # Round 11 (pool-scoped medium v3, "일부만 없으면 빼고 진행"): `EX_n2_m` matches no model of
+    # the pool while `EX_glc__D_m` does, so it is "not applicable to this pool" — recorded, the
+    # LP unchanged, the run not degraded; `--allow-unknown-medium` has nothing left to drop.
+    assert manifest["status"] == "ok", manifest["status"]
+    assert not any("EX_n2_m" in warning for warning in manifest["warnings"]), manifest["warnings"]
+    assert manifest["summary"]["medium_not_applicable_to_pool"] == ["EX_n2_m"]
     assert _component(manifest, "medium")["allow_unknown_medium"] is True
-    # The candidate itself was evaluated — a partly applied medium degrades the run, it does not
-    # disqualify the rows, which would silently shrink the ranking.
     summary = json.loads((out / "host_search_summary.json").read_text())
+    assert summary["medium_not_applicable_to_pool"] == ["EX_n2_m"]
     assert summary["n_candidates_evaluated"] == 1
     assert summary["n_candidates_failed"] == 0
 

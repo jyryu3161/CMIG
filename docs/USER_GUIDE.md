@@ -1559,8 +1559,8 @@ per metabolite, so an exchange that is currently closed **does get opened**.
 > A trustworthy run records `exchange_reactions_by_metabolite_pool_scoped_v3` (or
 > the earlier `exchange_reactions_by_metabolite_v2`). Absent, or
 > `open_uptakes_exact_key_v1`, means re-run. v3 changed only pool workflows (see
-> below): sub-communities v2 refused for a medium row only other pool models can
-> take up now have answers; every number v2 produced is unchanged.
+> below): candidates and selections v2 refused for medium rows they cannot take up
+> now have answers; every number v2 produced is unchanged.
 
 Two further rules:
 
@@ -1574,25 +1574,31 @@ Two further rules:
   a `medium_unapplied` diagnostic naming the dropped ids, and a `medium_checksum`
   still computed over the **full requested** medium. Use it to diagnose a medium
   file, not to produce a reported result.
-- **Pool workflows check the medium against the pool, not each candidate.**
-  `search` (single and multi-target), `host-search-bigg`, `sweep --member-sets`
-  (without `--namespace-decisions`) and `medium-gap` over a `--taxonomy`/`--model-dir`
-  evaluate sub-communities or single members of the models you selected. A medium
-  written for the whole pool — the `gut_overlay_*` presets are — names nutrients
-  that some candidates cannot take up. Such an id is **not applicable** to that
-  candidate: it has no exchange in the community, so it cannot enter any member
-  and dropping it leaves the LP identical (MICOM's own `grow` and `tradeoff`
-  workflows filter the medium to the community's exchanges the same way). It is
-  listed per candidate as `medium_not_applicable` (search summaries and
-  evaluations, host-search rows, the sweep condition's solve provenance, the
-  `medium-gap` row) and does not degrade the run or change the
-  candidate's status. An id that **no** model of the selected pool can take up is
-  still an input error (exit `2`, before any candidate is evaluated);
-  `--allow-unknown-medium` keeps its meaning for those ids only. (`sweep` keeps
-  recording such an id as a failed condition rather than exiting.) A pool model
-  whose file cannot be read is left out of this check (the refusal says so) and
-  fails where it is used, as before. `gene-ko-search` checks against its
-  `--members` consortium only, so a row only non-members can take up is refused.
+- **Pool workflows drop medium rows that cannot apply, and record them.**
+  `search` (single and multi-target), `host-search-bigg`, `gene-ko-search` (its
+  `--members` consortium is the pool), `sweep --member-sets` (without
+  `--namespace-decisions`) and `medium-gap` over a `--taxonomy`/`--model-dir` evaluate
+  sub-communities or single members of the models you selected. A medium written for a
+  larger pool — the `gut_overlay_*` presets are written for all five bundled models —
+  names nutrients that some candidates, or the whole selection, cannot take up. An id with
+  no exchange in a community cannot enter any member, so dropping it leaves the LP
+  identical (MICOM's own `grow` and `tradeoff` workflows filter the medium to the
+  community's exchanges the same way). Such ids are recorded, not refused:
+  - **not applicable to this community** (`medium_not_applicable`, per candidate): some
+    other model of the selection can take it up;
+  - **not applicable to this pool** (`medium_not_applicable_to_pool`, once per run): no
+    model of the selection can take it up, while other ids of the medium match.
+
+  Neither degrades the run nor changes a candidate's status; both appear in the run's
+  summary JSON and in the GUI result details. The only refusal left is a medium of which
+  **not one** id matches any selected model — the signature of a namespace mismatch (an
+  untranslated AGORA `EX_x(e)` file, nonsense ids): exit `2` before any candidate is
+  evaluated, "none of the medium's N exchange ids matches …". A model file that cannot be
+  read does not count as a match (the refusal names it) and fails where it is used, as
+  before. `--allow-unknown-medium` has nothing to drop in these workflows when some ids
+  match; when none match it runs without the medium's rows, which are listed as not
+  applied (the behaviour it had before). `sweep` records a zero-match medium as a failed
+  condition rather than exiting.
 
 ## Solver Provenance
 

@@ -2255,7 +2255,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
 
             medium_pool = pool_medium_coverage_from_taxonomy(taxonomy, microbe_medium)
             if not args.allow_unknown_medium:
-                medium_pool.require_known()
+                medium_pool.require_some_match()
         interface_map = _load_host_interface_map(
             args.interface_map, accept_unreviewed=args.accept_unreviewed_map
         )
@@ -2438,6 +2438,9 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
             n_candidates_failed=len(unevaluated_rows),
             unevaluated=unevaluated_rows,
             warnings=search_warnings,
+            medium_not_applicable_to_pool=(
+                medium_pool.pool_not_applicable if medium_pool is not None else ()
+            ),
             ranking_parameters={
                 "host_weight": args.host_weight,
                 "target_weight": args.target_weight,
@@ -2506,6 +2509,9 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
             "n_candidates_total": len(candidates),
             "n_candidates_ranked": len(ranked_rows),
             "n_candidates_failed": len(unevaluated_rows),
+            "medium_not_applicable_to_pool": list(
+                medium_pool.pool_not_applicable if medium_pool is not None else ()
+            ),
         },
     )
     return _exit_code_for_status(
@@ -3203,7 +3209,7 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
 
             medium_pool = pool_medium_coverage_from_taxonomy(sub, medium_spec)
             if strict_medium:
-                medium_pool.require_known()
+                medium_pool.require_some_match()
         baseline_result = search_model_pool(
             MicomEngine(), sub, config,
             medium_spec=medium_spec, strict_medium=strict_medium, medium_pool=medium_pool,
@@ -3307,6 +3313,9 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             seed=args.seed,
             direction=args.direction,
             warnings=warnings,
+            medium_not_applicable_to_pool=(
+                medium_pool.pool_not_applicable if medium_pool is not None else ()
+            ),
         )
     except ValueError as e:
         print(str(e), file=sys.stderr)
@@ -4620,6 +4629,7 @@ def _write_gene_ko_search_outputs(
     seed: int,
     direction: str,
     warnings: list[str],
+    medium_not_applicable_to_pool: tuple[str, ...] = (),
 ) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "gene_ko_rankings.csv", "w", newline="") as f:
@@ -4722,6 +4732,7 @@ def _write_gene_ko_search_outputs(
         # Medium ids another model of the taxonomy can take up but no member of this consortium
         # can: dropped for every arm alike, the LP unchanged (pool-scoped medium rule).
         "medium_not_applicable": list(getattr(baseline, "medium_not_applicable", ())),
+        "medium_not_applicable_to_pool": list(medium_not_applicable_to_pool),
         "artifacts": (artifacts := [
             "gene_ko_rankings.csv",
             "gene_ko_summary.json",
@@ -5046,6 +5057,7 @@ def _write_host_search_bigg_outputs(
     n_candidates_failed: int = 0,
     unevaluated: list[dict[str, Any]] | None = None,
     warnings: list[str] | None = None,
+    medium_not_applicable_to_pool: tuple[str, ...] = (),
 ) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     unevaluated = list(unevaluated or [])
@@ -5146,6 +5158,9 @@ def _write_host_search_bigg_outputs(
             for row in unevaluated
         ],
         "ranking_parameters": ranking_parameters,
+        # Microbial medium ids no model of the selected pool can take up (others match):
+        # dropped for every candidate, LP unchanged.
+        "medium_not_applicable_to_pool": list(medium_not_applicable_to_pool),
         "biomass_basis": biomass_basis,
         "top_ranked": [
             {
@@ -6204,6 +6219,7 @@ def _cmd_search_impl(args: argparse.Namespace) -> int:
             "best_target_flux": (
                 _finite_or_none(result.ranks[0].target_flux) if result.ranks else None
             ),
+            "medium_not_applicable_to_pool": list(result.medium_not_applicable_to_pool),
         },
     )
     return _exit_code_for_status(
@@ -6432,6 +6448,7 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
             "n_pareto_failed_attempts": sum(
                 a["outcome"] in {"timeout", "error"} for a in result.pareto_attempts
             ),
+            "medium_not_applicable_to_pool": list(result.medium_not_applicable_to_pool),
         },
     )
     return _exit_code_for_status(
@@ -6554,6 +6571,9 @@ def _write_multi_target_outputs(
             for r in result.unevaluated
         ],
         "medium_not_applicable": _medium_not_applicable_summary(result),
+        "medium_not_applicable_to_pool": list(
+            getattr(result, "medium_not_applicable_to_pool", ())
+        ),
         "top_ranked": [
             {
                 "rank": r.rank,
@@ -7367,6 +7387,9 @@ def _write_search_outputs(
             for row in result.unevaluated
         ],
         "medium_not_applicable": _medium_not_applicable_summary(result),
+        "medium_not_applicable_to_pool": list(
+            getattr(result, "medium_not_applicable_to_pool", ())
+        ),
         "pool_diagnostics": {
             "n_readable": n_readable,
             "n_with_target_exchange": n_with_target,
@@ -9104,7 +9127,7 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
 
             medium_pool = pool_medium_coverage_from_taxonomy(taxonomy, medium_spec)
             if not args.allow_unknown_medium:
-                medium_pool.require_known()
+                medium_pool.require_some_match()
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -9145,7 +9168,7 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
         not_applicable: tuple[str, ...] = ()
         unmatched_medium = list(result.unmatched_medium)
         if medium_pool is not None:
-            not_applicable, unknown = medium_pool.split(unmatched_medium, (member_id,))
+            not_applicable, _pool, unknown = medium_pool.split(unmatched_medium, (member_id,))
             unmatched_medium = list(unknown)
         rows.append({
             "id": member_id,
@@ -9197,6 +9220,10 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
         ),
         "supplement_union_exchanges": sorted(supplement_union),
         "not_expressible_as_medium_rows": {k: sorted(v) for k, v in sorted(unfixable.items())},
+        # Medium ids no pool model can take up (others match): not applicable to this pool.
+        "medium_not_applicable_to_pool": list(
+            medium_pool.pool_not_applicable if medium_pool is not None else ()
+        ),
         "models": rows,
     }
     atomic_write_text(

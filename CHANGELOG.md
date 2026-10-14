@@ -9,32 +9,46 @@ semantic versioning for public releases.
 
 - Workflows that evaluate sub-communities or single members of the selected pool —
   `search` (single and multi-target, including `--validate-top` and robustness FVA),
-  `host-search-bigg`, `sweep --member-sets` (without `--namespace-decisions`) and `medium-gap`
-  over a `--taxonomy`/`--model-dir` — now check the medium in two layers. An id that **no** model of
-  the selected pool can take up (matched on metabolite) is an input error before any
-  candidate is evaluated (exit 2; `--allow-unknown-medium` keeps its meaning for those ids).
-  An id some pool model can take up but this candidate cannot is **not applicable** to the
-  candidate: it is listed per candidate as `medium_not_applicable` and neither refuses the
-  candidate, degrades the run, nor counts as `medium_unapplied`. It cannot enter any member,
-  so the LP is identical without it — MICOM's own `grow`/`tradeoff` workflows filter the
-  medium to the community's exchanges the same way. Previously the shipped `gut_overlay_*`
-  presets (written for the whole bundled pool) failed every Combination Search candidate.
-  A pool model whose file cannot be read is left out of the pool check and keeps its own
-  failure (a `load_failed` row, failed candidates); the refusal names it as not consulted.
-  `gene-ko-search` checks the medium against its `--members` consortium only (the models it
-  uses), so an id no consortium member can take up is refused up front (exit 2) — the same
-  outcome as before, with the ids named.- `medium_policy` provenance marker: `exchange_reactions_by_metabolite_v2` →
+  `host-search-bigg`, `gene-ko-search` (scope: its `--members` consortium), `sweep
+  --member-sets` (without `--namespace-decisions`) and `medium-gap` over a
+  `--taxonomy`/`--model-dir` — no longer refuse a medium because some of its ids are missing
+  ("일부만 없으면 빼고 진행"). Every id that cannot reach the LP is dropped and recorded, and the
+  LP is identical without it — MICOM's own `grow`/`tradeoff` workflows filter the medium to
+  the community's exchanges the same way:
+  - an id some pool model can take up but this candidate cannot is **not applicable to this
+    community** — `medium_not_applicable`, per candidate;
+  - an id no (readable) model of the selected pool can take up, while other ids match, is
+    **not applicable to this pool** — `medium_not_applicable_to_pool`, once per run.
+  Neither refuses a candidate, degrades the run, or counts as `medium_unapplied`.
+  Previously the shipped `gut_overlay_*` presets (written for the whole bundled pool) failed
+  every Combination Search candidate, and a 3-model selection that lacks 19 of their rows
+  was an input error.
+- The one refusal kept (exit 2, before any candidate is evaluated, strict mode): a medium of
+  which **not one** id matches any model of the selected pool — the signature of a namespace
+  mismatch (e.g. an untranslated AGORA `EX_x(e)` file, or nonsense ids): "none of the medium's
+  N exchange ids matches an exchange of any model of the selected pool …". A pool model whose
+  file cannot be read does not count as a match; it is left out and keeps its own failure
+  (a `load_failed` row, failed candidates), and the zero-match refusal names it as not
+  consulted.
+- `--allow-unknown-medium` in these workflows: when some ids match it changes nothing (there is
+  nothing left to drop — unknown ids are already "not applicable to this pool"); when none
+  match it keeps today's behaviour (the run proceeds without the medium's rows, which are listed
+  as not applied). Other workflows keep the flag's existing meaning.
+- `medium_policy` provenance marker: `exchange_reactions_by_metabolite_v2` →
   `exchange_reactions_by_metabolite_pool_scoped_v3`. **No hash moves**: the solve `run_hash`
   (11 components) and every workflow hash are unchanged, so a v2 and a v3 run of the same
-  inputs share a `run_hash`. Candidates that v2 refused for a pool-only medium row now have
+  inputs share a `run_hash`. Candidates and pools v2 refused for missing medium rows now have
   answers; every number v2 produced is unchanged. The search checkpoint identity now includes
   `medium_policy`, so a checkpoint written before this change cannot be resumed (start a new
   checkpoint path).
 - New outputs: `medium_not_applicable` per candidate in `search_summary.json` (`top_ranked`,
   `unevaluated`) and `search_evaluations.json`, plus a run-level
   `medium_not_applicable: {ids, n_candidates}`; per row in `host_search_summary.json`; in
-  `gene_ko_summary.json` (always empty: its scope is the consortium); in a sweep condition's solve-manifest `provenance`; and a
-  `medium_not_applicable` column in `medium_gap.csv`/`medium_gap.json`.
+  `gene_ko_summary.json`; in a sweep condition's solve-manifest `provenance`; a
+  `medium_not_applicable` column in `medium_gap.csv`/`medium_gap.json`; and
+  `medium_not_applicable_to_pool` in `search_summary.json`, `host_search_summary.json`,
+  `gene_ko_summary.json`, `medium_gap.json`, the sweep condition's `provenance` and the search
+  and host-search manifests' `summary`. The GUI result details show both records.
 
 ### Fixed — GUI failure reasons
 

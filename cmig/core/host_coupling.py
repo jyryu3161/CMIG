@@ -553,7 +553,7 @@ def run_bigg_host_microbe(
         preview = translate_medium_for_model(community, microbe_medium)
         unknown: tuple[str, ...] = tuple(preview.unmatched)
         if medium_pool is not None:
-            not_applicable, unknown = medium_pool.split(
+            not_applicable, _pool, unknown = medium_pool.split(
                 preview.unmatched, [str(member) for member in taxonomy["id"]]
             )
         if strict_medium and unknown:

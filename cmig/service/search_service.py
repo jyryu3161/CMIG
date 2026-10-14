@@ -120,7 +120,7 @@ class SearchService:
             # candidate is evaluated (unless --allow-unknown-medium); candidate level: ids
             # other pool models have are "not applicable" to a candidate, not a refusal.
             if request.strict_medium:
-                coverage.require_known()
+                coverage.require_some_match()
             request = replace(request, medium_pool=coverage)
         selected: Any = (
             search_model_pool_multi
@@ -172,6 +172,9 @@ class SearchService:
                     totals[key] = totals.get(key, 0.0) + value
         return replace(
             result,
+            medium_not_applicable_to_pool=(
+                request.medium_pool.pool_not_applicable if request.medium_pool else ()
+            ),
             profile={
                 "completed_evaluation_totals": totals,
                 "workers": control.workers if control else 1,
