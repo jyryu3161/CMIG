@@ -99,6 +99,8 @@ class _EntityTab(QWidget):
         self.table.itemSelectionChanged.connect(self._show_detail)
 
     def set_rows(self, rows: list[list[str]], haystack: list[str]) -> None:
+        # Empty first: otherwise the previous model's current row stays selected here.
+        self.table.setRowCount(0)
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             for c, text in enumerate(row):

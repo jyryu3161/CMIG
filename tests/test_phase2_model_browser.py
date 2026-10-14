@@ -362,3 +362,28 @@ def test_ensure_indexes_reads_no_index_on_the_gui_thread(tmp_path: Path, monkeyp
         assert w._index_job is None, "indexes the job found usable are not checked again"
     finally:
         w.close_project()
+
+
+def test_another_model_starts_with_no_row_selected() -> None:
+    """A row picked in one model must not stay highlighted (with an empty detail) in the next."""
+    from cmig.gui.model_browser import ModelBrowser
+
+    def entry(model_id: str) -> proj.ModelEntry:
+        return proj.ModelEntry(id=model_id, file=f"models/{model_id}.xml", source_path="x",
+                               sha256=model_id, format="xml", added="t", status="ok",
+                               biomass=["BIOMASS"])
+
+    def index(prefix: str) -> dict:
+        reactions = [{"id": f"{prefix}{i}", "name": "", "metabolites": {}, "lower": 0.0,
+                      "upper": 1.0, "gpr": "", "subsystem": ""} for i in range(5)]
+        return {"reactions": reactions, "metabolites": [], "genes": [], "exchanges": [],
+                "objective": []}
+
+    b = ModelBrowser()
+    b.show_model(entry("a"), index("A"))
+    assert b.select("reaction", "A3")
+    b.show_model(entry("b"), index("B"))
+    assert b.reactions_tab.current_id() is None
+    assert b.reactions_tab.table.selectedItems() == []
+    assert b.reactions_tab.detail.toPlainText() == ""
+
