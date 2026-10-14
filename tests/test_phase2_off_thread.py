@@ -118,13 +118,26 @@ def test_off_thread_calls_leave_no_timers_or_loops_behind(window) -> None:
     assert len(window.findChildren(QEventLoop)) == loops
 
 
-def test_a_quick_job_does_not_wait_for_a_timer_tick(window) -> None:
-    window._run_off_thread(lambda: None)  # warm up
-    start = time.perf_counter()
-    for _ in range(10):
-        window._run_off_thread(lambda: None)
-    assert time.perf_counter() - start < 0.15  # a 20 ms tick minimum each would be >= 0.2 s
+def test_the_loop_quits_from_the_done_callback_not_the_safety_timer(
+    window, monkeypatch
+) -> None:
+    entered: list[bool] = []
 
+    class RecordingLoop(QEventLoop):
+        def exec(self, flag=QEventLoop.ProcessEventsFlag.AllEvents):  # type: ignore[no-untyped-def]
+            entered.append(True)
+            return super().exec(flag)
+
+    class SlowTimer(QTimer):
+        def setInterval(self, msec):  # type: ignore[no-untyped-def]
+            super().setInterval(10_000)  # the safety net cannot be what ends the loop
+
+    monkeypatch.setattr("cmig.gui.app.QEventLoop", RecordingLoop)
+    monkeypatch.setattr("cmig.gui.app.QTimer", SlowTimer)
+    start = time.perf_counter()
+    window._run_off_thread(time.sleep, 0.03)  # outlasts submit, so the loop is entered
+    assert entered
+    assert time.perf_counter() - start < 5
 
 def test_other_threads_output_is_not_captured_by_the_lookup(window, monkeypatch, capsys) -> None:
     def fake_main(argv):  # type: ignore[no-untyped-def]
