@@ -27,7 +27,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, TextIO, cast
+from typing import Any, TextIO, TypeVar, cast
 
 from PySide6.QtCore import (
     QEvent,
@@ -783,6 +783,9 @@ def _search_argv(
     return argv, ""
 
 
+T = TypeVar("T")
+
+
 class _ThreadStderrRouter:
     """Pass-through `sys.stderr` that also copies writes made by a *registered* thread.
 
@@ -820,6 +823,26 @@ def _install_stderr_router() -> None:
     """Install the pass-through router (GUI thread only; idempotent)."""
     if not isinstance(sys.stderr, _ThreadStderrRouter):
         sys.stderr = cast(TextIO, _ThreadStderrRouter(sys.stderr))
+
+
+def _install_stdout_router() -> None:
+    """Install the pass-through router on stdout (GUI thread only; idempotent)."""
+    if not isinstance(sys.stdout, _ThreadStderrRouter):
+        sys.stdout = cast(TextIO, _ThreadStderrRouter(sys.stdout))
+
+
+@contextmanager
+def _captured_thread_stdout() -> Iterator[list[str]]:
+    """Collect what the *current* thread prints (other threads' output is untouched)."""
+    chunks: list[str] = []
+    router = sys.stdout if isinstance(sys.stdout, _ThreadStderrRouter) else None
+    if router is not None:
+        router.attach(chunks)
+    try:
+        yield chunks
+    finally:
+        if router is not None:
+            router.detach()
 
 
 @contextmanager
@@ -1330,6 +1353,7 @@ class CmigMainWindow(QMainWindow):
             )
         )
         self.refresh_workspace()
+        self._polling = False
         self._completion_timer = QTimer(self)
         self._completion_timer.setInterval(500)
         self._completion_timer.timeout.connect(self._poll_completed_jobs)
@@ -1383,6 +1407,20 @@ class CmigMainWindow(QMainWindow):
     def _show_status(self, key: str, **values: Any) -> None:
         self.statusBar().showMessage(self._message(key, **values))
 
+    def _run_off_thread(self, fn: Callable[..., T], *args: Any) -> T:
+        """Run `fn` on a worker thread; keep the window responsive until it is done."""
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(fn, *args)
+            loop = QEventLoop(self)
+            timer = QTimer(self)
+            timer.setInterval(20)
+            timer.timeout.connect(lambda: loop.quit() if future.done() else None)
+            timer.start()
+            while not future.done():
+                loop.exec()
+            timer.stop()
+            return future.result()
+
     def _inspect_gui_run(self, run_dir: Path) -> dict[str, Any] | None:
         """Strict manifest preflight around the CLI's shared digest inspector."""
         from cmig.cli.main import _inspect_run_dir
@@ -1429,27 +1467,9 @@ class CmigMainWindow(QMainWindow):
                         or not isinstance(digest.get("artifacts"), dict)
                     ):
                         raise ValueError("workflow manifest result_digest is malformed")
-            # Digests of large runs are I/O bound. A nested event loop keeps repaint,
-            # cancellation and window input live while a read-only worker hashes files.
-            declared = manifest.get("artifacts", []) if manifest_path.exists() else []
-            large = any(
-                (run_dir / name).stat().st_size > 16 * 1024 * 1024
-                for name in declared if isinstance(name, str) and (run_dir / name).is_file()
-            )
-            if large:
-                with ThreadPoolExecutor(max_workers=1) as inspector_pool:
-                    future = inspector_pool.submit(_inspect_run_dir, run_dir)
-                    loop = QEventLoop(self)
-                    timer = QTimer(self)
-                    timer.setInterval(50)
-                    timer.timeout.connect(lambda: loop.quit() if future.done() else None)
-                    timer.start()
-                    while not future.done():
-                        loop.exec()
-                    timer.stop()
-                    inspected = future.result()
-            else:
-                inspected = _inspect_run_dir(run_dir)
+            # Digests are I/O bound: a worker hashes the files while a nested event loop
+            # keeps repaint, cancellation and window input live.
+            inspected = self._run_off_thread(_inspect_run_dir, run_dir)
             state = inspected["artifact_integrity"]
             detail = ""
             if state == "mismatch":
@@ -1527,7 +1547,9 @@ class CmigMainWindow(QMainWindow):
         inspected: dict[str, Any]
         try:
             fresh = cached[1] if cached is not None and cached[0] == key else None
-            inspected = dict(fresh if fresh is not None else _inspect_run_dir(run_dir))
+            if fresh is None:
+                fresh = self._run_off_thread(_inspect_run_dir, run_dir)
+            inspected = dict(fresh)
             inspected["artifact_integrity"] = _integrity_text(inspected)
         except Exception as exc:  # noqa: BLE001 - an unreadable run is shown as unreadable
             inspected = {"artifact_integrity": f"unreadable ({exc})"}
@@ -3635,14 +3657,11 @@ class CmigMainWindow(QMainWindow):
     def _agora2_list(self, query: str) -> list[Agora2Strain]:
         """Strains matching `query`, from `cmig agora2-list` run in this process.
 
-        Runs on the GUI thread (the dialog calls it on Search): `redirect_stdout` swaps the
-        process-wide stream, so it must not be used from a job thread. The catalogue cache is
-        the project's, never the package data folder. A first lookup downloads the index.
+        Runs the CLI on a worker thread; only that thread's stdout is captured. The catalogue
+        cache is the project's, never the package data folder. A first lookup downloads the
+        index.
         """
-        import contextlib
-        import io
-
-        from cmig.cli.main import main
+        import cmig.cli.main as cli_main
 
         project = self.session.require()
         argv = ["agora2-list", "--format", "json", "--limit", str(SEARCH_LIMIT),
@@ -3654,16 +3673,28 @@ class CmigMainWindow(QMainWindow):
             raise ValueError("Enter part of a genus or strain name.")
         argv += ["--match", re.escape("_".join(words))]
         _install_stderr_router()
-        buffer = io.StringIO()
+        # The router is only needed for this lookup; leave sys.stdout as it was found.
+        original_stdout = sys.stdout
+        _install_stdout_router()
+        router = sys.stdout
+
+        def _call() -> tuple[int, str, str]:
+            with _captured_thread_stdout() as out, _captured_job_stderr() as err:
+                try:
+                    rc = cli_main.main(argv)
+                except SystemExit as exc:  # argparse rejected the query
+                    rc = exc.code if isinstance(exc.code, int) else 2
+            return rc, "".join(out), "".join(err)
+
         try:
-            with contextlib.redirect_stdout(buffer), _captured_job_stderr() as stderr_chunks:
-                rc = main(argv)
-        except SystemExit as exc:  # argparse rejected the query
-            rc = exc.code if isinstance(exc.code, int) else 2
+            rc, printed, errors = self._run_off_thread(_call)
+        finally:
+            if sys.stdout is router:
+                sys.stdout = original_stdout
         if rc != 0:
-            lines = "".join(stderr_chunks).strip().splitlines()
+            lines = errors.strip().splitlines()
             raise RuntimeError(lines[-1].strip() if lines else f"agora2-list exited {rc}")
-        return _parse_catalogue(buffer.getvalue())
+        return _parse_catalogue(printed)
 
     def _agora2_fetch(self, strains: list[str]) -> str:
         """Download `strains` into a new batch folder of `models/agora2/`, then add them.
@@ -5630,6 +5661,17 @@ class CmigMainWindow(QMainWindow):
         self.last_run_button.setToolTip("")
 
     def _poll_completed_jobs(self) -> None:
+        # A readback hash runs in a nested event loop (`_run_off_thread`), which lets this
+        # 500 ms timer fire again before the first pass is done. Skip; the next tick retries.
+        if self._polling:
+            return
+        self._polling = True
+        try:
+            self._poll_completed_jobs_pass()
+        finally:
+            self._polling = False
+
+    def _poll_completed_jobs_pass(self) -> None:
         settled = self._settle_run_jobs()
         self._finish_index_job()
         self._finish_search_rows_job()
