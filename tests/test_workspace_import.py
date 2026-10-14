@@ -300,7 +300,7 @@ def test_model_overview_lists_the_project_models(window, tmp_path: Path) -> None
         "Model", "Check", "Reactions", "File",
     ]
     assert panel.exchange_table.item(0, 0).text() == "a"
-    assert panel.exchange_table.item(0, 1).text() == "ok"
+    assert panel.exchange_table.item(0, 1).text() == "✓ Ready"
     assert panel.exchange_table.item(0, 2).text() == "10"
     assert panel.exchange_table.item(1, 3).text() == "models/b.xml"
     assert window.pages.currentWidget() is panel
@@ -314,13 +314,13 @@ def test_model_overview_shows_integrity_problems_and_unchecked_sizes() -> None:
                                sha256="0" * 64, format="xml", added="t", **fields)
 
     panel = ModelManagerPanel()
-    panel.show_project_models([entry("fine", status="ok", n_reactions=7),
+    panel.show_project_models([entry("fine", status="ok", n_reactions=7, biomass=["BIOMASS"]),
                                entry("edited", status="ok", integrity="changed"),
                                entry("pending")])
     def column(c: int) -> list[str]:
         return [panel.exchange_table.item(r, c).text() for r in range(3)]
 
-    assert column(1) == ["ok", "changed", "pending"]
+    assert column(1) == ["✓ Ready", "⚠ File changed", "… Checking"]
     assert column(2) == ["7", "—", "—"]
 
 

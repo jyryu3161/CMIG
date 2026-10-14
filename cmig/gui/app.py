@@ -91,6 +91,7 @@ from cmig.gui.editors import (
 from cmig.gui.graph_view import GateBadge, InteractionGraphView
 from cmig.gui.host_view import HostImpactView
 from cmig.gui.inspector import InspectorPanel
+from cmig.gui.model_browser import ModelBrowser
 from cmig.gui.pages.gene_ko import GeneKoPage
 from cmig.gui.pages.host_search import HostSearchPage
 from cmig.gui.pages.ratio_impact import RatioImpactPage
@@ -1102,11 +1103,13 @@ class CmigMainWindow(QMainWindow):
         #: what the inspector shows: a run folder, or a model's (id, sha256)
         self._inspector_run: str | None = None
         self._inspected_model: tuple[str, str] | None = None
-        #: model sha256 -> exchange ids (successful loads only); job id -> (model id, sha256)
-        self._exchange_cache: dict[str, list[str]] = {}
-        self._exchange_jobs: dict[str, tuple[str, str]] = {}
-        #: exchange lookups cancelled because the inspector moved on (not Activity jobs)
-        self._stale_exchange_jobs: set[str] = set()
+        #: model sha256 -> why its browse index could not be built (this project only)
+        self._index_failures: dict[str, str] = {}
+        #: the one index-building job, and the project root it builds for
+        self._index_job: str | None = None
+        self._index_job_root: Path | None = None
+        #: model sha256 -> loaded browse index (a few recent ones)
+        self._index_cache: dict[str, dict[str, Any]] = {}
         self.bridge = JobsBridge(self.runner, self.jobs_panel)
         self._fixture_jobs: dict[str, Path] = {}
         # Each Search-tab map holds (out_dir, the answer-determining inputs at submit time)
@@ -1139,6 +1142,7 @@ class CmigMainWindow(QMainWindow):
         self.current_host_microbe_dir: Path | None = None
 
         self.model_manager = ModelManagerPanel()
+        self.model_browser = ModelBrowser()
         self.community_builder = CommunityBuilderView()
         self.medium_editor = MediumEditor(strings=self.tr_map)
         self.profile_view = ExternalProfileView(strings=self.tr_map)
@@ -1214,8 +1218,8 @@ class CmigMainWindow(QMainWindow):
             "sandbox": self.sandbox_page,
             "compare": self.compare_page,
         }
-        for page in [self.welcome_page, self.empty_models_page,
-                     self.model_manager, *dict.fromkeys(self.analysis_pages.values())]:
+        for page in [self.welcome_page, self.empty_models_page, self.model_manager,
+                     self.model_browser, *dict.fromkeys(self.analysis_pages.values())]:
             self.pages.addWidget(page)
         # The community result (Profile | Graph) sits in one page's results area at a time;
         # it starts on Community Solve, whose results area stays empty until a run shows.
@@ -1250,6 +1254,10 @@ class CmigMainWindow(QMainWindow):
         for button in self._run_buttons().values():
             button.installEventFilter(self)
         self.sidebar.selection_changed.connect(self._on_sidebar_selection)
+        self.model_manager.model_activated.connect(
+            lambda mid: self.sidebar.select("models", mid)
+        )
+        self.model_browser.retry_index_requested.connect(self._retry_index)
         self.sidebar.files_dropped.connect(self.add_model_paths)
         self.sidebar.context_requested.connect(self._show_sidebar_menu)
         self.sidebar.itemSelectionChanged.connect(self._update_model_actions)
@@ -1522,7 +1530,6 @@ class CmigMainWindow(QMainWindow):
         for jid in list(self.bridge._job_ids):
             if self.runner.poll(jid).status in (JobStatus.PENDING, JobStatus.RUNNING):
                 self.runner.cancel(jid)
-        self._cancel_stale_exchange_jobs(everything=True)
         self.runner.shutdown(wait=False, cancel_futures=True)
         self._close_session()
         super().closeEvent(event)
@@ -1894,7 +1901,6 @@ class CmigMainWindow(QMainWindow):
         for job_id in list(self.bridge._job_ids):
             if self.runner.poll(job_id).status in (JobStatus.PENDING, JobStatus.RUNNING):
                 self._cancel_job_id(job_id)
-        self._cancel_stale_exchange_jobs(everything=True)
 
     def _close_project_command(self) -> None:
         """File > Close Project: asks first when jobs are running."""
@@ -1972,6 +1978,10 @@ class CmigMainWindow(QMainWindow):
                 ranked.status.clear()
             for dynamics in (self.dynamics_view, self.spatial_page):
                 dynamics._clear_dynamics("")
+            # Browse indexes, their failures and the browsed model belong to that project too.
+            self._index_failures = {}
+            self._index_cache = {}
+            self.model_browser.clear()
         # Rebuilding a group drops its rows' selection; put it back unless the project changed.
         current = None if switched else self._sidebar_current()
         selected_models = [] if switched else self.sidebar.selected_keys("models")
@@ -1995,12 +2005,18 @@ class CmigMainWindow(QMainWindow):
             # Opened, switched or closed: lay the centre out for the new state.
             self._shown_root = root
             self.current_analysis = None
-            self.inspector.clear()
+            self._show_project_summary()
             self._inspector_run, self._inspected_model = None, None
             self._show_models_overview()
+            self._ensure_indexes()
         elif project is not None and self.pages.currentWidget() in (
             self.welcome_page, self.empty_models_page, self.model_manager
         ):
+            self._show_models_overview()
+        elif (project is not None and self.pages.currentWidget() is self.model_browser
+              and self.model_browser.model_id() not in {m.id for m in project.models}):
+            # The browsed model was removed or renamed: never keep showing it as current.
+            self.model_browser.clear()
             self._show_models_overview()
         self.model_manager.show_project_models([] if project is None else project.models)
         self._update_run_action()
@@ -2368,9 +2384,7 @@ class CmigMainWindow(QMainWindow):
             if group == "analyses":
                 self.show_analysis(key)
             elif group == "models" and project is not None:
-                self._inspect_model(project.model(key))
-                self.current_analysis = None
-                self._show_models_overview()
+                self._show_model(project.model(key))
             elif group == "media":
                 self._inspect_medium(key)
             elif group == "runs":
@@ -2378,82 +2392,133 @@ class CmigMainWindow(QMainWindow):
                 self._open_run_entry(Path(key))
         finally:
             self._following_sidebar = False
-            self._cancel_stale_exchange_jobs()  # lookups for a model no longer shown
 
     def _inspect_model(self, entry: ModelEntry) -> None:
-        """Show a model at once; its exchange list is parsed in a job (a GEM takes seconds)."""
-        from cmig.io.project import model_path
+        project = self.session.require()
+        self.inspector.show_model(project, entry)
+        self._inspector_run, self._inspected_model = None, (entry.id, entry.sha256)
+
+    def _show_model(self, entry: ModelEntry) -> None:
+        self._inspect_model(entry)
+        self.current_analysis = None
+        index = self._load_index(entry)
+        self.model_browser.show_model(entry, index, self._index_problem(entry))
+        self._show_page(self.model_browser)
+        if index is None and entry.sha256 not in self._index_failures:
+            self._ensure_indexes()
+
+    def _index_problem(self, entry: ModelEntry, unfinished: str = "") -> str:
+        """Why `entry` has no browse index, or "" while one is (or will be) built."""
+        if entry.sha256 in self._index_failures:
+            return self._index_failures[entry.sha256]
+        if entry.status not in ("ok", "warning") or entry.integrity != "ok":
+            return proj.check_reason(entry)[1].lower()  # never indexed: not "being built"
+        return unfinished
+
+    def _load_index(self, entry: ModelEntry) -> dict[str, Any] | None:
+        from cmig.io import model_index
 
         project = self.session.require()
-        if entry.status == "failed" or entry.integrity != "ok":
-            self.inspector.show_model(project, entry, None)
-        elif entry.sha256 in self._exchange_cache:
-            self.inspector.show_model(project, entry, self._exchange_cache[entry.sha256])
-        else:
-            self.inspector.show_model(project, entry, [])
-            self._exchange_placeholder("Loading exchanges…")
-            if all(sha != entry.sha256 or jid in self._stale_exchange_jobs
-                   for jid, (_id, sha) in self._exchange_jobs.items()):
-                path = model_path(project, entry)
+        cached = self._index_cache.get(entry.sha256)
+        if cached is not None:
+            return cached
+        index = model_index.load_index(project.root, entry.sha256)
+        if index is not None:
+            if len(self._index_cache) >= 4:
+                self._index_cache.pop(next(iter(self._index_cache)))
+            self._index_cache[entry.sha256] = index
+        return index
 
-                def _job(ctx: Any) -> list[str]:
-                    from cmig.io.model_import import import_model
+    def _ensure_indexes(self) -> None:
+        """Build missing model indexes in one background job (listed in Activity)."""
+        from cmig.io import model_index
 
-                    ctx.raise_if_cancelled()
-                    return [str(exchange) for exchange in import_model(path).exchanges]
+        project = self.session.project
+        if project is None or self._index_job is not None:
+            return
+        wanted = [
+            (m.id, m.sha256, proj.model_path(project, m)) for m in project.models
+            if m.status in ("ok", "warning") and m.integrity == "ok"
+            and m.sha256 not in self._index_failures
+            and not model_index.index_path(project.root, m.sha256).exists()
+        ]
+        if not wanted:
+            return
+        root = project.root
 
-                # A lookup for the inspector, not a user job: kept out of Activity.
-                jid = self.runner.submit("model_exchanges", _job)
-                self._exchange_jobs[jid] = (entry.id, entry.sha256)
-        self._inspector_run, self._inspected_model = None, (entry.id, entry.sha256)
-        self._cancel_stale_exchange_jobs()
+        def _job(ctx: Any) -> dict[str, Any]:
+            failures: dict[str, str] = {}
+            for i, (model_id, sha, path) in enumerate(wanted):
+                if ctx.cancelled:
+                    break
+                ctx.report_progress(i, len(wanted))
+                try:
+                    model_index.build_index_file(root, path, sha, model_id)
+                except Exception as exc:  # noqa: BLE001 - one bad model must not stop the rest
+                    failures[sha] = str(exc) or type(exc).__name__
+            ctx.report_progress(len(wanted), len(wanted))
+            return {"failures": failures, "root": str(root), "cancelled": ctx.cancelled}
 
-    def _cancel_stale_exchange_jobs(self, everything: bool = False) -> None:
-        """Cancel lookups for models the inspector no longer shows (all, when `everything`).
+        self._index_job = self.runner.submit("index_models", _job)
+        self._index_job_root = root
+        self.bridge.track(self._index_job)
+        self._job_commands[self._index_job] = f"Index {len(wanted)} model(s)"
 
-        A queued one never starts, so it cannot hold up a run the user starts next; a parse
-        already under way finishes, and its result still fills the cache.
-        """
-        for jid, key in self._exchange_jobs.items():
-            if jid in self._stale_exchange_jobs:
-                continue
-            if everything or key != self._inspected_model:
-                self.runner.cancel(jid)
-                self._stale_exchange_jobs.add(jid)
-
-    def _exchange_placeholder(self, text: str) -> None:
-        listing = self.inspector.exchange_list
-        listing.clear()
-        item = QListWidgetItem(text)
-        item.setFlags(Qt.ItemFlag.NoItemFlags)  # a note, not an exchange id
-        listing.addItem(item)
-
-    def _finish_exchange_jobs(self) -> None:
-        self._cancel_stale_exchange_jobs()  # also when the inspector moved on outside the sidebar
-        for jid, (model_id, sha) in list(self._exchange_jobs.items()):
-            job = self.runner.poll(jid)
-            if job.status in (JobStatus.PENDING, JobStatus.RUNNING):
-                continue
-            self._exchange_jobs.pop(jid, None)
-            stale = jid in self._stale_exchange_jobs
-            self._stale_exchange_jobs.discard(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, list):
-                self._exchange_cache[sha] = job.result  # failures are not cached: retried
-            self.runner.release_payload(jid)
-            project = self.session.project
-            if project is None or self._inspected_model != (model_id, sha):
-                continue  # the user moved on; the cache serves the next selection
-            if stale and sha not in self._exchange_cache:
-                continue  # a fresh lookup for this model is under way
-            if sha in self._exchange_cache:
+    def _finish_index_job(self) -> None:
+        jid = self._index_job
+        if jid is None:
+            return
+        job = self.runner.poll(jid)
+        if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+            return
+        job_root = self._index_job_root
+        self._index_job, self._index_job_root = None, None
+        project = self.session.project
+        result = job.result if isinstance(job.result, dict) else {}
+        self.runner.release_payload(jid)
+        if project is None:
+            return
+        if job_root is None or not _same_folder(project.root, job_root):
+            self._ensure_indexes()  # it was the previous project's job: start this project's
+            return
+        self._index_failures.update(result.get("failures", {}))
+        cancelled = job.status is JobStatus.CANCELLED or bool(result.get("cancelled"))
+        if job.status is JobStatus.DONE and not cancelled:
+            self._ensure_indexes()  # models added or retried while this job ran
+        # Contents still missing after a cancelled or failed job are not "being built".
+        unfinished = (
+            "indexing was cancelled" if cancelled
+            else "" if job.status is JobStatus.DONE else f"indexing failed: {job.error or jid}"
+        )
+        if self.pages.currentWidget() is self.model_browser:
+            model_id = self.model_browser.model_id()
+            if model_id is not None:
                 try:
                     entry = project.model(model_id)
                 except ProjectError:
-                    continue
-                self.inspector.show_model(project, entry, self._exchange_cache[sha])
-            else:
-                reason = job.error or job.status.value
-                self._exchange_placeholder(f"Exchange list unavailable: {reason}")
+                    entry = None
+                if entry is not None:
+                    self.model_browser.show_model(
+                        entry, self._load_index(entry), self._index_problem(entry, unfinished)
+                    )
+        self._index_changed()
+
+    def _index_changed(self) -> None:
+        """Hook for the project search table (Task 16)."""
+
+    def _retry_index(self, model_id: str) -> None:
+        project = self.session.require()
+        entry = project.model(model_id)
+        self._index_failures.pop(entry.sha256, None)
+        self.model_browser.show_model(entry, None, "")
+        self._ensure_indexes()
+
+    def _show_project_summary(self) -> None:
+        project = self.session.project
+        if project is None:
+            self.inspector.clear()
+        else:
+            self.inspector.show_project_summary(project, self._display_runs(self.session.runs()))
 
     def _inspect_medium(self, key: str) -> None:
         from cmig.io.project import medium_path
@@ -2925,6 +2990,7 @@ class CmigMainWindow(QMainWindow):
             self._show_job_in_activity(job_id)
         self.runner.release_payload(job_id)
         self.refresh_workspace()
+        self._ensure_indexes()
 
     def _add_imported(self, job_id: str, project: proj.Project, result: dict[str, Any]) -> None:
         # The project may have changed (a rename, an undo) since the worker took its snapshot.
@@ -4989,7 +5055,7 @@ class CmigMainWindow(QMainWindow):
 
     def _poll_completed_jobs(self) -> None:
         settled = self._settle_run_jobs()
-        self._finish_exchange_jobs()
+        self._finish_index_job()
         for jid in list(self._import_jobs):
             job = self.runner.poll(jid)
             if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):

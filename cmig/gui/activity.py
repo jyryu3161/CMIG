@@ -44,6 +44,8 @@ JOB_KIND_NAMES = {
     "sandbox_fixture": "Constraint Sandbox",
     "solve_fixture": "Demo Run",
     "import_models": "Import Models",
+    "index_models": "Index Models",
+    "check_growth": "Check Growth",
     "agora2_fetch": "AGORA2 Download",
 }
 

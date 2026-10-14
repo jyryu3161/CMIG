@@ -22,18 +22,30 @@ APP = QApplication.instance() or QApplication([])
 
 
 def test_model_inspector_shows_counts_checksum_and_filters_exchanges(tmp_path: Path) -> None:
+    from cmig.gui.model_browser import ModelBrowser
+
     project = make_project(tmp_path / "p", ["E_rectale"])
     entry = project.model("E_rectale")
+    entry.namespace_mappings = {"total": 3, "resolved": 3}
     panel = InspectorPanel()
-    panel.show_model(project, entry, ["EX_but_e", "EX_ac_e", "EX_glc__D_e"])
+    panel.show_model(project, entry)
     text = panel.details.toPlainText()
     assert "E_rectale" in panel.title_label.text()
-    assert "10 reactions" in text and entry.sha256[:12] in text and "99.0%" in text
-    panel.exchange_filter.setText("but")
-    visible = [panel.exchange_list.item(i).text() for i in range(panel.exchange_list.count())
-               if not panel.exchange_list.item(i).isHidden()]
-    assert visible == ["EX_but_e"]
+    assert "10 reactions" in text and entry.sha256[:12] in text
+    assert "Namespace mappings: 3 of 3 reviewed" in text
     assert panel.current_path() == project.root / entry.file
+    # The exchange list moved to the model browser's Exchanges tab.
+    exchanges = ["EX_but_e", "EX_ac_e", "EX_glc__D_e"]
+    reactions = [{"id": rid, "name": "", "metabolites": {}, "lower": -10.0, "upper": 1000.0}
+                 for rid in exchanges]
+    browser = ModelBrowser()
+    browser.show_model(entry, {"reactions": reactions, "metabolites": [], "genes": [],
+                               "exchanges": exchanges, "objective": []})
+    tab = browser.exchanges_tab
+    tab.filter_input.setText("but")
+    visible = [tab.table.item(r, 0).text() for r in range(tab.table.rowCount())
+               if not tab.table.isRowHidden(r)]
+    assert visible == ["EX_but_e"]
 
 
 def test_model_inspector_marks_changed_copy(tmp_path: Path) -> None:
@@ -41,9 +53,9 @@ def test_model_inspector_marks_changed_copy(tmp_path: Path) -> None:
     entry = project.model("a")
     entry.integrity = "changed"
     panel = InspectorPanel()
-    panel.show_model(project, entry, None)
+    panel.show_model(project, entry)
     assert "changed since it was added" in panel.details.toPlainText()
-    assert panel.exchange_list.count() == 0
+    assert "File changed" in panel.details.toPlainText()
 
 
 def test_run_inspector_shows_status_integrity_solver_and_command(tmp_path: Path) -> None:
@@ -120,20 +132,20 @@ def test_unrecorded_values_read_not_recorded_never_zero(tmp_path: Path) -> None:
     entry.biomass = []
     entry.sha256 = ""
     panel = InspectorPanel()
-    panel.show_model(project, entry, None)
+    panel.show_model(project, entry)
     lines = panel.details.toPlainText().splitlines()
     assert "Size: not recorded" in lines
-    assert "BiGG namespace coverage: not recorded" in lines
-    assert "Biomass: not recorded" in lines
+    assert "Namespace mappings: not recorded" in lines
+    assert "Objective: not recorded" in lines
     assert "SHA-256: not recorded" in lines  # not a bare ellipsis
     assert not any("0 reactions" in line for line in lines)
 
     entry.n_reactions, entry.n_metabolites, entry.n_genes = 0, 0, 0
-    entry.namespace_coverage_pct = 0.0
-    panel.show_model(project, entry, None)
+    entry.namespace_mappings = {"total": 0, "resolved": 0}
+    panel.show_model(project, entry)
     lines = panel.details.toPlainText().splitlines()
     assert "Size: 0 reactions · 0 metabolites · 0 genes" in lines
-    assert "BiGG namespace coverage: 0.0%" in lines
+    assert "Namespace mappings: 0 of 0 reviewed" in lines
 
     run = RunEntry(tmp_path, "search-20261013-103100", "search", "ok", "Search", 1.0)
     panel.show_run(run, {"run_hash": "", "artifact_integrity": None}, "")
@@ -162,7 +174,6 @@ def test_medium_inspector_lists_rows_and_source(tmp_path: Path) -> None:
     assert str(source) in text
     assert "EX_glc__D_e" in text and "10.0" in text and "EX_o2_e" in text
     assert "<b>0</b>" in text  # escaped, shown literally
-    assert not panel.exchange_list.isVisibleTo(panel)
     assert panel.current_path() == source and panel.current_command() == ""
     assert panel.reveal_btn.isEnabled() and not panel.copy_command_btn.isEnabled()
     panel.show_medium("gone", [], str(tmp_path / "missing.csv"))
@@ -182,15 +193,11 @@ def test_analysis_inspector_shows_description_and_cli() -> None:
 def test_clear_resets_title_exchanges_and_buttons(tmp_path: Path) -> None:
     project = make_project(tmp_path / "p", ["a"])
     panel = InspectorPanel()
-    panel.show_model(project, project.model("a"), ["EX_but_e"])
-    assert panel.exchange_list.isVisibleTo(panel) and panel.exchange_list.count() == 1
+    panel.show_model(project, project.model("a"))
     assert panel.reveal_btn.isEnabled()
     panel.clear()
     assert panel.title_label.text() == "Nothing selected"
     assert "Select a model" in panel.details.toPlainText()
-    assert panel.exchange_list.count() == 0
-    assert not panel.exchange_list.isVisibleTo(panel)
-    assert not panel.exchange_filter.isVisibleTo(panel)
     assert not panel.copy_command_btn.isEnabled() and not panel.reveal_btn.isEnabled()
     assert panel.current_command() == "" and panel.current_path() is None
 
@@ -256,7 +263,7 @@ def test_model_inspector_says_none_when_the_check_found_nothing(tmp_path: Path) 
         entry = project.model(model_id)
         for name, value in fields.items():
             setattr(entry, name, value)
-        panel.show_model(project, entry, None)
+        panel.show_model(project, entry)
         return panel.details.toPlainText()
 
     fine = text("fine")  # checked: ok, no error, no warnings

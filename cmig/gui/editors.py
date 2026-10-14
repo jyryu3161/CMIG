@@ -38,7 +38,7 @@ from cmig.core.medium_spec import MediumSpec, load_medium
 from cmig.gui.builder import make_read_only, read_only_item
 from cmig.gui.pickers import ModelPicker
 from cmig.io.model_import import ModelSummary
-from cmig.io.project import ModelEntry
+from cmig.io.project import ModelEntry, check_reasons
 
 _NUTRIENT_ROLE = "nutrient"
 _POOL_CLOSURE_ROLE = "pool_closure"
@@ -744,6 +744,8 @@ class MediumEditor(QWidget):
 class ModelManagerPanel(QWidget):
     """Model Manager — import 된 GEM 요약 표시(reaction/metabolite/gene·exchange·biomass)."""
 
+    model_activated = Signal(str)
+
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
@@ -753,6 +755,7 @@ class ModelManagerPanel(QWidget):
         self.exchange_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         make_read_only(self.exchange_table)
         self.exchange_table.verticalHeader().setVisible(False)
+        self.exchange_table.cellDoubleClicked.connect(lambda row, _col: self._activate(row))
         self.biomass_label = QLabel("")
         layout.addWidget(self.summary_label)
         layout.addWidget(self.exchange_table)
@@ -778,11 +781,22 @@ class ModelManagerPanel(QWidget):
         self.exchange_table.setHorizontalHeaderLabels(["Model", "Check", "Reactions", "File"])
         self.exchange_table.setRowCount(len(models))
         for row, entry in enumerate(models):
-            values = [entry.id, entry.status if entry.integrity == "ok" else entry.integrity,
+            reasons = check_reasons(entry)
+            symbol, text = reasons[0]
+            values = [entry.id, f"{symbol} {text}",
                       "—" if entry.n_reactions is None else str(entry.n_reactions), entry.file]
             for col, value in enumerate(values):
-                self.exchange_table.setItem(row, col, read_only_item(value))
-        self.biomass_label.setText("Select a model in the sidebar for its details.")
+                item = read_only_item(value)
+                if col == 1:
+                    item.setToolTip("\n".join([f"{s} {t}" for s, t in reasons] + entry.warnings))
+                self.exchange_table.setItem(row, col, item)
+        self.biomass_label.setText("Double-click a model, or select it in the sidebar, to "
+                                   "browse it.")
+
+    def _activate(self, row: int) -> None:
+        item = self.exchange_table.item(row, 0)
+        if item is not None and self.exchange_table.columnCount() == 4:
+            self.model_activated.emit(item.text())
 
 
 _PRESET_METADATA = "provenance_rows.csv"  # shipped beside the presets; not a medium
