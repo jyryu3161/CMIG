@@ -1274,17 +1274,19 @@ class CmigMainWindow(QMainWindow):
         #: Digest state of the last loaded run ("Integrity: verified", "Readback: …").
         self._last_integrity = "Integrity: no run loaded"
         self._integrity_detail = "No run loaded."
-        self.solver_label = QLabel("")
-        self.statusBar().addPermanentWidget(self.solver_label)
-        self._refresh_solver_label()
+        # A permanent widget: ordinary status-bar widgets are hidden while a message shows,
+        # and the window keeps one ("Ready") on screen.
         self.last_run_button = QToolButton()
         self.last_run_button.setAutoRaise(True)
         self.last_run_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.last_run_button.clicked.connect(self._open_last_run)
-        self.statusBar().addWidget(self.last_run_button)
+        self.statusBar().addPermanentWidget(self.last_run_button)
         self._last_run_dir: Path | None = None
         #: run folders whose job ended since the last poll: (folder, error text)
         self._just_finished: list[tuple[Path, str]] = []
+        self.solver_label = QLabel("")
+        self.statusBar().addPermanentWidget(self.solver_label)
+        self._refresh_solver_label()
         self._install_workflow_actions()
         self._connect_view_actions()
         for button in self._run_buttons().values():
@@ -5557,9 +5559,10 @@ class CmigMainWindow(QMainWindow):
             if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
                 continue
             del self._job_runs[job_id]
-            self._just_finished.append(
-                (run_dir, "" if job.status is JobStatus.DONE else (job.error or ""))
-            )
+            if self._in_project_runs(run_dir):  # a closed project's run is not shown here
+                self._just_finished.append(
+                    (run_dir, "" if job.status is JobStatus.DONE else (job.error or ""))
+                )
             if job.status is JobStatus.DONE:
                 continue  # a finished run is judged by what it holds
             changed = True
@@ -5577,6 +5580,8 @@ class CmigMainWindow(QMainWindow):
         from cmig.gui.inspector import _solver_label
         from cmig.gui.run_restore import analysis_for_run
 
+        if not self._in_project_runs(run_dir):
+            return
         entry = self._run_entry(Path(run_dir).resolve())
         key, _record, _problem = analysis_for_run(entry.path)
         title = (dict(ANALYSES).get(key or "") or ("Check Growth" if key == "check_growth"
@@ -5590,18 +5595,28 @@ class CmigMainWindow(QMainWindow):
         solver = _solver_label(manifest)
         if solver and symbol != "✗":
             parts.append(solver)
+        full_reason = self._failure_reason(error, first_line_only=False)
+        tip = [str(entry.path)]
         if symbol == "✗":
             parts.append(self._failure_reason(error) or entry.status)
-        self.last_run_button.setText(" · ".join(parts))
-        self.last_run_button.setToolTip(str(entry.path))
+            tip.insert(0, full_reason or f"Status: {entry.status}")
+        elif symbol == "⚠":
+            tip.insert(0, f"Status: {entry.status}")
+        # A long reason is cut at the bar's edge; the tooltip carries all of it.
+        self.last_run_button.setText(self.last_run_button.fontMetrics().elidedText(
+            " · ".join(parts), Qt.TextElideMode.ElideRight, 640))
+        self.last_run_button.setToolTip("\n".join(tip))
         self._last_run_dir = entry.path
 
     @staticmethod
-    def _failure_reason(error: str) -> str:
-        """The first readable line of a job's error (a serialized Diagnostic or plain text)."""
+    def _failure_reason(error: str, *, first_line_only: bool = True) -> str:
+        """A job's error as readable text (a serialized Diagnostic or plain text)."""
         message = str((parse_diagnostic(error) or {}).get("message") or error)
-        lines = message.removeprefix("RuntimeError: ").strip().splitlines()
-        return lines[0] if lines else ""
+        text = message.removeprefix("RuntimeError: ").strip()
+        lines = text.splitlines()
+        if not lines:
+            return ""
+        return lines[0] if first_line_only else text
 
     def _open_last_run(self) -> None:
         if self._last_run_dir is not None:

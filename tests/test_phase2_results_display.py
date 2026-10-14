@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -55,9 +56,26 @@ def test_paint_computed_rules() -> None:
     assert "Computed by CMIG" in table.horizontalHeaderItem(1).toolTip()
 
 
+def test_only_numbers_and_numeric_ranges_are_painted() -> None:
+    table = QTableWidget(8, 2)
+    table.setHorizontalHeaderLabels(["Value", "Status"])
+    rows = [("1.2e-3", "optimal"), ("[0.1, 2]", "optimal"), ("0.1..2", "optimal"),
+            ("-0.5", "optimal"), ("biomass=unknown", "optimal"), ("not_run", "optimal"),
+            ("1.5", "completed ⚠ see warnings"), ("2.5", "unevaluated")]
+    for r, row in enumerate(rows):
+        for c, text in enumerate(row):
+            table.setItem(r, c, read_only_item(text))
+    paint_computed(table, [0], status_column=1)
+    painted = [_fg(table, r, 0) is not None for r in range(len(rows))]
+    assert painted == [True, True, True, True, False, False, False, False]
+
+
 @pytest.mark.parametrize(("text", "failed"), [("failed", True), ("Infeasible", True),
                                               ("non-viable", True), ("optimal", False),
-                                              ("ok", False), ("timeout", True)])
+                                              ("ok", False), ("timeout", True),
+                                              ("time_limit", True), ("not_run", True),
+                                              ("no_solution", True), ("unbounded", True),
+                                              ("completed ⚠ see warnings", True)])
 def test_is_failed_status(text: str, failed: bool) -> None:
     assert is_failed_status(text) is failed
 
@@ -123,3 +141,66 @@ def test_closing_the_project_clears_the_last_run(tmp_path: Path) -> None:
     w.close_project()
     assert w.last_run_button.text() == ""
     assert w._last_run_dir is None
+
+
+def _wait_for(predicate, w, seconds: float = 10.0) -> bool:  # type: ignore[no-untyped-def]
+    deadline = time.time() + seconds
+    while not predicate() and time.time() < deadline:
+        APP.processEvents()
+        time.sleep(0.02)
+        w._poll_completed_jobs()
+    return bool(predicate())
+
+
+def test_last_run_button_is_visible_beside_a_status_message(tmp_path: Path, monkeypatch) -> None:
+    make_project(tmp_path / "p", ["a", "b"])
+    w = build_main_window()
+    w.recent = RecentProjects(QSettings(str(tmp_path / "r.ini"), QSettings.Format.IniFormat))
+    w.show()
+    assert w.open_project(tmp_path / "p")
+    try:
+        w.statusBar().showMessage("Ready")
+        monkeypatch.setattr("cmig.cli.main.main", lambda argv: 2)
+        w.strain_growth_page.model_picker.set_selected(["a"])
+        assert w.run_strain_growth_report()
+        assert _wait_for(lambda: bool(w.last_run_button.text()), w)
+        APP.processEvents()
+        assert w.last_run_button.isVisible()
+        tip = w.last_run_button.toolTip()
+        assert "rc=2" in tip and "strain-growth-" in tip, "the tooltip has the reason and path"
+    finally:
+        w.close_project()
+
+
+def test_a_closed_projects_run_is_not_shown_in_the_next_project(
+    tmp_path: Path, monkeypatch
+) -> None:
+    make_project(tmp_path / "p", ["a", "b"])
+    make_project(tmp_path / "q", ["a", "b"])
+    w = build_main_window()
+    w.recent = RecentProjects(QSettings(str(tmp_path / "r.ini"), QSettings.Format.IniFormat))
+    assert w.open_project(tmp_path / "p")
+    release = threading.Event()
+
+    def slow_main(argv: list[str]) -> int:
+        release.wait(10)
+        return 2
+
+    try:
+        monkeypatch.setattr("cmig.cli.main.main", slow_main)
+        w.strain_growth_page.model_picker.set_selected(["a"])
+        assert w.run_strain_growth_report()
+        assert w._job_runs, "the job is in flight"
+        monkeypatch.setattr(w, "_confirm_closing_with_jobs", lambda: True)
+        assert w.open_project(tmp_path / "q")
+        release.set()
+        assert _wait_for(lambda: not w._job_runs, w)
+        w._poll_completed_jobs()
+        assert w.last_run_button.text() == ""
+        assert w._last_run_dir is None
+        w.show_analysis("search")
+        w.last_run_button.click()
+        assert w.pages.currentWidget() is not w.strain_growth_page
+    finally:
+        release.set()
+        w.close_project()

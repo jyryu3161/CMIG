@@ -6,6 +6,7 @@ Pages register their inputs by name; `snapshot()` is what a run records in
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -41,8 +42,13 @@ def hide_row_numbers(table: QTableWidget) -> QTableWidget:
 COMPUTED_TIP = "Computed by CMIG"
 FLUX_LEGEND = "+ secretion / − uptake (mmol gDW⁻¹ h⁻¹)"
 _FAILED_WORDS = ("failed", "error", "infeasible", "cancel", "non-viable", "non_viable",
-                 "timeout", "unknown", "unreadable")
-_NOT_VALUES = ("—", "unknown", "not recorded")
+                 "timeout", "unknown", "unreadable", "time_limit", "numeric", "undefined",
+                 "no_solution", "unevaluable", "unbounded", "not_run", "unevaluated", "⚠")
+_NUMBER = r"[+\-−]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+\-]?\d+)?"
+#: a finite number, "[lo, hi]" or "lo..hi": the only text that reads as a computed value
+_VALUE_TEXT = re.compile(
+    rf"{_NUMBER}|\[\s*{_NUMBER}\s*,\s*{_NUMBER}\s*\]|{_NUMBER}\s*\.\.\s*{_NUMBER}"
+)
 
 
 def is_failed_status(text: str) -> bool:
@@ -65,8 +71,9 @@ def paint_computed(
 ) -> None:
     """Show computed values in the system accent colour; inputs keep the default colour.
 
-    A cell that already has its own colour (a diagnostic, a significance mark) keeps it; a
-    missing value and every cell of a failed or unevaluated row are never painted as values.
+    A cell that already has its own colour (a diagnostic, a significance mark) keeps it. Only
+    text that reads as a finite number or a numeric range is painted: a missing value, a
+    status word and every cell of a failed, warned or unevaluated row never are.
     """
     accent = QApplication.palette().color(QPalette.ColorRole.Accent)
     wanted = list(columns)
@@ -79,8 +86,7 @@ def paint_computed(
             item = table.item(row, column)
             if item is None or item.data(Qt.ItemDataRole.ForegroundRole) is not None:
                 continue
-            text = item.text().strip()
-            if not text or text.startswith(_NOT_VALUES):
+            if _VALUE_TEXT.fullmatch(item.text().strip()) is None:
                 continue
             item.setForeground(accent)
 
