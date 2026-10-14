@@ -208,15 +208,20 @@ def test_full_pool_medium_gives_the_same_lp_as_the_medium_prefiltered_to_the_can
     from cmig.core.search import Direction, TargetSpec
     from cmig.core.search_product import _evaluate_members
 
+    """Each single-member candidate lacks a row with a NON-ZERO uptake limit and is optimal.
+
+    The producer has no butyrate exchange (EX_but_m offered at 3), the consumer no glucose
+    exchange (EX_glc__D_m offered at 10); each is asked for a target it can make.
+    """
     taxonomy = _pair_pool(tmp_path)
-    medium = MediumSpec(uptake={"EX_glc__D_m": 10.0, "EX_ac_m": 5.0, "EX_but_m": 0.0})
+    medium = MediumSpec(uptake={"EX_glc__D_m": 10.0, "EX_ac_m": 5.0, "EX_but_m": 3.0})
     coverage = pool_medium_coverage_from_taxonomy(taxonomy, medium)
     assert coverage.unknown == ()
-    spec = TargetSpec("ac", Direction.MAX_SECRETION)
     engine = MicomEngine()
     compared = 0
     with cli_exact_medium(True):
-        for members in (("producer",), ("consumer",)):
+        for members, target in ((("producer",), "ac"), (("consumer",), "but")):
+            spec = TargetSpec(target, Direction.MAX_SECRETION)
             new = _evaluate_members(
                 engine, taxonomy, members, spec, growth_fraction=0.5, solver="gurobi",
                 medium_spec=medium, strict_medium=True, medium_pool=coverage,
@@ -231,10 +236,11 @@ def test_full_pool_medium_gives_the_same_lp_as_the_medium_prefiltered_to_the_can
                 engine, taxonomy, members, spec, growth_fraction=0.5, solver="gurobi",
                 medium_spec=prefiltered, strict_medium=True,
             )
-            assert new.status == old.status
-            assert new.medium_not_applicable == tuple(
-                sorted(set(medium.uptake) - set(prefiltered.uptake))
-            )
+            assert new.status == old.status == "optimal", (new.diagnostic, old.diagnostic)
+            dropped = tuple(sorted(set(medium.uptake) - set(prefiltered.uptake)))
+            assert dropped and all(medium.uptake[row] > 0 for row in dropped)
+            assert new.target_flux > 0
+            assert new.medium_not_applicable == dropped
             assert old.medium_not_applicable == ()
             assert new.target_flux == pytest.approx(old.target_flux, abs=1e-6)
             assert new.community_growth == pytest.approx(old.community_growth, abs=1e-6)
