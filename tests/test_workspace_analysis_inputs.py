@@ -132,7 +132,7 @@ def test_dfba_uses_single_model(setup) -> None:
 def test_community_writes_abundances(setup) -> None:
     w, calls = setup
     w.community_builder.model_picker.set_selected(["a", "b"])
-    w.community_builder.add_member("a", 0.25)
+    w.community_builder.set_abundance("a", 0.25)
     w.community_builder.assume_bigg_check.setChecked(True)
     w.run_community_solve()
     argv = _wait_calls(w, calls)
@@ -282,12 +282,12 @@ def test_refused_community_abundance_keeps_runs_clean(setup) -> None:
     w, calls = setup
     project = w.session.project
     w.community_builder.model_picker.set_selected(["a"])
-    w.community_builder.add_member("b", 0.5)
+    # The table follows the picker: an unselected model has no abundance row to run with.
+    assert "b" not in w.community_builder.members()
+    with pytest.raises(KeyError):
+        w.community_builder.set_abundance("b", 0.5)
     w.community_builder.assume_bigg_check.setChecked(True)
-    assert w.run_community_solve() == ""
-    assert "unselected models: ['b']" in w.community_builder.status.text()
-    w.community_builder.table.setRowCount(0)
-    w.community_builder.add_member("a", 0.0)
+    w.community_builder.set_abundance("a", 0.0)
     assert w.run_community_solve() == ""
     assert "greater than 0" in w.community_builder.status.text()
     assert calls == []

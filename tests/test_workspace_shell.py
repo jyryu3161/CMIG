@@ -302,7 +302,9 @@ def _exchange_texts(window) -> list[str]:
 
 
 def _profile_overlay_shown(window) -> bool:
-    return (window.pages.currentWidget() is window.community_result_page
+    return (window.pages.currentWidget() is window.community_builder
+            and window.community_builder.results.isAncestorOf(window.community_result_page)
+            and window.community_builder.results.has_results()
             and window.community_result_page.currentWidget() is window.profile_view
             and window.profile_view.net_chart.delta_active
             and not window.profile_view.delta_note.isHidden())

@@ -99,7 +99,7 @@ def test_advanced_tools_are_listed_apart_and_open_on_request():
         assert w.pages.currentWidget() is page
         assert w.pages.currentWidget() is w.analysis_pages[key]
     w.show_analysis("community")
-    assert "Pick members" in w.community_builder.status.text()
+    assert "Abundances start at 1" in w.community_builder.description.text()
     assert "Advanced editor" in w.medium_editor.status.text()
     assert "Advanced result view" in w.sweep_view.status.text()
     assert "Advanced sandbox" in w.sandbox_view.status.text()
@@ -122,7 +122,9 @@ def test_load_run_dir_updates_profile_and_runs_list(tmp_path):
     assert w.profile_view.table.rowCount() == 0
     assert w.current_manifest["run_hash"] == "abc1234567890"
     assert "elements" in w.current_graph_payload
-    assert w.pages.currentWidget() is w.community_result_page
+    assert w.pages.currentWidget() is w.community_builder
+    assert w.community_builder.results.isAncestorOf(w.community_result_page)
+    assert w.community_builder.results.has_results()
     assert w.community_result_page.currentWidget() is w.profile_view
 
 
@@ -138,7 +140,9 @@ def test_runs_list_entry_reopens_run(tmp_path):
     w._show_page(w.search_view)
     item = w.sidebar.topLevelItem(3).child(0)
     w._open_run_entry(Path(item.data(0, Qt.ItemDataRole.UserRole)))
-    assert w.pages.currentWidget() is w.community_result_page
+    assert w.pages.currentWidget() is w.community_builder
+    assert w.community_builder.results.isAncestorOf(w.community_result_page)
+    assert w.community_builder.results.has_results()
     assert w.community_result_page.currentWidget() is w.profile_view
     assert w.sidebar.topLevelItem(3).childCount() == 1
     # the inspector replaces the status-bar Integrity details
@@ -757,7 +761,7 @@ def test_community_solve_button_writes_taxonomy_and_overrides_abundance(monkeypa
     # GUI now mirrors that gate instead of always failing at rc=2. The GUI must never supply
     # the confirmation on the user's behalf, so the test confirms it explicitly.
     w.community_builder.assume_bigg_check.setChecked(True)
-    w.community_builder.add_member("iML1515", 0.75)
+    w.community_builder.set_abundance("iML1515", 0.75)
     w.community_builder.f_slider.setValue(30)
     jid = w.run_community_solve()
     runner.result(jid, timeout=5)

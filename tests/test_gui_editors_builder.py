@@ -79,13 +79,15 @@ def test_community_builder_members_and_tradeoff():
     """SC-CB1: 멤버 추가/abundance + tradeoff 슬라이더."""
     _app()
     cb = CommunityBuilderView()
-    cb.add_member("A", 0.6)
-    cb.add_member("B", 0.4)
+    cb.model_picker.set_choices([("A", True, ""), ("B", True, "")])
+    cb.model_picker.set_selected(["A", "B"])
+    cb.set_abundance("A", 0.6)
+    cb.set_abundance("B", 0.4)
     assert cb.members() == {"A": 0.6, "B": 0.4}
     cb.f_slider.setValue(70)
     assert abs(cb.tradeoff_f() - 0.70) < 1e-9
     assert "0.70" in cb.f_label.text()
-    cb.remove_member(0)
+    cb.model_picker.set_selected(["B"])
     assert set(cb.members()) == {"B"}
 
 

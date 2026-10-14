@@ -74,25 +74,20 @@ REFERENCE_WARNING = (
 )
 
 
-class CommunityBuilderView(QWidget):
-    """Community Builder — 멤버 추가/제거·abundance·tradeoff f 슬라이더 → taxonomy 구성."""
+class CommunityBuilderView(AnalysisPage):
+    """Community Solve: the picked members are the table's rows; only abundances are edited."""
 
     def __init__(self) -> None:
-        super().__init__()
-        layout = QVBoxLayout(self)
-        self.title = QLabel("Community Builder")
-        self.status = QLabel(
-            "Pick members, set abundances below (default 1), then Run Community."
+        super().__init__(
+            "Community Solve",
+            "Community FBA of the selected members. Abundances start at 1; edit them in the "
+            "table.",
+            run_text="Run Community",
+            cancel=False,
         )
-        self.run_btn = QPushButton("Run Community")
-        pool_row = QHBoxLayout()
         self.model_picker = ModelPicker("Members")
-        pool_row.addWidget(self.model_picker)
-        pool_row.addStretch(1)
-        pool_row.addWidget(self.run_btn)
         # `cmig solve` refuses to run without an explicit namespace decision. Mirror that gate
         # here instead of failing at rc=2 with the real reason hidden on the process's stdout.
-        namespace_row = QHBoxLayout()
         self.assume_bigg_check = QCheckBox(
             "I reviewed these models and confirm they are already in BiGG namespace"
         )
@@ -101,46 +96,51 @@ class CommunityBuilderView(QWidget):
             "…or a reviewed namespace-decisions JSON file"
         )
         self.browse_namespace_decisions_btn = QPushButton("Decisions")
-        namespace_row.addWidget(self.assume_bigg_check)
-        namespace_row.addWidget(self.namespace_decisions_input)
-        namespace_row.addWidget(self.browse_namespace_decisions_btn)
+        self.namespace_note = QLabel("")
+        self.namespace_note.setWordWrap(True)
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["Member", "Abundance"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        member_btn_row = QHBoxLayout()
-        self.add_member_btn = QPushButton("Add member")
-        self.remove_member_btn = QPushButton("Remove selected")
-        self.add_member_btn.clicked.connect(lambda: self.add_member("", 1.0))
-        self.remove_member_btn.clicked.connect(self._remove_selected_member)
-        member_btn_row.addWidget(self.add_member_btn)
-        member_btn_row.addWidget(self.remove_member_btn)
-        member_btn_row.addStretch(1)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setMaximumHeight(220)
         #: rows whose abundance could not be parsed on the last members() call
         self.invalid_rows: list[int] = []
+        self.add_input_row(self.model_picker)
+        self.inputs.addWidget(self.table)
+        self.add_input_row(self.assume_bigg_check)
+        self.add_input_row(self.namespace_decisions_input, self.browse_namespace_decisions_btn)
+        self.inputs.addWidget(self.namespace_note)
         # tradeoff f 슬라이더 (0..1, 0.01 step → 0..100)
-        f_row = QHBoxLayout()
         self.f_label = QLabel("tradeoff f: 0.50")
         self.f_slider = QSlider(Qt.Orientation.Horizontal)
         self.f_slider.setRange(1, 100)
         self.f_slider.setValue(50)
         self.f_slider.valueChanged.connect(self._on_f)
-        f_row.addWidget(self.f_label)
-        f_row.addWidget(self.f_slider)
-        layout.addWidget(self.title)
-        layout.addWidget(self.status)
-        layout.addLayout(pool_row)
-        layout.addLayout(namespace_row)
-        layout.addWidget(self.table)
-        layout.addLayout(member_btn_row)
-        layout.addLayout(f_row)
+        self.advanced.add_row(self.f_label, self.f_slider)
+        self.advanced.track(self.f_slider)
+        self.model_picker.selection_changed.connect(self._sync_rows)
+        self.register("members", self.model_picker)
+        self.register_custom("abundances", self.members_snapshot, self._restore_abundances)
+        self.register_custom("tradeoff", lambda: self.f_slider.value(), self._restore_tradeoff)
+        self.register("assume_bigg", self.assume_bigg_check)
+        self.register("namespace_decisions", self.namespace_decisions_input)
+        self._sync_rows()
 
     def _on_f(self, v: int) -> None:
         self.f_label.setText(f"tradeoff f: {v / 100:.2f}")
 
-    def _remove_selected_member(self) -> None:
-        row = self.table.currentRow()
-        if row >= 0:
-            self.table.removeRow(row)
+    def _sync_rows(self) -> None:
+        """One row per picked member; a member that stays picked keeps its abundance."""
+        kept: dict[str, str] = {}
+        for row in range(self.table.rowCount()):
+            member, value = self.table.item(row, 0), self.table.item(row, 1)
+            if member is not None and value is not None:
+                kept[member.text()] = value.text()
+        chosen = self.model_picker.selected_ids()
+        self.table.setRowCount(len(chosen))
+        for row, member_id in enumerate(chosen):
+            self.table.setItem(row, 0, read_only_item(member_id))
+            self.table.setItem(row, 1, QTableWidgetItem(kept.get(member_id, "1")))
 
     def namespace_policy(self) -> tuple[list[str], str]:
         """Return (extra argv, error message) for the CLI's namespace gate.
@@ -168,17 +168,16 @@ class CommunityBuilderView(QWidget):
     def tradeoff_f(self) -> float:
         return self.f_slider.value() / 100.0
 
-    def add_member(self, member_id: str, abundance: float = 1.0) -> None:
-        r = self.table.rowCount()
-        self.table.insertRow(r)
-        self.table.setItem(r, 0, QTableWidgetItem(member_id))
-        self.table.setItem(r, 1, QTableWidgetItem(str(abundance)))
-
-    def remove_member(self, row: int) -> None:
-        self.table.removeRow(row)
+    def set_abundance(self, member_id: str, value: float) -> None:
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None and item.text() == member_id:
+                self.table.setItem(row, 1, QTableWidgetItem(f"{value:g}"))
+                return
+        raise KeyError(f"{member_id!r} is not a selected member")
 
     def members(self) -> dict[str, float]:
-        """Return member→abundance overrides. Unparseable rows are recorded, never skipped.
+        """Return member→abundance for every row. Unparseable rows are recorded, never skipped.
 
         Silently dropping a row the user typed would run a *different* community than the
         one on screen, so `invalid_rows` is populated and the caller must refuse to run.
@@ -188,15 +187,37 @@ class CommunityBuilderView(QWidget):
         for r in range(self.table.rowCount()):
             mid = self.table.item(r, 0)
             ab = self.table.item(r, 1)
-            if not (mid and mid.text().strip()):
+            if mid is None:
                 continue
             try:
-                value = float(ab.text()) if ab else 1.0
+                out[mid.text()] = float(ab.text()) if ab else 1.0
             except ValueError:
                 self.invalid_rows.append(r + 1)
-                continue
-            out[mid.text().strip()] = value
         return out
+
+    def members_snapshot(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for row in range(self.table.rowCount()):
+            member, value = self.table.item(row, 0), self.table.item(row, 1)
+            if member is not None and value is not None:
+                out[member.text()] = value.text()
+        return out
+
+    def _restore_abundances(self, values: object) -> str | None:
+        if not isinstance(values, dict):
+            return "abundances could not be restored"
+        for row in range(self.table.rowCount()):
+            member = self.table.item(row, 0)
+            if member is not None and member.text() in values:
+                self.table.setItem(row, 1, QTableWidgetItem(str(values[member.text()])))
+        return None
+
+    def _restore_tradeoff(self, value: object) -> str | None:
+        try:
+            self.f_slider.setValue(int(value))  # type: ignore[call-overload]
+        except (TypeError, ValueError):
+            return "tradeoff f could not be restored"
+        return None
 
 
 class DeltaTable(QTableWidget):

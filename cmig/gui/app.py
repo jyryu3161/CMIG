@@ -1175,9 +1175,13 @@ class CmigMainWindow(QMainWindow):
             "sandbox": self.sandbox_view,       # Task 12 wraps
             "compare": self.scenario_compare,   # Task 12 wraps
         }
-        for page in [self.welcome_page, self.empty_models_page, self.community_result_page,
+        for page in [self.welcome_page, self.empty_models_page,
                      self.model_manager, *dict.fromkeys(self.analysis_pages.values())]:
             self.pages.addWidget(page)
+        # The community result (Profile | Graph) sits in one page's results area at a time;
+        # it starts on Community Solve, whose results area stays empty until a run shows.
+        self.community_builder.results.add(self.community_result_page, 1)
+        self._community_result_host: str | None = "community"
         self.current_analysis: str | None = None
 
         vertical = QSplitter(Qt.Orientation.Vertical)
@@ -1517,10 +1521,18 @@ class CmigMainWindow(QMainWindow):
             )
         self._update_run_action()
 
-    def _show_profile(self) -> None:
-        """The community result page with Profile current; whatever it holds stays drawn."""
-        self._show_page(self.community_result_page)
+    def _show_profile(self, host_key: str = "community") -> None:
+        """Show the community result (Profile | Graph) inside `host_key`'s results area."""
+        page = self.analysis_pages[host_key]
+        previous = self._community_result_host
+        if previous is not None and previous != host_key:
+            self.analysis_pages[previous].results.show_empty()  # type: ignore[attr-defined]
+        if self._community_result_host != host_key:
+            page.results.add(self.community_result_page, 1)  # type: ignore[attr-defined]
+            self._community_result_host = host_key
+        page.results.show_results()  # type: ignore[attr-defined]
         self.community_result_page.setCurrentWidget(self.profile_view)
+        self._show_page(page)
 
     def _show_models_overview(self) -> None:
         project = self.session.project
@@ -3129,7 +3141,7 @@ class CmigMainWindow(QMainWindow):
         self.toggle_activity_action.setText("Hide Activity")
         return jid
 
-    def load_run_dir(self, path: str | Path) -> bool:
+    def load_run_dir(self, path: str | Path, host_key: str = "community") -> bool:
         """Show a run in its viewer; a tidy community run goes to Profile and Graph.
 
         Returns True only when the run is now on screen. A failed readback (reported in the
@@ -3217,7 +3229,7 @@ class CmigMainWindow(QMainWindow):
         self.profile_view.load_bundle(bundle)
         self.profile_view.load_targets(_read_target_summary(run_dir))
         self._register_run_output(run_dir)
-        self._show_profile()
+        self._show_profile(host_key)
         run_hash = None if self.current_manifest is None else self.current_manifest.get("run_hash")
         suffix = "" if run_hash is None else f" (run_hash {str(run_hash)[:12]})"
         self._show_status("status_loaded_run", run_dir=run_dir, suffix=suffix)

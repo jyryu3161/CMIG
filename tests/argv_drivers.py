@@ -67,7 +67,7 @@ def ratio_impact(w: Any) -> str:
 def community(w: Any) -> str:
     v = w.community_builder
     v.model_picker.set_selected(["a", "b"])
-    v.add_member("a", 0.25)
+    v.set_abundance("a", 0.25)
     v.assume_bigg_check.setChecked(True)
     v.f_slider.setValue(30)
     return w.run_community_solve()

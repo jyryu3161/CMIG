@@ -524,7 +524,7 @@ def test_community_invalid_abundance_reports_instead_of_raising(tmp_path):
     w = build_main_window(runner=runner)
     open_test_project(w, tmp_path / "p", ["iHN637"])
     w.community_builder.assume_bigg_check.setChecked(True)
-    w.community_builder.add_member("iHN637", 0.5)
+    w.community_builder.set_abundance("iHN637", 0.5)
     w.community_builder.table.item(0, 1).setText("0.5x")
     jid = w.run_community_solve()  # must not raise
     assert jid == ""

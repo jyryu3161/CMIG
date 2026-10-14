@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSpinBox,
     QTableWidget,
     QToolButton,
@@ -46,6 +47,8 @@ def widget_value(widget: QWidget) -> Any:
     if isinstance(widget, QDoubleSpinBox):
         return widget.value()
     if isinstance(widget, QSpinBox):
+        return widget.value()
+    if isinstance(widget, QSlider):
         return widget.value()
     if isinstance(widget, QComboBox):
         return widget.currentText()
@@ -75,6 +78,8 @@ def set_widget_value(widget: QWidget, value: Any) -> str | None:
             widget.setValue(float(value))
         elif isinstance(widget, QSpinBox):
             widget.setValue(int(value))
+        elif isinstance(widget, QSlider):
+            widget.setValue(int(value))
         elif isinstance(widget, QComboBox):
             index = widget.findText(str(value))
             if index < 0:
@@ -97,6 +102,8 @@ def connect_change(widget: QWidget, slot: Callable[..., Any]) -> None:
     elif isinstance(widget, QCheckBox):
         widget.toggled.connect(slot)
     elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+        widget.valueChanged.connect(slot)
+    elif isinstance(widget, QSlider):
         widget.valueChanged.connect(slot)
     elif isinstance(widget, QLineEdit):
         widget.textChanged.connect(slot)

@@ -92,6 +92,12 @@ def test_advanced_counts_values_changed_from_their_defaults() -> None:
     assert page.advanced.body.isHidden(), "collapsed by default"
     page.advanced.set_expanded(True)
     assert not page.advanced.body.isHidden()
+    from PySide6.QtWidgets import QSlider
+
+    slider = QSlider()
+    page.advanced.track(slider)
+    slider.setValue(slider.value() + 1)
+    assert page.advanced.changed_count() == 2
 
 
 def test_results_area_starts_empty_and_shows_content() -> None:
