@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from gui_project_helpers import _deterministic_qt_teardown, make_project  # noqa: E402,F401
-from PySide6.QtCore import QSettings, QTimer  # noqa: E402
+from PySide6.QtCore import QEventLoop, QSettings, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.gui.app import build_main_window  # noqa: E402
@@ -89,3 +89,62 @@ def test_a_poll_that_fires_during_a_readback_does_not_re_enter(window, monkeypat
     assert passes == [0]
     window._poll_completed_jobs()  # the guard is released afterwards
     assert passes == [0, 1]
+
+
+def test_the_nested_loop_excludes_user_input(window, monkeypatch) -> None:
+    flags: list[object] = []
+
+    class RecordingLoop(QEventLoop):
+        def exec(self, flag=QEventLoop.ProcessEventsFlag.AllEvents):  # type: ignore[no-untyped-def]
+            flags.append(flag)
+            return super().exec(flag)
+
+    monkeypatch.setattr("cmig.gui.app.QEventLoop", RecordingLoop)
+    window._run_off_thread(time.sleep, 0.05)
+    assert flags and all(f == QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents for f in flags)
+
+
+def test_off_thread_calls_leave_no_timers_or_loops_behind(window) -> None:
+    import gc
+
+    window._run_off_thread(lambda: None)  # warm up
+    gc.collect()
+    timers = len(window.findChildren(QTimer))
+    loops = len(window.findChildren(QEventLoop))
+    for _ in range(20):
+        window._run_off_thread(lambda: None)
+    gc.collect()
+    assert len(window.findChildren(QTimer)) == timers
+    assert len(window.findChildren(QEventLoop)) == loops
+
+
+def test_a_quick_job_does_not_wait_for_a_timer_tick(window) -> None:
+    window._run_off_thread(lambda: None)  # warm up
+    start = time.perf_counter()
+    for _ in range(10):
+        window._run_off_thread(lambda: None)
+    assert time.perf_counter() - start < 0.15  # a 20 ms tick minimum each would be >= 0.2 s
+
+
+def test_other_threads_output_is_not_captured_by_the_lookup(window, monkeypatch, capsys) -> None:
+    def fake_main(argv):  # type: ignore[no-untyped-def]
+        other = threading.Thread(target=lambda: print("from-another-thread"))
+        other.start()
+        other.join()
+        print(json.dumps({"models": [{"id": "Roseburia_x", "published_size": "1M"}]}))
+        return 0
+
+    monkeypatch.setattr("cmig.cli.main.main", fake_main)
+    found = window._agora2_list("Roseburia")
+    assert [str(s) for s in found] == ["Roseburia_x"]  # the other thread's line is not in it
+    assert "from-another-thread" in capsys.readouterr().out  # and it still reached the stream
+
+
+def test_installing_the_stdout_router_without_a_stdout_does_nothing(monkeypatch) -> None:
+    import sys
+
+    from cmig.gui.app import _install_stdout_router
+
+    monkeypatch.setattr(sys, "stdout", None)
+    _install_stdout_router()
+    assert sys.stdout is None

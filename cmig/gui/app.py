@@ -33,6 +33,7 @@ from PySide6.QtCore import (
     QEvent,
     QEventLoop,
     QItemSelectionModel,
+    QMetaObject,
     QModelIndex,
     QObject,
     Qt,
@@ -827,7 +828,7 @@ def _install_stderr_router() -> None:
 
 def _install_stdout_router() -> None:
     """Install the pass-through router on stdout (GUI thread only; idempotent)."""
-    if not isinstance(sys.stdout, _ThreadStderrRouter):
+    if sys.stdout is not None and not isinstance(sys.stdout, _ThreadStderrRouter):
         sys.stdout = cast(TextIO, _ThreadStderrRouter(sys.stdout))
 
 
@@ -1408,18 +1409,33 @@ class CmigMainWindow(QMainWindow):
         self.statusBar().showMessage(self._message(key, **values))
 
     def _run_off_thread(self, fn: Callable[..., T], *args: Any) -> T:
-        """Run `fn` on a worker thread; keep the window responsive until it is done."""
+        """Run `fn` on a worker thread; keep the window repainting until it is done.
+
+        User input is queued until the worker ends (a click or key press in the nested loop
+        would re-enter a run loader half way); timers and repaints continue. The loop and
+        timer have no parent, so nothing accumulates on the window.
+        """
+        loop = QEventLoop()
+        timer = QTimer()
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(fn, *args)
-            loop = QEventLoop(self)
-            timer = QTimer(self)
-            timer.setInterval(20)
+            # The worker thread posts the quit, so the loop ends the moment `fn` returns.
+            future.add_done_callback(
+                lambda _f: QMetaObject.invokeMethod(
+                    loop, "quit", Qt.ConnectionType.QueuedConnection
+                )
+            )
+            # Safety net only: the done callback is the normal way out of the loop.
+            timer.setInterval(50)
             timer.timeout.connect(lambda: loop.quit() if future.done() else None)
             timer.start()
-            while not future.done():
-                loop.exec()
-            timer.stop()
-            return future.result()
+            try:
+                while not future.done():
+                    loop.exec(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            finally:
+                timer.stop()
+                timer.timeout.disconnect()
+        return future.result()
 
     def _inspect_gui_run(self, run_dir: Path) -> dict[str, Any] | None:
         """Strict manifest preflight around the CLI's shared digest inspector."""
