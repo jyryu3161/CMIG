@@ -2166,13 +2166,16 @@ class CmigMainWindow(QMainWindow):
         self._store_settings(key, values)
 
     def _prepare_run(
-        self, kind: str, model_ids: list[str], *, abundances: dict[str, float] | None = None
+        self, kind: str, model_ids: list[str], *, abundances: dict[str, float] | None = None,
+        analysis: str | None = None,
     ) -> tuple[Path, Path | None]:
-        """Claim a new `runs/<kind>-…` folder and write its `runs/_inputs` taxonomy.
+        """Claim a new `runs/<kind>-…` folder, write its `runs/_inputs` taxonomy and, for an
+        analysis page, the page's inputs (`<run>-request.json`, for reopening the run).
 
         Returns (run folder, taxonomy or None when `model_ids` is empty). A model that cannot
-        run raises `ProjectError`; the claimed folder is removed again, so a refused run
-        leaves nothing in RUNS, and the sidebar and pickers show the model's new state.
+        run, or inputs that cannot be recorded, raise `ProjectError`; the claimed folder and
+        its inputs are removed again, so a refused run leaves nothing in RUNS, and the sidebar
+        and pickers show the model's new state.
         """
         project = self.session.require()
         run_dir = proj.new_run_dir(project, kind)
@@ -2186,12 +2189,33 @@ class CmigMainWindow(QMainWindow):
                 run_dir.rmdir()
             self.refresh_workspace()  # a copy found changed or missing is shown and dropped
             raise
+        if analysis is not None:
+            try:
+                self._record_request(analysis, run_dir)
+            except ProjectError:
+                self._discard_run(run_dir, taxonomy)
+                raise
         return run_dir.resolve(), taxonomy
+
+    def _record_request(self, analysis: str, run_dir: Path) -> None:
+        """Write the page's inputs as the run's `runs/_inputs/<run>-request.json`."""
+        from cmig import __version__
+        from cmig.gui.run_restore import request_models_and_media
+
+        page = self.analysis_pages[analysis]
+        values = page.snapshot()  # type: ignore[attr-defined]
+        page.clear_banner()  # type: ignore[attr-defined]
+        models, media = request_models_and_media(values)
+        proj.write_run_request(run_dir, analysis, values, models=models, media=media,
+                               cmig_version=__version__)
+
+    def _page_key(self, page: Any) -> str:
+        return next(key for key, shown in self.analysis_pages.items() if shown is page)
 
     @staticmethod
     def _discard_run(run_dir: Path, *inputs: Path | None) -> None:
         """Remove a claimed run folder (still empty) and its inputs when the GUI refuses it."""
-        for path in inputs:
+        for path in (*inputs, proj.run_request_path(run_dir)):
             if path is not None:
                 with suppress(OSError):
                     path.unlink()
@@ -2287,15 +2311,18 @@ class CmigMainWindow(QMainWindow):
         "compare": ("Compare two completed runs.", "cmig inspect-run"),
     }
 
-    def show_analysis(self, key: str) -> None:
+    def show_analysis(self, key: str, *, select: bool = True) -> None:
+        """Show `key`'s page; `select=False` leaves the sidebar's row (an opened run) as is."""
         page = self.analysis_pages[key]
+        getattr(page, "clear_banner", lambda: None)()  # a banner is about one reopened run
         self.current_analysis = key
         self._show_page(page)
-        blocked = self.sidebar.blockSignals(True)
-        try:
-            self.sidebar.select("analyses", key)  # a menu choice shows in the sidebar too
-        finally:
-            self.sidebar.blockSignals(blocked)
+        if select:
+            blocked = self.sidebar.blockSignals(True)
+            try:
+                self.sidebar.select("analyses", key)  # a menu choice shows in the sidebar too
+            finally:
+                self.sidebar.blockSignals(blocked)
         title = dict(ANALYSES)[key]
         description, cli = self._DESCRIPTIONS[key]
         self.inspector.show_analysis(title, description, cli)
@@ -2454,11 +2481,131 @@ class CmigMainWindow(QMainWindow):
         self._inspector_run, self._inspected_model = None, None
 
     def _open_run_entry(self, run_dir: Path) -> None:
+        """Open a run on its analysis page: its recorded inputs first, then its result.
+
+        A run of no page (or of no known kind) opens in its viewer as before. A run whose
+        result cannot be shown leaves its page empty, with the reason in the page's status:
+        never another run's result under this run's inputs.
+        """
+        from cmig.gui.run_restore import analysis_for_run, banner_text
+
         run_dir = Path(run_dir).resolve()
-        self._inspector_run = None
-        self.load_run_dir(run_dir)
-        if self._inspector_run != str(run_dir):  # e.g. a run kind without a viewer
-            self._show_run_in_inspector(run_dir)
+        key, record, problem = analysis_for_run(run_dir)
+        page = self.analysis_pages.get(key or "")
+        if page is None:
+            self._inspector_run = None
+            self.load_run_dir(run_dir)
+            if self._inspector_run != str(run_dir):  # e.g. a run kind without a viewer
+                self._show_run_in_inspector(run_dir)
+            return
+        assert key is not None
+        self.show_analysis(key, select=False)  # the opened run stays selected in RUNS
+        notes = page.restore(record["values"]) if record is not None else []  # type: ignore[attr-defined]
+        self._empty_run_result(key)  # inputs changed above; nothing older stays on show
+        if not self._load_run_into_page(key, run_dir):
+            self._empty_run_result(key, keep_status=True)
+            status = self._run_status_label(key)
+            if not status.text():  # the loader gave no reason of its own
+                failure = self._readback_failures.get(_run_key(run_dir))
+                reason = (
+                    "; ".join(failure[1].splitlines()[1:]) or failure[0]
+                    if failure is not None else "it has no result this page can show"
+                )
+                status.setText(f"No result shown for {run_dir.name}: {reason}")
+        page.show_banner(banner_text(run_dir.name, record, problem, notes))  # type: ignore[attr-defined]
+        self._show_run_in_inspector(run_dir)
+
+    def _run_status_label(self, key: str) -> QLabel:
+        """The status line under `key`'s results (Sweep's frame has no results area)."""
+        if key == "sweep":
+            return self.sweep_view.status
+        return self.analysis_pages[key].status  # type: ignore[attr-defined,no-any-return]
+
+    def _empty_run_result(self, key: str, *, keep_status: bool = False) -> None:
+        """Empty `key`'s shown result (and, unless `keep_status`, its status line)."""
+        page = self.analysis_pages[key]
+        if key in ("search", "gene_ko", "strain_growth", "ratio_impact", "host_search"):
+            self._clear_ranked(page)
+            if key == "search":
+                self.current_search_dir = None
+        elif key in ("community", "medium"):
+            self._empty_community_result_on(key)
+            if key == "medium":
+                editor = self.medium_editor
+                for label in (editor.growth_label, editor.dropped_ids_label,
+                              editor.profile_delta_label, editor.minimal_status):
+                    label.clear()
+                editor.minimal_table.setRowCount(0)
+                self._medium_delta_active = False
+        elif key == "host":
+            self.host_view.clear_result()
+            self.current_host_microbe_dir = None
+        elif key in ("dfba", "spatial"):
+            page._clear_dynamics("")  # type: ignore[attr-defined]
+        elif key == "sweep":
+            self.sweep_view.load_results([])
+        if not keep_status:
+            self._run_status_label(key).clear()
+
+    def _load_run_into_page(self, key: str, run_dir: Path) -> bool:
+        """Show a run's result on its page; inputs are restored first, so it is not stale."""
+        if key == "search":
+            return self.load_search_dir(run_dir)
+        if key in ("gene_ko", "strain_growth", "ratio_impact", "host_search"):
+            return self.load_ranked_dir(key, run_dir)
+        if key in ("community", "medium") and (run_dir / "nodes.parquet").exists():
+            return self.load_run_dir(run_dir, host_key=key)
+        if key == "medium" and (run_dir / "minimal_medium_summary.json").exists():
+            return self._load_minimal_medium_dir(run_dir)
+        if key == "host":
+            return self.load_host_microbe_bigg_dir(run_dir)
+        if key == "dfba":
+            return self.load_dfba_dir(run_dir)
+        if key == "spatial":
+            return self.load_spatial_dir(run_dir)
+        if key == "sweep" and (run_dir / "sweep.parquet").exists():
+            self.sweep_view.load_results(_load_sweep_rows(run_dir / "sweep.parquet"))
+            self._show_page(self.sweep_page)
+            return True
+        return False
+
+    def load_ranked_dir(self, key: str, run_dir: Path) -> bool:
+        """Show a Gene KO / Strain Growth / Ratio Impact / Host Search run on its page."""
+        summary_name, _adapter, kind, _label = self._ranked_spec(key)
+        page = self.analysis_pages[key]
+        if self._inspect_gui_run(run_dir) is None:
+            self._clear_ranked(page)
+            page.status.setText(f"Readback invalid/unreadable: {run_dir}")  # type: ignore[attr-defined]
+            return False
+        try:
+            payload = json.loads((run_dir / summary_name).read_text())
+            if not isinstance(payload, dict):
+                raise ValueError(f"{summary_name} is not a JSON object")
+            self._show_ranked(key, payload, run_dir,
+                              page.request_fields(kind))  # type: ignore[attr-defined]
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self._reject_gui_summary(run_dir, exc)
+            self._clear_ranked(page)
+            page.status.setText(f"Readback invalid/unreadable: {exc}")  # type: ignore[attr-defined]
+            return False
+        self._register_run_output(run_dir)
+        return True
+
+    def _load_minimal_medium_dir(self, run_dir: Path) -> bool:
+        if self._inspect_gui_run(run_dir) is None:
+            return False
+        try:
+            payload = json.loads((run_dir / "minimal_medium_summary.json").read_text())
+            if not isinstance(payload, dict):
+                raise ValueError("minimal_medium_summary.json is not a JSON object")
+            self.medium_editor.load_minimal_result(payload)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self._reject_gui_summary(run_dir, exc)
+            self.medium_editor.minimal_table.setRowCount(0)
+            self.medium_editor.minimal_status.setText(f"Readback invalid/unreadable: {exc}")
+            return False
+        self._show_page(self.medium_page)
+        return True
 
     def _show_sidebar_menu(self, group: str, keys: list[str]) -> None:
         if group != "models" or not keys:
@@ -3747,7 +3894,7 @@ class CmigMainWindow(QMainWindow):
             self.search_view.status.setText(f"{CHECKPOINT_EXISTS}: {checkpoint}")
             return ""
         try:
-            out_dir, taxonomy = self._prepare_run("search", model_ids)
+            out_dir, taxonomy = self._prepare_run("search", model_ids, analysis="search")
         except ProjectError as exc:
             self.search_view.status.setText(str(exc))
             return ""
@@ -3852,7 +3999,9 @@ class CmigMainWindow(QMainWindow):
             host = str(self._model_file(request["host_id"]))
             host_medium = self._medium_arg(request["host_medium"])
             microbe_medium = self._medium_arg(request["microbe_medium"])
-            out_dir, taxonomy = self._prepare_run(kind, list(request["models"]))
+            out_dir, taxonomy = self._prepare_run(
+                kind, list(request["models"]), analysis=self._page_key(page)
+            )
         except (ProjectError, ValueError) as exc:
             page.status.setText(str(exc))
             return None
@@ -4010,7 +4159,7 @@ class CmigMainWindow(QMainWindow):
             return None
         try:
             medium_file = self._medium_arg(medium_ref)
-            out_dir, taxonomy = self._prepare_run(kind, model_ids)
+            out_dir, taxonomy = self._prepare_run(kind, model_ids, analysis=self._page_key(page))
         except (ProjectError, ValueError) as exc:
             page.status.setText(str(exc))
             return None
@@ -4213,7 +4362,7 @@ class CmigMainWindow(QMainWindow):
             return ""
         try:
             model = str(self._model_file(str(request["model"])))
-            out_dir, _ = self._prepare_run("dfba", [])
+            out_dir, _ = self._prepare_run("dfba", [], analysis="dfba")
         except (ProjectError, ValueError) as exc:
             self.dynamics_view.status.setText(str(exc))
             return ""
@@ -4262,7 +4411,7 @@ class CmigMainWindow(QMainWindow):
 
         request = self.spatial_page.spatial_request()
         try:
-            out_dir, _ = self._prepare_run("spatial", [])
+            out_dir, _ = self._prepare_run("spatial", [], analysis="spatial")
         except ProjectError as exc:
             self.spatial_page.status.setText(str(exc))
             return ""
@@ -4346,7 +4495,9 @@ class CmigMainWindow(QMainWindow):
             return ""
         tradeoff_f = self.community_builder.tradeoff_f()
         try:
-            out_dir, tax_path = self._prepare_run("community", model_ids, abundances=members)
+            out_dir, tax_path = self._prepare_run(
+                "community", model_ids, abundances=members, analysis="community"
+            )
         except ProjectError as exc:
             self.community_builder.status.setText(str(exc))
             return ""
@@ -4405,7 +4556,7 @@ class CmigMainWindow(QMainWindow):
             self.sweep_view.status.setText(self.tr_map["sweep_namespace_required"])
             return ""
         try:
-            out_dir, taxonomy = self._prepare_run("sweep", model_ids)
+            out_dir, taxonomy = self._prepare_run("sweep", model_ids, analysis="sweep")
         except ProjectError as exc:
             self.sweep_view.status.setText(str(exc))
             return ""
@@ -4544,7 +4695,7 @@ class CmigMainWindow(QMainWindow):
         allow_unknown = self.medium_editor.allow_unknown_check.isChecked()
         medium_file: Path | None = None
         try:
-            out_dir, taxonomy = self._prepare_run("medium-growth", model_ids)
+            out_dir, taxonomy = self._prepare_run("medium-growth", model_ids, analysis="medium")
             if uptake:
                 try:
                     medium_file = self._medium_input_file(out_dir, uptake)
@@ -4641,7 +4792,7 @@ class CmigMainWindow(QMainWindow):
         medium_file: Path | None = None
         try:
             model = self._model_file(chosen[0])
-            out_dir, _ = self._prepare_run("minimal-medium", [])
+            out_dir, _ = self._prepare_run("minimal-medium", [], analysis="medium")
             if uptake:
                 try:
                     medium_file = self._medium_input_file(out_dir, uptake)
