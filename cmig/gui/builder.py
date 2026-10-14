@@ -16,6 +16,7 @@ from typing import Any
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemDelegate,
     QAbstractItemView,
     QCheckBox,
     QComboBox,
@@ -119,6 +120,10 @@ class CommunityBuilderView(AnalysisPage):
         self.advanced.add_row(self.f_label, self.f_slider)
         self.advanced.track(self.f_slider)
         self.model_picker.selection_changed.connect(self._sync_rows)
+        # A shown result describes the inputs it ran with; any later change makes it stale.
+        self.model_picker.selection_changed.connect(self.invalidate_results)
+        self.table.itemChanged.connect(self.invalidate_results)
+        self.f_slider.valueChanged.connect(self.invalidate_results)
         self.register("members", self.model_picker)
         self.register_custom("abundances", self.members_snapshot, self._restore_abundances)
         self.register_custom("tradeoff", lambda: self.f_slider.value(), self._restore_tradeoff)
@@ -168,6 +173,24 @@ class CommunityBuilderView(AnalysisPage):
     def tradeoff_f(self) -> float:
         return self.f_slider.value() / 100.0
 
+    def invalidate_results(self, *_args: object) -> None:
+        if not self.results.has_results():
+            return
+        self.results.show_empty()
+        self.status.setText("Inputs changed — previous result cleared; re-run to update.")
+
+    def _commit_open_editor(self) -> None:
+        """An abundance still being typed is the one on screen, so it is the one that runs.
+
+        Run Community (and ⌘R) does not take focus on macOS, so the cell editor is not
+        committed by the click itself.
+        """
+        if self.table.state() != QAbstractItemView.State.EditingState:
+            return
+        for editor in self.table.viewport().findChildren(QLineEdit):
+            self.table.commitData(editor)
+            self.table.closeEditor(editor, QAbstractItemDelegate.EndEditHint.NoHint)
+
     def set_abundance(self, member_id: str, value: float) -> None:
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
@@ -182,6 +205,7 @@ class CommunityBuilderView(AnalysisPage):
         Silently dropping a row the user typed would run a *different* community than the
         one on screen, so `invalid_rows` is populated and the caller must refuse to run.
         """
+        self._commit_open_editor()
         out: dict[str, float] = {}
         self.invalid_rows = []
         for r in range(self.table.rowCount()):

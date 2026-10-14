@@ -1534,6 +1534,18 @@ class CmigMainWindow(QMainWindow):
         self.community_result_page.setCurrentWidget(self.profile_view)
         self._show_page(page)
 
+    def _clear_community_result(self) -> None:
+        """Drop the shown community run (profile, graph, badge, manifest) and empty its page."""
+        self.current_manifest = None
+        self.current_graph_payload = None
+        self.graph_view.clear()
+        self.graph_gate_badge.set_unavailable()
+        self.profile_view.load_profile([])
+        self.profile_view.load_targets(None)
+        host = self._community_result_host
+        if host is not None:
+            self.analysis_pages[host].results.show_empty()  # type: ignore[attr-defined]
+
     def _show_models_overview(self) -> None:
         project = self.session.project
         if project is None:
@@ -1836,6 +1848,7 @@ class CmigMainWindow(QMainWindow):
         if switched:
             self._pending_imports = []  # placeholders belong to the project they were queued in
             self._reported_unrunnable = {}
+            self._clear_community_result()  # the shown run belongs to the previous project
         # Rebuilding a group drops its rows' selection; put it back unless the project changed.
         current = None if switched else self._sidebar_current()
         selected_models = [] if switched else self.sidebar.selected_keys("models")
@@ -3180,24 +3193,14 @@ class CmigMainWindow(QMainWindow):
                 kind = str(legacy_manifest.get("kind") or "unknown")
             if kind in ("tidy", "community", "solve", "fixture", "community_solve"):
                 self._reject_gui_summary(run_dir, "missing essential nodes.parquet")
-                self.current_manifest = None
-                self.current_graph_payload = None
-                self.graph_view.clear()
-                self.graph_gate_badge.set_unavailable()
-                self.profile_view.load_profile([])
-                self.profile_view.load_targets(None)
+                self._clear_community_result()
                 self._show_status("status_run_load_failed", error="missing essential nodes.parquet")
                 return False
             self._show_status("status_run_no_viewer", kind=kind, run_dir=run_dir)
             return False
         inspected = self._inspect_gui_run(run_dir)
         if inspected is None:
-            self.current_manifest = None
-            self.current_graph_payload = None
-            self.graph_view.clear()
-            self.graph_gate_badge.set_unavailable()
-            self.profile_view.load_profile([])
-            self.profile_view.load_targets(None)
+            self._clear_community_result()
             return False
         try:
             bundle = TidyBundle.read(run_dir)
@@ -3207,12 +3210,7 @@ class CmigMainWindow(QMainWindow):
             self._reject_gui_summary(run_dir, e)
             # A failed load must not leave the *previous* run's provenance on screen: the
             # run_hash in the status bar and the profile table would still describe run A.
-            self.current_manifest = None
-            self.current_graph_payload = None
-            self.graph_view.clear()
-            self.graph_gate_badge.set_unavailable()
-            self.profile_view.load_profile([])
-            self.profile_view.load_targets(None)
+            self._clear_community_result()
             self._show_status("status_run_load_failed", error=e)
             return False
         self.current_manifest = manifest
@@ -4929,6 +4927,8 @@ class CmigMainWindow(QMainWindow):
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._community_jobs.pop(jid, None)
                 self.community_builder.run_btn.setEnabled(True)
+                # A failed rerun must not leave the previous run drawn under its message.
+                self.community_builder.results.show_empty()
                 self.community_builder.status.setText(
                     f"community solve {job.status.value}: {job.error or jid}"
                 )
