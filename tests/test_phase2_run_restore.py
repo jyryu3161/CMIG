@@ -323,3 +323,63 @@ def test_failed_sweep_with_partial_rows_says_it_failed(window) -> None:
     assert w.sweep_view.table.rowCount() == 1
     status = w.sweep_view.status.text()
     assert "failed" in status and "partial" in status
+
+
+def _namespace_page(w, key: str):
+    """(models picker, "already BiGG" box, the object whose namespace_policy() runs)."""
+    owner = w.community_builder if key == "community" else w.medium_editor
+    return owner.model_picker, owner.assume_bigg_check, owner
+
+
+@pytest.mark.parametrize("key", ["community", "medium"])
+def test_a_revoked_namespace_confirmation_is_not_restored(window, key: str) -> None:
+    w, _calls = window
+    picker, check, owner = _namespace_page(w, key)
+    picker.set_selected(["a", "b"])
+    w.session.confirm_namespace("a")
+    w.session.confirm_namespace("b")
+    w.refresh_workspace()
+    assert check.isChecked()
+    values = w.analysis_pages[key].snapshot()
+    assert values["assume_bigg"] is True
+    w.session.revoke_namespace("b")
+    picker.set_selected([])  # the inputs moved on before the run is reopened
+    w.refresh_workspace()
+    notes = w.analysis_pages[key].restore(values)
+    w.refresh_workspace()
+    assert picker.selected_ids() == ["a", "b"]
+    assert not check.isChecked()
+    assert notes == ["namespace confirmation not restored: b not confirmed"]
+    assert "--assume-bigg-namespace" not in owner.namespace_policy()[0]
+
+
+@pytest.mark.parametrize("key", ["community", "medium"])
+def test_a_namespace_confirmation_still_held_is_restored(window, key: str) -> None:
+    w, _calls = window
+    picker, check, owner = _namespace_page(w, key)
+    picker.set_selected(["a"])
+    w.session.confirm_namespace("a")
+    w.refresh_workspace()
+    values = w.analysis_pages[key].snapshot()
+    picker.set_selected([])
+    w.refresh_workspace()
+    assert w.analysis_pages[key].restore(values) == []
+    w.refresh_workspace()
+    assert check.isChecked()
+    assert owner.namespace_policy()[0] == ["--assume-bigg-namespace"]
+
+
+def test_a_reopened_run_says_its_namespace_tick_was_not_restored(window) -> None:
+    w, calls = window
+    view = w.community_builder
+    view.model_picker.set_selected(["a"])
+    w.session.confirm_namespace("a")
+    w.refresh_workspace()
+    assert view.assume_bigg_check.isChecked()
+    assert w.run_community_solve()
+    run_dir = _out(_wait(calls))
+    w.session.revoke_namespace("a")
+    w.refresh_workspace()
+    w._open_run_entry(run_dir)
+    assert not view.assume_bigg_check.isChecked()
+    assert "namespace confirmation not restored: a not confirmed" in view.banner.text()

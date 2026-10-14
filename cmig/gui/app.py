@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from dataclasses import replace
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, TextIO, TypeVar, cast
@@ -43,6 +44,7 @@ from PySide6.QtGui import QAction, QCursor, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractItemView,
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -1243,6 +1245,15 @@ class CmigMainWindow(QMainWindow):
             self.medium_page.register(name, widget)
         # After "exact": the nutrients-only view it restores is judged against the exact mode.
         self.medium_page.register_custom("rows", self._medium_rows, self._restore_medium_rows)
+        # "Already BiGG" is restored only for models confirmed now (it keeps its place, after
+        # the models it covers).
+        for key, namespace_page, check in (
+            ("community", self.community_builder, self.community_builder.assume_bigg_check),
+            ("medium", self.medium_page, editor.assume_bigg_check),
+        ):
+            namespace_page.register_custom(
+                "assume_bigg", check.isChecked, partial(self._restore_assume_bigg, key)
+            )
         sweep = self.sweep_view
         self.sweep_page.register("models", sweep.model_picker)
         for name in ("mediums", "abundance_variants", "member_sets", "bounds_variants",
@@ -2892,11 +2903,9 @@ class CmigMainWindow(QMainWindow):
         self._namespace_defaults[key] = None
         self._apply_namespace_defaults()
 
-    def _apply_namespace_defaults(self) -> None:
-        """Tick "already BiGG" on Community and Medium only when every chosen model is
-        confirmed in this project (a box the user set stays until that page's models change)."""
-        project = self.session.project
-        targets = {
+    def _namespace_targets(self) -> dict[str, tuple[QCheckBox, QLabel, list[str]]]:
+        """Community's and Medium's "already BiGG" box, its note and the models it covers."""
+        return {
             "community": (self.community_builder.assume_bigg_check,
                           self.community_builder.namespace_note,
                           self.community_builder.model_picker.selected_ids()),
@@ -2905,7 +2914,32 @@ class CmigMainWindow(QMainWindow):
                                           + self.medium_editor.single_model_picker
                                           .selected_ids()))),
         }
-        for key, (check, note, ids) in targets.items():
+
+    def _restore_assume_bigg(self, key: str, value: Any) -> str | None:
+        """Put a run's "already BiGG" tick back only while every model it covers is confirmed
+        in this project now; a confirmation revoked or gone stale since is never restored."""
+        check, _note, ids = self._namespace_targets()[key]
+        project = self.session.project
+        if value is not True:
+            check.setChecked(False)
+            return None
+        known = [] if project is None else [i for i in ids
+                                            if any(m.id == i for m in project.models)]
+        confirmed_all, missing = (
+            (False, []) if project is None else proj.confirmation_summary(project, known)
+        )
+        if confirmed_all:
+            check.setChecked(True)
+            return None
+        check.setChecked(False)
+        return ("namespace confirmation not restored: "
+                + (f"{', '.join(missing)} not confirmed" if missing else "no model is chosen"))
+
+    def _apply_namespace_defaults(self) -> None:
+        """Tick "already BiGG" on Community and Medium only when every chosen model is
+        confirmed in this project (a box the user set stays until that page's models change)."""
+        project = self.session.project
+        for key, (check, note, ids) in self._namespace_targets().items():
             if project is None or not ids:
                 note.setText("")
                 continue

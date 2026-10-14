@@ -17,9 +17,10 @@ semantic versioning for public releases.
   Solve's member table follows its member picker (abundance is the only edit). The same
   inputs produce the same CLI argv as before the split (`tests/test_phase2_argv_parity.py`).
 - Runs record the page's inputs in `runs/_inputs/<run>-request.json`; opening a run from
-  RUNS shows its page with the inputs restored, the result, and a banner. Runs without a
-  usable record open on the page their manifest, summary or folder name points to, with
-  the inputs left as they are.
+  RUNS shows its page with the inputs restored, the result, and a banner. An "already
+  BiGG" tick is restored only while every model it covers is confirmed now (the banner
+  names the models that are not). Runs without a usable record open on the page their
+  manifest, summary or folder name points to, with the inputs left as they are.
 - Model table with a reason per model (`⚠ Namespace not reviewed`, `⚠ Objective is not
   growth`, …), a read-only model browser (reactions, metabolites, genes, exchanges, linked
   details) backed by a per-model index `models/.index/<sha256>.json` (a viewing cache only,

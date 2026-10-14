@@ -506,8 +506,11 @@ Selecting a run in RUNS opens it on its analysis page: the page's inputs are put
 from `<run>-request.json`, the result is shown in Results, and a banner reads "Inputs
 restored from <run>." The restored inputs match the result, so it is not marked as
 changed. Inputs that can no longer be chosen (a removed model or medium, a model whose copy
-changed) are left out and named after "Not restored:". Restoring replaces the page's
-current inputs, without undo.
+changed) are left out and named after "Not restored:". The "already BiGG" box of Community
+Solve and the Medium Editor is ticked again only while every model it covers is confirmed in
+this project now; otherwise it stays clear and the banner says "namespace confirmation not
+restored: <models> not confirmed". Restoring replaces the page's current inputs, without
+undo.
 
 A run without a usable request (a phase-1 run, a run from Open Run…, or a damaged record)
 opens on the page its manifest's workflow kind (or its summary file, or its GUI folder
