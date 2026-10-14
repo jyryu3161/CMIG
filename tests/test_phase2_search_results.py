@@ -48,3 +48,14 @@ def test_search_view_delegates_to_its_panel() -> None:
     assert view.results_panel._displayed_kind == "search"
     view.load_summary(SUMMARY)
     assert view.results_panel.table.rowCount() == 1
+
+
+def test_figure_preview_is_drawn_on_white_in_any_appearance() -> None:
+    """Saved figures have black text on a transparent page: a dark window made them unreadable."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QPalette
+
+    panel = SearchResultsPanel(lambda kind: {}, status=QLabel())
+    view = panel.figure_view
+    assert view.autoFillBackground()
+    assert view.palette().color(QPalette.ColorRole.Window) == Qt.GlobalColor.white

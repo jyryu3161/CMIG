@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import cast
 
 from PySide6.QtCore import QModelIndex, QPersistentModelIndex, Qt, QUrl
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -237,6 +237,12 @@ class SearchResultsPanel(QWidget):
             from PySide6.QtSvgWidgets import QSvgWidget
 
             self.figure_view: QWidget = QSvgWidget()
+            # A saved figure is dark text on a transparent page, made for white paper: show it
+            # on white in a dark appearance too (the web fallback below does the same).
+            page = self.figure_view.palette()
+            page.setColor(QPalette.ColorRole.Window, QColor(Qt.GlobalColor.white))
+            self.figure_view.setPalette(page)
+            self.figure_view.setAutoFillBackground(True)
         except ImportError:  # pragma: no cover - optional GUI extra
             try:
                 from PySide6.QtWebEngineWidgets import QWebEngineView
