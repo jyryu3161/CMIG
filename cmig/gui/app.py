@@ -110,6 +110,12 @@ from cmig.gui.project_session import (
     inspect_run,
     merge_run_status,
 )
+from cmig.gui.run_failure import (
+    cli_error_text,
+    cli_failure,
+    job_error_text,
+    ranked_failure_reason,
+)
 from cmig.gui.sidebar import (
     ANALYSES,
     ANALYSIS_GROUPS,
@@ -872,6 +878,59 @@ def _finish_after_artifacts(ctx: Any) -> None:
     ctx.report_progress(1, 1)
 
 
+def _run_cli(main: Callable[[list[str]], int], argv: list[str]) -> tuple[int, str]:
+    """Run the CLI on this job thread: (exit code, the CLI's own stderr reason).
+
+    The reason is what the CLI said (e.g. "dfba input error: …"), without CLI-only hints; the
+    caller's GUI-thread `_install_stderr_router()` makes this thread's stderr collectable.
+    """
+    with _captured_job_stderr() as chunks:
+        rc = main(argv)
+    return rc, cli_error_text(chunks)
+
+
+def _ranked_cli_failure(
+    label: str, rc: int, error_text: str, out_dir: Path, summary_name: str
+) -> Exception:
+    """A ranked page's failure: an input refusal, or a failed run with its published summary.
+
+    A run that failed scientifically (exit 3) still publishes its summary with the per-candidate
+    reasons; carrying it with the failure lets the page say why and list the unevaluated
+    candidates. A nonzero exit can never make it a success: its status is forced to failed.
+    """
+    if rc != 2:
+        try:
+            loaded = json.loads((out_dir / summary_name).read_text())
+        except (OSError, ValueError):
+            loaded = None
+        if isinstance(loaded, dict):
+            from cmig.service.jobrunner import ArtifactJobFailure
+
+            reason = ranked_failure_reason(loaded) or error_text
+            payload = {**loaded, "status": "failed", "cli_exit_code": rc,
+                       "output_dir": str(out_dir)}
+            return ArtifactJobFailure(
+                f"{label} failed (rc={rc})" + (f": {reason}" if reason else ""), payload
+            )
+    return cli_failure(label, rc, error_text)
+
+
+def _failed_ranked_status(label: str, summary: dict[str, Any]) -> str:
+    """The status line of a ranked page whose run failed, from its published summary.
+
+    Names why — "N of M candidates could not be evaluated: <most common cause>" — or the CLI's
+    own reason; never the CLI's "--allow-failed-run" hint (stripped before it gets here).
+    """
+    rc = summary.get("cli_exit_code", "?")
+    reason = ranked_failure_reason(summary)
+    if reason:
+        return (f"{label} failed (rc={rc}): {reason}. The unevaluated candidates and their "
+                "diagnostics are listed in the details.")
+    cause = summary.get("cli_error") or summary.get("input_diagnostic")
+    return (f"{label} failed (rc={rc})" + (f": {cause}" if cause else "")
+            + "; diagnostics and artifact path are in details")
+
+
 def _failed_search_artifacts(out_dir: Path, rc: int) -> dict[str, Any]:
     """Keep a CLI failure's scientific ledger and directory with the failed job."""
     summary_path = out_dir / "search_summary.json"
@@ -911,6 +970,31 @@ _SEARCH_CONDITION_KEYS = (
     "growth_fraction", "min_member_growth", "min_community_growth", "seed",
     "target_scales", "ga_max_evaluations",
 )
+
+
+def _with_run_outcome(summary: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    """Carry the run's status and unevaluated candidates through a ranked-page adapter.
+
+    The adapters reshape `top_ranked` for the table; the run's verdict and the candidates it
+    could not evaluate (with their reasons) must reach the page too, or a failed run reads as
+    an empty ranking with "status: unknown".
+    """
+    adapted = dict(summary)
+    adapted.setdefault("status", source.get("status", "unknown"))
+    rows = source.get("unevaluated")
+    if "unevaluated" not in adapted and isinstance(rows, list):
+        adapted["unevaluated"] = [
+            {
+                "members": (
+                    row["members"] if isinstance(row.get("members"), list)
+                    else [f"{row.get('member', '')}:{row.get('gene', '')}"]
+                ),
+                "status": row.get("status") or row.get("evaluation_status"),
+                "diagnostic": row.get("diagnostic"),
+            }
+            for row in rows if isinstance(row, dict)
+        ]
+    return adapted
 
 
 def _with_search_conditions(summary: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
@@ -4168,6 +4252,9 @@ class CmigMainWindow(QMainWindow):
 
     def submit_job(self, kind: str, fn: Any) -> str:
         """facade 작업을 JobRunner 로 제출 + bridge 추적(실 소비). Opens the Activity pane."""
+        # A job that runs the CLI collects its own stderr reason (`_run_cli`); the router that
+        # makes that possible is installed here, on the GUI thread, once.
+        _install_stderr_router()
         jid = self.runner.submit(kind, fn)
         self.bridge.track(jid)
         self.activity.expand()
@@ -4669,10 +4756,10 @@ class CmigMainWindow(QMainWindow):
             if rc == 130:
                 ctx.raise_if_cancelled()
             if rc != 0:
-                from cmig.service.jobrunner import ArtifactJobFailure
+                from cmig.service.jobrunner import ArtifactJobFailure, JobInputError
 
                 artifacts = _failed_search_artifacts(out_dir, rc)
-                cli_error = "".join(stderr_chunks).strip()
+                cli_error = cli_error_text(stderr_chunks)
                 if cli_error:
                     artifacts["cli_error"] = cli_error
                     artifacts.setdefault("warnings", []).insert(0, f"CLI error: {cli_error}")
@@ -4681,12 +4768,13 @@ class CmigMainWindow(QMainWindow):
                     artifacts.setdefault("warnings", []).append(cause)
                     artifacts["input_diagnostic"] = cause
                 reason = "; ".join(
-                    part for part in (cli_error, cause) if part
+                    part for part in (ranked_failure_reason(artifacts), cli_error, cause)
+                    if part
                 ) or "see diagnostics"
-                raise ArtifactJobFailure(
-                    f"search failed with rc={rc}; {reason}; outputs: {out_dir}",
-                    artifacts,
-                )
+                message = f"search failed with rc={rc}; {reason}; outputs: {out_dir}"
+                if rc == 2:
+                    raise JobInputError(message, artifacts)
+                raise ArtifactJobFailure(message, artifacts)
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / output_name).read_text())
             if not isinstance(payload, dict):
@@ -4791,9 +4879,9 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"host-microbe run failed with rc={rc}")
+                raise cli_failure("host-microbe run", rc, cli_error)
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "host_microbe_bigg_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -4866,9 +4954,11 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"host-search run failed with rc={rc}")
+                raise _ranked_cli_failure(
+                    "host-search", rc, cli_error, out_dir, "host_search_summary.json"
+                )
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "host_search_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -4961,9 +5051,11 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"gene KO search failed with rc={rc}")
+                raise _ranked_cli_failure(
+                    "gene KO search", rc, cli_error, out_dir, "gene_ko_summary.json"
+                )
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "gene_ko_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -5006,9 +5098,11 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"strain growth failed with rc={rc}")
+                raise _ranked_cli_failure(
+                    "strain growth", rc, cli_error, out_dir, "strain_growth_summary.json"
+                )
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "strain_growth_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -5066,9 +5160,11 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"abundance impact failed with rc={rc}")
+                raise _ranked_cli_failure(
+                    "abundance impact", rc, cli_error, out_dir, "abundance_impact_summary.json"
+                )
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "abundance_impact_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -5122,9 +5218,9 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"dFBA failed with rc={rc}")
+                raise cli_failure("dFBA", rc, cli_error)
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "dfba_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -5175,9 +5271,9 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"spatial preview failed with rc={rc}")
+                raise cli_failure("spatial preview", rc, cli_error)
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "spatial_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -5250,9 +5346,9 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"community solve failed with rc={rc}")
+                raise cli_failure("community solve", rc, cli_error)
             _finish_after_artifacts(ctx)
             manifest_path = out_dir / "manifest.json"
             manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
@@ -5331,12 +5427,12 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
                 # A scientific failure deliberately exits 3 after writing diagnostic-bearing
                 # sweep artifacts. The Job remains failed, while the poller still loads those
                 # rows so the GUI is not quieter than the CLI.
-                raise RuntimeError(self._message("sweep_cli_failed", rc=rc))
+                raise cli_failure("sweep", rc, cli_error)
             _finish_after_artifacts(ctx)
             summary_path = out_dir / "sweep_summary.json"
             summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
@@ -5377,9 +5473,9 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"sweep-fixture failed with rc={rc}")
+                raise cli_failure("sweep-fixture", rc, cli_error)
             _finish_after_artifacts(ctx)
             return {"out_dir": str(out_dir)}
 
@@ -5467,10 +5563,10 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             manifest_path = out_dir / "manifest.json"
             if not manifest_path.exists() or not (out_dir / "profile.parquet").exists():
-                raise RuntimeError(f"growth check failed with rc={rc}")
+                raise cli_failure("growth check", rc, cli_error)
             _finish_after_artifacts(ctx)
             manifest = json.loads(manifest_path.read_text())
             if not isinstance(manifest, dict):
@@ -5559,10 +5655,10 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             summary_path = out_dir / "minimal_medium_summary.json"
             if not summary_path.exists():
-                raise RuntimeError(f"minimal-medium failed with rc={rc}")
+                raise cli_failure("minimal-medium", rc, cli_error)
             _finish_after_artifacts(ctx)
             payload = json.loads(summary_path.read_text())
             if not isinstance(payload, dict):
@@ -5917,13 +6013,8 @@ class CmigMainWindow(QMainWindow):
                         self._show_status("status_run_load_failed", error=exc)
                         continue
                     self.current_search_dir = out_dir
-                    cause = job.result.get("cli_error") or job.result.get(
-                        "input_diagnostic"
-                    )
                     self.search_view.status.setText(
-                        f"search failed (rc={job.result.get('cli_exit_code', '?')})"
-                        + (f": {cause}" if cause else "")
-                        + "; diagnostics and artifact path are in details"
+                        _failed_ranked_status("search", job.result)
                     )
                     self._show_page(self.search_view)
                     self._register_run_output(out_dir)
@@ -5931,12 +6022,12 @@ class CmigMainWindow(QMainWindow):
                     # No replacement summary was published. Keep every part of the
                     # displayed run (including its badge and export pointer) together.
                     self.statusBar().showMessage(
-                        f"search {job.status.value}: {job.error or jid}"
+                        f"search {job.status.value}: {job_error_text(job.error) or jid}"
                     )
                     if was_cancel_pending:
                         # The pending notice must not outlive the job it describes.
                         self.search_view.status.setText(
-                            f"search {job.status.value}: {job.error or jid}"
+                            f"search {job.status.value}: {job_error_text(job.error) or jid}"
                         )
         for jid, out_dir in list(self._host_microbe_jobs.items()):
             job = self.runner.poll(jid)
@@ -5961,7 +6052,7 @@ class CmigMainWindow(QMainWindow):
                 self.host_view.run_btn.setEnabled(True)
                 self.host_view.clear_result()
                 self.host_view.run_status.setText(
-                    f"host-microbe {job.status.value}: {job.error or jid}"
+                    f"host-microbe {job.status.value}: {job_error_text(job.error) or jid}"
                 )
         self._finish_ranked_jobs("host_search", self._host_search_jobs, "host-search")
         self._finish_ranked_jobs("gene_ko", self._gene_ko_jobs, "gene KO search")
@@ -5985,7 +6076,7 @@ class CmigMainWindow(QMainWindow):
                 self.dynamics_view.run_dfba_btn.setEnabled(True)
                 # A failed rerun must not leave the previous timecourse drawn under its message.
                 self.dynamics_view._clear_dynamics(
-                    f"dFBA {job.status.value}: {job.error or jid}"
+                    f"dFBA {job.status.value}: {job_error_text(job.error) or jid}"
                 )
         for jid, out_dir in list(self._spatial_jobs.items()):
             job = self.runner.poll(jid)
@@ -6006,7 +6097,7 @@ class CmigMainWindow(QMainWindow):
                 self._spatial_jobs.pop(jid, None)
                 self.spatial_page.run_btn.setEnabled(True)
                 self.spatial_page._clear_dynamics(
-                    f"spatial preview {job.status.value}: {job.error or jid}"
+                    f"spatial preview {job.status.value}: {job_error_text(job.error) or jid}"
                 )
         for jid, out_dir in list(self._community_jobs.items()):
             job = self.runner.poll(jid)
@@ -6037,7 +6128,7 @@ class CmigMainWindow(QMainWindow):
                 # A failed rerun must not leave the previous run drawn under its message.
                 self.community_builder.results.show_empty()
                 self.community_builder.status.setText(
-                    f"community solve {job.status.value}: {job.error or jid}"
+                    f"community solve {job.status.value}: {job_error_text(job.error) or jid}"
                 )
         for jid, (out_dir, mode) in list(self._sweep_jobs.items()):
             job = self.runner.poll(jid)
@@ -6087,7 +6178,7 @@ class CmigMainWindow(QMainWindow):
                         "sweep_failed_detail",
                         mode=self.tr_map[f"sweep_mode_{mode}"],
                         status=job.status.value,
-                        error=job.error or jid,
+                        error=job_error_text(job.error) or jid,
                         artifact_note=artifact_note,
                     )
                 )
@@ -6184,7 +6275,7 @@ class CmigMainWindow(QMainWindow):
                     self._message(
                         "medium_growth_failed",
                         status=job.status.value,
-                        error=job.error or jid,
+                        error=job_error_text(job.error) or jid,
                     )
                 )
         for jid, out_dir in list(self._minimal_medium_jobs.items()):
@@ -6214,7 +6305,7 @@ class CmigMainWindow(QMainWindow):
                     self._message(
                         "medium_minimal_failed",
                         status=job.status.value,
-                        error=job.error or jid,
+                        error=job_error_text(job.error) or jid,
                     )
                 )
         self._show_search_cancel_pending()
@@ -6263,7 +6354,7 @@ class CmigMainWindow(QMainWindow):
         panel = page.results_panel
         panel.figure_mode_combo.setCurrentText("Ranking")
         panel.load_summary(
-            _with_search_conditions(adapter(payload), payload),
+            _with_run_outcome(_with_search_conditions(adapter(payload), payload), payload),
             run_dir=out_dir,
             request_note="" if requested is None else (
                 panel.effective_note(requested, kind) + panel.superseded_note(requested, kind)
@@ -6303,9 +6394,37 @@ class CmigMainWindow(QMainWindow):
                 page.run_btn.setEnabled(True)
                 # A failed rerun must not leave the previous ranking drawn under its message.
                 self._clear_ranked(page)
+                if (
+                    job.status is JobStatus.FAILED
+                    and isinstance(job.result, dict)
+                    and self._show_failed_ranked(key, job.result, out_dir, requested)
+                ):
+                    page.status.setText(_failed_ranked_status(failure_label, job.result))
+                    continue
                 page.status.setText(
-                    f"{failure_label} {job.status.value}: {job.error or jid}"
+                    f"{failure_label} {job.status.value}: {job_error_text(job.error) or jid}"
                 )
+
+    def _show_failed_ranked(
+        self, key: str, payload: dict[str, Any], out_dir: Path,
+        requested: dict[str, str] | None,
+    ) -> bool:
+        """Show a failed run's published summary (its unevaluated candidates and reasons).
+
+        The summary's status is `failed` (forced by the job), so nothing reads as a ranking
+        result; False when the run cannot be read back, leaving the page empty.
+        """
+        if self._inspect_gui_run(out_dir) is None:
+            return False
+        try:
+            self._show_ranked(key, payload, out_dir, requested)
+        except (TypeError, ValueError, KeyError) as exc:
+            self._reject_gui_summary(out_dir, exc)
+            self._clear_ranked(self._ranked_page(key))
+            return False
+        self.current_search_dir = out_dir
+        self._register_run_output(out_dir)
+        return True
 
     @staticmethod
     def _clear_ranked(page: RankedPage) -> None:

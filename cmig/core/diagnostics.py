@@ -30,6 +30,10 @@ class DiagnosticCode(enum.Enum):
     # so it returned `viable=True` with a phantom-fed objective instead of failing. A model that
     # cannot express the contract must say so rather than answer a different question.
     HOST_INTERFACE_ABSENT = "host_interface_absent"
+    # Round 11: a request refused before any analysis ran (a CLI exit 2: a missing exchange id,
+    # an unknown medium id, a bad flag). Labelling it `solver_error` sent users to debug a solver
+    # that never ran.
+    INPUT_ERROR = "input_error"
 
 
 @dataclass(frozen=True)

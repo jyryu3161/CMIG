@@ -33,6 +33,21 @@ semantic versioning for public releases.
   `gene_ko_summary.json`; in a sweep condition's solve-manifest `provenance`; and a
   `medium_not_applicable` column in `medium_gap.csv`/`medium_gap.json`.
 
+### Fixed — GUI failure reasons
+
+- A failed analysis page now shows the CLI's own reason (e.g. `dfba input error: --initial
+  exchange ids not found in model: […]`) as `"<kind> failed (rc=N): <reason>"`, not a
+  Diagnostic JSON blob. A CLI exit 2 is recorded as the new job error code `input_error`, never
+  `solver_error`. Applies to Search, Gene Knockout, Strain Growth, Ratio Impact, Community
+  Solve, Host–Microbe, Host Combination Search, dFBA, Spatial Preview, Sweep and the Medium
+  Editor's growth check and minimal medium.
+- The CLI-only hint "pass --allow-failed-run to exit 0 anyway" (and the solver's licence
+  banner) is no longer shown in the GUI. A ranked page (Search, Gene Knockout, Strain Growth,
+  Ratio Impact, Host Combination Search) whose run failed but published its summary shows
+  that summary — status `failed`, an empty ranking — with a status line such as "10 of 10
+  candidates could not be evaluated: <most common diagnostic>"; the details list every
+  unevaluated candidate and its diagnostic before the run warnings.
+
 ### Changed — GUI appearance
 
 - The GUI opens in light appearance by default, whatever the system setting is.

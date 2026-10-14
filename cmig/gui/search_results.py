@@ -553,7 +553,8 @@ class SearchResultsPanel(QWidget):
         ):
             if key in summary:
                 details.append(f"{key}: {summary[key]}")
-        details.extend(f"Warning {i}: {warning}" for i, warning in enumerate(warning_list, 1))
+        # The candidates the run could not evaluate, and why, come before the run warnings: in
+        # a failed run they are the answer to "what went wrong".
         unevaluated = summary.get("unevaluated")
         if isinstance(unevaluated, list):
             for i, candidate in enumerate(unevaluated, 1):
@@ -563,6 +564,7 @@ class SearchResultsPanel(QWidget):
                         f"{candidate.get('status')} · "
                         f"{_diagnostic_text(candidate.get('diagnostic'))}"
                     )
+        details.extend(f"Warning {i}: {warning}" for i, warning in enumerate(warning_list, 1))
         if request_note:
             details.append(request_note)
         if executed_request:

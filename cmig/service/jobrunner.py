@@ -19,7 +19,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
-from cmig.core.diagnostics import Diagnostic
+from cmig.core.diagnostics import Diagnostic, DiagnosticCode
 
 _JobSpec = tuple[str, "Callable[[JobContext], Any]", "Callable[[int, int], None] | None"]
 
@@ -44,6 +44,19 @@ class ArtifactJobFailure(RuntimeError):
     """A failed scientific job whose published diagnostics remain available."""
 
     def __init__(self, message: str, artifacts: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.artifacts = artifacts
+
+
+class JobInputError(RuntimeError):
+    """The job's request was refused before any analysis ran (a CLI exit 2).
+
+    Recorded with :attr:`DiagnosticCode.INPUT_ERROR` and its own message, never as a solver
+    error. ``artifacts`` (optional) is published as the job result like
+    :class:`ArtifactJobFailure`'s.
+    """
+
+    def __init__(self, message: str, artifacts: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.artifacts = artifacts
 
@@ -155,8 +168,14 @@ class JobRunner:
             # it. KeyboardInterrupt still propagates.
             with self._lock:
                 self._jobs[job_id].status = JobStatus.FAILED
-                self._jobs[job_id].error = Diagnostic.from_exception(e).to_json()
-                if isinstance(e, ArtifactJobFailure):
+                self._jobs[job_id].error = (
+                    Diagnostic(
+                        DiagnosticCode.INPUT_ERROR, str(e), {"exc_type": type(e).__name__}
+                    ).to_json()
+                    if isinstance(e, JobInputError)
+                    else Diagnostic.from_exception(e).to_json()
+                )
+                if isinstance(e, (ArtifactJobFailure, JobInputError)):
                     self._jobs[job_id].result = e.artifacts
             return None
         with self._lock:

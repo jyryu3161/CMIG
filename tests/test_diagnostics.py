@@ -55,4 +55,6 @@ def test_all_codes_present():
         # Round 6 (track B): a host model whose exchange interface CMIG cannot classify would
         # otherwise be solved against an undeclared background and reported as viable.
         "host_interface_absent",
+        # Round 11: a request refused before any analysis ran (CLI exit 2) in a GUI job.
+        "input_error",
     }
