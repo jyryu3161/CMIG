@@ -165,6 +165,21 @@ def test_window_fits_target_sizes(window, tmp_path: Path, size: tuple[int, int])
         assert window.width() <= size[0] and window.height() <= size[1], key
 
 
+def test_every_page_fits_1280_wide_without_sideways_scrolling(window, tmp_path: Path) -> None:
+    """A small window scrolls a page down, never sideways: input rows wrap instead."""
+    from cmig.gui.sidebar import ANALYSES
+
+    make_project(tmp_path / "g", ["a", "b"])
+    window.open_project(tmp_path / "g")
+    window.resize(1280, 800)
+    window.show()
+    for key, _label in ANALYSES:
+        window.show_analysis(key)
+        APP.processEvents()
+        bar = window.analysis_pages[key].scroll_area.horizontalScrollBar()
+        assert bar.maximum() == 0, key
+
+
 def test_empty_results_line_sits_under_its_heading(window, tmp_path: Path) -> None:
     make_project(tmp_path / "g", ["a"])
     window.open_project(tmp_path / "g")

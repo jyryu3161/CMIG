@@ -872,12 +872,18 @@ class SweepView(QWidget):
             )
         )
         self.run_btn = QPushButton(_view_text(self.strings, "sweep_run", "Run Sweep"))
+        # Three rows, so the page fits a 1280-wide window without scrolling sideways (one
+        # row squeezed the FVA metabolites field to nothing).
         options_row.addWidget(self.fva_check)
-        options_row.addWidget(self.fva_metabolites_input)
-        options_row.addWidget(self.exact_medium_check)
-        options_row.addWidget(self.allow_unknown_medium_check)
-        options_row.addWidget(self.fixture_check)
-        options_row.addWidget(self.run_btn)
+        options_row.addWidget(self.fva_metabolites_input, 1)
+        medium_options_row = QHBoxLayout()
+        medium_options_row.addWidget(self.exact_medium_check)
+        medium_options_row.addWidget(self.allow_unknown_medium_check)
+        medium_options_row.addStretch(1)
+        run_row = QHBoxLayout()
+        run_row.addWidget(self.fixture_check)
+        run_row.addStretch(1)
+        run_row.addWidget(self.run_btn)
 
         self.table = QTableWidget(0, len(self._COLS))
         self.table.setHorizontalHeaderLabels(
@@ -908,6 +914,8 @@ class SweepView(QWidget):
         layout.addLayout(axis_grid)
         layout.addLayout(namespace_row)
         layout.addLayout(options_row)
+        layout.addLayout(medium_options_row)
+        layout.addLayout(run_row)
         layout.addWidget(self.table)
         self._job_id: str | None = None
 
