@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTabWidget,
@@ -158,6 +159,10 @@ class ModelBrowser(QWidget):
         font.setPointSizeF(font.pointSizeF() * 1.2)
         self.title_label.setFont(font)
         self.title_label.setTextFormat(Qt.TextFormat.PlainText)
+        # A long (AGORA2) id must not force the window wider than 1280: the title wraps, and
+        # an id longer than the room is cut at the edge (the sidebar and inspector name it).
+        self.title_label.setWordWrap(True)
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.medium_picker = MediumPicker()
         self.skip_unknown_check = QCheckBox("Skip medium metabolites this model lacks")
         self.check_growth_btn = QPushButton("Check Growth")

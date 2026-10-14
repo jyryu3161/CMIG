@@ -404,3 +404,21 @@ def test_model_table_check_column_is_not_cut_at_1280(tmp_path: Path) -> None:
             assert table.columnWidth(1) > table.fontMetrics().horizontalAdvance(text), text
     finally:
         w.close_project()
+
+
+def test_a_long_model_id_does_not_widen_the_browser() -> None:
+    """AGORA2 ids are long; the title wraps instead of forcing the window past 1280 wide."""
+    from cmig.gui.model_browser import ModelBrowser
+
+    def entry(model_id: str) -> proj.ModelEntry:
+        return proj.ModelEntry(id=model_id, file="models/x.xml", source_path="x", sha256="s",
+                               format="xml", added="t", status="ok", biomass=["BIOMASS"],
+                               n_reactions=4321, n_metabolites=3210, n_genes=2109)
+
+    b = ModelBrowser()
+    b.show_model(entry("m"), None, "")
+    b.layout().activate()
+    short = b.minimumSizeHint().width()
+    b.show_model(entry("Bacteroides_thetaiotaomicron_VPI_5482_and_a_long_strain_suffix"), None, "")
+    b.layout().activate()
+    assert b.minimumSizeHint().width() <= short
