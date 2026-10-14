@@ -90,6 +90,7 @@ from cmig.gui.graph_view import GateBadge, InteractionGraphView
 from cmig.gui.host_view import HostImpactView
 from cmig.gui.inspector import InspectorPanel
 from cmig.gui.pages.gene_ko import GeneKoPage
+from cmig.gui.pages.host_search import HostSearchPage
 from cmig.gui.pages.ratio_impact import RatioImpactPage
 from cmig.gui.pages.strain_growth import StrainGrowthPage
 from cmig.gui.pickers import MediumPicker, ModelPicker
@@ -1152,6 +1153,7 @@ class CmigMainWindow(QMainWindow):
         self.strain_growth_page = StrainGrowthPage()
         self.ratio_impact_page = RatioImpactPage()
         self.host_view = HostImpactView()
+        self.host_search_page = HostSearchPage()
         self.dynamics_view = DfbaSpatialView()
         self.central_stack = QStackedWidget()  # kept: set_central() still docks extra views
         self.pages = self.central_stack
@@ -1167,7 +1169,7 @@ class CmigMainWindow(QMainWindow):
             "ratio_impact": self.ratio_impact_page,
             "community": self.community_builder,
             "host": self.host_view,
-            "host_search": self.host_view,      # Task 10 replaces
+            "host_search": self.host_search_page,
             "dfba": self.dynamics_view,
             "spatial": self.dynamics_view,      # Task 11 replaces
             "medium": self.medium_editor,       # Task 12 wraps
@@ -1849,6 +1851,10 @@ class CmigMainWindow(QMainWindow):
             self._pending_imports = []  # placeholders belong to the project they were queued in
             self._reported_unrunnable = {}
             self._clear_community_result()  # the shown run belongs to the previous project
+            self.host_view.clear_result()
+            self.host_search_page.results_panel.invalidate_results()
+            for page in (self.host_view, self.host_search_page):
+                page.status.clear()
         # Rebuilding a group drops its rows' selection; put it back unless the project changed.
         current = None if switched else self._sidebar_current()
         selected_models = [] if switched else self.sidebar.selected_keys("models")
@@ -1921,7 +1927,8 @@ class CmigMainWindow(QMainWindow):
         "host": "Host microbes", "dfba": "dFBA", "sweep": "Sweep",
         "medium": "Medium growth check", "medium_single": "Minimal medium",
         "gene_ko": "Gene Knockout", "strain_growth": "Strain Growth",
-        "ratio_impact": "Ratio Impact",
+        "ratio_impact": "Ratio Impact", "host_search_model": "Host search host",
+        "host_search": "Host search microbes",
     }
 
     def _model_pickers(self) -> dict[str, ModelPicker]:
@@ -1937,6 +1944,8 @@ class CmigMainWindow(QMainWindow):
             "community": self.community_builder.model_picker,
             "host_model": self.host_view.host_picker,
             "host": self.host_view.model_picker,
+            "host_search_model": self.host_search_page.host_picker,
+            "host_search": self.host_search_page.model_picker,
             "dfba": self.dynamics_view.model_picker,
             "sweep": self.sweep_view.model_picker,
             "medium": self.medium_editor.model_picker,
@@ -1952,6 +1961,8 @@ class CmigMainWindow(QMainWindow):
             ("ratio_impact", "medium"): self.ratio_impact_page.medium_picker,
             ("host", "host_medium"): self.host_view.host_medium_picker,
             ("host", "microbe_medium"): self.host_view.microbe_medium_picker,
+            ("host_search", "host_medium"): self.host_search_page.host_medium_picker,
+            ("host_search", "microbe_medium"): self.host_search_page.microbe_medium_picker,
         }
 
     def _refresh_pickers(self) -> None:
@@ -1984,7 +1995,9 @@ class CmigMainWindow(QMainWindow):
                     left_out += [f"{m} ({self._PICKER_LABELS[key]})" for m in new]
                     self._reported_unrunnable[key] = lost
                 elif not picker.single:
-                    host = self.host_view.host_picker.selected_ids() if key == "host" else []
+                    host_pickers = {"host": self.host_view.host_picker,
+                                    "host_search": self.host_search_page.host_picker}
+                    host = host_pickers[key].selected_ids() if key in host_pickers else []
                     picker.set_selected([m for m in runnable if m not in host])
             for (key, field), medium_picker in self._medium_pickers().items():
                 medium_picker.set_choices(presets, media)
@@ -2005,14 +2018,14 @@ class CmigMainWindow(QMainWindow):
         if notes:
             self.statusBar().showMessage("; ".join(notes) + ".", 15000)
 
-    def _host_model_changed(self) -> None:
+    def _host_model_changed(self, page: Any) -> None:
         """A newly chosen host model is unticked from Microbes; re-ticking it is refused at run."""
         if self._refreshing_pickers:
             return
-        host = self.host_view.host_picker.selected_ids()
-        microbes = self.host_view.model_picker.selected_ids()
+        host = page.host_picker.selected_ids()
+        microbes = page.model_picker.selected_ids()
         if host and host[0] in microbes:
-            self.host_view.model_picker.set_selected([m for m in microbes if m != host[0]])
+            page.model_picker.set_selected([m for m in microbes if m != host[0]])
 
     def _store_settings(self, key: str, values: dict[str, object]) -> None:
         try:
@@ -2124,7 +2137,7 @@ class CmigMainWindow(QMainWindow):
             "ratio_impact": self.ratio_impact_page.run_btn,
             "community": self.community_builder.run_btn,
             "host": self.host_view.run_btn,
-            "host_search": self.host_view.run_search_btn,
+            "host_search": self.host_search_page.run_btn,
             "dfba": self.dynamics_view.run_dfba_btn,
             "spatial": self.dynamics_view.run_spatial_btn,
             "medium": self.medium_editor.check_growth_btn,
@@ -2883,8 +2896,11 @@ class CmigMainWindow(QMainWindow):
                 lambda _c=False, p=page: self._export_ranked_figure(p)
             )
         self.host_view.run_btn.clicked.connect(self.run_host_microbe_bigg)
-        self.host_view.run_search_btn.clicked.connect(self.run_host_search_bigg)
         self.host_view.export_figure_btn.clicked.connect(self._export_host_figure)
+        self.host_search_page.run_btn.clicked.connect(self.run_host_search_bigg)
+        self.host_search_page.results_panel.export_figure_btn.clicked.connect(
+            lambda _c=False: self._export_ranked_figure(self.host_search_page)
+        )
         self.dynamics_view.run_dfba_btn.clicked.connect(self.run_dfba)
         self.dynamics_view.run_spatial_btn.clicked.connect(self.run_spatial_preview)
         self.community_builder.run_btn.clicked.connect(self.run_community_solve)
@@ -2907,7 +2923,12 @@ class CmigMainWindow(QMainWindow):
         self.scenario_compare.compare_btn.clicked.connect(self.run_scenario_compare)
         for key, picker in self._model_pickers().items():
             picker.selection_changed.connect(lambda k=key, p=picker: self._remember(k, p))
-        self.host_view.host_picker.selection_changed.connect(self._host_model_changed)
+        self.host_view.host_picker.selection_changed.connect(
+            lambda p=self.host_view: self._host_model_changed(p)
+        )
+        self.host_search_page.host_picker.selection_changed.connect(
+            lambda p=self.host_search_page: self._host_model_changed(p)
+        )
         for (key, field), medium_picker in self._medium_pickers().items():
             medium_picker.currentIndexChanged.connect(
                 lambda _index, k=key, f=field, p=medium_picker: self._remember_medium(k, f, p)
@@ -3685,7 +3706,7 @@ class CmigMainWindow(QMainWindow):
         return jid
 
     def _host_inputs(
-        self, kind: str, request: dict[str, Any], biomass_error: str
+        self, page: Any, kind: str, request: dict[str, Any], biomass_error: str
     ) -> tuple[Path, Path | None, str, str | None, str | None] | None:
         """Check the Host page's choices and claim a run: (out, taxonomy, host, media), or
         None after the reason is shown on the page."""
@@ -3706,7 +3727,7 @@ class CmigMainWindow(QMainWindow):
         ):
             message = biomass_error
         if message:
-            self.host_view.run_status.setText(message)
+            page.status.setText(message)
             return None
         try:
             host = str(self._model_file(request["host_id"]))
@@ -3714,7 +3735,7 @@ class CmigMainWindow(QMainWindow):
             microbe_medium = self._medium_arg(request["microbe_medium"])
             out_dir, taxonomy = self._prepare_run(kind, list(request["models"]))
         except (ProjectError, ValueError) as exc:
-            self.host_view.run_status.setText(str(exc))
+            page.status.setText(str(exc))
             return None
         return out_dir, taxonomy, host, host_medium, microbe_medium
 
@@ -3723,9 +3744,10 @@ class CmigMainWindow(QMainWindow):
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        request = self.host_view.request()
+        page = self.host_view
+        request = page.request()
         inputs = self._host_inputs(
-            "host-microbe", request,
+            page, "host-microbe", request,
             "Positive biomass gDW values, basis kind, and source are required.",
         )
         if inputs is None:
@@ -3785,13 +3807,14 @@ class CmigMainWindow(QMainWindow):
         return jid
 
     def run_host_search_bigg(self) -> str:
-        """Rank microbial combinations by host objective/target transfer from the Host tab."""
+        """Rank microbial combinations by host objective/target transfer for one host."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        request = self.host_view.request()
+        page = self.host_search_page
+        request = page.request()
         inputs = self._host_inputs(
-            "host-search", request,
+            page, "host-search", request,
             "Positive biomass gDW values, basis kind, and source are required for ranking.",
         )
         if inputs is None:
@@ -3851,9 +3874,9 @@ class CmigMainWindow(QMainWindow):
 
         jid = self.submit_job("host_search_bigg", _job)
         self._record_command(jid, out_dir, argv)
-        self._host_search_jobs[jid] = (out_dir, self.search_view.request_fields("host_search"))
-        self.host_view.run_search_btn.setEnabled(False)
-        self.host_view.run_status.setText(f"host-search started: {jid}")
+        self._host_search_jobs[jid] = (out_dir, page.request_fields("host_search"))
+        page.run_btn.setEnabled(False)
+        page.status.setText(f"host-search started: {jid}")
         self._show_status("status_started", kind=self.tr_map["kind_host_search"], job_id=jid)
         return jid
 
@@ -4829,46 +4852,18 @@ class CmigMainWindow(QMainWindow):
                         "status_complete", kind=self.tr_map["kind_host_microbe"], job_id=jid
                     )
                 else:
+                    # The earlier run must not stay drawn under this run's failure message.
+                    self.host_view.clear_result()
                     self.host_view.run_status.setText(_UNREADABLE_RESULT.format(
                         kind="host-microbe", out_dir=out_dir))
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._host_microbe_jobs.pop(jid, None)
                 self.host_view.run_btn.setEnabled(True)
+                self.host_view.clear_result()
                 self.host_view.run_status.setText(
                     f"host-microbe {job.status.value}: {job.error or jid}"
                 )
-        for jid, (out_dir, requested) in list(self._host_search_jobs.items()):
-            job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, dict):
-                self._host_search_jobs.pop(jid, None)
-                self.host_view.run_search_btn.setEnabled(True)
-                if self._inspect_gui_run(out_dir) is None:
-                    continue
-                self.current_search_dir = out_dir
-                summary = _host_search_summary_for_search_view(job.result)
-                self.search_view.figure_mode_combo.setCurrentText("Ranking")
-                self.search_view.load_summary(
-                    _with_search_conditions(summary, job.result),
-                    run_dir=out_dir,
-                    request_note=self.search_view.superseded_note(requested, "host_search"),
-                    workflow_kind="host_search",
-                    executed_request=requested,
-                    source_summary=job.result,
-                )
-                self._show_page(self.search_view)
-                self._register_run_output(out_dir)
-                self._show_status(
-                    "status_complete_out",
-                    kind=self.tr_map["kind_host_search"],
-                    job_id=jid,
-                    out_dir=out_dir,
-                )
-            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
-                self._host_search_jobs.pop(jid, None)
-                self.host_view.run_search_btn.setEnabled(True)
-                self.host_view.run_status.setText(
-                    f"host-search {job.status.value}: {job.error or jid}"
-                )
+        self._finish_ranked_jobs("host_search", self._host_search_jobs, "host-search")
         self._finish_ranked_jobs("gene_ko", self._gene_ko_jobs, "gene KO search")
         self._finish_ranked_jobs("strain_growth", self._strain_growth_jobs, "strain growth")
         self._finish_ranked_jobs("ratio_impact", self._abundance_impact_jobs, "ratio impact")
@@ -5118,6 +5113,8 @@ class CmigMainWindow(QMainWindow):
             "ratio_impact": ("abundance_impact_summary.json",
                              _abundance_impact_summary_for_search_view, "abundance_impact",
                              "kind_ratio_impact"),
+            "host_search": ("host_search_summary.json", _host_search_summary_for_search_view,
+                            "host_search", "kind_host_search"),
         }[key]
 
     def _show_ranked(

@@ -946,7 +946,6 @@ class SearchView(AnalysisPage):
                    "ga_tournament_k", "ga_elitism", "ga_budget", "ga_patience",
                    "ga_restart_after", "ga_local_search_fraction", "ga_preserve_common",
                    "checkpoint", "resume", "min_community_growth", "validate_top", "timeout"),
-        "host_search": (),  # driven by the Host tab's own controls, not these
     }
 
     def request_fields(self, kind: str) -> dict[str, str]:

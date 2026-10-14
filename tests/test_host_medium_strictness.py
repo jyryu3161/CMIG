@@ -529,9 +529,9 @@ def test_the_gui_host_tab_can_relax_the_medium_too():
     import inspect
 
     pytest.importorskip("PySide6")
-    from cmig.gui.host_view import HostImpactView
+    from cmig.gui.host_view import HostInputs
 
-    source = inspect.getsource(HostImpactView)
+    source = inspect.getsource(HostInputs)  # both host pages build their inputs from it
     assert "allow_unknown_medium_check" in source
     assert '"allow_unknown_medium"' in source, "request() must carry the control to the runner"
 

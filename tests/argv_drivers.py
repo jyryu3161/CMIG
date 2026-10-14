@@ -91,10 +91,10 @@ def host(w: Any) -> str:
 
 
 def host_search(w: Any) -> str:
-    v = w.host_view
+    v = w.host_search_page
     _host_common(v)
-    v.search_target_input.setText("but")
-    v.search_metric_combo.setCurrentText("objective_value")
+    v.target_input.setText("but")
+    v.metric_combo.setCurrentText("objective_value")
     v.min_size_spin.setValue(1)
     v.max_size_spin.setValue(2)
     return w.run_host_search_bigg()
