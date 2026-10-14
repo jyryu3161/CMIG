@@ -512,7 +512,8 @@ this project now; otherwise it stays clear and the banner says "namespace confir
 restored: <models> not confirmed". Restoring replaces the page's current inputs, without
 undo.
 
-A run without a usable request (a phase-1 run, a run from Open Run…, or a damaged record)
+A run without a usable request (a phase-1 run, a run outside this project's `runs/`
+opened with Open Run…, whose record is never read, or a damaged record)
 opens on the page its manifest's workflow kind (or its summary file, or its GUI folder
 name) points to, keeps the inputs on screen and says "Inputs for <run> cannot be restored"
 with the reason. A ranked run reopened without its full inputs says that its inputs are

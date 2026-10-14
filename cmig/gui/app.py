@@ -3139,7 +3139,8 @@ class CmigMainWindow(QMainWindow):
         from cmig.gui.run_restore import analysis_for_run, banner_text
 
         run_dir = Path(run_dir).resolve()
-        key, record, problem = analysis_for_run(run_dir)
+        key, record, problem = analysis_for_run(run_dir,
+                                                in_project=self._in_project_runs(run_dir))
         if key == "check_growth" and self._open_check_growth_run(run_dir, record):
             return
         page = self.analysis_pages.get(key or "")

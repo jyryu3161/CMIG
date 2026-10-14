@@ -50,9 +50,17 @@ def _manifest_kind(run_dir: Path) -> str | None:
     return kind if isinstance(kind, str) else None
 
 
-def analysis_for_run(run_dir: Path) -> tuple[str | None, dict[str, Any] | None, str]:
+def analysis_for_run(
+    run_dir: Path, *, in_project: bool = True
+) -> tuple[str | None, dict[str, Any] | None, str]:
+    """(page key, the run's input record, why there is none). The record of a run outside
+    the open project (`in_project` False) is never used: its model ids name that project's
+    models, not this one's."""
     run_dir = Path(run_dir)
-    record, problem = proj.read_run_request(run_dir)
+    if in_project:
+        record, problem = proj.read_run_request(run_dir)
+    else:
+        record, problem = None, "opened from outside this project"
     if record is not None:
         return str(record["analysis"]), record, ""
     kind = _manifest_kind(run_dir)

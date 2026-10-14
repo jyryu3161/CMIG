@@ -383,3 +383,30 @@ def test_a_reopened_run_says_its_namespace_tick_was_not_restored(window) -> None
     w._open_run_entry(run_dir)
     assert not view.assume_bigg_check.isChecked()
     assert "namespace confirmation not restored: a not confirmed" in view.banner.text()
+
+
+def test_another_projects_run_is_opened_without_its_inputs(
+    window, tmp_path: Path, monkeypatch
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    w, calls = window
+    page = w.gene_ko_page
+    page.model_picker.set_selected(["a", "b"])
+    page.members_picker.set_selected(["a"])
+    page.target_input.setText("ac")
+    assert w.run_gene_ko_search()
+    run_dir = _out(_wait(calls))
+    assert proj.read_run_request(run_dir)[0] is not None  # the record is there to be misread
+    make_project(tmp_path / "p2", ["a", "b"])
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: QMessageBox.StandardButton.Yes)
+    assert w.open_project(tmp_path / "p2")
+    page.target_input.setText("zzz")
+    page.model_picker.set_selected(["b"])
+    w._open_run_entry(run_dir)
+    assert w.pages.currentWidget() is page
+    assert page.target_input.text() == "zzz"  # the inputs on screen are left as they are
+    assert page.model_picker.selected_ids() == ["b"]
+    assert (f"Inputs for {run_dir.name} cannot be restored: opened from outside this project."
+            in page.banner.text())
