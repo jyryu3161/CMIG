@@ -10,6 +10,7 @@ cause. These helpers are shared by every page so the wording and the rules are t
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from collections.abc import Iterable
 from typing import Any
@@ -27,6 +28,8 @@ _NOT_A_REASON = (
 )
 
 _MAX_REASON = 220
+
+_EXCEPTION_PREFIX = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Failure|Exit|Cancelled): ")
 
 
 def cli_error_text(chunks: Iterable[str]) -> str:
@@ -60,8 +63,15 @@ def job_error_text(error: str | None) -> str:
         return ""
     from cmig.core.diagnostics import parse_diagnostic
 
-    message = str((parse_diagnostic(error) or {}).get("message") or error)
-    return message.removeprefix("RuntimeError: ").strip()
+    parsed = parse_diagnostic(error) or {}
+    message = str(parsed.get("message") or error).strip()
+    detail = parsed.get("detail")
+    exc_type = detail.get("exc_type") if isinstance(detail, dict) else None
+    if isinstance(exc_type, str) and message.startswith(f"{exc_type}: "):
+        return message[len(exc_type) + 2:].strip()
+    # `Diagnostic.from_exception` writes "<ExceptionType>: <message>"; any exception class name
+    # (ArtifactJobFailure, ModelImportError, SystemExit, …) is not part of the reason.
+    return _EXCEPTION_PREFIX.sub("", message, count=1).strip()
 
 
 def _diagnostic_message(diagnostic: object) -> str:

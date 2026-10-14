@@ -245,3 +245,112 @@ def test_failed_host_search_reads_its_published_summary(w, monkeypatch):
     details = page.results_panel.details.toPlainText()
     assert "Unevaluated 1:" in details and "--allow-failed-run" not in details
     assert page.results_panel.table.rowCount() == 0
+
+
+# ── review round 1 ─────────────────────────────────────────────────────────────────────────────
+
+
+def _publish(out: Path, name: str, kind: str, summary: dict) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    (out / name).write_text(json.dumps(summary))
+    (out / "manifest.json").write_text(json.dumps({
+        "manifest_scope": "workflow", "manifest_schema_version": "1.2",
+        "workflow_kind": kind, "status": "failed", "artifacts": [name],
+        "result_digest": artifact_result_digest(out, kind, [name]),
+    }))
+
+
+def test_failed_strain_growth_shows_no_ranking_rows_and_the_cli_reason(w, monkeypatch):
+    from argv_drivers import DRIVERS
+
+    reason = "strain-growth: the community solve did not reach an optimum (status=infeasible)"
+
+    def fake_main(argv):
+        _publish(Path(argv[argv.index("--out") + 1]), "strain_growth_summary.json",
+                 "strain_growth", {
+                     "status": "failed", "warnings": ["community solve was not optimal"],
+                     "members": [
+                         {"member": "a", "single_growth": 0.4, "single_status": "optimal",
+                          "community_member_growth": None, "community_growth": None,
+                          "community_status": "infeasible", "diagnostic": None},
+                         {"member": "b", "single_growth": 0.2, "single_status": "optimal",
+                          "community_member_growth": None, "community_growth": None,
+                          "community_status": "infeasible", "diagnostic": None},
+                     ],
+                 })
+        print(reason, file=sys.stderr)
+        print(CLI_HINT, file=sys.stderr, end="")
+        return 3
+
+    monkeypatch.setattr("cmig.cli.main.main", fake_main)
+    jid = DRIVERS["strain_growth"](w)
+    _settle(w, jid)
+    page = w.strain_growth_page
+    assert page.results_panel.table.rowCount() == 0, "a failed run is never shown as a ranking"
+    status = page.status.text()
+    assert reason in status and "--allow-failed-run" not in status, status
+    details = page.results_panel.details.toPlainText()
+    assert "Not ranked 1 (the run failed):" in details, details
+    assert "status: failed" in details
+
+
+def test_failed_ratio_impact_without_a_cli_reason_names_the_runs_own_warning(w, monkeypatch):
+    from argv_drivers import DRIVERS
+
+    def fake_main(argv):
+        _publish(Path(argv[argv.index("--out") + 1]), "abundance_impact_summary.json",
+                 "abundance_impact", {
+                     "status": "failed", "target": "but", "target_member": "b",
+                     "warnings": ["no abundance point solved: every point was infeasible"],
+                     "rows": [{"target_member": "b", "target_abundance": 0.2, "status": "failed",
+                               "diagnostic": "infeasible", "community_growth": None}],
+                 })
+        print(CLI_HINT, file=sys.stderr, end="")
+        return 3
+
+    monkeypatch.setattr("cmig.cli.main.main", fake_main)
+    jid = DRIVERS["ratio_impact"](w)
+    _settle(w, jid)
+    page = w.ratio_impact_page
+    assert page.results_panel.table.rowCount() == 0
+    status = page.status.text()
+    assert "no abundance point solved: every point was infeasible" in status, status
+    assert "--allow-failed-run" not in status
+
+
+def test_check_growth_input_refusal_is_an_input_error(w, monkeypatch):
+    reason = ("medium exchange has no counterpart in the target model (matched on metabolite): "
+              "['EX_fru_e']")
+
+    def fake_main(argv):
+        print(reason, file=sys.stderr)
+        return 2
+
+    monkeypatch.setattr("cmig.cli.main.main", fake_main)
+    w.session.confirm_namespace("a")
+    w.sidebar.select("models", "a")
+    jid = w.run_check_growth("a")
+    assert jid
+    _settle(w, jid)
+    diagnostic = parse_diagnostic(w.runner.poll(jid).error)
+    assert diagnostic["code"] == "input_error"
+    assert reason in diagnostic["message"]
+
+
+def test_job_error_text_strips_any_exception_type_prefix():
+    from cmig.gui.run_failure import job_error_text
+
+    for kind in ("RuntimeError", "ArtifactJobFailure", "ModelImportError", "SystemExit"):
+        raw = json.dumps({"code": "solver_error", "message": f"{kind}: the reason",
+                          "detail": {"exc_type": kind}})
+        assert job_error_text(raw) == "the reason", kind
+    assert job_error_text(json.dumps({"code": "x", "message": "ValueError: why"})) == "why"
+    assert job_error_text("Note: a plain sentence") == "Note: a plain sentence"
+
+
+def test_the_stderr_router_is_not_installed_over_a_missing_stderr(monkeypatch):
+    from cmig.gui import app as gui_app
+
+    monkeypatch.setattr(sys, "stderr", None)
+    gui_app._install_stderr_router()
+    assert sys.stderr is None

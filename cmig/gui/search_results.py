@@ -564,6 +564,14 @@ class SearchResultsPanel(QWidget):
                         f"{candidate.get('status')} · "
                         f"{_diagnostic_text(candidate.get('diagnostic'))}"
                     )
+        not_ranked = summary.get("not_ranked")
+        if isinstance(not_ranked, list):
+            for i, row in enumerate(not_ranked, 1):
+                if isinstance(row, dict):
+                    details.append(
+                        f"Not ranked {i} (the run failed): {row.get('members')} · "
+                        f"{row.get('status')} · {_diagnostic_text(row.get('diagnostic'))}"
+                    )
         details.extend(f"Warning {i}: {warning}" for i, warning in enumerate(warning_list, 1))
         if request_note:
             details.append(request_note)

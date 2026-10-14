@@ -824,7 +824,7 @@ class _ThreadStderrRouter:
 
 def _install_stderr_router() -> None:
     """Install the pass-through router (GUI thread only; idempotent)."""
-    if not isinstance(sys.stderr, _ThreadStderrRouter):
+    if sys.stderr is not None and not isinstance(sys.stderr, _ThreadStderrRouter):
         sys.stderr = cast(TextIO, _ThreadStderrRouter(sys.stderr))
 
 
@@ -907,6 +907,8 @@ def _ranked_cli_failure(
             reason = ranked_failure_reason(loaded) or error_text
             payload = {**loaded, "status": "failed", "cli_exit_code": rc,
                        "output_dir": str(out_dir)}
+            if error_text:
+                payload["cli_error"] = error_text
             return ArtifactJobFailure(
                 f"{reason} (rc={rc})" if reason else f"{label} exited with rc={rc}", payload
             )
@@ -924,9 +926,34 @@ def _failed_ranked_status(label: str, summary: dict[str, Any]) -> str:
     if reason:
         return (f"{label} failed (rc={rc}): {reason}. The unevaluated candidates and their "
                 "diagnostics are listed in the details.")
-    cause = summary.get("cli_error") or summary.get("input_diagnostic")
+    warnings = summary.get("warnings")
+    cause = (
+        summary.get("cli_error") or summary.get("input_diagnostic")
+        or summary.get("diagnostic")
+        # A kind without per-candidate records (strain growth, ratio impact): its own first
+        # warning is the run's account of what went wrong.
+        or (str(warnings[0]) if isinstance(warnings, list) and warnings else "")
+    )
     return (f"{label} failed (rc={rc})" + (f": {cause}" if cause else "")
             + "; diagnostics and artifact path are in details")
+
+
+def _unranked(summary: dict[str, Any]) -> dict[str, Any]:
+    """A failed run's summary with no ranking: its rows move to `not_ranked` (details only).
+
+    A nonzero exit can never be shown as a ranking result (rule 3); the rows it recorded are
+    still listed, labelled as not ranked.
+    """
+    shown = dict(summary)
+    rows = shown.get("top_ranked")
+    if isinstance(rows, list):
+        shown["not_ranked"] = rows
+        shown["top_ranked"] = []
+    elif isinstance(rows, dict):
+        shown["not_ranked"] = [row for items in rows.values() if isinstance(items, list)
+                               for row in items]
+        shown["top_ranked"] = {}
+    return shown
 
 
 def _failed_search_artifacts(out_dir: Path, rc: int) -> dict[str, Any]:
@@ -3096,11 +3123,9 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            with _captured_job_stderr() as stderr_chunks:
-                rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                lines = "".join(stderr_chunks).strip().splitlines()
-                raise RuntimeError(lines[-1] if lines else f"cmig single exited {rc}")
+                raise cli_failure("cmig single", rc, cli_error)
             _finish_after_artifacts(ctx)
             return {"rc": rc}
 
@@ -3152,8 +3177,7 @@ class CmigMainWindow(QMainWindow):
         if failed and failed_summary(out_dir):
             return reading_text()  # a solve that failed (e.g. infeasible), told by its summary
         if job is not None and job.status is JobStatus.FAILED:
-            message = str((parse_diagnostic(job.error) or {}).get("message") or "")
-            lines = message.removeprefix("RuntimeError: ").strip().splitlines()
+            lines = job_error_text(job.error).splitlines()
             reason = lines[-1] if lines else "the run failed"
             hint = (" — tick “Skip medium metabolites this model lacks” to run without them"
                     if "no counterpart" in reason else "")
@@ -6033,7 +6057,7 @@ class CmigMainWindow(QMainWindow):
                     try:
                         validate_search_summary(job.result)
                         self.search_view.load_summary(
-                            job.result,
+                            _unranked(job.result),
                             run_dir=out_dir,
                             request_note=self.search_view.superseded_note(requested, "search"),
                             workflow_kind="search",
@@ -6379,16 +6403,21 @@ class CmigMainWindow(QMainWindow):
 
     def _show_ranked(
         self, key: str, payload: dict[str, Any], out_dir: Path,
-        requested: dict[str, str] | None,
+        requested: dict[str, str] | None, *, failed: bool = False,
     ) -> None:
         """Show a ranked result; `requested` None = the run's inputs are not known, so nothing
-        is labelled as executed (the screen's inputs may belong to another run)."""
+        is labelled as executed (the screen's inputs may belong to another run).
+
+        `failed`: the run failed, so none of its rows is a ranking — they are listed in the
+        details as not ranked and the table stays empty.
+        """
         _file, adapter, kind, _label = self._ranked_spec(key)
         page = self._ranked_page(key)
         panel = page.results_panel
         panel.figure_mode_combo.setCurrentText("Ranking")
+        adapted = _with_run_outcome(_with_search_conditions(adapter(payload), payload), payload)
         panel.load_summary(
-            _with_run_outcome(_with_search_conditions(adapter(payload), payload), payload),
+            _unranked(adapted) if failed else adapted,
             run_dir=out_dir,
             request_note="" if requested is None else (
                 panel.effective_note(requested, kind) + panel.superseded_note(requested, kind)
@@ -6451,7 +6480,7 @@ class CmigMainWindow(QMainWindow):
         if self._inspect_gui_run(out_dir) is None:
             return False
         try:
-            self._show_ranked(key, payload, out_dir, requested)
+            self._show_ranked(key, payload, out_dir, requested, failed=True)
         except (TypeError, ValueError, KeyError) as exc:
             self._reject_gui_summary(out_dir, exc)
             self._clear_ranked(self._ranked_page(key))
