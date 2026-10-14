@@ -88,6 +88,7 @@ from cmig.gui.editors import (
     installed_medium_preset_path,
     installed_medium_presets,
 )
+from cmig.gui.find import FindField, SearchTable, build_table
 from cmig.gui.graph_view import GateBadge, InteractionGraphView
 from cmig.gui.host_view import HostImpactView
 from cmig.gui.inspector import InspectorPanel
@@ -1114,6 +1115,15 @@ class CmigMainWindow(QMainWindow):
         self._index_cache: dict[str, dict[str, Any]] = {}
         #: model sha256s an index job found usable or rebuilt (this project only)
         self._index_checked: set[str] = set()
+        #: model sha256 -> its (kind, id, name) search rows, read from its index by an
+        #: unlisted job (this project only); sha256s whose index that job could not read
+        self._search_rows: dict[str, list[tuple[str, str, str]]] = {}
+        self._search_unreadable: set[str] = set()
+        self._search_rows_job: str | None = None
+        #: medium ref -> its exchange ids, for the project search
+        self._medium_exchange_cache: dict[str, list[str]] = {}
+        self.find_field = FindField(self._search_table, self)
+        self.find_field.activated.connect(self._find_activated)
         self.bridge = JobsBridge(self.runner, self.jobs_panel)
         self._fixture_jobs: dict[str, Path] = {}
         # Each Search-tab map holds (out_dir, the answer-determining inputs at submit time)
@@ -1558,6 +1568,7 @@ class CmigMainWindow(QMainWindow):
         for jid in list(self.bridge._job_ids):
             if self.runner.poll(jid).status in (JobStatus.PENDING, JobStatus.RUNNING):
                 self.runner.cancel(jid)
+        self._cancel_unlisted_jobs()
         self.runner.shutdown(wait=False, cancel_futures=True)
         self._close_session()
         super().closeEvent(event)
@@ -1727,6 +1738,7 @@ class CmigMainWindow(QMainWindow):
         # Delete removes the sidebar's selected models, so it must only fire while the sidebar
         # has focus — not when Delete is pressed in a table or editor elsewhere in the window.
         self.remove_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.find_action = self._action("Find…", self._focus_find, QKeySequence.StandardKey.Find)
         self.sidebar.addAction(self.remove_action)
         self.toggle_sidebar_action = self._action("Hide Sidebar",
                                                   lambda: self._toggle(self.sidebar, "Sidebar"),
@@ -1758,6 +1770,8 @@ class CmigMainWindow(QMainWindow):
         edit_menu.addActions([self.undo_action, self.redo_action])
         edit_menu.addSeparator()
         edit_menu.addActions([self.rename_action, self.remove_action])
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.find_action)
         view_menu = bar.addMenu("&View")
         view_menu.addActions([self.toggle_sidebar_action, self.toggle_inspector_action,
                               self.toggle_activity_action])
@@ -1797,8 +1811,13 @@ class CmigMainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
+        toolbar.addWidget(self.find_field)
         toolbar.addAction(self.toggle_inspector_action)
         toolbar.addAction(self.run_action)
+
+    def _focus_find(self) -> None:
+        self.find_field.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.find_field.selectAll()
 
     def _toggle(self, widget: QWidget, name: str) -> None:
         # isHidden() is the pane's own state; isVisible() is also False while the window is.
@@ -1929,8 +1948,14 @@ class CmigMainWindow(QMainWindow):
         for job_id in list(self.bridge._job_ids):
             if self.runner.poll(job_id).status in (JobStatus.PENDING, JobStatus.RUNNING):
                 self._cancel_job_id(job_id)
+        self._cancel_unlisted_jobs()
+
+    def _cancel_unlisted_jobs(self) -> None:
+        """Cancel this project's jobs that Activity does not list (index check, search rows)."""
         if self._index_job is not None and self._index_job_kind == "check":
-            self.runner.cancel(self._index_job)  # the unlisted index check of this project
+            self.runner.cancel(self._index_job)
+        if self._search_rows_job is not None:
+            self.runner.cancel(self._search_rows_job)
 
     def _close_project_command(self) -> None:
         """File > Close Project: asks first when jobs are running."""
@@ -2014,6 +2039,11 @@ class CmigMainWindow(QMainWindow):
             self._index_checked = set()
             self.model_browser.clear()
             self._browser_shown = None
+            # So do its search rows and media; the open result list is the previous project's.
+            self._search_rows = {}
+            self._search_unreadable = set()
+            self._medium_exchange_cache = {}
+            self.find_field.popup.setVisible(False)
             # A namespace choice made for the previous project's models is not one for these.
             self._namespace_user_set = dict.fromkeys(self._namespace_user_set, False)
             self._namespace_defaults = dict.fromkeys(self._namespace_defaults, None)
@@ -2045,6 +2075,7 @@ class CmigMainWindow(QMainWindow):
             self._inspector_run, self._inspected_model = None, None
             self._show_models_overview()
             self._ensure_indexes()
+            self._refresh_search_rows()
         elif project is not None and self.pages.currentWidget() in (
             self.welcome_page, self.empty_models_page, self.model_manager
         ):
@@ -2589,7 +2620,117 @@ class CmigMainWindow(QMainWindow):
         self._index_changed()
 
     def _index_changed(self) -> None:
-        """Hook for the project search table (Task 16)."""
+        """An index job finished: read the search rows of the indexes now usable."""
+        # A rebuilt index may be one the search job could not read before.
+        self._search_unreadable -= self._index_checked
+        self._refresh_search_rows()
+
+    # ── project search (⌘F) ──────────────────────────────────────────────────────────────
+    def _refresh_search_rows(self) -> None:
+        """Read the search rows of indexed models not read yet, in an unlisted job."""
+        from cmig.io import model_index
+
+        project = self.session.project
+        if project is None or self._search_rows_job is not None:
+            return
+        wanted = [m.sha256 for m in project.models
+                  if m.sha256 not in self._search_rows and m.sha256 not in self._search_unreadable
+                  and model_index.index_path(project.root, m.sha256).exists()]
+        if not wanted:
+            return
+        root = project.root
+
+        def _job(ctx: Any) -> dict[str, Any]:
+            rows: dict[str, list[tuple[str, str, str]]] = {}
+            bad: list[str] = []
+            for sha in wanted:
+                if ctx.cancelled:
+                    break
+                index = model_index.load_index(root, sha)
+                if index is None:
+                    bad.append(sha)
+                else:
+                    rows[sha] = model_index.search_rows(index)
+            return {"root": str(root), "rows": rows, "bad": bad}
+
+        # A read of small files, not a user job: kept out of Activity.
+        self._search_rows_job = self.runner.submit("search_rows", _job)
+
+    def _finish_search_rows_job(self) -> None:
+        jid = self._search_rows_job
+        if jid is None:
+            return
+        job = self.runner.poll(jid)
+        if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+            return
+        self._search_rows_job = None
+        project = self.session.project
+        result = job.result if isinstance(job.result, dict) else {}
+        # Rows read for a previous project (closed or switched while it ran) are dropped.
+        if project is not None and result.get("root") == str(project.root):
+            self._search_rows.update(result.get("rows", {}))
+            self._search_unreadable.update(result.get("bad", []))
+        self.runner.release_payload(jid)
+        self._refresh_search_rows()  # an index built meanwhile, or the new project's rows
+
+    def _search_table(self) -> SearchTable:
+        project = self.session.project
+        if project is None:
+            return SearchTable()
+        by_model = {m.id: self._search_rows[m.sha256] for m in project.models
+                    if m.sha256 in self._search_rows}
+        indexing = sum(1 for m in project.models
+                       if m.sha256 not in self._search_rows
+                       and m.sha256 not in self._search_unreadable
+                       and m.sha256 not in self._index_failures
+                       and m.status in ("ok", "warning") and m.integrity == "ok")
+        unreadable = sum(1 for m in project.models
+                         if m.sha256 in self._search_unreadable
+                         or m.sha256 in self._index_failures)
+        media = [(f"preset:{name}", name, self._medium_exchanges(f"preset:{name}"))
+                 for name in installed_medium_presets()]
+        media += [(f"medium:{m.id}", m.id, self._medium_exchanges(f"medium:{m.id}"))
+                  for m in project.media]
+        runs = [(str(e.path), e.name, f"{e.label} · {e.status}")
+                for e in self._display_runs(self.session.runs())]
+        return build_table([(m.id, Path(m.file).name) for m in project.models], by_model,
+                           media, runs, indexing=indexing, unreadable=unreadable)
+
+    def _medium_exchanges(self, ref: str) -> list[str]:
+        cached = self._medium_exchange_cache.get(ref)
+        if cached is not None:
+            return cached
+        from cmig.core.medium_spec import load_medium
+
+        try:
+            path = self._medium_arg(ref)
+            ids = sorted(load_medium(path).uptake) if path else []
+        except Exception:  # noqa: BLE001 - an unreadable medium is simply not searchable
+            ids = []
+        self._medium_exchange_cache[ref] = ids
+        return ids
+
+    def _find_activated(self, kind: str, key: str, model: object) -> None:
+        project = self.session.project
+        if project is None:
+            return
+        if kind == "run":
+            self._open_run_entry(Path(key))
+        elif kind == "medium":
+            self.sidebar.select("media", key)
+        else:
+            model_id = key if kind == "model" else str(model)
+            try:
+                entry = project.model(model_id)
+            except ProjectError:
+                return  # removed or renamed since the result list was drawn
+            self.sidebar.select("models", model_id)
+            if self.model_browser.model_id() != model_id or (
+                self.pages.currentWidget() is not self.model_browser
+            ):
+                self._show_model(entry)
+            if kind != "model":
+                self.model_browser.select(kind, key)
 
     def _retry_index(self, model_id: str) -> None:
         project = self.session.require()
@@ -5387,6 +5528,7 @@ class CmigMainWindow(QMainWindow):
     def _poll_completed_jobs(self) -> None:
         settled = self._settle_run_jobs()
         self._finish_index_job()
+        self._finish_search_rows_job()
         self._finish_check_growth_jobs()
         for jid in list(self._import_jobs):
             job = self.runner.poll(jid)
