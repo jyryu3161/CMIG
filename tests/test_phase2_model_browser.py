@@ -169,7 +169,7 @@ def test_inspector_wording(textbook_window) -> None:
     assert "Namespace mappings: 0 of 20 reviewed" in text
     assert "BiGG namespace coverage" not in text
     assert "Biomass:" not in text
-    assert w.inspector.exchange_list.isHidden() if hasattr(w.inspector, "exchange_list") else True
+    assert not hasattr(w.inspector, "exchange_list")
 
 
 def test_nothing_selected_shows_project_summary(textbook_window) -> None:
@@ -206,3 +206,126 @@ def test_switching_project_does_not_keep_the_browsed_model(tmp_path: Path) -> No
         assert w.inspector.title_label.text() == "Project · p2"
     finally:
         w.close_project()
+
+
+@pytest.mark.parametrize("bad_index", ["{not json", "older schema"])
+def test_unusable_index_file_is_rebuilt(tmp_path: Path, bad_index: str) -> None:
+    import json
+
+    from cmig.io import model_index
+
+    project = proj.create_project(tmp_path / "p")
+    entry = proj.add_model_file(project, textbook_sbml(tmp_path / "src" / "e_coli_core.xml"))
+    proj.save_project(project)
+    path = model_index.index_path(project.root, entry.sha256)
+    if bad_index == "older schema":
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["schema_version"] = 0
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    else:
+        path.write_text(bad_index, encoding="utf-8")
+    w = build_main_window()
+    _open(w, project.root, tmp_path)
+    try:
+        w.sidebar.select("models", "e_coli_core")
+        deadline = time.time() + 30
+        while w.model_browser.reactions_tab.table.rowCount() == 0 and time.time() < deadline:
+            APP.processEvents()
+            time.sleep(0.05)
+            w._poll_completed_jobs()
+        assert w.model_browser.reactions_tab.table.rowCount() == 95
+        assert model_index.load_index(project.root, entry.sha256) is not None
+    finally:
+        w.close_project()
+
+
+def test_retry_rebuilds_an_unusable_index(tmp_path: Path, monkeypatch) -> None:
+    from cmig.io import model_index
+
+    real_build = model_index.build_index_file
+    calls: list[str] = []
+
+    def flaky(root, path, sha, model_id):  # type: ignore[no-untyped-def]
+        calls.append(model_id)
+        if len(calls) == 1:
+            raise ValueError("boom")
+        return real_build(root, path, sha, model_id)
+
+    monkeypatch.setattr(model_index, "build_index_file", flaky)
+    project = proj.create_project(tmp_path / "p")
+    entry = proj.add_model_file(project, textbook_sbml(tmp_path / "src" / "e_coli_core.xml"))
+    proj.save_project(project)
+    model_index.index_path(project.root, entry.sha256).write_text("{not json")
+    w = build_main_window()
+    _open(w, project.root, tmp_path)
+    try:
+        w.sidebar.select("models", "e_coli_core")
+        b = w.model_browser
+        deadline = time.time() + 30
+        while "boom" not in b.contents_label.text() and time.time() < deadline:
+            APP.processEvents()
+            time.sleep(0.05)
+            w._poll_completed_jobs()
+        assert not b.retry_btn.isHidden()
+        b.retry_btn.click()
+        assert w._index_job is not None
+        while b.reactions_tab.table.rowCount() == 0 and time.time() < deadline:
+            APP.processEvents()
+            time.sleep(0.05)
+            w._poll_completed_jobs()
+        assert b.reactions_tab.table.rowCount() == 95 and calls == ["e_coli_core"] * 2
+    finally:
+        w.close_project()
+
+
+def test_another_models_index_does_not_redraw_the_browsed_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import threading
+
+    from cmig.io import model_index
+
+    gate = threading.Event()
+    real_write = model_index.write_index
+
+    def gated(root, path, sha, model_id):  # type: ignore[no-untyped-def]
+        assert gate.wait(10)
+        return real_write(root, sha, model_id, {"reactions": [], "metabolites": [],
+                                                "genes": [], "exchanges": [], "objective": []})
+
+    monkeypatch.setattr(model_index, "build_index_file", gated)
+    project = make_project(tmp_path / "p", ["a", "b"], index=False)
+    reaction = {"id": "R1", "name": "one", "metabolites": {}, "lower": 0.0, "upper": 1.0}
+    real_write(project.root, project.model("a").sha256, "a",
+               {"reactions": [reaction], "metabolites": [], "genes": [], "exchanges": [],
+                "objective": []})
+    w = build_main_window()
+    _open(w, project.root, tmp_path)
+    try:
+        assert w._index_job is not None  # b's index is being built
+        w.sidebar.select("models", "a")
+        b = w.model_browser
+        b.set_growth("Growth 0.5")
+        assert b.select("reaction", "R1")
+        gate.set()
+        deadline = time.time() + 10
+        while w._index_job is not None and time.time() < deadline:
+            APP.processEvents()
+            time.sleep(0.05)
+            w._poll_completed_jobs()
+        assert w._index_job is None
+        assert b.growth_label.text() == "Growth 0.5"
+        assert b.reactions_tab.current_id() == "R1"
+    finally:
+        w.close_project()
+
+
+def test_model_derived_labels_are_plain_text() -> None:
+    from PySide6.QtCore import Qt
+
+    from cmig.gui.model_browser import ModelBrowser
+
+    b = ModelBrowser()
+    for label in (b.title_label, b.contents_label, b.objective_label, b.objective_terms,
+                  b.namespace_label, b.growth_label):
+        assert label.textFormat() == Qt.TextFormat.PlainText

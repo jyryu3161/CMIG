@@ -2436,11 +2436,14 @@ class CmigMainWindow(QMainWindow):
         project = self.session.project
         if project is None or self._index_job is not None:
             return
+        # An index file that cannot be used (corrupt, older schema, another model's) counts
+        # as missing: it is rebuilt, never left "being built" with nothing building.
         wanted = [
             (m.id, m.sha256, proj.model_path(project, m)) for m in project.models
             if m.status in ("ok", "warning") and m.integrity == "ok"
             and m.sha256 not in self._index_failures
-            and not model_index.index_path(project.root, m.sha256).exists()
+            and m.sha256 not in self._index_cache
+            and model_index.load_index(project.root, m.sha256) is None
         ]
         if not wanted:
             return
@@ -2490,17 +2493,18 @@ class CmigMainWindow(QMainWindow):
             "indexing was cancelled" if cancelled
             else "" if job.status is JobStatus.DONE else f"indexing failed: {job.error or jid}"
         )
-        if self.pages.currentWidget() is self.model_browser:
-            model_id = self.model_browser.model_id()
-            if model_id is not None:
-                try:
-                    entry = project.model(model_id)
-                except ProjectError:
-                    entry = None
-                if entry is not None:
-                    self.model_browser.show_model(
-                        entry, self._load_index(entry), self._index_problem(entry, unfinished)
-                    )
+        # Only a browsed model still waiting for its contents is redrawn, and only its
+        # contents: the header (namespace, Check Growth result) and a shown index stay as they are.
+        model_id = self.model_browser.model_id()
+        if model_id is not None and not self.model_browser.has_index():
+            try:
+                entry = project.model(model_id)
+            except ProjectError:
+                entry = None
+            if entry is not None:
+                self.model_browser.set_contents(
+                    self._load_index(entry), self._index_problem(entry, unfinished)
+                )
         self._index_changed()
 
     def _index_changed(self) -> None:
@@ -2510,7 +2514,8 @@ class CmigMainWindow(QMainWindow):
         project = self.session.require()
         entry = project.model(model_id)
         self._index_failures.pop(entry.sha256, None)
-        self.model_browser.show_model(entry, None, "")
+        self._index_cache.pop(entry.sha256, None)
+        self.model_browser.set_contents(None, "")
         self._ensure_indexes()
 
     def _show_project_summary(self) -> None:

@@ -149,6 +149,7 @@ class ModelBrowser(QWidget):
         self._metabolites: dict[str, dict[str, Any]] = {}
         self._genes: dict[str, dict[str, Any]] = {}
         self._met_reactions: dict[str, list[str]] = {}
+        self._has_index = False
         self.title_label = QLabel("")
         font = QFont(self.title_label.font())
         font.setBold(True)
@@ -160,15 +161,18 @@ class ModelBrowser(QWidget):
         self.check_growth_btn = QPushButton("Check Growth")
         self.namespace_label = QLabel("")
         self.namespace_label.setWordWrap(True)
+        self.namespace_label.setTextFormat(Qt.TextFormat.PlainText)
         self.confirm_btn = QPushButton("Confirm…")
         self.revoke_btn = QPushButton("Revoke")
         self.objective_label = QLabel("")
         self.objective_label.setWordWrap(True)
+        self.objective_label.setTextFormat(Qt.TextFormat.PlainText)
         self.objective_toggle = QToolButton()
         self.objective_toggle.setText("Show terms")
         self.objective_toggle.setCheckable(True)
         self.objective_terms = QLabel("")
         self.objective_terms.setWordWrap(True)
+        self.objective_terms.setTextFormat(Qt.TextFormat.PlainText)
         self.objective_terms.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -176,9 +180,11 @@ class ModelBrowser(QWidget):
         self.objective_toggle.toggled.connect(self.objective_terms.setVisible)
         self.growth_label = QLabel("Growth: not checked yet")
         self.growth_label.setWordWrap(True)
+        self.growth_label.setTextFormat(Qt.TextFormat.PlainText)
         self.growth_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.contents_label = QLabel("")
         self.contents_label.setWordWrap(True)
+        self.contents_label.setTextFormat(Qt.TextFormat.PlainText)
         self.retry_btn = QPushButton("Retry")
         self.retry_btn.setVisible(False)
         self.reactions_tab = _EntityTab(["ID", "Name", "Bounds", "Subsystem"],
@@ -257,7 +263,7 @@ class ModelBrowser(QWidget):
         self.objective_toggle.setVisible(False)
         self.check_growth_btn.setEnabled(False)
         self.check_growth_btn.setToolTip("")
-        self._show_contents(None, "")
+        self.set_contents(None, "")
         self.contents_label.setVisible(False)
 
     # ── header ───────────────────────────────────────────────────────────────────────
@@ -279,7 +285,19 @@ class ModelBrowser(QWidget):
             ("Confirm this model's namespace first" if runnable
              else "This model cannot be run: " + proj.check_reason(entry)[1])
         )
+        self.set_contents(index, problem)
+
+    def has_index(self) -> bool:
+        """True while the shown model's contents (its index) are on screen."""
+        return self._has_index
+
+    def set_contents(self, index: dict[str, Any] | None, problem: str = "") -> None:
+        """Show the browsed model's contents (or why there are none); the header is kept."""
+        entry = self._entry
+        runnable = (entry is not None and entry.status in ("ok", "warning")
+                    and entry.integrity == "ok")
         self._show_contents(index, problem)
+        self._has_index = index is not None
         # Retry builds an index again; a model that cannot be read has nothing to retry.
         self.retry_btn.setVisible(index is None and bool(problem) and runnable)
 
