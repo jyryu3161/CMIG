@@ -752,6 +752,7 @@ class ModelManagerPanel(QWidget):
         self.exchange_table.setHorizontalHeaderLabels(["Exchange reactions"])
         self.exchange_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         make_read_only(self.exchange_table)
+        self.exchange_table.verticalHeader().setVisible(False)
         self.biomass_label = QLabel("")
         layout.addWidget(self.summary_label)
         layout.addWidget(self.exchange_table)

@@ -92,7 +92,7 @@ def test_advanced_tools_are_listed_apart_and_open_on_request():
     w = build_main_window()
     advanced = [key for key, _l in dict(ANALYSIS_GROUPS)["Tools"]]
     assert advanced == ["medium", "sweep", "sandbox", "compare"]
-    pages = [w.medium_editor, w.sweep_view, w.sandbox_view, w.scenario_compare]
+    pages = [w.medium_page, w.sweep_page, w.sandbox_page, w.compare_page]
     assert w.pages.currentWidget() not in pages
     for key, page in zip(advanced, pages, strict=True):
         w.show_analysis(key)

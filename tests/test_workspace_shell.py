@@ -270,7 +270,7 @@ def test_menu_choice_is_reflected_in_the_sidebar(window, tmp_path: Path) -> None
     make_project(tmp_path / "s", ["a"])
     window.open_project(tmp_path / "s")
     window.analysis_actions["sweep"].trigger()
-    assert window.pages.currentWidget() is window.sweep_view
+    assert window.pages.currentWidget() is window.sweep_page
     assert window.sidebar.currentItem().data(0, 0x0100) == "sweep"
 
 
@@ -301,10 +301,10 @@ def _exchange_texts(window) -> list[str]:
     return [listing.item(i).text() for i in range(listing.count())]
 
 
-def _profile_overlay_shown(window) -> bool:
-    return (window.pages.currentWidget() is window.community_builder
-            and window.community_builder.results.isAncestorOf(window.community_result_page)
-            and window.community_builder.results.has_results()
+def _profile_overlay_shown(window, page) -> bool:
+    return (window.pages.currentWidget() is page
+            and page.results.isAncestorOf(window.community_result_page)
+            and page.results.has_results()
             and window.community_result_page.currentWidget() is window.profile_view
             and window.profile_view.net_chart.delta_active
             and not window.profile_view.delta_note.isHidden())
@@ -328,7 +328,7 @@ def test_compare_runs_overlay_is_shown_on_profile(window, tmp_path: Path) -> Non
     window.scenario_compare.run_a_input.setText(str(tmp_path / "a"))
     window.scenario_compare.run_b_input.setText(str(tmp_path / "b"))
     window.run_scenario_compare()
-    assert _profile_overlay_shown(window)
+    assert _profile_overlay_shown(window, window.compare_page)
 
 
 def _fake_sandbox_engine(monkeypatch: pytest.MonkeyPatch, gate=None) -> list[bool]:
@@ -365,7 +365,7 @@ def test_sandbox_overlay_is_shown_on_profile(window, monkeypatch: pytest.MonkeyP
     _fake_sandbox_engine(monkeypatch)
     _sandbox_with_bound(window).preview_btn.click()
     _wait_for(window, lambda: not window._sandbox_jobs)
-    assert _profile_overlay_shown(window)
+    assert _profile_overlay_shown(window, window.sandbox_page)
 
 
 def test_sandbox_commit_shows_profile(
@@ -378,7 +378,7 @@ def test_sandbox_commit_shows_profile(
     _sandbox_with_bound(window).commit_btn.click()
     _wait_for(window, lambda: not window._sandbox_jobs)
     assert calls == [True]
-    assert _profile_overlay_shown(window)
+    assert _profile_overlay_shown(window, window.sandbox_page)
 
 
 def test_auto_preview_after_a_bound_edit_stays_on_the_sandbox_page(
@@ -397,9 +397,11 @@ def test_auto_preview_after_a_bound_edit_stays_on_the_sandbox_page(
     loop.exec()
     _wait_for(window, lambda: bool(calls) and not window._sandbox_jobs)
     assert calls == [False]
-    assert window.pages.currentWidget() is view  # the delta table and its warning stay visible
+    # the delta table and its warning stay visible
+    assert window.pages.currentWidget() is window.sandbox_page
     assert "preview" in view.status.text()
     assert window.profile_view.net_chart.delta_active  # Profile still carries the overlay
+    assert window.sandbox_page.results.isAncestorOf(window.profile_view)  # on this page
 
 
 def test_auto_preview_waits_for_the_solve_in_flight_then_follows_the_latest_bound(
@@ -459,7 +461,7 @@ def test_explicit_preview_does_not_leave_a_cell_being_edited(
     assert view.bound_table.state() == QAbstractItemView.State.EditingState
     gate.set()
     _wait_for(window, lambda: not window._sandbox_jobs)
-    assert window.pages.currentWidget() is view
+    assert window.pages.currentWidget() is window.sandbox_page
     assert view.bound_table.state() == QAbstractItemView.State.EditingState
 
 

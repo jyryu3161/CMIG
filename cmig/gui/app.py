@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QStyle,
+    QTableWidget,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -71,6 +72,7 @@ from cmig.gui.agora2_dialog import (
     Agora2Strain,
     download_estimate,
 )
+from cmig.gui.analysis_page import hide_row_numbers
 from cmig.gui.builder import (
     WEIGHTED_METRICS,
     CommunityBuilderView,
@@ -94,6 +96,7 @@ from cmig.gui.pages.host_search import HostSearchPage
 from cmig.gui.pages.ratio_impact import RatioImpactPage
 from cmig.gui.pages.spatial import SpatialPage
 from cmig.gui.pages.strain_growth import StrainGrowthPage
+from cmig.gui.pages.tools import ToolPage
 from cmig.gui.pickers import MediumPicker, ModelPicker
 from cmig.gui.project_session import (
     ProjectSession,
@@ -1157,6 +1160,37 @@ class CmigMainWindow(QMainWindow):
         self.host_search_page = HostSearchPage()
         self.dynamics_view = DfbaView()
         self.spatial_page = SpatialPage()
+        self.medium_page = ToolPage(
+            "Medium Editor",
+            "Edit a medium, check whether the selected models grow on it, or find a minimal "
+            "medium.", self.medium_editor, results=True)
+        self.sweep_page = ToolPage(
+            "Sweep", "Run the community across media, abundances and solvers.",
+            self.sweep_view, results=False)
+        self.sandbox_page = ToolPage(
+            "Constraint Sandbox", "Preview one bound change before committing it.",
+            self.sandbox_view, results=True)
+        self.compare_page = ToolPage(
+            "Compare Runs", "Compare two completed runs.", self.scenario_compare,
+            results=True)
+        editor = self.medium_editor
+        self.medium_page.register("models", editor.model_picker)
+        self.medium_page.register("model", editor.single_model_picker)
+        self.medium_page.register_custom("rows", self._medium_rows, self._restore_medium_rows)
+        for name, widget in (("exact", editor.exact_medium_check),
+                             ("allow_unknown", editor.allow_unknown_check),
+                             ("assume_bigg", editor.assume_bigg_check),
+                             ("namespace_decisions", editor.namespace_decisions_input),
+                             ("min_growth", editor.min_growth_spin),
+                             ("oxygen_mode", editor.oxygen_mode_combo)):
+            self.medium_page.register(name, widget)
+        sweep = self.sweep_view
+        self.sweep_page.register("models", sweep.model_picker)
+        for name in ("mediums", "abundance_variants", "member_sets", "bounds_variants",
+                     "tradeoff_fs", "solvers", "namespace_decisions", "fva_metabolites"):
+            self.sweep_page.register(name, getattr(sweep, f"{name}_input"))
+        for name in ("assume_bigg", "fva", "exact_medium", "allow_unknown_medium"):
+            self.sweep_page.register(name, getattr(sweep, f"{name}_check"))
         self.central_stack = QStackedWidget()  # kept: set_central() still docks extra views
         self.pages = self.central_stack
         self.welcome_page = self._build_welcome_page()
@@ -1174,10 +1208,10 @@ class CmigMainWindow(QMainWindow):
             "host_search": self.host_search_page,
             "dfba": self.dynamics_view,
             "spatial": self.spatial_page,
-            "medium": self.medium_editor,       # Task 12 wraps
-            "sweep": self.sweep_view,           # Task 12 wraps
-            "sandbox": self.sandbox_view,       # Task 12 wraps
-            "compare": self.scenario_compare,   # Task 12 wraps
+            "medium": self.medium_page,
+            "sweep": self.sweep_page,
+            "sandbox": self.sandbox_page,
+            "compare": self.compare_page,
         }
         for page in [self.welcome_page, self.empty_models_page,
                      self.model_manager, *dict.fromkeys(self.analysis_pages.values())]:
@@ -1239,6 +1273,29 @@ class CmigMainWindow(QMainWindow):
         self._completion_timer.timeout.connect(self._poll_completed_jobs)
         self._completion_timer.start()
         self.bridge.start()
+        for table in self.findChildren(QTableWidget):
+            hide_row_numbers(table)
+
+    def _medium_rows(self) -> list[list[str]]:
+        table = self.medium_editor.table
+        rows = []
+        for r in range(table.rowCount()):
+            cells = [table.item(r, c) for c in range(3)]
+            rows.append(["" if cell is None else cell.text() for cell in cells])
+        return rows
+
+    def _restore_medium_rows(self, rows: object) -> str | None:
+        editor = self.medium_editor
+        try:
+            parsed = [(str(e), float(v), str(role)) for e, v, role in rows]  # type: ignore[attr-defined]
+        except (TypeError, ValueError):
+            return "medium rows could not be restored"
+        editor.clear_rows()
+        for exchange, limit, role in parsed:
+            editor.add_row(exchange, limit, role, notify=False)
+        editor._update_role_presentation()  # add_row(notify=False) leaves the role column as is
+        editor.medium_changed.emit()
+        return None
 
     def _message(self, key: str, **values: Any) -> str:
         """Format one localized UI message from the active language catalogue."""
@@ -1527,6 +1584,10 @@ class CmigMainWindow(QMainWindow):
 
     def _show_profile(self, host_key: str = "community") -> None:
         """Show the community result (Profile | Graph) inside `host_key`'s results area."""
+        self._show_page(self._host_community_result(host_key))
+
+    def _host_community_result(self, host_key: str) -> QWidget:
+        """Put the community result in `host_key`'s results area without changing the page."""
         page = self.analysis_pages[host_key]
         previous = self._community_result_host
         if previous is not None and previous != host_key:
@@ -1536,7 +1597,12 @@ class CmigMainWindow(QMainWindow):
             self._community_result_host = host_key
         page.results.show_results()  # type: ignore[attr-defined]
         self.community_result_page.setCurrentWidget(self.profile_view)
-        self._show_page(page)
+        return page
+
+    def _empty_community_result_on(self, host_key: str) -> None:
+        """A failed run on `host_key` must not leave that page's previous result on show."""
+        if self._community_result_host == host_key:
+            self.analysis_pages[host_key].results.show_empty()  # type: ignore[attr-defined]
 
     def _clear_community_result(self) -> None:
         """Drop the shown community run (profile, graph, badge, manifest) and empty its page."""
@@ -1853,6 +1919,9 @@ class CmigMainWindow(QMainWindow):
             self._pending_imports = []  # placeholders belong to the project they were queued in
             self._reported_unrunnable = {}
             self._clear_community_result()  # the shown run belongs to the previous project
+            # A growth check of the previous project is no baseline for this one's medium delta.
+            self._last_medium_growth_check = None
+            self._medium_delta_active = False
             self.host_view.clear_result()
             self.host_view.status.clear()
             for ranked in (self.search_view, self.gene_ko_page, self.strain_growth_page,
@@ -4596,10 +4665,12 @@ class CmigMainWindow(QMainWindow):
         dir_a = self.scenario_compare.run_a_input.text().strip()
         dir_b = self.scenario_compare.run_b_input.text().strip()
         if not dir_a or not dir_b:
+            self._empty_community_result_on("compare")
             self.scenario_compare.status.setText("Select both Run A and Run B directories.")
             return
         path_a, path_b = Path(dir_a), Path(dir_b)
         if not (path_a / "profile.parquet").exists() or not (path_b / "profile.parquet").exists():
+            self._empty_community_result_on("compare")
             self.scenario_compare.status.setText(
                 "Both directories must be completed CMIG runs (profile.parquet missing)."
             )
@@ -4611,6 +4682,7 @@ class CmigMainWindow(QMainWindow):
             # status/objective/external_exchange/members, all present on the namespace.
             delta = compute_delta(result_a, result_b)  # type: ignore[arg-type]
         except Exception as e:
+            self._empty_community_result_on("compare")
             self.scenario_compare.status.setText(f"Scenario compare failed: {e}")
             return
         self.scenario_compare.load_comparison(delta)
@@ -4619,7 +4691,7 @@ class CmigMainWindow(QMainWindow):
             baseline_label=self._message("profile_scenario_baseline", name=path_a.name),
             variant_label=self._message("profile_scenario_variant", name=path_b.name),
         )
-        self._show_profile()
+        self._show_profile("compare")
         self.scenario_compare.status.setText(
             f"compare complete: {dir_a} vs {dir_b} · {self.tr_map['profile_overlay_available']}"
         )
@@ -4695,10 +4767,12 @@ class CmigMainWindow(QMainWindow):
             self.sandbox_view.preview_btn.setEnabled(True)
             self.sandbox_view.commit_btn.setEnabled(True)
             if job.status is not JobStatus.DONE:
+                self._empty_community_result_on("sandbox")
                 self.sandbox_view.status.setText(f"Sandbox {job.status.value}: {job.error or jid}")
                 continue
             result = job.result
             if result is None or getattr(result, "delta", None) is None:
+                self._empty_community_result_on("sandbox")
                 self.sandbox_view.status.setText(
                     f"Sandbox finished with no result to display: {jid}"
                 )
@@ -4718,13 +4792,16 @@ class CmigMainWindow(QMainWindow):
             # Only an explicit Preview / Commit moves the centre to Profile. A debounced preview
             # fires while the user is still typing bounds, and leaving the page would hide the
             # delta table and its "table has changed" warning — and commit a half-typed cell.
+            # Either way the overlay belongs to the Sandbox page, never to another page's run.
             editing = (
-                self.pages.currentWidget() is self.sandbox_view
+                self.pages.currentWidget() is self.sandbox_page
                 and self.sandbox_view.bound_table.state()
                 == QAbstractItemView.State.EditingState
             )
             if not auto and not editing:
-                self._show_profile()
+                self._show_profile("sandbox")
+            else:
+                self._host_community_result("sandbox")
             self.sandbox_view.status.setText(
                 f"{self.sandbox_view.status.text()} · {self.tr_map['profile_overlay_available']}"
             )
@@ -5023,7 +5100,7 @@ class CmigMainWindow(QMainWindow):
                     )
 
                 previous = self._last_medium_growth_check
-                if not self.load_run_dir(out_dir):
+                if not self.load_run_dir(out_dir, host_key="medium"):
                     # The growth figure came from files the GUI could not read back: do not
                     # present it, and keep the failure in the status bar and the inspector.
                     self.medium_editor.growth_label.setText(_UNREADABLE_RESULT.format(
@@ -5071,6 +5148,7 @@ class CmigMainWindow(QMainWindow):
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._medium_growth_jobs.pop(jid, None)
                 self.medium_editor.check_growth_btn.setEnabled(True)
+                self._empty_community_result_on("medium")
                 self.medium_editor.growth_label.setText(
                     self._message(
                         "medium_growth_failed",
