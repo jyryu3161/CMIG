@@ -362,7 +362,8 @@ class HostImpactView(AnalysisPage, HostInputWidgets):
                 if c == 3 and f.label in _LABEL_COLOR:
                     item.setForeground(QColor(_LABEL_COLOR[f.label]))
                 self.iface_table.setItem(i, c, item)
-        paint_computed(self.iface_table, [2])
+        if host_result.viable:  # a non-viable solve's fluxes are no computed result
+            paint_computed(self.iface_table, [2])
         self.results.show_results()
 
     def load_impact(self, impact: Any, *, solved: bool | None = True) -> None:

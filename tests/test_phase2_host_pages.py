@@ -151,3 +151,20 @@ def test_host_search_default_microbes_leave_out_the_host(window, tmp_path: Path)
     page = w.host_search_page
     assert page.host_picker.selected_ids() == ["host"]
     assert page.model_picker.selected_ids() == ["a", "b"]
+
+
+def test_a_non_viable_host_result_paints_no_interface_flux(window) -> None:
+    from PySide6.QtCore import Qt
+
+    from cmig.core.host import InterfaceFlux
+
+    view = window.host_view
+    flux = InterfaceFlux(exchange_id="EX_ac_e", interface="bigg_external", metabolite="ac",
+                         flux=-2.0, label="uptake")
+    view.load_host_result(SimpleNamespace(viable=True, biomass=1.5, status="optimal",
+                                          interface_fluxes=[flux]))
+    assert view.iface_table.item(0, 2).data(Qt.ItemDataRole.ForegroundRole) is not None
+    view.load_host_result(SimpleNamespace(viable=False, biomass=None, status="infeasible",
+                                          interface_fluxes=[flux]))
+    assert view.iface_table.item(0, 2).text() == "-2"
+    assert view.iface_table.item(0, 2).data(Qt.ItemDataRole.ForegroundRole) is None
