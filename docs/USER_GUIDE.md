@@ -1590,15 +1590,26 @@ Two further rules:
     model of the selection can take it up, while other ids of the medium match.
 
   Neither degrades the run nor changes a candidate's status; both appear in the run's
-  summary JSON and in the GUI result details. The only refusal left is a medium of which
-  **not one** id matches any selected model — the signature of a namespace mismatch (an
-  untranslated AGORA `EX_x(e)` file, nonsense ids): exit `2` before any candidate is
-  evaluated, "none of the medium's N exchange ids matches …". A model file that cannot be
-  read does not count as a match (the refusal names it) and fails where it is used, as
-  before. `--allow-unknown-medium` has nothing to drop in these workflows when some ids
-  match; when none match it runs without the medium's rows, which are listed as not
-  applied (the behaviour it had before). `sweep` records a zero-match medium as a failed
-  condition rather than exiting.
+  summary JSON and in the GUI result details; the pool-level list is also printed as a
+  console warning and shown on the GUI status line, and the summaries report how many of
+  the medium's ids matched (`medium_matched`, per run and per candidate). What is still
+  refused is a namespace mismatch:
+  - a medium of which **not one** id matches any selected model (an untranslated AGORA
+    `EX_x(e)` file, nonsense ids): exit `2` before any candidate is evaluated, "none of the
+    medium's N exchange ids matches …";
+  - an id that would match a selected model in BiGG notation (`EX_glc_D_m` for
+    `EX_glc__D_m`, `EX_but(e)` for `EX_but_e`): exit `2`, naming each id and its likely
+    counterpart;
+  - a candidate that **none** of the medium's ids reaches while other models do: that
+    candidate is `failed` with a namespace diagnostic and never ranked (it would grow on its
+    model's own defaults).
+
+  A model file that cannot be read, or whose exchanges cannot be resolved, does not count as
+  a match (the zero-match refusal names it) and fails where it is used, as before.
+  `--allow-unknown-medium` does not change genuine "not applicable to this pool" ids; with
+  it, near-miss ids are dropped and listed as not applied, and a medium that matches nothing
+  runs without its rows (the behaviour it had before). `sweep` records a zero-match medium
+  as a failed condition rather than exiting.
 
 ## Solver Provenance
 

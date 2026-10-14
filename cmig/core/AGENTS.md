@@ -28,7 +28,7 @@
 - 숙주 전달이 식별되지 않으면 점값은 `None`, 구간과 이유를 보존한다. `.get(target, 0.0)`류로 채우지 않는다.
 - `RUN_HASH_COMPONENTS`는 11개 고정, `compute_run_hash`가 유일한 solve hash 계산기다. `WORKFLOW_HASH_COMPONENTS`의 각 튜플은 `_EXPECTED_ARITY`와 개수가 같고 `workflow_kind`로 시작하며 `WORKFLOW_COMPONENT_VOCABULARY` 안의 이름만 쓴다(import 시 assert).
 - 결과 의미를 바꾸는 정책 수정은 `NON_HASHED_PROVENANCE_MARKERS`의 표식 값을 올린다. 탐색 의미 변경은 `SEARCH_POLICY_VERSION`을 올린다.
-- pool의 부분 커뮤니티를 평가하는 경로의 배지는 `PoolMediumCoverage`로 판정한다: `split`이 후보의 없는 id를 커뮤니티 해당 없음(`medium_not_applicable`)·pool 해당 없음(`pool_not_applicable`)·unknown(배지가 pool과 하나도 맞지 않을 때만)으로 나누고, 후보 멤버가 가진 id면 오류다. 하나도 맞지 않는 배지만 평가 전 거부한다(`require_some_match`, strict). coverage 없이 부르면 후보마다 기존 strict 규칙이다.
+- pool의 부분 커뮤니티를 평가하는 경로의 배지는 `PoolMediumCoverage`로 판정한다: `split`이 후보의 없는 id를 커뮤니티 해당 없음(`medium_not_applicable`)·pool 해당 없음(`pool_not_applicable`)·unknown(배지가 pool과 하나도 맞지 않을 때만)으로 나누고, 후보 멤버가 가진 id면 오류다. 후보에 배지 id가 하나도 닿지 않으면(pool은 대응) `split`이 거부해 그 후보는 failed다. 평가 전 거부(`check_namespace`, strict)는 하나도 맞지 않는 배지와 BiGG 표기 near miss(`near_misses`, 표기 함수는 `cmig.io.agora2.bigg_exchange_notation`을 호출자가 넘김 — core가 agora2에 의존하지 않도록)뿐이다. 읽을 수 없거나 exchange identity를 풀 수 없는 모델은 `unreadable`로 빠진다. coverage 없이 부르면 후보마다 기존 strict 규칙이다.
 - 통계: 결정적 조건을 독립 반복으로 보지 않는다(replicate 열과 독립성 확인이 있을 때만 p-value). 분산 0·평균 상이의 효과 크기는 null + 진단.
 - pickle 금지.
 

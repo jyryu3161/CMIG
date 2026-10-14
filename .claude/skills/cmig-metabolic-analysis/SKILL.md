@@ -260,6 +260,17 @@ host-microbe or publication run.
     So `$?` says success and the hash certifies a medium that was only partly
     applied. Use it only to diagnose a medium file, never for a reported result,
     and always quote the dropped ids.
+  - **Pool workflows drop what cannot apply, and say so.** `search`,
+    `host-search-bigg`, `gene-ko-search`, `sweep --member-sets` and pool
+    `medium-gap` do not refuse a medium because some ids are missing: an id other
+    selected models have is `medium_not_applicable` for that candidate; an id no
+    selected model has is `medium_not_applicable_to_pool` (summary, console
+    warning, GUI status). Both leave the LP unchanged and do not degrade the run —
+    but quote them, and read `medium_matched` (matched/requested). Still refused
+    (exit 2): a medium no selected model matches at all, and an id that is a
+    BiGG-notation near miss (`EX_glc_D_m` for `EX_glc__D_m`). A candidate that no
+    medium id reaches is `failed`, never ranked. `--allow-unknown-medium` does not
+    change "not applicable to this pool".
 - **Never add quantities with different units.** `host-search-bigg --metric
   weighted` refuses to combine host objective and target transfer unless you
   give positive, finite `--host-weight`, `--target-weight`, `--host-reference`,
@@ -362,7 +373,7 @@ choice. Always decide them explicitly.
 | `strain-growth` | `--single-medium` | `model_default` reports native capability, **not** an interaction effect |
 | `abundance-impact` | `--fva` | separates a dose response from alternate-optima degeneracy |
 | `dfba`, `dfba-sensitivity` | `--close-untracked-uptake` | without it a substrate/Km experiment is not interpretable |
-| `solve`, `search`, `strain-growth`, `abundance-impact`, `gene-ko-search`, `sweep`, `host-microbe-bigg`, `host-search-bigg`, `host-ko-impact` | `--allow-unknown-medium` | drops unmatched nutrients with their ids recorded; the run continues as `degraded` |
+| `solve`, `search`, `strain-growth`, `abundance-impact`, `gene-ko-search`, `sweep`, `host-microbe-bigg`, `host-search-bigg`, `host-ko-impact` | `--allow-unknown-medium` | drops unmatched nutrients with their ids recorded; the run continues as `degraded`. In the pool workflows (`search`, `host-search-bigg`, `gene-ko-search`, `sweep --member-sets`, pool `medium-gap`) ids no selected model has are already dropped as `medium_not_applicable_to_pool` without it; there the flag only drops BiGG-notation near misses and lets a medium that matches nothing run |
 | every medium-bearing command (the nine above plus round-8's `pair`, `single`, `minimal-medium`) | `--exact-medium` | the file becomes the whole environment (boundary isolation first, then only named exchanges open); without it the file is a merge overlay. Hashed as `medium_application_mode` (schema 1.2) |
 | `solve`, `sweep`, `publication-benchmark` | `--assume-bigg-namespace` | waives the namespace-decision review gate |
 | host commands | `--accept-unreviewed-map` | waives the D/L stereoisomer review gate |

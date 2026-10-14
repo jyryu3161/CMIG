@@ -23,17 +23,29 @@ semantic versioning for public releases.
   Previously the shipped `gut_overlay_*` presets (written for the whole bundled pool) failed
   every Combination Search candidate, and a 3-model selection that lacks 19 of their rows
   was an input error.
-- The one refusal kept (exit 2, before any candidate is evaluated, strict mode): a medium of
-  which **not one** id matches any model of the selected pool — the signature of a namespace
-  mismatch (e.g. an untranslated AGORA `EX_x(e)` file, or nonsense ids): "none of the medium's
-  N exchange ids matches an exchange of any model of the selected pool …". A pool model whose
-  file cannot be read does not count as a match; it is left out and keeps its own failure
-  (a `load_failed` row, failed candidates), and the zero-match refusal names it as not
-  consulted.
-- `--allow-unknown-medium` in these workflows: when some ids match it changes nothing (there is
-  nothing left to drop — unknown ids are already "not applicable to this pool"); when none
-  match it keeps today's behaviour (the run proceeds without the medium's rows, which are listed
-  as not applied). Other workflows keep the flag's existing meaning.
+- The refusals kept are the namespace-mismatch signatures:
+  - (exit 2, before any candidate is evaluated, strict mode) a medium of which **not one** id
+    matches any model of the selected pool (e.g. an untranslated AGORA `EX_x(e)` file, or
+    nonsense ids): "none of the medium's N exchange ids matches an exchange of any model of the
+    selected pool …";
+  - (exit 2, strict mode) a pool-unknown id that would match a pool model in BiGG notation (the
+    `cmig/io/agora2.py` rules: isomer `glc_D` → `glc__D`, compartment `(e)` → `_e`), e.g.
+    `EX_glc_D_m`: the refusal names each id and its likely counterpart (`EX_glc_D_m ->
+    EX_glc__D_m`) — such an id is not "not applicable", it is the same nutrient misspelled;
+  - (per candidate, any mode) a candidate that **none** of the medium's ids reaches while other
+    pool models match is `failed` with a namespace diagnostic ("none of the medium's N exchange
+    ids reaches this candidate …") and never ranked — it would otherwise grow on its models'
+    SBML defaults.
+  A pool model whose file cannot be read, or whose exchanges cannot be resolved, does not count
+  as a match: it is left out and keeps its own failure (a `load_failed` row, failed
+  candidates), and the zero-match refusal names it and why.
+- `--allow-unknown-medium` in these workflows: genuine pool-unknown ids are "not applicable to
+  this pool" with or without it; near-miss ids are dropped and listed as not applied with it;
+  when no id matches it keeps today's behaviour (the run proceeds without the medium's rows,
+  listed as not applied). Other workflows keep the flag's existing meaning.
+- Reporting: the matched fraction of the medium (`medium_matched: {matched, requested,
+  fraction}`) per run and per candidate (`{matched, requested}`) in the summaries, and the
+  pool-level not-applicable ids as a console warning and in the GUI status line and details.
 - `medium_policy` provenance marker: `exchange_reactions_by_metabolite_v2` →
   `exchange_reactions_by_metabolite_pool_scoped_v3`. **No hash moves**: the solve `run_hash`
   (11 components) and every workflow hash are unchanged, so a v2 and a v3 run of the same
@@ -48,7 +60,8 @@ semantic versioning for public releases.
   `medium_not_applicable` column in `medium_gap.csv`/`medium_gap.json`; and
   `medium_not_applicable_to_pool` in `search_summary.json`, `host_search_summary.json`,
   `gene_ko_summary.json`, `medium_gap.json`, the sweep condition's `provenance` and the search
-  and host-search manifests' `summary`. The GUI result details show both records.
+  and host-search manifests' `summary` (so also in `inspect-run`'s `manifest.summary`, no
+  payload schema change). The GUI result details show both records.
 
 ### Fixed — GUI failure reasons
 
