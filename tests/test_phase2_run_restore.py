@@ -410,3 +410,57 @@ def test_another_projects_run_is_opened_without_its_inputs(
     assert page.model_picker.selected_ids() == ["b"]
     assert (f"Inputs for {run_dir.name} cannot be restored: opened from outside this project."
             in page.banner.text())
+
+
+_RERUN = {
+    "search_default": "run_search_fixture", "search_advanced": "run_search_fixture",
+    "gene_ko": "run_gene_ko_search", "strain_growth": "run_strain_growth_report",
+    "ratio_impact": "run_abundance_impact", "community": "run_community_solve",
+    "host": "run_host_microbe_bigg", "host_search": "run_host_search_bigg", "dfba": "run_dfba",
+    "spatial": "run_spatial_preview", "medium_growth": "run_medium_growth_check",
+    "minimal_medium": "run_minimal_medium", "sweep": "run_sweep",
+}
+
+
+def _settle(w) -> None:
+    deadline = time.time() + 10
+    while w._active_job_ids() and time.time() < deadline:
+        APP.processEvents()
+        time.sleep(0.02)
+    w._poll_completed_jobs()
+
+
+@pytest.mark.parametrize("name", sorted(DRIVERS))
+def test_a_reopened_run_reruns_with_the_same_argv(
+    tmp_path: Path, monkeypatch, name: str
+) -> None:
+    from test_phase2_argv_parity import normalize
+
+    make_project(tmp_path / "p", ["a", "b", "host"])
+    calls: list[list[str]] = []
+    monkeypatch.setattr("cmig.cli.main.main", lambda argv: (calls.append(list(argv)), 2)[1])
+    recent = RecentProjects(QSettings(str(tmp_path / "r.ini"), QSettings.Format.IniFormat))
+    w = build_main_window()
+    w.recent = recent
+    assert w.open_project(tmp_path / "p")
+    for model_id in ("a", "b", "host"):  # "already BiGG" is restored only when confirmed
+        w.session.confirm_namespace(model_id)
+    assert DRIVERS[name](w), f"{name}: the page refused to run"
+    first = _wait(calls)
+    run_dir = _out(first)
+    root = w.session.require().root
+    _settle(w)
+    w.close_project()
+    fresh = build_main_window()  # nothing of the first run's inputs is left on screen
+    fresh.recent = recent
+    assert fresh.open_project(tmp_path / "p")
+    try:
+        fresh._open_run_entry(run_dir)
+        page = fresh.analysis_pages[_DRIVER_PAGES[name]]
+        assert page.banner.text() == f"Inputs restored from {run_dir.name}."
+        assert getattr(fresh, _RERUN[name])(), f"{name}: refused after restore"
+        second = _wait(calls, 2)
+        assert normalize(second, root) == normalize(first, root)
+        _settle(fresh)
+    finally:
+        fresh.close_project()
