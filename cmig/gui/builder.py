@@ -104,8 +104,8 @@ class CommunityBuilderView(AnalysisPage):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setMaximumHeight(220)
-        #: rows whose abundance could not be parsed on the last members() call
-        self.invalid_rows: list[int] = []
+        #: members whose abundance could not be parsed on the last members() call
+        self.invalid_members: list[str] = []
         self.add_input_row(self.model_picker)
         self.inputs.addWidget(self.table)
         self.add_input_row(self.assume_bigg_check)
@@ -203,11 +203,11 @@ class CommunityBuilderView(AnalysisPage):
         """Return member→abundance for every row. Unparseable rows are recorded, never skipped.
 
         Silently dropping a row the user typed would run a *different* community than the
-        one on screen, so `invalid_rows` is populated and the caller must refuse to run.
+        one on screen, so `invalid_members` is populated and the caller must refuse to run.
         """
         self._commit_open_editor()
         out: dict[str, float] = {}
-        self.invalid_rows = []
+        self.invalid_members = []
         for r in range(self.table.rowCount()):
             mid = self.table.item(r, 0)
             ab = self.table.item(r, 1)
@@ -216,7 +216,7 @@ class CommunityBuilderView(AnalysisPage):
             try:
                 out[mid.text()] = float(ab.text()) if ab else 1.0
             except ValueError:
-                self.invalid_rows.append(r + 1)
+                self.invalid_members.append(mid.text())
         return out
 
     def members_snapshot(self) -> dict[str, str]:
@@ -295,8 +295,8 @@ class ConstraintSandboxView(QWidget):
         btn_row.addWidget(self.preview_btn)
         btn_row.addWidget(self.commit_btn)
         self.status = QLabel("Advanced sandbox: one bound constraint per preview run.")
-        #: rows whose lower/upper bound could not be parsed on the last constraints() call
-        self.invalid_rows: list[int] = []
+        #: reactions whose lower/upper bound could not be parsed on the last constraints() call
+        self.invalid_reactions: list[str] = []
         layout.addWidget(self.title)
         layout.addWidget(self.bound_table)
         layout.addLayout(btn_row)
@@ -333,10 +333,10 @@ class ConstraintSandboxView(QWidget):
 
         A raw `float()` ValueError used to escape the Qt slot (the debounce fires 500 ms
         after each keystroke), leaving the *previous* run's delta on screen next to the
-        newly typed bound. The caller checks `invalid_rows` and refuses to solve.
+        newly typed bound. The caller checks `invalid_reactions` and refuses to solve.
         """
         out: list[BoundConstraint] = []
-        self.invalid_rows = []
+        self.invalid_reactions = []
         for r in range(self.bound_table.rowCount()):
             rid = self.bound_table.item(r, 0)
             lo = self.bound_table.item(r, 1)
@@ -347,7 +347,7 @@ class ConstraintSandboxView(QWidget):
                 lower = float(lo.text()) if lo else 0.0
                 upper = float(hi.text()) if hi else 0.0
             except ValueError:
-                self.invalid_rows.append(r + 1)
+                self.invalid_reactions.append(rid.text().strip())
                 continue
             out.append(BoundConstraint(rid.text().strip(), lower, upper))
         return out
@@ -368,7 +368,7 @@ class ConstraintSandboxView(QWidget):
         suffix = f" · bound: {self.describe_bound(constraint)}"
         current = self.constraints()
         if (
-            self.invalid_rows
+            self.invalid_reactions
             or len(current) != 1
             or (
                 current[0].reaction_id != constraint.reaction_id

@@ -39,6 +39,30 @@ def test_no_row_numbers_anywhere() -> None:
     assert all(table.verticalHeader().isHidden() for table in tables)
 
 
+def test_table_messages_name_the_row_instead_of_its_hidden_number() -> None:
+    w = build_main_window()
+    editor = w.medium_editor
+    editor.add_row("EX_ac_e", 1.0)
+    editor.add_row("EX_ac_e", 2.0)
+    with pytest.raises(ValueError):
+        editor.to_spec()
+    assert editor.status.text() == "Duplicate exchange_id EX_ac_e: it is listed more than once."
+    editor.table.setRowCount(0)
+    editor.add_row("EX_glc__D_e", 1.0)
+    editor.table.item(0, 1).setText("lots")
+    with pytest.raises(ValueError):
+        editor.to_spec()
+    assert editor.status.text() == "Invalid uptake_limit for EX_glc__D_e"
+    view = w.sandbox_view
+    view.add_bound("EX_glc__D_e", -1.0, 1000.0)
+    view.bound_table.item(0, 1).setText("-")
+    view._debounce.stop()
+    assert w._run_sandbox(commit=False) == ""
+    assert view.status.text() == (
+        "EX_glc__D_e: bound is not a number — fix it before previewing."
+    )
+
+
 def test_sandbox_result_shows_on_the_sandbox_page() -> None:
     w = build_main_window()
     w._show_profile("sandbox")

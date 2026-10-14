@@ -654,7 +654,6 @@ class MediumEditor(QWidget):
     def to_spec(self) -> MediumSpec:
         """표 → MediumSpec(검증). 빈 행 무시, 잘못된 값 → ValueError(status 표시)."""
         uptake: dict[str, float] = {}
-        first_rows: dict[str, int] = {}
         for r in range(self.table.rowCount()):
             if self.table.isRowHidden(r):
                 continue
@@ -668,10 +667,10 @@ class MediumEditor(QWidget):
                     _editor_text(
                         self.strings,
                         "medium_table_duplicate",
-                        "Duplicate exchange_id {exchange}: rows {first} and {row}.",
-                    ).format(exchange=ex, first=first_rows[ex], row=r + 1)
+                        "Duplicate exchange_id {exchange}: it is listed more than once.",
+                    ).format(exchange=ex)
                 )
-                raise ValueError(f"duplicate exchange_id {ex}: rows {first_rows[ex]} and {r + 1}")
+                raise ValueError(f"duplicate exchange_id {ex}")
             try:
                 uptake[ex] = float(lim_item.text()) if lim_item else 0.0
             except ValueError as e:
@@ -679,11 +678,10 @@ class MediumEditor(QWidget):
                     _editor_text(
                         self.strings,
                         "medium_invalid_uptake",
-                        "Invalid uptake_limit (row {row}: {exchange})",
-                    ).format(row=r + 1, exchange=ex)
+                        "Invalid uptake_limit for {exchange}",
+                    ).format(exchange=ex)
                 )
-                raise ValueError(f"uptake_limit is not numeric (row {r + 1})") from e
-            first_rows[ex] = r + 1
+                raise ValueError(f"uptake_limit of {ex} is not numeric") from e
         spec = MediumSpec(uptake=uptake)
         try:
             spec.validate()

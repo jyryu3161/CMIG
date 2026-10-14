@@ -68,7 +68,7 @@ def test_bad_abundance_is_refused(window) -> None:
     view.table.item(1, 1).setText("lots")
     view.assume_bigg_check.setChecked(True)
     assert w.run_community_solve() == ""
-    assert "row 2" in view.status.text()
+    assert view.status.text() == "b: abundance is not a number — fix it before running."
     assert calls == []
 
 

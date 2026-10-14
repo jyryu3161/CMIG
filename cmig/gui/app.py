@@ -218,10 +218,8 @@ I18N: dict[str, dict[str, str]] = {
         "medium_namespace_required": (
             "Namespace 검토가 필요합니다. 검토된 판정 파일을 선택하거나 BiGG임을 확인하세요."
         ),
-        "medium_table_duplicate": (
-            "exchange_id {exchange} 중복: {first}행과 {row}행."
-        ),
-        "medium_invalid_uptake": "잘못된 uptake_limit({row}행: {exchange})",
+        "medium_table_duplicate": "Duplicate exchange_id {exchange}: it is listed more than once.",
+        "medium_invalid_uptake": "Invalid uptake_limit for {exchange}",
         "medium_validation_failed": (
             "{error} — mmol gDW⁻¹ h⁻¹ 단위의 양의 흡수 크기를 입력하세요(예: -10이 "
             "아닌 10). CMIG가 내부적으로 흡수 부호를 적용합니다."
@@ -466,10 +464,8 @@ I18N: dict[str, dict[str, str]] = {
         "medium_namespace_required": (
             "Namespace review is required: choose reviewed decisions or confirm BiGG namespace."
         ),
-        "medium_table_duplicate": (
-            "Duplicate exchange_id {exchange}: rows {first} and {row}."
-        ),
-        "medium_invalid_uptake": "Invalid uptake_limit (row {row}: {exchange})",
+        "medium_table_duplicate": "Duplicate exchange_id {exchange}: it is listed more than once.",
+        "medium_invalid_uptake": "Invalid uptake_limit for {exchange}",
         "medium_validation_failed": (
             "{error} — enter a POSITIVE uptake magnitude in mmol gDW⁻¹ h⁻¹ (e.g. 10, not "
             "-10); CMIG applies the uptake sign internally."
@@ -4114,11 +4110,11 @@ class CmigMainWindow(QMainWindow):
         from cmig.service import JobContext
 
         constraints = self.sandbox_view.constraints()
-        if self.sandbox_view.invalid_rows:
-            rows = ", ".join(str(r) for r in self.sandbox_view.invalid_rows)
+        if self.sandbox_view.invalid_reactions:
+            reactions = ", ".join(self.sandbox_view.invalid_reactions)
             self.sandbox_view.delta_view.setRowCount(0)
             self.sandbox_view.status.setText(
-                f"row {rows}: bound is not a number — fix it before previewing."
+                f"{reactions}: bound is not a number — fix it before previewing."
             )
             return ""
         if not constraints:
@@ -5208,10 +5204,10 @@ class CmigMainWindow(QMainWindow):
             self.community_builder.status.setText("Select at least one member model.")
             return ""
         members = self.community_builder.members()
-        if self.community_builder.invalid_rows:
-            rows = ", ".join(str(r) for r in self.community_builder.invalid_rows)
+        if self.community_builder.invalid_members:
+            invalid = ", ".join(self.community_builder.invalid_members)
             self.community_builder.status.setText(
-                f"row {rows}: abundance is not a number — fix it before running."
+                f"{invalid}: abundance is not a number — fix it before running."
             )
             return ""
         # An abundance row for a model that is not picked used to be dropped silently, so the
