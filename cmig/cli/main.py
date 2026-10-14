@@ -11301,6 +11301,10 @@ def build_parser() -> argparse.ArgumentParser:
     gui.add_argument("--lang", default="en", choices=["en", "ko"], help="UI language")
     gui.add_argument("--width", type=int, default=1500)
     gui.add_argument("--height", type=int, default=950)
+    gui.add_argument(
+        "--appearance", default="light", choices=["light", "dark", "system"],
+        help="light (default), dark, or system (follow the operating system)",
+    )
     gui.set_defaults(func=_cmd_gui)
     return p
 
@@ -11310,7 +11314,8 @@ def _cmd_gui(args: argparse.Namespace) -> int:
     from cmig.gui.__main__ import main as gui_main
 
     return gui_main(
-        ["--lang", args.lang, "--width", str(args.width), "--height", str(args.height)]
+        ["--lang", args.lang, "--width", str(args.width), "--height", str(args.height),
+         "--appearance", args.appearance]
     )
 
 

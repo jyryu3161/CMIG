@@ -5,6 +5,12 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Changed — GUI appearance
+
+- The GUI opens in light appearance by default, whatever the system setting is.
+  `cmig gui --appearance dark|system` (also `cmig-gui`) forces dark or follows the
+  operating system.
+
 ### Changed — GUI workspace (phase 2)
 
 - One page per analysis, in four sidebar and Analysis-menu groups: Community (Combination

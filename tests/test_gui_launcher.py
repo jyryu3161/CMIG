@@ -83,3 +83,60 @@ def test_launcher_shows_why_the_last_project_did_not_reopen(monkeypatch, tmp_pat
     assert window.session.project is None
     assert window.pages.currentWidget() is window.welcome_page
     assert "gone" in window.welcome_message.text()
+
+
+
+class _Hints:
+    def __init__(self) -> None:
+        self.schemes: list[object] = []
+
+    def setColorScheme(self, scheme: object) -> None:  # noqa: N802 - Qt name
+        self.schemes.append(scheme)
+
+
+class _App:
+    def __init__(self) -> None:
+        self.hints = _Hints()
+
+    def styleHints(self) -> _Hints:  # noqa: N802 - Qt name
+        return self.hints
+
+
+@pytest.mark.parametrize(
+    ("choice", "scheme"), [("light", "Light"), ("dark", "Dark"), ("system", "Unknown")]
+)
+def test_apply_appearance_sets_the_colour_scheme(choice: str, scheme: str) -> None:
+    # The offscreen platform ignores colour schemes, so the call itself is what is checked.
+    from PySide6.QtCore import Qt
+
+    from cmig.gui.__main__ import apply_appearance
+
+    app = _App()
+    apply_appearance(app, choice)
+    assert app.hints.schemes == [getattr(Qt.ColorScheme, scheme)]
+
+
+def _recorded_appearance(monkeypatch) -> list[str]:
+    import cmig.gui.__main__ as launcher
+
+    seen: list[str] = []
+    monkeypatch.setattr(launcher, "apply_appearance", lambda _app, choice: seen.append(choice))
+    return seen
+
+
+def test_launcher_is_light_by_default(monkeypatch) -> None:
+    _no_block(monkeypatch)
+    seen = _recorded_appearance(monkeypatch)
+    assert gui_main(["--lang", "en"]) == 0
+    assert seen == ["light"]
+
+
+def test_launcher_and_cli_pass_the_appearance(monkeypatch) -> None:
+    from cmig.cli.main import main as cli_main
+
+    _no_block(monkeypatch)
+    seen = _recorded_appearance(monkeypatch)
+    assert gui_main(["--appearance", "system"]) == 0
+    assert cli_main(["gui", "--appearance", "dark"]) == 0
+    assert cli_main(["gui"]) == 0
+    assert seen == ["system", "dark", "light"]

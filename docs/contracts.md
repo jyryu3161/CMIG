@@ -42,7 +42,7 @@ CMIG의 소비자는 (1) `cmig` 명령을 부르는 사람·스크립트·LLM �
 | 숙주 | `host-fixture`, `host-generic`, `host-benchmark`, `host-map`, `host-microbe-bigg`, `host-search-bigg`, `host-ko-impact` |
 | 동역학 | `dfba`, `dfba-fixture`, `dfba-community`, `dfba-sensitivity`, `spatial-preview` |
 | 통계·출판 | `stats-demo`, `stats-sweep`, `publication-benchmark`, `render-figure` |
-| 앱 | `gui` (`cmig-gui`와 같음, `--lang en|ko`) |
+| 앱 | `gui` (`cmig-gui`와 같음, `--lang en|ko`, `--appearance light|dark|system`, 기본 light) |
 
 솔버 선택(`--solver`):
 

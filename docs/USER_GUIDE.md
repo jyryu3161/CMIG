@@ -165,7 +165,11 @@ Two caveats worth knowing when driving CMIG from the skill:
 
 ```bash
 uv run cmig gui
+uv run cmig gui --appearance system   # follow the macOS/Windows light or dark setting
 ```
+
+The GUI opens in light appearance by default, whatever the system setting is.
+`--appearance dark` forces dark, and `--appearance system` follows the operating system.
 
 The GUI is organised around a **project**: one folder that holds the models and media
 you work with and every run you make. Each analysis page picks its inputs from the

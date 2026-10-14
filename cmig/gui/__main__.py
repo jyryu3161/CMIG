@@ -13,6 +13,22 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import Any
+
+#: --appearance choices; "system" follows the operating system's light/dark setting
+APPEARANCES = ("light", "dark", "system")
+
+
+def apply_appearance(app: Any, appearance: str) -> None:
+    """Set the app's colour scheme: light by default, dark, or the system's ("system")."""
+    from PySide6.QtCore import Qt
+
+    scheme = {
+        "light": Qt.ColorScheme.Light,
+        "dark": Qt.ColorScheme.Dark,
+        "system": Qt.ColorScheme.Unknown,  # Unknown resets to the platform's own scheme
+    }[appearance]
+    app.styleHints().setColorScheme(scheme)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,6 +41,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--width", type=int, default=1500, help="initial window width")
     parser.add_argument("--height", type=int, default=950, help="initial window height")
+    parser.add_argument(
+        "--appearance", default="light", choices=list(APPEARANCES),
+        help="light (default), dark, or system (follow the operating system)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -39,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     from cmig.gui.app import build_main_window
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    apply_appearance(app, args.appearance)
     window = build_main_window(lang=args.lang)
     window.resize(args.width, args.height)
     window.show()

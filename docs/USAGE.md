@@ -57,6 +57,7 @@ be inspected on a machine with no solver at all.
 ```bash
 uv run cmig gui              # equivalently: uv run cmig-gui
 uv run cmig gui --lang ko    # older panels use Korean strings; the workspace stays English
+uv run cmig gui --appearance system   # light by default; dark | system (follow the OS)
 ```
 
 The window works on a **project** folder (`cmig-project.json`, `models/`, `media/`,
