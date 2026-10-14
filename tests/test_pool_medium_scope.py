@@ -504,28 +504,6 @@ def test_host_search_cli_still_refuses_an_id_no_pool_model_has(tmp_path, capsys)
     assert "no counterpart in any model of the selected pool" in capsys.readouterr().err
 
 
-def test_gene_ko_search_runs_a_sub_consortium_on_a_pool_medium(tmp_path):
-    pytest.importorskip("micom")
-    pytest.importorskip("gurobipy")
-    from cmig.cli.main import main
-
-    tax_path, medium = _pair_files(tmp_path, "EX_glc__D_m,10\nEX_ac_m,0\nEX_but_m,0\n")
-    out = tmp_path / "ko"
-    rc = main([
-        "gene-ko-search", "--taxonomy", str(tax_path), "--members", "producer",
-        "--member", "producer", "--ko-level", "reaction", "--reactions", "GLC2AC",
-        "--target", "ac", "--medium", str(medium), "--exact-medium", "--out", str(out),
-    ])
-    # The baseline consortium is evaluated (exit 2 was "baseline consortium is not evaluable":
-    # no counterpart for EX_but_m). Knocking out the producer's only pathway then leaves an arm
-    # that cannot grow, which is a real, reported outcome (exit 3), not a medium refusal.
-    assert rc in (0, 3), rc
-    summary = json.loads((out / "gene_ko_summary.json").read_text())
-    assert summary["medium_not_applicable"] == ["EX_but_m"]
-    for row in summary["unevaluated"]:
-        assert "no counterpart" not in str(row["diagnostic"]), row
-
-
 def test_sweep_member_sets_are_evaluated_on_a_pool_medium(tmp_path):
     pytest.importorskip("micom")
     pytest.importorskip("gurobipy")
@@ -565,3 +543,116 @@ def test_medium_gap_surveys_each_pool_model_on_a_pool_medium(tmp_path):
     assert by_id["producer"]["medium_not_applicable"] == "EX_but_m"
     assert by_id["consumer"]["medium_not_applicable"] == "EX_glc__D_m"
     assert {row["status"] for row in payload["models"]} <= {"sufficient", "supplement_required"}
+
+
+# ── review round 1: an unreadable pool model, and naming the model behind a bad exchange ───────
+
+
+def _pair_files_with_broken(tmp_path, medium_rows: str):
+    tax_path, medium = _pair_files(tmp_path, medium_rows)
+    broken = tmp_path / "broken.xml"
+    broken.write_text("<sbml>not a model</sbml>")
+    taxonomy = pd.read_csv(tax_path)
+    taxonomy = pd.concat(
+        [taxonomy, pd.DataFrame({"id": ["broken"], "file": [str(broken)], "abundance": [0.5]})],
+        ignore_index=True,
+    )
+    taxonomy.to_csv(tax_path, index=False)
+    return tax_path, medium
+
+
+def test_coverage_leaves_an_unreadable_model_out_and_names_it():
+    from cmig.core.medium_spec import pool_medium_coverage_from_taxonomy
+
+    taxonomy = pd.DataFrame({"id": ["broken"], "file": ["/nonexistent/broken.xml"]})
+    coverage = pool_medium_coverage_from_taxonomy(taxonomy, _POOL_MEDIUM)
+    assert coverage.by_model == {}
+    assert coverage.unreadable == ("broken",)
+    with pytest.raises(ValueError, match="could not be read and were not consulted: broken"):
+        coverage.require_known()
+
+
+def test_medium_gap_survey_keeps_its_load_failed_row_for_an_unreadable_model(tmp_path):
+    pytest.importorskip("gurobipy")
+    from cmig.cli.main import main
+
+    tax_path, medium = _pair_files_with_broken(tmp_path, "EX_glc__D_m,10\nEX_notreal_m,1\n")
+    out = tmp_path / "gap"
+    rc = main([
+        "medium-gap", "--taxonomy", str(tax_path), "--medium", str(medium),
+        "--allow-unknown-medium", "--min-growth", "0.01", "--out", str(out),
+    ])
+    assert rc == 0
+    by_id = {row["id"]: row for row in json.loads((out / "medium_gap.json").read_text())["models"]}
+    assert by_id["broken"]["status"] == "load_failed"
+    assert by_id["producer"]["status"] in {"sufficient", "supplement_required"}
+
+
+def test_host_search_fails_only_the_candidates_with_an_unreadable_model(tmp_path):
+    pytest.importorskip("micom")
+    pytest.importorskip("gurobipy")
+    from cmig.cli.main import main
+
+    tax_path, medium = _pair_files_with_broken(tmp_path, "EX_glc__D_m,10\nEX_ac_m,5\n")
+    host = _model("bigg_style_host", ["EX_ac_e"])
+    host_path = tmp_path / "host.xml"
+    cobra.io.write_sbml_model(host, str(host_path))
+    out = tmp_path / "hs"
+    rc = main([
+        "host-search-bigg", "--host", str(host_path), "--taxonomy", str(tax_path),
+        "--min-size", "1", "--max-size", "1",
+        "--microbial-biomass-gdw", "1.0", "--host-biomass-gdw", "1.0",
+        "--biomass-basis-kind", "validation", "--biomass-basis-source", "pool scope fixture",
+        "--microbe-medium", str(medium), "--target", "ac", "--metric", "objective_value",
+        "--out", str(out),
+    ])
+    assert rc in (0, 3)
+    summary = json.loads((out / "host_search_summary.json").read_text())
+    rows = {tuple(r["members"]): r for r in summary["top_ranked"] + summary["unevaluated"]}
+    assert rows[("broken",)]["evaluation_status"] == "failed"
+    assert rows[("producer",)]["evaluation_status"] != "failed" or "broken" not in str(
+        rows[("producer",)]["diagnostic"]
+    )
+    assert set(rows) == {("producer",), ("consumer",), ("broken",)}
+
+
+def test_gene_ko_coverage_reads_only_the_consortium_models(tmp_path, capsys):
+    """An unreadable non-member must not stop the screen; the consortium is the scope."""
+    pytest.importorskip("micom")
+    pytest.importorskip("gurobipy")
+    from cmig.cli.main import main
+
+    tax_path, medium = _pair_files_with_broken(tmp_path, "EX_glc__D_m,10\nEX_ac_m,0\n")
+    rc = main([
+        "gene-ko-search", "--taxonomy", str(tax_path), "--members", "producer",
+        "--member", "producer", "--ko-level", "reaction", "--reactions", "GLC2AC",
+        "--target", "ac", "--medium", str(medium), "--exact-medium",
+        "--out", str(tmp_path / "ko"),
+    ])
+    assert rc in (0, 3), capsys.readouterr().err
+    # A row only a non-member can take up is outside the consortium's scope: input error.
+    _tax, but_medium = _pair_files(tmp_path / "b", "EX_glc__D_m,10\nEX_but_m,1\n")
+    rc = main([
+        "gene-ko-search", "--taxonomy", str(tax_path), "--members", "producer",
+        "--member", "producer", "--ko-level", "reaction", "--reactions", "GLC2AC",
+        "--target", "ac", "--medium", str(but_medium), "--exact-medium",
+        "--out", str(tmp_path / "ko2"),
+    ])
+    assert rc == 2
+    assert "EX_but_m" in capsys.readouterr().err
+
+
+def test_an_unresolvable_exchange_names_the_pool_model_and_its_file(tmp_path):
+    from cmig.core.medium_spec import pool_medium_coverage_from_taxonomy
+
+    bad = cobra.Model("bad")
+    reaction = cobra.Reaction("EX_weird")
+    reaction.add_metabolites({cobra.Metabolite("weird", compartment="e"): -1})
+    bad.add_reactions([reaction])
+    path = tmp_path / "bad.json"
+    cobra.io.save_json_model(bad, str(path))
+    taxonomy = pd.DataFrame({"id": ["oddball"], "file": [str(path)]})
+    with pytest.raises(ValueError) as error:
+        pool_medium_coverage_from_taxonomy(taxonomy, _POOL_MEDIUM)
+    assert "oddball" in str(error.value) and str(path) in str(error.value)
+    assert "unresolved exchange metabolite identity" in str(error.value)

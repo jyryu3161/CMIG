@@ -1575,9 +1575,8 @@ Two further rules:
   still computed over the **full requested** medium. Use it to diagnose a medium
   file, not to produce a reported result.
 - **Pool workflows check the medium against the pool, not each candidate.**
-  `search` (single and multi-target), `host-search-bigg`, `gene-ko-search` (the
-  `--members` consortium drawn from the taxonomy), `sweep --member-sets` (without
-  `--namespace-decisions`) and `medium-gap` over a `--taxonomy`/`--model-dir`
+  `search` (single and multi-target), `host-search-bigg`, `sweep --member-sets`
+  (without `--namespace-decisions`) and `medium-gap` over a `--taxonomy`/`--model-dir`
   evaluate sub-communities or single members of the models you selected. A medium
   written for the whole pool — the `gut_overlay_*` presets are — names nutrients
   that some candidates cannot take up. Such an id is **not applicable** to that
@@ -1585,12 +1584,15 @@ Two further rules:
   and dropping it leaves the LP identical (MICOM's own `grow` and `tradeoff`
   workflows filter the medium to the community's exchanges the same way). It is
   listed per candidate as `medium_not_applicable` (search summaries and
-  evaluations, host-search rows, the gene-KO summary, the sweep condition's solve
-  provenance, the `medium-gap` row) and does not degrade the run or change the
+  evaluations, host-search rows, the sweep condition's solve provenance, the
+  `medium-gap` row) and does not degrade the run or change the
   candidate's status. An id that **no** model of the selected pool can take up is
   still an input error (exit `2`, before any candidate is evaluated);
   `--allow-unknown-medium` keeps its meaning for those ids only. (`sweep` keeps
-  recording such an id as a failed condition rather than exiting.)
+  recording such an id as a failed condition rather than exiting.) A pool model
+  whose file cannot be read is left out of this check (the refusal says so) and
+  fails where it is used, as before. `gene-ko-search` checks against its
+  `--members` consortium only, so a row only non-members can take up is refused.
 
 ## Solver Provenance
 

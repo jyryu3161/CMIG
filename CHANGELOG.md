@@ -9,9 +9,8 @@ semantic versioning for public releases.
 
 - Workflows that evaluate sub-communities or single members of the selected pool —
   `search` (single and multi-target, including `--validate-top` and robustness FVA),
-  `host-search-bigg`, `gene-ko-search` (the `--members` consortium drawn from the taxonomy),
-  `sweep --member-sets` (without `--namespace-decisions`) and `medium-gap` over a
-  `--taxonomy`/`--model-dir` — now check the medium in two layers. An id that **no** model of
+  `host-search-bigg`, `sweep --member-sets` (without `--namespace-decisions`) and `medium-gap`
+  over a `--taxonomy`/`--model-dir` — now check the medium in two layers. An id that **no** model of
   the selected pool can take up (matched on metabolite) is an input error before any
   candidate is evaluated (exit 2; `--allow-unknown-medium` keeps its meaning for those ids).
   An id some pool model can take up but this candidate cannot is **not applicable** to the
@@ -20,7 +19,11 @@ semantic versioning for public releases.
   so the LP is identical without it — MICOM's own `grow`/`tradeoff` workflows filter the
   medium to the community's exchanges the same way. Previously the shipped `gut_overlay_*`
   presets (written for the whole bundled pool) failed every Combination Search candidate.
-- `medium_policy` provenance marker: `exchange_reactions_by_metabolite_v2` →
+  A pool model whose file cannot be read is left out of the pool check and keeps its own
+  failure (a `load_failed` row, failed candidates); the refusal names it as not consulted.
+  `gene-ko-search` checks the medium against its `--members` consortium only (the models it
+  uses), so an id no consortium member can take up is refused up front (exit 2) — the same
+  outcome as before, with the ids named.- `medium_policy` provenance marker: `exchange_reactions_by_metabolite_v2` →
   `exchange_reactions_by_metabolite_pool_scoped_v3`. **No hash moves**: the solve `run_hash`
   (11 components) and every workflow hash are unchanged, so a v2 and a v3 run of the same
   inputs share a `run_hash`. Candidates that v2 refused for a pool-only medium row now have
@@ -30,7 +33,7 @@ semantic versioning for public releases.
 - New outputs: `medium_not_applicable` per candidate in `search_summary.json` (`top_ranked`,
   `unevaluated`) and `search_evaluations.json`, plus a run-level
   `medium_not_applicable: {ids, n_candidates}`; per row in `host_search_summary.json`; in
-  `gene_ko_summary.json`; in a sweep condition's solve-manifest `provenance`; and a
+  `gene_ko_summary.json` (always empty: its scope is the consortium); in a sweep condition's solve-manifest `provenance`; and a
   `medium_not_applicable` column in `medium_gap.csv`/`medium_gap.json`.
 
 ### Fixed — GUI failure reasons

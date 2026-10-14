@@ -414,9 +414,6 @@ MEDIUM_POOL_UNKNOWN_HINT = (
     "allow unknown medium ids (--allow-unknown-medium) to drop them; the dropped ids are then "
     "listed as not applied"
 )
-#: Record name for ids a candidate cannot take up but another pool model can. Not
-#: `medium_unapplied` (nothing requested was withheld from a member that could use it).
-MEDIUM_NOT_APPLICABLE = "medium_not_applicable"
 
 
 def medium_ids_with_counterpart(model: object, spec: MediumSpec) -> frozenset[str]:
@@ -435,6 +432,9 @@ class PoolMediumCoverage:
 
     by_model: dict[str, frozenset[str]]
     requested: tuple[str, ...]
+    #: Pool members whose model file could not be read. They are left out of the coverage and
+    #: keep their own failure where they are used (a load_failed row, a failed candidate).
+    unreadable: tuple[str, ...] = ()
 
     @property
     def known(self) -> frozenset[str]:
@@ -448,8 +448,12 @@ class PoolMediumCoverage:
     def require_known(self) -> None:
         """Refuse ids no pool model can take up — the namespace-safety half of the rule."""
         if self.unknown:
+            unread = (
+                f" (pool models that could not be read and were not consulted: "
+                f"{', '.join(self.unreadable)})" if self.unreadable else ""
+            )
             raise ValueError(
-                f"{MEDIUM_POOL_UNKNOWN}: {list(self.unknown)}. {MEDIUM_POOL_UNKNOWN_HINT}"
+                f"{MEDIUM_POOL_UNKNOWN}: {list(self.unknown)}{unread}. {MEDIUM_POOL_UNKNOWN_HINT}"
             )
 
     def split(
@@ -479,30 +483,64 @@ class PoolMediumCoverage:
         return tuple(not_applicable), tuple(unknown)
 
 
-def pool_medium_coverage(models: dict[str, Any], spec: MediumSpec) -> PoolMediumCoverage:
-    """Coverage of ``spec`` over a pool given as ``{member id: cobra model}``."""
+def pool_medium_coverage(
+    models: dict[str, Any],
+    spec: MediumSpec,
+    *,
+    sources: dict[str, str] | None = None,
+    unreadable: tuple[str, ...] = (),
+) -> PoolMediumCoverage:
+    """Coverage of ``spec`` over a pool given as ``{member id: cobra model}``.
+
+    An exchange whose identity cannot be resolved is refused naming the pool member (and its
+    file, from ``sources``) — the refusal happens before any candidate runs, so without the name
+    a user could not tell which of the selected models to fix.
+    """
     spec.validate()
+    by_model: dict[str, frozenset[str]] = {}
+    for member, model in sorted(models.items()):
+        try:
+            by_model[str(member)] = medium_ids_with_counterpart(model, spec)
+        except ValueError as error:
+            where = str(member) + (
+                f" ({sources[str(member)]})" if sources and str(member) in sources else ""
+            )
+            raise ValueError(f"pool model {where}: {error}") from error
     return PoolMediumCoverage(
-        by_model={
-            str(member): medium_ids_with_counterpart(model, spec)
-            for member, model in sorted(models.items())
-        },
+        by_model=by_model,
         requested=tuple(sorted(str(source) for source in spec.uptake)),
+        unreadable=tuple(sorted(unreadable)),
     )
 
 
 def pool_medium_coverage_from_taxonomy(taxonomy: Any, spec: MediumSpec) -> PoolMediumCoverage:
-    """Coverage of ``spec`` over the models a taxonomy (``id``, ``file``) names."""
-    from cmig.io.model_import import load_cobra_model
+    """Coverage of ``spec`` over the models a taxonomy (``id``, ``file``) names.
+
+    A model file that cannot be read is left out (and listed in ``unreadable``): the workflow
+    reports that model's failure where it uses it, exactly as it did before the pool check.
+    """
+    from cmig.io.model_import import ModelImportError, load_cobra_model
 
     loaded: dict[str, Any] = {}
+    failed: set[str] = set()
     models: dict[str, Any] = {}
+    sources: dict[str, str] = {}
+    unreadable: list[str] = []
     for record in taxonomy.to_dict("records"):
-        path = str(record["file"])
-        if path not in loaded:
-            loaded[path] = load_cobra_model(path)
-        models[str(record["id"])] = loaded[path]
-    return pool_medium_coverage(models, spec)
+        member, path = str(record["id"]), str(record["file"])
+        if path not in loaded and path not in failed:
+            try:
+                loaded[path] = load_cobra_model(path)
+            except (ModelImportError, OSError, ValueError):
+                failed.add(path)
+        if path in failed:
+            unreadable.append(member)
+            continue
+        models[member] = loaded[path]
+        sources[member] = path
+    return pool_medium_coverage(
+        models, spec, sources=sources, unreadable=tuple(unreadable)
+    )
 
 
 def effective_medium_by_metabolite(model: object) -> dict[str, float]:

@@ -3194,14 +3194,14 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         # round 5 and this command passed none.
         medium_spec = load_medium(args.medium) if args.medium else None
         strict_medium = not args.allow_unknown_medium
-        # Round 11 (pool-scoped medium): the taxonomy is the pool and --members one consortium
-        # drawn from it. A medium id no taxonomy model can take up is an input error; one only
-        # non-members can take up is not applicable to this consortium (LP unchanged).
+        # Round 11 (pool-scoped medium), review round 1: the scope is the models this screen
+        # actually uses — the --members consortium — not the rest of the taxonomy (which it
+        # never loads). An id no consortium model can take up is an input error, named up front.
         medium_pool = None
         if medium_spec is not None:
             from cmig.core.medium_spec import pool_medium_coverage_from_taxonomy
 
-            medium_pool = pool_medium_coverage_from_taxonomy(taxonomy, medium_spec)
+            medium_pool = pool_medium_coverage_from_taxonomy(sub, medium_spec)
             if strict_medium:
                 medium_pool.require_known()
         baseline_result = search_model_pool(
