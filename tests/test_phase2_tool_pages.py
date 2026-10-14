@@ -285,6 +285,15 @@ def test_a_project_switch_empties_the_tool_result_and_drops_the_medium_baseline(
     assert [label.text() for label in labels] == [""] * len(labels)
 
 
+def test_a_project_switch_clears_the_tool_status_lines(tmp_path: Path) -> None:
+    w = build_main_window()
+    statuses = (w.scenario_compare.status, w.sandbox_view.status, w.sweep_view.status)
+    for status in statuses:
+        status.setText("compare complete: run-a vs run-b")  # about the previous project
+    open_test_project(w, tmp_path / "p", ["a"])
+    assert [status.text() for status in statuses] == ["", "", ""]
+
+
 def test_medium_restore_reproduces_the_same_medium() -> None:
     w = build_main_window()
     editor = w.medium_editor

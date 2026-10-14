@@ -2097,6 +2097,9 @@ class CmigMainWindow(QMainWindow):
             self.scenario_compare.growth_label.clear()
             self.sandbox_view.delta_view.setRowCount(0)
             self.sweep_view.table.setRowCount(0)
+            for status in (self.scenario_compare.status, self.sandbox_view.status,
+                           self.sweep_view.status):
+                status.clear()
             editor = self.medium_editor
             for label in (editor.growth_label, editor.dropped_ids_label,
                           editor.profile_delta_label, editor.minimal_status):
