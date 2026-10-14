@@ -105,3 +105,20 @@ def test_latest_check_growth_matches_model_and_file(tmp_path: Path) -> None:
     found = latest_check_growth(root, "a", "s1")
     assert found is not None and found.name == "check-growth-20261014-100000"
     assert latest_check_growth(root, "c", "x") is None
+
+
+def test_infeasible_run_as_the_cli_writes_it(tmp_path: Path) -> None:
+    run = _summary(tmp_path, status="failed", growth_feasible=False,
+                   methods={"FBA": {"status": "infeasible", "objective": None,
+                                    "diagnostic": "FBA status=infeasible"}})
+    reading = _read(run)
+    assert reading.symbol == "✗"
+    assert reading.text.startswith("Infeasible")
+    assert "FBA status=infeasible" in reading.text
+    assert reading.text.endswith("Gurobi (full-flux) · western_diet (exact) · 10:31")
+
+
+def test_medium_text_names_skipped_metabolites() -> None:
+    assert (medium_text("preset:western_diet", skip_unknown=True)
+            == "western_diet (exact, model-lacking metabolites skipped)")
+    assert medium_text("", skip_unknown=True) == "model default"

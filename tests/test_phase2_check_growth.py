@@ -211,3 +211,61 @@ def test_check_growth_of_a_model_not_on_show_is_refused(window) -> None:
     w.sidebar.select("models", "b")
     assert w.run_check_growth("a") == ""
     assert calls == []
+
+
+def _write_infeasible(argv: list[str]) -> int:
+    out = Path(argv[argv.index("--out") + 1])
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "single_summary.json").write_text(json.dumps({
+        "status": "failed", "solver": "gurobi", "growth_feasible": False,
+        "growth_threshold": 1e-6, "warnings": ["FBA status=infeasible: FBA status=infeasible"],
+        "methods": {"FBA": {"status": "infeasible", "objective": None,
+                            "diagnostic": "FBA status=infeasible"}},
+    }))
+    import sys
+
+    print("  analysis failed: artifacts were written … pass --allow-failed-run to exit 0 "
+          "anyway", file=sys.stderr)
+    return 3
+
+
+def test_infeasible_run_reads_infeasible_now_and_after_reselect(window, monkeypatch) -> None:
+    w, _calls = window
+    monkeypatch.setattr("cmig.cli.main.main", _write_infeasible)
+    w.sidebar.select("models", "a")
+    w.model_browser.confirm_btn.click()
+    w.model_browser.medium_picker.set_ref("preset:western_diet")
+    assert w.run_check_growth("a")
+    _wait_text(w, "Infeasible")
+    text = w.model_browser.growth_label.text()
+    assert text.startswith("✗ Infeasible")
+    assert "western_diet (exact)" in text and "allow-failed-run" not in text
+    w.sidebar.select("models", "b")
+    w.sidebar.select("models", "a")
+    assert w.model_browser.growth_label.text().startswith("✗ Infeasible")
+
+
+def test_changed_result_is_never_growth(window, monkeypatch) -> None:
+    w, _calls = window
+    monkeypatch.setattr(w, "_inspect_gui_run", lambda _d: {"artifact_integrity": "mismatch"})
+    w.sidebar.select("models", "a")
+    w.model_browser.confirm_btn.click()
+    assert w.run_check_growth("a")
+    _wait_text(w, "Result changed")
+    assert (w.model_browser.growth_label.text()
+            == "✗ Result changed since the run — see the inspector")
+
+
+def test_skipped_metabolites_are_named_and_the_record_names_the_model(window) -> None:
+    w, _calls = window
+    w.sidebar.select("models", "a")
+    w.model_browser.confirm_btn.click()
+    w.model_browser.medium_picker.set_ref("preset:western_diet")
+    w.model_browser.skip_unknown_check.setChecked(True)
+    assert w.run_check_growth("a")
+    _wait_text(w, "Growth 0.5")
+    assert ("western_diet (exact, model-lacking metabolites skipped)"
+            in w.model_browser.growth_label.text())
+    run_dir = next(e.path for e in w.session.runs() if e.label.startswith("Check Growth · a"))
+    record, _problem = proj.read_run_request(run_dir)
+    assert record is not None and record["models"] == ["a"]

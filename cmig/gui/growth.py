@@ -29,10 +29,21 @@ def solver_text(name: object) -> str:
     )
 
 
-def medium_text(ref: str) -> str:
+def medium_text(ref: str, *, skip_unknown: bool = False) -> str:
+    """How a run's medium is named; a run that skipped model-lacking metabolites says so."""
     if not ref:
         return "model default"
-    return f"{ref.partition(':')[2] or ref} (exact)"
+    mode = "exact, model-lacking metabolites skipped" if skip_unknown else "exact"
+    return f"{ref.partition(':')[2] or ref} ({mode})"
+
+
+def failed_summary(run_dir: Path) -> bool:
+    """True when the run's `single_summary.json` reads and records a failed solve."""
+    try:
+        summary = json.loads((Path(run_dir) / "single_summary.json").read_text())
+    except (OSError, ValueError, RecursionError):
+        return False
+    return isinstance(summary, dict) and summary.get("status") == "failed"
 
 
 def run_clock(run_name: str) -> str:
@@ -52,10 +63,14 @@ def read_growth(run_dir: Path, *, objective_warning: str | None, medium: str,
     tail = " · ".join(part for part in (solver_text(summary.get("solver")), medium, finished)
                       if part)
     run_status = str(summary.get("status", "unknown"))
-    if run_status == "failed":
-        diagnostic = fba.get("diagnostic") or "the run failed"
-        return GrowthReading("✗", f"Failed: {diagnostic}")
     status = str(fba.get("status", "unknown"))
+    if run_status == "failed":
+        # e.g. an infeasible FBA: `cmig single` records it and exits 3. Name the solve status.
+        label = ("Failed" if status in ("optimal", "unknown")
+                 else status.replace("_", " ").capitalize())
+        diagnostic = fba.get("diagnostic")
+        detail = f" — {diagnostic}" if isinstance(diagnostic, str) and diagnostic else ""
+        return GrowthReading("✗", f"{label}{detail} · {tail}")
     if status != "optimal":
         return GrowthReading("✗", f"{status.replace('_', ' ').capitalize()} · {tail}")
     value = fba.get("objective")

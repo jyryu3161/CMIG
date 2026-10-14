@@ -2260,6 +2260,8 @@ class CmigMainWindow(QMainWindow):
         values = page.snapshot()  # type: ignore[attr-defined]
         page.clear_banner()  # type: ignore[attr-defined]
         models, media = request_models_and_media(values)
+        if analysis == "check_growth" and isinstance(values.get("model"), str):
+            models = [values["model"]]  # the browser names one model, not a picker list
         proj.write_run_request(run_dir, analysis, values, models=models, media=media,
                                cmig_version=__version__)
 
@@ -2775,10 +2777,24 @@ class CmigMainWindow(QMainWindow):
 
     def _growth_text(self, out_dir: Path, model_id: str, job: Job | None) -> str:
         """The browser's growth line for one Check Growth run (a failure never reads as growth)."""
-        from cmig.gui.growth import medium_text, read_growth, run_clock
+        from cmig.gui.growth import failed_summary, medium_text, read_growth, run_clock
+
+        def reading_text() -> str:
+            record, _problem = proj.read_run_request(out_dir)
+            values = (record or {}).get("values", {})
+            medium = medium_text(str(values.get("medium") or ""),
+                                 skip_unknown=values.get("skip_unknown") is True)
+            entry = self.session.require().model(model_id)
+            reading = read_growth(out_dir, objective_warning=proj.objective_warning_of(entry),
+                                  medium=medium, finished=run_clock(out_dir.name))
+            return f"{reading.symbol} {reading.text}"
 
         if job is not None and job.status is JobStatus.CANCELLED:
             return "⊘ Cancelled"
+        state = proj.read_run_state(out_dir)
+        failed = (job is not None and job.status is JobStatus.FAILED) or state == "failed"
+        if failed and failed_summary(out_dir):
+            return reading_text()  # a solve that failed (e.g. infeasible), told by its summary
         if job is not None and job.status is JobStatus.FAILED:
             message = str((parse_diagnostic(job.error) or {}).get("message") or "")
             lines = message.removeprefix("RuntimeError: ").strip().splitlines()
@@ -2786,17 +2802,14 @@ class CmigMainWindow(QMainWindow):
             hint = (" — tick “Skip medium metabolites this model lacks” to run without them"
                     if "no counterpart" in reason else "")
             return f"✗ Failed: {reason}{hint}"
-        state = proj.read_run_state(out_dir)
         if state is not None:
             return {"cancelled": "⊘ Cancelled"}.get(state, f"✗ Failed ({state}) — see the run")
-        if self._inspect_gui_run(out_dir) is None:
+        inspected = self._inspect_gui_run(out_dir)
+        if inspected is None:
             return "✗ Failed: the result could not be read back — see the inspector"
-        record, _problem = proj.read_run_request(out_dir)
-        medium = medium_text(str((record or {}).get("values", {}).get("medium") or ""))
-        entry = self.session.require().model(model_id)
-        reading = read_growth(out_dir, objective_warning=proj.objective_warning_of(entry),
-                              medium=medium, finished=run_clock(out_dir.name))
-        return f"{reading.symbol} {reading.text}"
+        if inspected.get("artifact_integrity") == "mismatch":
+            return "✗ Result changed since the run — see the inspector"
+        return reading_text()
 
     def _show_latest_growth(self, entry: ModelEntry) -> None:
         """The browsed model's running or newest Check Growth, for exactly this model file."""
