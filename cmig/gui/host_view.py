@@ -31,7 +31,13 @@ from PySide6.QtWidgets import (
 )
 
 from cmig.core.host_impact import identified_transfer_point
-from cmig.gui.analysis_page import AnalysisPage, connect_change
+from cmig.gui.analysis_page import (
+    FLUX_LEGEND,
+    AnalysisPage,
+    connect_change,
+    mark_computed_headers,
+    paint_computed,
+)
 from cmig.gui.builder import make_read_only, read_only_item
 from cmig.gui.pickers import MediumPicker, ModelPicker
 
@@ -215,6 +221,7 @@ class HostImpactView(AnalysisPage, HostInputWidgets):
         flux_header = self.iface_table.horizontalHeaderItem(2)
         if flux_header is not None:
             flux_header.setToolTip("Flux, mmol gDW⁻¹ h⁻¹")
+        mark_computed_headers(self.iface_table, [2])
         self.iface_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         make_read_only(self.iface_table)
         # microbe→host cross-feeding 표
@@ -224,6 +231,7 @@ class HostImpactView(AnalysisPage, HostInputWidgets):
         transfer_header = self.cross_table.horizontalHeaderItem(1)
         if transfer_header is not None:
             transfer_header.setToolTip("Lumen transfer, mmol gDW⁻¹ h⁻¹")
+        mark_computed_headers(self.cross_table, [1])
         self.cross_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         make_read_only(self.cross_table)
         self.network_label = QLabel("Interaction Network")
@@ -248,7 +256,8 @@ class HostImpactView(AnalysisPage, HostInputWidgets):
         tables = QWidget()
         tables_layout = QVBoxLayout(tables)
         tables_layout.setContentsMargins(0, 0, 0, 0)
-        for w in (self.viability_label, self.iface_table, self.cross_label, self.cross_table):
+        for w in (self.viability_label, QLabel(FLUX_LEGEND), self.iface_table, self.cross_label,
+                  self.cross_table):
             tables_layout.addWidget(w)
         splitter = QSplitter()
         tables.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
@@ -353,6 +362,7 @@ class HostImpactView(AnalysisPage, HostInputWidgets):
                 if c == 3 and f.label in _LABEL_COLOR:
                     item.setForeground(QColor(_LABEL_COLOR[f.label]))
                 self.iface_table.setItem(i, c, item)
+        paint_computed(self.iface_table, [2])
         self.results.show_results()
 
     def load_impact(self, impact: Any, *, solved: bool | None = True) -> None:
@@ -377,6 +387,7 @@ class HostImpactView(AnalysisPage, HostInputWidgets):
             elif met in ambiguous:
                 item.setToolTip("Identifiability: ambiguous")
             self.cross_table.setItem(i, 1, item)
+        paint_computed(self.cross_table, [1])
         self.results.show_results()
 
     def load_bigg_summary(self, payload: dict[str, Any], *, run_dir: Path | None = None) -> None:

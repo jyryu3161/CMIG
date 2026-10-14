@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 from cmig.core.delta import DeltaResult
 from cmig.core.sandbox import BoundConstraint
 from cmig.core.targets import TARGET_PRESETS, preset_targets
-from cmig.gui.analysis_page import AnalysisPage
+from cmig.gui.analysis_page import AnalysisPage, mark_computed_headers, paint_computed
 from cmig.gui.pickers import MediumPicker, ModelPicker
 from cmig.gui.search_results import (
     MERGE_MEDIUM_WARNING,
@@ -252,6 +252,7 @@ class DeltaTable(QTableWidget):
     def __init__(self) -> None:
         super().__init__(0, 4)
         self.setHorizontalHeaderLabels(["Metabolite", "Baseline", "Modified", "Δ"])
+        mark_computed_headers(self, [1, 2, 3])
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         make_read_only(self)
 
@@ -265,6 +266,7 @@ class DeltaTable(QTableWidget):
                 if d.metabolite in sig:
                     item.setForeground(QColor("#d62728"))  # 변화 있는 대사체 강조
                 self.setItem(i, c, item)
+        paint_computed(self, [1, 2, 3])
 
 
 class ConstraintSandboxView(QWidget):

@@ -30,7 +30,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cmig.gui.analysis_page import AnalysisPage, ResultsArea, connect_change
+from cmig.gui.analysis_page import (
+    FLUX_LEGEND,
+    AnalysisPage,
+    ResultsArea,
+    connect_change,
+    mark_computed_headers,
+    paint_computed,
+)
 from cmig.gui.builder import make_read_only, read_only_item
 from cmig.gui.pickers import ModelPicker
 from cmig.service import JobRunner, make_sweep_job
@@ -977,6 +984,7 @@ class ExternalProfileView(QWidget):
         self.table.setHorizontalHeaderLabels(
             ["Metabolite", "Net flux (mmol gDW⁻¹ h⁻¹)", "Direction", "FVA [lo, hi]"]
         )
+        mark_computed_headers(self.table, [1, 3])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         make_read_only(self.table)
         self.net_chart = DivergingProfileChart(self.strings)
@@ -1026,6 +1034,7 @@ class ExternalProfileView(QWidget):
         layout.addWidget(self.chart_note)
         layout.addWidget(self.contribution_basis_label)
         layout.addLayout(delta_row)
+        layout.addWidget(QLabel(FLUX_LEGEND))
         layout.addWidget(self.table)
         layout.addWidget(self.target_label)
 
@@ -1080,6 +1089,7 @@ class ExternalProfileView(QWidget):
                 if c == 2 and label in _LABEL_COLOR:
                     item.setForeground(QColor(_LABEL_COLOR[label]))
                 self.table.setItem(i, c, item)
+        paint_computed(self.table, [1, 3])
 
     def show_delta_overlay(
         self,
@@ -1185,6 +1195,7 @@ class DynamicsResults:
         self.warning_label.setVisible(False)
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Run", "Status", "Final time (h)", "Readout"])
+        mark_computed_headers(self.table, [2, 3])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setMaximumHeight(130)
         make_read_only(self.table)
@@ -1221,6 +1232,7 @@ class DynamicsResults:
         values = [run_type, status, "unknown" if final_t is None else f"{final_t:.4g}", readout]
         for idx, value in enumerate(values):
             self.table.setItem(0, idx, read_only_item(value))
+        paint_computed(self.table, [2, 3], status_column=1)
         self.results.show_results()
 
     def _load_figure(self, run_dir: Any, artifact: str) -> None:

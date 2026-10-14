@@ -6,12 +6,13 @@ Pages register their inputs by name; `snapshot()` is what a run records in
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QPalette
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -35,6 +36,53 @@ from cmig.gui.pickers import MediumPicker, ModelPicker
 def hide_row_numbers(table: QTableWidget) -> QTableWidget:
     table.verticalHeader().setVisible(False)
     return table
+
+
+COMPUTED_TIP = "Computed by CMIG"
+FLUX_LEGEND = "+ secretion / − uptake (mmol gDW⁻¹ h⁻¹)"
+_FAILED_WORDS = ("failed", "error", "infeasible", "cancel", "non-viable", "non_viable",
+                 "timeout", "unknown", "unreadable")
+_NOT_VALUES = ("—", "unknown", "not recorded")
+
+
+def is_failed_status(text: str) -> bool:
+    lowered = text.lower()
+    return any(word in lowered for word in _FAILED_WORDS)
+
+
+def mark_computed_headers(table: QTableWidget, columns: Iterable[int]) -> None:
+    for column in columns:
+        item = table.horizontalHeaderItem(column)
+        if item is None:
+            continue
+        tip = item.toolTip()
+        if COMPUTED_TIP not in tip:
+            item.setToolTip(f"{tip}\n{COMPUTED_TIP}" if tip else COMPUTED_TIP)
+
+
+def paint_computed(
+    table: QTableWidget, columns: Iterable[int], *, status_column: int | None = None
+) -> None:
+    """Show computed values in the system accent colour; inputs keep the default colour.
+
+    A cell that already has its own colour (a diagnostic, a significance mark) keeps it; a
+    missing value and every cell of a failed or unevaluated row are never painted as values.
+    """
+    accent = QApplication.palette().color(QPalette.ColorRole.Accent)
+    wanted = list(columns)
+    for row in range(table.rowCount()):
+        if status_column is not None:
+            status = table.item(row, status_column)
+            if status is not None and is_failed_status(status.text()):
+                continue
+        for column in wanted:
+            item = table.item(row, column)
+            if item is None or item.data(Qt.ItemDataRole.ForegroundRole) is not None:
+                continue
+            text = item.text().strip()
+            if not text or text.startswith(_NOT_VALUES):
+                continue
+            item.setForeground(accent)
 
 
 def widget_value(widget: QWidget) -> Any:

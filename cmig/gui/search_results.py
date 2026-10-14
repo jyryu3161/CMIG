@@ -27,13 +27,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cmig.gui.analysis_page import ResultsArea
+from cmig.gui.analysis_page import ResultsArea, mark_computed_headers, paint_computed
 
 #: Default SearchView column labels. Adapters may override them per workflow so a growth
 #: rate is never displayed under a header that says "Flux" (round-5 P2 F7/F21).
 SEARCH_COLUMNS = ("Members", "Target", "Score", "Flux", "Growth", "FVA Range", "Status")
 
 _DIAGNOSTIC_COLOR = QColor("#d62728")
+#: Score, Flux, Growth and FVA Range are computed; Members and Target are the inputs
+_COMPUTED_COLUMNS = (2, 3, 4, 5)
 
 MERGE_MEDIUM_WARNING = (
     "Metabolites missing from the medium file stay at the model defaults (e.g. unlimited "
@@ -211,6 +213,7 @@ class SearchResultsPanel(QWidget):
         self.details.setPlaceholderText("Run conditions, warnings and diagnostics appear here.")
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(list(SEARCH_COLUMNS))
+        mark_computed_headers(self.table, _COMPUTED_COLUMNS)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         make_read_only(self.table)
         self.pareto_label = QLabel("")
@@ -309,6 +312,7 @@ class SearchResultsPanel(QWidget):
         self._clear_inspector()
         self.table.setRowCount(0)
         self.table.setHorizontalHeaderLabels(list(SEARCH_COLUMNS))
+        mark_computed_headers(self.table, _COMPUTED_COLUMNS)
         self.pareto_label.setText("")
         self.current_run_dir = None
         self._displayed_kind = None
@@ -522,6 +526,7 @@ class SearchResultsPanel(QWidget):
             else list(SEARCH_COLUMNS)
         )
         self.table.setHorizontalHeaderLabels(headers)
+        mark_computed_headers(self.table, _COMPUTED_COLUMNS)
         strategy = str(summary.get("strategy", ""))
         warnings = summary.get("warnings")
         warning_list = [str(w) for w in warnings] if isinstance(warnings, list) else []
@@ -640,6 +645,7 @@ class SearchResultsPanel(QWidget):
                     # The row's own summary record, by identity: not table order, not members.
                     item_widget.setData(Qt.ItemDataRole.UserRole, r)
                 self.table.setItem(r, c, item_widget)
+        paint_computed(self.table, _COMPUTED_COLUMNS, status_column=6)
         self._row_records = records
         pareto = summary.get("pareto_frontier")
         try:

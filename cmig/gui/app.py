@@ -1277,6 +1277,14 @@ class CmigMainWindow(QMainWindow):
         self.solver_label = QLabel("")
         self.statusBar().addPermanentWidget(self.solver_label)
         self._refresh_solver_label()
+        self.last_run_button = QToolButton()
+        self.last_run_button.setAutoRaise(True)
+        self.last_run_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.last_run_button.clicked.connect(self._open_last_run)
+        self.statusBar().addWidget(self.last_run_button)
+        self._last_run_dir: Path | None = None
+        #: run folders whose job ended since the last poll: (folder, error text)
+        self._just_finished: list[tuple[Path, str]] = []
         self._install_workflow_actions()
         self._connect_view_actions()
         for button in self._run_buttons().values():
@@ -1976,6 +1984,7 @@ class CmigMainWindow(QMainWindow):
 
     def _close_session(self) -> None:
         """Close the project; a failed final save is reported here, never raised into Qt."""
+        self._clear_last_run()
         try:
             self.session.close()
         except ProjectError as exc:
@@ -5548,6 +5557,9 @@ class CmigMainWindow(QMainWindow):
             if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
                 continue
             del self._job_runs[job_id]
+            self._just_finished.append(
+                (run_dir, "" if job.status is JobStatus.DONE else (job.error or ""))
+            )
             if job.status is JobStatus.DONE:
                 continue  # a finished run is judged by what it holds
             changed = True
@@ -5557,6 +5569,50 @@ class CmigMainWindow(QMainWindow):
             except ProjectError as exc:
                 self.statusBar().showMessage(str(exc), 8000)
         return changed
+
+    _STATUS_SYMBOLS = {"ok": "✓", "degraded": "⚠", "warning": "⚠", "cancelled": "⊘"}
+
+    def _show_last_run(self, run_dir: Path, error: str = "") -> None:
+        """Name the last finished run in the status bar; clicking it opens that run."""
+        from cmig.gui.inspector import _solver_label
+        from cmig.gui.run_restore import analysis_for_run
+
+        entry = self._run_entry(Path(run_dir).resolve())
+        key, _record, _problem = analysis_for_run(entry.path)
+        title = (dict(ANALYSES).get(key or "") or ("Check Growth" if key == "check_growth"
+                 else entry.label.split(" · ")[0]))
+        symbol = self._STATUS_SYMBOLS.get(entry.status, "✗")
+        parts = [f"{symbol} {title}", entry.name]
+        try:
+            manifest = json.loads((entry.path / "manifest.json").read_text())
+        except (OSError, ValueError):
+            manifest = None
+        solver = _solver_label(manifest)
+        if solver and symbol != "✗":
+            parts.append(solver)
+        if symbol == "✗":
+            parts.append(self._failure_reason(error) or entry.status)
+        self.last_run_button.setText(" · ".join(parts))
+        self.last_run_button.setToolTip(str(entry.path))
+        self._last_run_dir = entry.path
+
+    @staticmethod
+    def _failure_reason(error: str) -> str:
+        """The first readable line of a job's error (a serialized Diagnostic or plain text)."""
+        message = str((parse_diagnostic(error) or {}).get("message") or error)
+        lines = message.removeprefix("RuntimeError: ").strip().splitlines()
+        return lines[0] if lines else ""
+
+    def _open_last_run(self) -> None:
+        if self._last_run_dir is not None:
+            self._open_run_entry(self._last_run_dir)
+
+    def _clear_last_run(self) -> None:
+        """Forget the last run: a previous project's run is neither shown nor opened."""
+        self._last_run_dir = None
+        self._just_finished.clear()
+        self.last_run_button.setText("")
+        self.last_run_button.setToolTip("")
 
     def _poll_completed_jobs(self) -> None:
         settled = self._settle_run_jobs()
@@ -6015,6 +6071,10 @@ class CmigMainWindow(QMainWindow):
                 self.bridge.cancelling.discard(jid)
         if settled:
             self.session.refresh_runs()
+        if self._just_finished:
+            run_dir, error = self._just_finished[-1]
+            self._just_finished.clear()
+            self._show_last_run(run_dir, error)
 
     def _ranked_spec(self, key: str) -> tuple[str, Callable[[dict[str, Any]], dict[str, Any]],
                                               str, str]:
