@@ -499,14 +499,6 @@ def test_new_search_settings_invalidate_search_result(tmp_path):
         assert view.current_run_dir is not None
         edit()
         assert view.current_run_dir is None
-    # Search-only settings do not invalidate a Gene KO result.
-    view.set_target_rows([("but",)])
-    view.load_summary({"top_ranked": [], "strategy": "x"}, run_dir=tmp_path,
-                      workflow_kind="gene_ko", executed_request=view.request_fields("gene_ko"))
-    view.solver_threads_spin.setValue(5)
-    view.medium_mode_combo.setCurrentIndex(0)
-    view.allow_unknown_medium_check.setChecked(False)
-    assert view.current_run_dir == tmp_path.resolve()
     view.close()
 
 

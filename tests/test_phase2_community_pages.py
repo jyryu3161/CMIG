@@ -92,6 +92,35 @@ def test_ranked_result_lands_on_its_own_page(window, tmp_path: Path) -> None:
     assert w.search_view.results_panel.table.rowCount() == 0, "Search keeps its own result"
 
 
+def test_edit_clears_a_ranked_result_but_a_same_choice_keeps_it(window, tmp_path: Path) -> None:
+    w, _calls = window
+    ko = w.gene_ko_page
+    payload = {"target": "but", "ko_level": "gene", "warnings": [],
+               "top_ranked": [{"member": "a", "gene": "g1", "score": 1.0, "target_flux": 2.0,
+                               "community_growth": 0.3, "evaluation_status": "optimal"}]}
+    w._show_ranked("gene_ko", payload, tmp_path, ko.request_fields("gene_ko"))
+    assert ko.results.has_results()
+    ko.target_input.setText("ac")
+    assert not ko.results.has_results()
+    assert "Inputs changed" in ko.status.text()
+
+    ratio = w.ratio_impact_page
+    ratio.model_picker.set_selected(["b", "c"])
+    ratio.member_combo.setCurrentText("b")
+    ratio_payload = {"status": "ok", "target_member": "b", "target": "but",
+                     "rows": [{"target_abundance": 0.2, "target_influence_share": 0.7,
+                               "target_member_exchange": 1.2, "community_growth": 0.5,
+                               "status": "optimal"}]}
+    w._show_ranked("ratio_impact", ratio_payload, tmp_path,
+                   ratio.request_fields("abundance_impact"))
+    assert ratio.results.has_results()
+    ratio.model_picker.set_selected(["b", "c"])
+    w._refresh_pickers()  # a picker rebuild that keeps the same choice
+    assert ratio.model_picker.selected_ids() == ["b", "c"]
+    assert ratio.results.has_results()
+    assert ratio.results_panel.table.rowCount() == 1
+
+
 def test_search_advanced_counts_changes(window) -> None:
     w, _calls = window
     page = w.search_view
