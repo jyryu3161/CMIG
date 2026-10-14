@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QPalette
@@ -32,6 +32,9 @@ from PySide6.QtWidgets import (
 )
 
 from cmig.gui.pickers import MediumPicker, ModelPicker
+
+if TYPE_CHECKING:
+    from cmig.gui.search_results import SearchResultsPanel
 
 
 def hide_row_numbers(table: QTableWidget) -> QTableWidget:
@@ -352,3 +355,15 @@ class AnalysisPage(QWidget):
     def clear_banner(self) -> None:
         self.banner.clear()
         self.banner.setVisible(False)
+
+
+class RankedPage(Protocol):
+    """A page whose results are a ranked table: Search, Gene Knockout, Strain Growth, Ratio
+    Impact and Host Combination Search."""
+
+    run_btn: QPushButton
+    status: QLabel
+    results: ResultsArea
+    results_panel: SearchResultsPanel
+
+    def request_fields(self, kind: str) -> dict[str, str]: ...

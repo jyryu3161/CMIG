@@ -75,7 +75,7 @@ from cmig.gui.agora2_dialog import (
     Agora2Strain,
     download_estimate,
 )
-from cmig.gui.analysis_page import hide_row_numbers
+from cmig.gui.analysis_page import AnalysisPage, RankedPage, hide_row_numbers
 from cmig.gui.builder import (
     WEIGHTED_METRICS,
     CommunityBuilderView,
@@ -93,7 +93,7 @@ from cmig.gui.editors import (
 )
 from cmig.gui.find import FindField, SearchTable, build_table
 from cmig.gui.graph_view import GateBadge, InteractionGraphView
-from cmig.gui.host_view import HostImpactView
+from cmig.gui.host_view import HostImpactView, HostInputWidgets
 from cmig.gui.inspector import InspectorPanel
 from cmig.gui.model_browser import ModelBrowser
 from cmig.gui.pages.gene_ko import GeneKoPage
@@ -1268,7 +1268,7 @@ class CmigMainWindow(QMainWindow):
         self.community_result_page = QTabWidget()
         self.community_result_page.addTab(self.profile_view, "Profile")
         self.community_result_page.addTab(self.graph_tab, "Graph")
-        self.analysis_pages: dict[str, QWidget] = {
+        self.analysis_pages: dict[str, AnalysisPage] = {
             "search": self.search_view,
             "gene_ko": self.gene_ko_page,
             "strain_growth": self.strain_growth_page,
@@ -1733,11 +1733,11 @@ class CmigMainWindow(QMainWindow):
         page = self.analysis_pages[host_key]
         previous = self._community_result_host
         if previous is not None and previous != host_key:
-            self.analysis_pages[previous].results.show_empty()  # type: ignore[attr-defined]
+            self.analysis_pages[previous].results.show_empty()
         if self._community_result_host != host_key:
-            page.results.add(self.community_result_page, 1)  # type: ignore[attr-defined]
+            page.results.add(self.community_result_page, 1)
             self._community_result_host = host_key
-        page.results.show_results()  # type: ignore[attr-defined]
+        page.results.show_results()
         self.community_result_page.setCurrentWidget(self.profile_view)
         return page
 
@@ -1758,7 +1758,7 @@ class CmigMainWindow(QMainWindow):
     def _empty_community_result_on(self, host_key: str) -> None:
         """A failed run on `host_key` must not leave that page's previous result on show."""
         if self._community_result_host == host_key:
-            self.analysis_pages[host_key].results.show_empty()  # type: ignore[attr-defined]
+            self.analysis_pages[host_key].results.show_empty()
 
     def _clear_community_result(self) -> None:
         """Drop the shown community run (profile, graph, badge, manifest) and empty its page."""
@@ -1770,7 +1770,7 @@ class CmigMainWindow(QMainWindow):
         self.profile_view.load_targets(None)
         host = self._community_result_host
         if host is not None:
-            self.analysis_pages[host].results.show_empty()  # type: ignore[attr-defined]
+            self.analysis_pages[host].results.show_empty()
 
     def _show_models_overview(self) -> None:
         project = self.session.project
@@ -2302,7 +2302,7 @@ class CmigMainWindow(QMainWindow):
         if notes:
             self.statusBar().showMessage("; ".join(notes) + ".", 15000)
 
-    def _host_model_changed(self, page: Any) -> None:
+    def _host_model_changed(self, page: HostInputWidgets) -> None:
         """A newly chosen host model is unticked from Microbes; re-ticking it is refused at run."""
         if self._refreshing_pickers:
             return
@@ -2369,16 +2369,18 @@ class CmigMainWindow(QMainWindow):
         from cmig import __version__
         from cmig.gui.run_restore import request_models_and_media
 
-        page = self.model_browser if analysis == "check_growth" else self.analysis_pages[analysis]
-        values = page.snapshot()  # type: ignore[attr-defined]
-        page.clear_banner()  # type: ignore[attr-defined]
+        page: AnalysisPage | ModelBrowser = (
+            self.model_browser if analysis == "check_growth" else self.analysis_pages[analysis]
+        )
+        values = page.snapshot()
+        page.clear_banner()
         models, media = request_models_and_media(values)
         if analysis == "check_growth" and isinstance(values.get("model"), str):
             models = [values["model"]]  # the browser names one model, not a picker list
         proj.write_run_request(run_dir, analysis, values, models=models, media=media,
                                cmig_version=__version__)
 
-    def _page_key(self, page: Any) -> str:
+    def _page_key(self, page: QWidget) -> str:
         return next(key for key, shown in self.analysis_pages.items() if shown is page)
 
     @staticmethod
@@ -3152,7 +3154,7 @@ class CmigMainWindow(QMainWindow):
             return
         assert key is not None
         self.show_analysis(key, select=False)  # the opened run stays selected in RUNS
-        notes = page.restore(record["values"]) if record is not None else []  # type: ignore[attr-defined]
+        notes = page.restore(record["values"]) if record is not None else []
         self._empty_run_result(key)  # inputs changed above; nothing older stays on show
         inputs_known = record is not None and not notes
         if not self._load_run_into_page(key, run_dir, inputs_known=inputs_known):
@@ -3169,7 +3171,7 @@ class CmigMainWindow(QMainWindow):
                 else:
                     reason = "it has no result this page can show"
                 status.setText(f"No result shown for {run_dir.name}: {reason}")
-        page.show_banner(banner_text(run_dir.name, record, problem, notes))  # type: ignore[attr-defined]
+        page.show_banner(banner_text(run_dir.name, record, problem, notes))
         self._show_run_in_inspector(run_dir)
 
     def _open_check_growth_run(self, run_dir: Path, record: dict[str, Any] | None) -> bool:
@@ -3194,13 +3196,12 @@ class CmigMainWindow(QMainWindow):
         """The status line under `key`'s results (Sweep's frame has no results area)."""
         if key == "sweep":
             return self.sweep_view.status
-        return self.analysis_pages[key].status  # type: ignore[attr-defined,no-any-return]
+        return self.analysis_pages[key].status
 
     def _empty_run_result(self, key: str, *, keep_status: bool = False) -> None:
         """Empty `key`'s shown result (and, unless `keep_status`, its status line)."""
-        page = self.analysis_pages[key]
         if key in ("search", "gene_ko", "strain_growth", "ratio_impact", "host_search"):
-            self._clear_ranked(page)
+            self._clear_ranked(self._ranked_page(key))
             if key == "search":
                 self.current_search_dir = None
         elif key in ("community", "medium"):
@@ -3216,7 +3217,7 @@ class CmigMainWindow(QMainWindow):
             self.host_view.clear_result()
             self.current_host_microbe_dir = None
         elif key in ("dfba", "spatial"):
-            page._clear_dynamics("")  # type: ignore[attr-defined]
+            (self.dynamics_view if key == "dfba" else self.spatial_page)._clear_dynamics("")
         elif key == "sweep":
             self.sweep_view.load_results([])
         if not keep_status:
@@ -3253,24 +3254,24 @@ class CmigMainWindow(QMainWindow):
         shown as the run's executed request.
         """
         summary_name, _adapter, kind, _label = self._ranked_spec(key)
-        page = self.analysis_pages[key]
+        page = self._ranked_page(key)
         if self._inspect_gui_run(run_dir) is None:
             self._clear_ranked(page)
-            page.status.setText(f"Readback invalid/unreadable: {run_dir}")  # type: ignore[attr-defined]
+            page.status.setText(f"Readback invalid/unreadable: {run_dir}")
             return False
         try:
             payload = json.loads((run_dir / summary_name).read_text())
             if not isinstance(payload, dict):
                 raise ValueError(f"{summary_name} is not a JSON object")
-            requested = page.request_fields(kind) if inputs_known else None  # type: ignore[attr-defined]
+            requested = page.request_fields(kind) if inputs_known else None
             self._show_ranked(key, payload, run_dir, requested)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             self._reject_gui_summary(run_dir, exc)
             self._clear_ranked(page)
-            page.status.setText(f"Readback invalid/unreadable: {exc}")  # type: ignore[attr-defined]
+            page.status.setText(f"Readback invalid/unreadable: {exc}")
             return False
         if not inputs_known:
-            status = page.status  # type: ignore[attr-defined]
+            status = page.status
             status.setText(
                 f"Inputs for {run_dir.name} are not known — labels show only what the run "
                 f"recorded. {status.text()}"
@@ -4046,7 +4047,7 @@ class CmigMainWindow(QMainWindow):
         shutil.copyfile(src, target)
         self.host_view.run_status.setText(f"Exported figure: {target}")
 
-    def _export_ranked_figure(self, page: Any) -> None:
+    def _export_ranked_figure(self, page: RankedPage) -> None:
         # Same rule as the Host tab: export the run the table is displaying, and nothing else.
         # There is deliberately NO fallback to `current_search_dir`: invalidation clears
         # `current_run_dir` and tells the user the result was discarded, and a fallback would
@@ -4707,7 +4708,7 @@ class CmigMainWindow(QMainWindow):
         return jid
 
     def _host_inputs(
-        self, page: Any, kind: str, request: dict[str, Any], biomass_error: str
+        self, page: AnalysisPage, kind: str, request: dict[str, Any], biomass_error: str
     ) -> tuple[Path, Path | None, str, str | None, str | None] | None:
         """Check the Host page's choices and claim a run: (out, taxonomy, host, media), or
         None after the reason is shown on the page."""
@@ -4884,7 +4885,7 @@ class CmigMainWindow(QMainWindow):
         return jid
 
     def _page_run_inputs(
-        self, page: Any, kind: str, medium_ref: str
+        self, page: GeneKoPage | StrainGrowthPage | RatioImpactPage, kind: str, medium_ref: str
     ) -> tuple[Path, Path | None, str | None] | None:
         """Claim a run for a page with a model picker: (out, taxonomy, medium file), or None
         after the reason is shown on the page."""
@@ -6228,6 +6229,14 @@ class CmigMainWindow(QMainWindow):
             self._just_finished.clear()
             self._show_last_run(run_dir, error)
 
+    def _ranked_page(self, key: str) -> RankedPage:
+        pages: dict[str, RankedPage] = {
+            "search": self.search_view, "gene_ko": self.gene_ko_page,
+            "strain_growth": self.strain_growth_page, "ratio_impact": self.ratio_impact_page,
+            "host_search": self.host_search_page,
+        }
+        return pages[key]
+
     def _ranked_spec(self, key: str) -> tuple[str, Callable[[dict[str, Any]], dict[str, Any]],
                                               str, str]:
         """(summary file, adapter to the ranked table, workflow kind, status label key)."""
@@ -6251,8 +6260,8 @@ class CmigMainWindow(QMainWindow):
         """Show a ranked result; `requested` None = the run's inputs are not known, so nothing
         is labelled as executed (the screen's inputs may belong to another run)."""
         _file, adapter, kind, _label = self._ranked_spec(key)
-        page = self.analysis_pages[key]
-        panel = page.results_panel  # type: ignore[attr-defined]
+        page = self._ranked_page(key)
+        panel = page.results_panel
         panel.figure_mode_combo.setCurrentText("Ranking")
         panel.load_summary(
             _with_search_conditions(adapter(payload), payload),
@@ -6264,23 +6273,23 @@ class CmigMainWindow(QMainWindow):
             executed_request=requested,
             source_summary=payload,
         )
-        self._show_page(page)
+        self._show_page(self.analysis_pages[key])
 
     def _finish_ranked_jobs(
         self, key: str, jobs: dict[str, tuple[Path, dict[str, str]]], failure_label: str
     ) -> None:
-        page = self.analysis_pages[key]
+        page = self._ranked_page(key)
         for jid, (out_dir, requested) in list(jobs.items()):
             job = self.runner.poll(jid)
             if job.status in _ENDED and self._from_closed_project(out_dir):
                 jobs.pop(jid, None)
-                page.run_btn.setEnabled(True)  # type: ignore[attr-defined]
+                page.run_btn.setEnabled(True)
             elif job.status is JobStatus.DONE and isinstance(job.result, dict):
                 jobs.pop(jid, None)
-                page.run_btn.setEnabled(True)  # type: ignore[attr-defined]
+                page.run_btn.setEnabled(True)
                 if self._inspect_gui_run(out_dir) is None:
                     self._clear_ranked(page)
-                    page.status.setText(  # type: ignore[attr-defined]
+                    page.status.setText(
                         _UNREADABLE_RESULT.format(kind=failure_label, out_dir=out_dir)
                     )
                     continue
@@ -6292,15 +6301,15 @@ class CmigMainWindow(QMainWindow):
                                   job_id=jid, out_dir=out_dir)
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 jobs.pop(jid, None)
-                page.run_btn.setEnabled(True)  # type: ignore[attr-defined]
+                page.run_btn.setEnabled(True)
                 # A failed rerun must not leave the previous ranking drawn under its message.
                 self._clear_ranked(page)
-                page.status.setText(  # type: ignore[attr-defined]
+                page.status.setText(
                     f"{failure_label} {job.status.value}: {job.error or jid}"
                 )
 
     @staticmethod
-    def _clear_ranked(page: Any) -> None:
+    def _clear_ranked(page: RankedPage) -> None:
         """Drop a ranked page's shown result and empty its results area."""
         page.results_panel.invalidate_results()
         page.results.show_empty()
