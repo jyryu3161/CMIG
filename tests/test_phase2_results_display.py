@@ -136,10 +136,14 @@ def test_closing_the_project_clears_the_last_run(tmp_path: Path) -> None:
     assert w.open_project(tmp_path / "p")
     run = tmp_path / "p" / "runs" / "strain-growth-20260101-000000"
     run.mkdir(parents=True)
+    # no run yet: no button (an empty one draws as a bare box in the native status bar)
+    assert w.last_run_button.isHidden()
     w._show_last_run(run, "boom")
     assert w.last_run_button.text()
+    assert not w.last_run_button.isHidden()
     w.close_project()
     assert w.last_run_button.text() == ""
+    assert w.last_run_button.isHidden()
     assert w._last_run_dir is None
 
 

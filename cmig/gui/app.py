@@ -1305,6 +1305,7 @@ class CmigMainWindow(QMainWindow):
         self.last_run_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.last_run_button.clicked.connect(self._open_last_run)
         self.statusBar().addPermanentWidget(self.last_run_button)
+        self.last_run_button.setVisible(False)  # empty, it draws as a bare box on macOS
         self._last_run_dir: Path | None = None
         #: run folders whose job ended since the last poll: (folder, error text)
         self._just_finished: list[tuple[Path, str]] = []
@@ -5653,6 +5654,7 @@ class CmigMainWindow(QMainWindow):
         self.last_run_button.setText(self.last_run_button.fontMetrics().elidedText(
             " · ".join(parts), Qt.TextElideMode.ElideRight, 640))
         self.last_run_button.setToolTip("\n".join(tip))
+        self.last_run_button.setVisible(True)
         self._last_run_dir = entry.path
 
     @staticmethod
@@ -5675,6 +5677,7 @@ class CmigMainWindow(QMainWindow):
         self._just_finished.clear()
         self.last_run_button.setText("")
         self.last_run_button.setToolTip("")
+        self.last_run_button.setVisible(False)
 
     def _poll_completed_jobs(self) -> None:
         # A readback hash runs in a nested event loop (`_run_off_thread`), which lets this
