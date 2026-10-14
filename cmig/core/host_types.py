@@ -531,6 +531,9 @@ class BiggHostMicrobeResult:
     objective_warning: str | None = None
     objective_reactions: list[str] = field(default_factory=list)
     unapplied_medium_exchanges: tuple[str, ...] = ()
+    #: Microbial medium ids another model of the selected pool can take up but no member of this
+    #: community can (pool-scoped medium rule): dropped with the LP unchanged, not a degradation.
+    medium_not_applicable: tuple[str, ...] = ()
 
 
 def _met_from_host_exchange(exchange_id: str) -> str:

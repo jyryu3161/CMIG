@@ -16,7 +16,7 @@ from cmig.core.search_execution import SearchControl
 from cmig.core.search_profile import timed
 
 if TYPE_CHECKING:
-    from cmig.core.medium_spec import MediumSpec
+    from cmig.core.medium_spec import MediumSpec, PoolMediumCoverage
     from cmig.core.search_product import MultiTargetConfig, SearchConfig
 
 _CONTROL: ContextVar[SearchControl | None] = ContextVar("cmig_search_control", default=None)
@@ -42,10 +42,14 @@ class SearchRequest:
     medium: MediumSpec | None = None
     strict_medium: bool = True
     exact_medium: bool | None = None
+    #: The selected pool's medium coverage. Filled by :meth:`SearchService.run` from the pool
+    #: models before any candidate is evaluated; not part of the request identity (it is a
+    #: function of the models and the medium, which are).
+    medium_pool: PoolMediumCoverage | None = None
 
 
 def search_identity(request: SearchRequest) -> dict[str, Any]:
-    from cmig.core.medium_spec import requested_medium_application_mode
+    from cmig.core.medium_spec import MEDIUM_POLICY, requested_medium_application_mode
     from cmig.core.search_ga import GA_POLICY_VERSION
     from cmig.io.solve_output import runtime_versions, taxonomy_model_checksum
 
@@ -66,6 +70,9 @@ def search_identity(request: SearchRequest) -> dict[str, Any]:
             has_custom_medium=request.medium is not None
         ),
         "strict_medium": request.strict_medium,
+        # Round 11: candidates the pool-scoped medium rule evaluates were refused under v2, so a
+        # checkpoint written under another medium policy must not be resumed into this one.
+        "medium_policy": MEDIUM_POLICY,
         "versions": runtime_versions(),
     }
     if isinstance(request.config, MultiTargetConfig) and request.config.metric == "pareto":
@@ -105,7 +112,16 @@ class SearchService:
             context["solver_threads"] = control.solver_threads
             context["solve_timeout"] = control.solve_timeout
             control.bind(context)
-            self.preflight(request, control=control)
+            coverage = self.preflight(request, control=control)
+        else:
+            coverage = self._pool_coverage(request)
+        if coverage is not None:
+            # Pool level: an id no pool model can take up is an input error before any
+            # candidate is evaluated (unless --allow-unknown-medium); candidate level: ids
+            # other pool models have are "not applicable" to a candidate, not a refusal.
+            if request.strict_medium:
+                coverage.require_known()
+            request = replace(request, medium_pool=coverage)
         selected: Any = (
             search_model_pool_multi
             if isinstance(request.config, MultiTargetConfig)
@@ -120,6 +136,7 @@ class SearchService:
             request.config,
             medium_spec=request.medium,
             strict_medium=request.strict_medium,
+            medium_pool=request.medium_pool,
             **({"control": control} if control is not None else {}),
         )
         if request.config.validation_top:
@@ -164,8 +181,22 @@ class SearchService:
         )
 
     @staticmethod
-    def preflight(request: SearchRequest, *, control: SearchControl | None = None) -> None:
-        """Probe a solver once; individual metabolic infeasibility stays per-candidate."""
+    def _pool_coverage(request: SearchRequest) -> PoolMediumCoverage | None:
+        if request.medium is None:
+            return None
+        from cmig.core.medium_spec import pool_medium_coverage_from_taxonomy
+
+        return pool_medium_coverage_from_taxonomy(request.taxonomy, request.medium)
+
+    @staticmethod
+    def preflight(
+        request: SearchRequest, *, control: SearchControl | None = None
+    ) -> PoolMediumCoverage | None:
+        """Probe a solver once; individual metabolic infeasibility stays per-candidate.
+
+        Returns the pool's medium coverage (``None`` without a medium), read from the models
+        this preflight loads anyway.
+        """
         from cmig.core.engine import _require_allowed_solver
         from cmig.core.single_model import SingleModelUnavailableError, _require_lp
         from cmig.io.model_import import ModelImportError, load_cobra_model
@@ -186,13 +217,23 @@ class SearchService:
                 raise ValueError(f"search solver preflight failed: {error}") from error
         # Missing or malformed source files affect every containing combination.
         # Check them once without discarding non-producers or non-viable monocultures.
+        loaded: dict[str, Any] = {}
         for path in dict.fromkeys(str(path) for path in request.taxonomy["file"]):
             if control is not None:
                 control.check()
             try:
-                load_cobra_model(path)
+                loaded[path] = load_cobra_model(path)
             except ModelImportError as error:
                 raise ValueError(f"search model preflight failed: {error}") from error
+        if request.medium is None:
+            return None
+        from cmig.core.medium_spec import pool_medium_coverage
+
+        return pool_medium_coverage(
+            {str(row["id"]): loaded[str(row["file"])]
+             for row in request.taxonomy.to_dict("records")},
+            request.medium,
+        )
 
 
 _WORKER_ENGINE: Any = None
@@ -255,6 +296,7 @@ def _evaluate_worker(job: tuple[Any, ...]) -> Any:
             strict_medium=request.strict_medium,
             growth_policy=config.growth_policy,
             medium_notes=notes,
+            medium_pool=request.medium_pool,
         )
         capability = known_capability
         if phase == "capability" or (config.metric == "pareto" and capability is None):
@@ -300,6 +342,7 @@ def _evaluate_worker(job: tuple[Any, ...]) -> Any:
         medium_spec=request.medium,
         strict_medium=request.strict_medium,
         growth_policy=request.config.growth_policy,
+        medium_pool=request.medium_pool,
     )
 
 

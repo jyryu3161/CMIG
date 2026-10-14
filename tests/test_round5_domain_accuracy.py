@@ -873,7 +873,8 @@ def test_medium_policy_marker_is_recorded_but_never_hashed():
         WORKFLOW_HASH_COMPONENTS,
     )
 
-    assert MEDIUM_POLICY == "exchange_reactions_by_metabolite_v2"
+    # v2 (round 5) -> pool_scoped_v3 (round 11, pool workflows): see test_pool_medium_scope.py
+    assert MEDIUM_POLICY == "exchange_reactions_by_metabolite_pool_scoped_v3"
     # It must not be smuggled into either hash contract.
     assert "medium_policy" not in set(RUN_HASH_COMPONENTS)
     assert "medium_policy" not in WORKFLOW_COMPONENT_VOCABULARY

@@ -476,10 +476,11 @@ def test_gene_ko_search_applies_the_requested_medium_to_every_arm(tmp_path, monk
     seen: list[dict[str, object]] = []
     original = search_product.search_model_pool
 
-    def _spy(engine, taxonomy, config, *, medium_spec=None, strict_medium=True):
+    def _spy(engine, taxonomy, config, *, medium_spec=None, strict_medium=True, medium_pool=None):
         seen.append({"medium_spec": medium_spec, "strict_medium": strict_medium})
         return original(
-            engine, taxonomy, config, medium_spec=medium_spec, strict_medium=strict_medium
+            engine, taxonomy, config, medium_spec=medium_spec, strict_medium=strict_medium,
+            medium_pool=medium_pool,
         )
 
     monkeypatch.setattr(search_product, "search_model_pool", _spy)

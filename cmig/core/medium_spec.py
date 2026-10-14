@@ -29,7 +29,14 @@ _DECIMALS = 6
 # bumping a hash component (`cmig_core_version` is frozen), so it is stamped into the manifest's
 # **non-hashed** `provenance` block instead: enough to tell the two eras apart mechanically,
 # without touching the frozen contract. See the CHANGELOG entry.
-MEDIUM_POLICY = "exchange_reactions_by_metabolite_v2"   # was: open_uptakes_exact_key_v1
+#
+# Round 11 (v3): in workflows that evaluate sub-communities of a selected pool, a medium id some
+# pool model can take up but this candidate cannot is no longer a per-candidate refusal; it is
+# recorded as `medium_not_applicable` (the LP is identical without it — see the pool-scoped
+# section below). Candidates the v2 rule refused now have answers under an unchanged
+# `run_hash`; numbers v2 did produce are unchanged.
+MEDIUM_POLICY = "exchange_reactions_by_metabolite_pool_scoped_v3"
+# was: exchange_reactions_by_metabolite_v2 (round 5), open_uptakes_exact_key_v1 (before)
 
 # Round 6 (track B, instances 1 and 3): a medium is applied in exactly one of two modes, and they
 # give **different answers on identical input**, so which one ran has to travel with the result.
@@ -306,6 +313,24 @@ class MediumTranslation:
         return record
 
 
+def _exchange_candidates(model: object) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """metabolite → this model's exchange ids, and exchange id → metabolite.
+
+    The single keying both :func:`translate_medium_for_model` and
+    :func:`medium_ids_with_counterpart` use, so "has a counterpart" means the same thing at the
+    pool level and at the community level.
+    """
+    from cmig.core.exchange import exchange_identity
+
+    candidates: dict[str, list[str]] = {}
+    by_id: dict[str, str] = {}
+    for reaction in getattr(model, "exchanges", []):
+        identity = exchange_identity(reaction)
+        candidates.setdefault(identity.metabolite, []).append(identity.reaction_id)
+        by_id[identity.reaction_id] = identity.metabolite
+    return candidates, by_id
+
+
 def translate_medium_for_model(model: object, spec: MediumSpec) -> MediumTranslation:
     """Re-key ``spec`` onto the exchange ids ``model`` actually exposes, matching on metabolite.
 
@@ -325,14 +350,7 @@ def translate_medium_for_model(model: object, spec: MediumSpec) -> MediumTransla
     limits are a contradictory input and are refused — never silently resolved in favour of one.
     """
     spec.validate()
-    from cmig.core.exchange import exchange_identity
-
-    candidates: dict[str, list[str]] = {}
-    by_id: dict[str, str] = {}
-    for reaction in getattr(model, "exchanges", []):
-        identity = exchange_identity(reaction)
-        candidates.setdefault(identity.metabolite, []).append(identity.reaction_id)
-        by_id[identity.reaction_id] = identity.metabolite
+    candidates, by_id = _exchange_candidates(model)
     mapping: dict[str, str] = {}
     requested: dict[str, dict[str, float]] = {}
     unmatched: list[str] = []
@@ -378,6 +396,113 @@ def translate_medium_for_model(model: object, spec: MediumSpec) -> MediumTransla
         mapping=mapping,
         unmatched=tuple(sorted(unmatched)),
     )
+
+
+# ── Pool-scoped medium (round 11) ──────────────────────────────────────────────────────────────
+# Workflows that evaluate sub-communities of a selected pool (Combination Search, Host
+# Combination Search, …) used to apply the strict "every medium id must have a counterpart"
+# rule per candidate. The shipped gut overlays are written for the whole bundled pool, so every
+# sub-community lacked some ids and every candidate failed. MICOM's own workflows filter the
+# medium to the community's exchanges before applying it (micom 0.39 `workflows/grow.py` and
+# `workflows/tradeoff.py`): an id with no exchange in the community cannot enter any member, so
+# dropping it leaves the LP identical. The namespace-safety purpose of the strict rule is kept
+# at the pool level instead: an id no pool model can take up is still an input error.
+MEDIUM_POOL_UNKNOWN = (
+    "medium exchange has no counterpart in any model of the selected pool (matched on metabolite)"
+)
+MEDIUM_POOL_UNKNOWN_HINT = (
+    "allow unknown medium ids (--allow-unknown-medium) to drop them; the dropped ids are then "
+    "listed as not applied"
+)
+#: Record name for ids a candidate cannot take up but another pool model can. Not
+#: `medium_unapplied` (nothing requested was withheld from a member that could use it).
+MEDIUM_NOT_APPLICABLE = "medium_not_applicable"
+
+
+def medium_ids_with_counterpart(model: object, spec: MediumSpec) -> frozenset[str]:
+    """The requested ids ``model`` has an exchange for, keyed exactly as the translation keys."""
+    candidates, by_id = _exchange_candidates(model)
+    return frozenset(
+        str(source)
+        for source in spec.uptake
+        if by_id.get(str(source), exchange_metabolite(str(source))) in candidates
+    )
+
+
+@dataclass(frozen=True)
+class PoolMediumCoverage:
+    """Which requested medium ids each model of a selected pool can take up."""
+
+    by_model: dict[str, frozenset[str]]
+    requested: tuple[str, ...]
+
+    @property
+    def known(self) -> frozenset[str]:
+        return frozenset().union(*self.by_model.values()) if self.by_model else frozenset()
+
+    @property
+    def unknown(self) -> tuple[str, ...]:
+        known = self.known
+        return tuple(sorted(source for source in self.requested if source not in known))
+
+    def require_known(self) -> None:
+        """Refuse ids no pool model can take up — the namespace-safety half of the rule."""
+        if self.unknown:
+            raise ValueError(
+                f"{MEDIUM_POOL_UNKNOWN}: {list(self.unknown)}. {MEDIUM_POOL_UNKNOWN_HINT}"
+            )
+
+    def split(
+        self, unmatched: Any, members: Any
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Split one candidate community's unmatched ids into (not applicable, unknown).
+
+        Refuses an id that one of the candidate's own members can take up: that would mean the
+        community dropped an exchange its member has, and calling it "not applicable" would hide
+        a medium that silently did not apply.
+        """
+        known = self.known
+        own: dict[str, str] = {}
+        for member in sorted(str(m) for m in members):
+            for source in self.by_model.get(member, frozenset()):
+                own.setdefault(source, member)
+        not_applicable: list[str] = []
+        unknown: list[str] = []
+        for source in sorted(str(s) for s in unmatched):
+            if source in own:
+                raise ValueError(
+                    f"medium exchange {source} has a counterpart in candidate member "
+                    f"{own[source]} but not in the community built from it; refusing to treat "
+                    "it as not applicable"
+                )
+            (not_applicable if source in known else unknown).append(source)
+        return tuple(not_applicable), tuple(unknown)
+
+
+def pool_medium_coverage(models: dict[str, Any], spec: MediumSpec) -> PoolMediumCoverage:
+    """Coverage of ``spec`` over a pool given as ``{member id: cobra model}``."""
+    spec.validate()
+    return PoolMediumCoverage(
+        by_model={
+            str(member): medium_ids_with_counterpart(model, spec)
+            for member, model in sorted(models.items())
+        },
+        requested=tuple(sorted(str(source) for source in spec.uptake)),
+    )
+
+
+def pool_medium_coverage_from_taxonomy(taxonomy: Any, spec: MediumSpec) -> PoolMediumCoverage:
+    """Coverage of ``spec`` over the models a taxonomy (``id``, ``file``) names."""
+    from cmig.io.model_import import load_cobra_model
+
+    loaded: dict[str, Any] = {}
+    models: dict[str, Any] = {}
+    for record in taxonomy.to_dict("records"):
+        path = str(record["file"])
+        if path not in loaded:
+            loaded[path] = load_cobra_model(path)
+        models[str(record["id"])] = loaded[path]
+    return pool_medium_coverage(models, spec)
 
 
 def effective_medium_by_metabolite(model: object) -> dict[str, float]:

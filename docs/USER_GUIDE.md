@@ -1556,8 +1556,11 @@ per metabolite, so an exchange that is currently closed **does get opened**.
 > uv run cmig inspect-run --run-dir runs/<name> --format json   # provenance.medium_policy
 > ```
 >
-> A trustworthy run records `exchange_reactions_by_metabolite_v2`. Absent, or
-> `open_uptakes_exact_key_v1`, means re-run.
+> A trustworthy run records `exchange_reactions_by_metabolite_pool_scoped_v3` (or
+> the earlier `exchange_reactions_by_metabolite_v2`). Absent, or
+> `open_uptakes_exact_key_v1`, means re-run. v3 changed only pool workflows (see
+> below): sub-communities v2 refused for a medium row only other pool models can
+> take up now have answers; every number v2 produced is unchanged.
 
 Two further rules:
 
@@ -1571,6 +1574,23 @@ Two further rules:
   a `medium_unapplied` diagnostic naming the dropped ids, and a `medium_checksum`
   still computed over the **full requested** medium. Use it to diagnose a medium
   file, not to produce a reported result.
+- **Pool workflows check the medium against the pool, not each candidate.**
+  `search` (single and multi-target), `host-search-bigg`, `gene-ko-search` (the
+  `--members` consortium drawn from the taxonomy), `sweep --member-sets` (without
+  `--namespace-decisions`) and `medium-gap` over a `--taxonomy`/`--model-dir`
+  evaluate sub-communities or single members of the models you selected. A medium
+  written for the whole pool — the `gut_overlay_*` presets are — names nutrients
+  that some candidates cannot take up. Such an id is **not applicable** to that
+  candidate: it has no exchange in the community, so it cannot enter any member
+  and dropping it leaves the LP identical (MICOM's own `grow` and `tradeoff`
+  workflows filter the medium to the community's exchanges the same way). It is
+  listed per candidate as `medium_not_applicable` (search summaries and
+  evaluations, host-search rows, the gene-KO summary, the sweep condition's solve
+  provenance, the `medium-gap` row) and does not degrade the run or change the
+  candidate's status. An id that **no** model of the selected pool can take up is
+  still an input error (exit `2`, before any candidate is evaluated);
+  `--allow-unknown-medium` keeps its meaning for those ids only. (`sweep` keeps
+  recording such an id as a failed condition rather than exiting.)
 
 ## Solver Provenance
 

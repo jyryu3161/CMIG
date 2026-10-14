@@ -28,6 +28,7 @@
 - 숙주 전달이 식별되지 않으면 점값은 `None`, 구간과 이유를 보존한다. `.get(target, 0.0)`류로 채우지 않는다.
 - `RUN_HASH_COMPONENTS`는 11개 고정, `compute_run_hash`가 유일한 solve hash 계산기다. `WORKFLOW_HASH_COMPONENTS`의 각 튜플은 `_EXPECTED_ARITY`와 개수가 같고 `workflow_kind`로 시작하며 `WORKFLOW_COMPONENT_VOCABULARY` 안의 이름만 쓴다(import 시 assert).
 - 결과 의미를 바꾸는 정책 수정은 `NON_HASHED_PROVENANCE_MARKERS`의 표식 값을 올린다. 탐색 의미 변경은 `SEARCH_POLICY_VERSION`을 올린다.
+- pool의 부분 커뮤니티를 평가하는 경로의 배지는 `PoolMediumCoverage`로 두 층에서 판정한다: pool 어느 모델에도 없는 id는 평가 전 입력 오류(`require_known`), 후보에만 없는 id는 `medium_not_applicable`(`split`, 후보 멤버가 가진 id면 오류). coverage 없이 부르면 후보마다 기존 strict 규칙이다.
 - 통계: 결정적 조건을 독립 반복으로 보지 않는다(replicate 열과 독립성 확인이 있을 때만 p-value). 분산 0·평균 상이의 효과 크기는 null + 진단.
 - pickle 금지.
 

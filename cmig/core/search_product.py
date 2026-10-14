@@ -60,6 +60,9 @@ class PoolRank:
     abundances: dict[str, float] = field(default_factory=dict)
     timings: dict[str, float] = field(default_factory=dict, compare=False)
     medium_note: str | None = None
+    #: Medium ids some model of the selected pool can take up but no member of this candidate
+    #: can: dropped for this candidate with the LP unchanged. Not a degradation.
+    medium_not_applicable: tuple[str, ...] = ()
 
     @property
     def robustness_width(self) -> float | None:
@@ -336,7 +339,6 @@ UNAPPLIED_MEDIUM_PREFIX = "requested medium exchanges not applied (no counterpar
 MERGED_MEDIUM_PREFIX = "medium was MERGED onto the model's default, not applied exactly"
 
 
-@timed("medium")
 def _apply_search_medium(
     community: Any,
     medium_spec: Any | None,
@@ -345,14 +347,52 @@ def _apply_search_medium(
     notes: set[str] | None = None,
 ) -> str | None:
     """Apply the requested medium to one consortium. Returns a diagnostic when it was not whole."""
-    if medium_spec is None:
-        return None
-    from cmig.core.medium_spec import MEDIUM_APPLICATION_MERGE, medium_application_report
+    return _apply_candidate_medium(
+        community, medium_spec, strict_medium=strict_medium, notes=notes
+    )[0]
 
-    translation = medium_application_report(community, medium_spec, strict=strict_medium)
+
+@timed("medium")
+def _apply_candidate_medium(
+    community: Any,
+    medium_spec: Any | None,
+    *,
+    strict_medium: bool,
+    notes: set[str] | None = None,
+    medium_pool: Any | None = None,
+    members: tuple[str, ...] = (),
+) -> tuple[str | None, tuple[str, ...]]:
+    """Apply the requested medium to one candidate: ``(diagnostic, not_applicable_ids)``.
+
+    With ``medium_pool`` (a :class:`cmig.core.medium_spec.PoolMediumCoverage` of the selected
+    pool), an id this community has no exchange for but some pool model has is *not applicable*
+    to the candidate: it cannot enter any member, so the LP is the same without it (MICOM's own
+    workflows filter the medium to ``com.exchanges`` for this reason). It is returned, never
+    refused and never reported as unapplied. Ids no pool model has keep the strict rule.
+    Without ``medium_pool`` every unmatched id is treated as unknown, as before.
+    """
+    if medium_spec is None:
+        return None, ()
+    from cmig.core.medium_spec import (
+        MEDIUM_APPLICATION_MERGE,
+        medium_application_report,
+        translate_medium_for_model,
+    )
+
+    unmatched = translate_medium_for_model(community, medium_spec).unmatched
+    if medium_pool is not None:
+        not_applicable, unknown = medium_pool.split(unmatched, members)
+    else:
+        not_applicable, unknown = (), tuple(unmatched)
+    if strict_medium and unknown:
+        raise ValueError(
+            "medium exchange has no counterpart in the target model "
+            f"(matched on metabolite): {list(unknown)}"
+        )
+    translation = medium_application_report(community, medium_spec, strict=False)
     parts: list[str] = []
-    if translation.unmatched:
-        parts.append(f"{UNAPPLIED_MEDIUM_PREFIX}: {sorted(translation.unmatched)}")
+    if unknown:
+        parts.append(f"{UNAPPLIED_MEDIUM_PREFIX}: {sorted(unknown)}")
     if (
         translation.application_mode == MEDIUM_APPLICATION_MERGE
         and translation.undeclared_suppliers
@@ -363,11 +403,11 @@ def _apply_search_medium(
             f"{list(translation.undeclared_suppliers[:6])}"
         )
     if not parts:
-        return None
+        return None, not_applicable
     note = "; ".join(parts)
     if notes is not None:
         notes.add(note)
-    return note
+    return note, not_applicable
 
 
 def _with_medium_note(diagnostic: str | None, note: str | None) -> str | None:
@@ -390,16 +430,19 @@ def _evaluate_members(
     robustness_fva: bool = False,
     medium_notes: set[str] | None = None,
     growth_policy: GrowthPolicy | None = None,
+    medium_pool: Any | None = None,
 ) -> PoolRank:
     sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
     medium_note: str | None = None
+    not_applicable: tuple[str, ...] = ()
     effective: tuple[str, ...] = ()
     try:
         community = engine.build_community(sub, cmig_solver=solver)
         effective = tuple(sorted(str(x) for x in getattr(community, "taxa", members)))
         actual_members(community, members)
-        medium_note = _apply_search_medium(
-            community, medium_spec, strict_medium=strict_medium, notes=medium_notes
+        medium_note, not_applicable = _apply_candidate_medium(
+            community, medium_spec, strict_medium=strict_medium, notes=medium_notes,
+            medium_pool=medium_pool, members=members,
         )
         result = target_max_solve(
             community,
@@ -445,6 +488,7 @@ def _evaluate_members(
             member_growth=getattr(result, "member_growth", {}),
             abundances=getattr(result, "abundances", {}),
             medium_note=medium_note,
+            medium_not_applicable=not_applicable,
         )
     except Exception as error:  # noqa: BLE001 - isolate one failed consortium
         return PoolRank(
@@ -457,6 +501,7 @@ def _evaluate_members(
             diagnostic=_with_medium_note(str(error), medium_note),
             effective_members=effective,
             medium_note=medium_note,
+            medium_not_applicable=not_applicable,
         )
 
 
@@ -473,17 +518,20 @@ def _add_robustness_fva(
     strict_medium: bool,
     medium_notes: set[str] | None = None,
     growth_policy: GrowthPolicy | None = None,
+    medium_pool: Any | None = None,
 ) -> PoolRank:
     """Attach FVA to one final ranked row without repeating the target-max solve."""
     sub = taxonomy[taxonomy["id"].astype(str).isin(row.members)].copy()
     try:
         community = engine.build_community(sub, cmig_solver=solver)
         actual_members(community, row.members)
-        _apply_search_medium(
+        _apply_candidate_medium(
             community,
             medium_spec,
             strict_medium=strict_medium,
             notes=medium_notes,
+            medium_pool=medium_pool,
+            members=row.members,
         )
         from cmig.core.search_advanced import robustness_fva as run_robustness_fva
 
@@ -555,14 +603,23 @@ def search_model_pool(
     strict_medium: bool = True,
     control: SearchControl | None = None,
     _batch_evaluate: Callable[[list[tuple[str, ...]]], list[PoolRank]] | None = None,
+    medium_pool: Any | None = None,
 ) -> PoolSearchResult:
-    """Rank model-pool combinations for a target metabolite."""
+    """Rank model-pool combinations for a target metabolite.
+
+    ``medium_pool`` is the selected pool's medium coverage
+    (:class:`cmig.core.medium_spec.PoolMediumCoverage`); with it, a medium id some pool model
+    has but a candidate lacks is recorded per candidate as not applicable instead of refusing
+    the candidate. Without it each candidate keeps the strict per-community rule.
+    """
     _validate_config(config)
     validate_taxonomy(taxonomy)
     if control is not None and control.workers > 1 and _batch_evaluate is None:
         from cmig.service.search_service import SearchRequest, search_workers
 
-        request = SearchRequest(taxonomy, config, medium_spec, strict_medium)
+        request = SearchRequest(
+            taxonomy, config, medium_spec, strict_medium, medium_pool=medium_pool
+        )
         with search_workers(request, control) as batch:
             return search_model_pool(
                 engine,
@@ -572,6 +629,7 @@ def search_model_pool(
                 strict_medium=strict_medium,
                 control=control,
                 _batch_evaluate=batch,
+                medium_pool=medium_pool,
             )
     if control is not None:
         from cmig.service.search_service import ConfiguredEngine
@@ -597,6 +655,7 @@ def search_model_pool(
             raw = dict(record)
             raw["members"] = genome
             raw["effective_members"] = tuple(raw.get("effective_members", ()))
+            raw["medium_not_applicable"] = tuple(raw.get("medium_not_applicable", ()))
             raw["score"] = -math.inf if raw["score"] is None else raw["score"]
             cache[genome] = PoolRank(**raw)
             note = cache[genome].medium_note
@@ -631,6 +690,7 @@ def search_model_pool(
                     # FVA is deliberately deferred until the final top-k is known.
                     robustness_fva=False,
                     medium_notes=medium_notes,
+                    medium_pool=medium_pool,
                     **cast(
                         dict[str, Any],
                         {"growth_policy": config.growth_policy}
@@ -748,6 +808,9 @@ def search_model_pool(
                         **stored,
                         "members": tuple(stored["members"]),
                         "effective_members": tuple(stored["effective_members"]),
+                        "medium_not_applicable": tuple(
+                            stored.get("medium_not_applicable", ())
+                        ),
                     }
                 )
                 robust_rows.append(restored)
@@ -765,6 +828,7 @@ def search_model_pool(
                 medium_spec=medium_spec,
                 strict_medium=strict_medium,
                 medium_notes=medium_notes,
+                medium_pool=medium_pool,
                 **cast(
                     dict[str, Any],
                     {"growth_policy": config.growth_policy}
@@ -889,6 +953,7 @@ class MultiTargetRank:
     abundances: dict[str, float] = field(default_factory=dict)
     timings: dict[str, float] = field(default_factory=dict, compare=False)
     sampling_status: str = "complete"
+    medium_not_applicable: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -936,6 +1001,9 @@ class _ComboEval:
     medium_note: str | None = None
     pareto_attempts: list[dict[str, Any]] = field(default_factory=list)
     sampling_status: str = "complete"
+    #: Medium ids some pool model can take up but no member of this candidate can (see
+    #: :attr:`PoolRank.medium_not_applicable`).
+    medium_not_applicable: tuple[str, ...] = ()
 
 
 def _append_pareto_attempt(
@@ -1114,6 +1182,7 @@ def rank_multi_target(
             abundances=e.abundances,
             timings=e.timings,
             sampling_status=e.sampling_status,
+            medium_not_applicable=e.medium_not_applicable,
         )
         for row, e in zip(rows, evals, strict=True)
     ]
@@ -1150,6 +1219,7 @@ def _evaluate_members_multi(
     strict_medium: bool,
     medium_notes: set[str] | None = None,
     growth_policy: GrowthPolicy | None = None,
+    medium_pool: Any | None = None,
 ) -> _ComboEval:
     """Per-target capability pass. Fluxes come from independent solves — NOT simultaneous.
 
@@ -1160,13 +1230,15 @@ def _evaluate_members_multi(
     sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
     effective: tuple[str, ...] = ()
     medium_note: str | None = None
+    not_applicable: tuple[str, ...] = ()
     attempts: list[dict[str, Any]] = []
     try:
         community = engine.build_community(sub, cmig_solver=solver)
         effective = tuple(sorted(str(x) for x in getattr(community, "taxa", members)))
         actual_members(community, members)
-        medium_note = _apply_search_medium(
-            community, medium_spec, strict_medium=strict_medium, notes=medium_notes
+        medium_note, not_applicable = _apply_candidate_medium(
+            community, medium_spec, strict_medium=strict_medium, notes=medium_notes,
+            medium_pool=medium_pool, members=members,
         )
         from cmig.core.search import _community_growth_star
         from cmig.core.search_constraints import apply_member_growth
@@ -1263,6 +1335,7 @@ def _evaluate_members_multi(
             FLUX_BASIS_CAPABILITY,
             effective_members=effective,
             medium_note=medium_note,
+            medium_not_applicable=not_applicable,
             pareto_attempts=attempts,
             sampling_status="failed" if status != "optimal" else "complete",
         )
@@ -1280,6 +1353,7 @@ def _evaluate_members_multi(
             FLUX_BASIS_NONE,
             effective_members=effective,
             medium_note=medium_note,
+            medium_not_applicable=not_applicable,
             pareto_attempts=attempts,
             sampling_status="failed",
         )
@@ -1329,6 +1403,7 @@ def _evaluate_members_multi_joint(
     metric: MultiTargetMetric = "normalized_weighted",
     medium_notes: set[str] | None = None,
     growth_policy: GrowthPolicy | None = None,
+    medium_pool: Any | None = None,
 ) -> _ComboEval:
     """Evaluate one consortium with a single jointly feasible weighted LP solution."""
     from cmig.core.search import joint_target_solve
@@ -1336,12 +1411,14 @@ def _evaluate_members_multi_joint(
     sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
     effective: tuple[str, ...] = ()
     medium_note: str | None = None
+    not_applicable: tuple[str, ...] = ()
     try:
         community = engine.build_community(sub, cmig_solver=solver)
         effective = tuple(sorted(str(x) for x in getattr(community, "taxa", members)))
         actual_members(community, members)
-        medium_note = _apply_search_medium(
-            community, medium_spec, strict_medium=strict_medium, notes=medium_notes
+        medium_note, not_applicable = _apply_candidate_medium(
+            community, medium_spec, strict_medium=strict_medium, notes=medium_notes,
+            medium_pool=medium_pool, members=members,
         )
         scales = _joint_lp_scales(metric, normalization_ranges)
         result = joint_target_solve(
@@ -1368,6 +1445,7 @@ def _evaluate_members_multi_joint(
             getattr(result, "member_growth", {}),
             getattr(result, "abundances", {}),
             medium_note=medium_note,
+            medium_not_applicable=not_applicable,
         )
     except Exception as e:  # noqa: BLE001 - per-combo isolation
         return _ComboEval(
@@ -1381,6 +1459,7 @@ def _evaluate_members_multi_joint(
             FLUX_BASIS_NONE,
             effective_members=effective,
             medium_note=medium_note,
+            medium_not_applicable=not_applicable,
         )
 
 
@@ -1399,6 +1478,7 @@ def _pareto_points_for_members(
     epsilon_grid: tuple[float, ...] = PARETO_EPSILON_GRID,
     medium_notes: set[str] | None = None,
     growth_policy: GrowthPolicy | None = None,
+    medium_pool: Any | None = None,
     resolution: int = 5,
 ) -> list[_ComboEval]:
     """Sample objective extremes and independent signed epsilon slices.
@@ -1415,6 +1495,7 @@ def _pareto_points_for_members(
     attempts: list[dict[str, Any]] = []
     seen_vectors: set[tuple[float, ...]] = set()
     medium_note: str | None = None
+    not_applicable: tuple[str, ...] = ()
 
     def record(
         phase: str,
@@ -1440,8 +1521,9 @@ def _pareto_points_for_members(
     try:
         community = engine.build_community(sub_taxonomy, cmig_solver=solver)
         actual_members(community, members)
-        medium_note = _apply_search_medium(
-            community, medium_spec, strict_medium=strict_medium, notes=medium_notes
+        medium_note, not_applicable = _apply_candidate_medium(
+            community, medium_spec, strict_medium=strict_medium, notes=medium_notes,
+            medium_pool=medium_pool, members=members,
         )
         from cmig.core.search import _community_growth_star
         from cmig.core.search_constraints import apply_member_growth
@@ -1643,6 +1725,7 @@ def _pareto_points_for_members(
                     getattr(result, "member_growth", {}),
                     getattr(result, "abundances", {}),
                     medium_note=medium_note,
+                    medium_not_applicable=not_applicable,
                 )
             )
     except SearchCancelled:
@@ -1671,6 +1754,8 @@ def _pareto_points_for_members(
                     _with_medium_note("no epsilon level solved to optimality", medium_note),
                     (),
                     FLUX_BASIS_NONE,
+                    medium_note=medium_note,
+                    medium_not_applicable=not_applicable,
                 ),
                 pareto_attempts=attempts,
                 sampling_status="failed",
@@ -1727,8 +1812,12 @@ def search_model_pool_multi(
     medium_spec: Any | None = None,
     strict_medium: bool = True,
     control: SearchControl | None = None,
+    medium_pool: Any | None = None,
 ) -> MultiTargetSearchResult:
-    """Rank model-pool combinations against multiple targets (weighted-normalized + Pareto)."""
+    """Rank model-pool combinations against multiple targets (weighted-normalized + Pareto).
+
+    ``medium_pool`` has the meaning it has in :func:`search_model_pool`.
+    """
     validate_taxonomy(taxonomy)
     config.growth_policy.validate()
     if (
@@ -1747,6 +1836,7 @@ def search_model_pool_multi(
             medium_spec=medium_spec,
             strict_medium=strict_medium,
             control=control,
+            medium_pool=medium_pool,
         )
     if len(config.targets) < 2:
         raise ValueError("multi-target search needs >= 2 targets; use single --target otherwise")
@@ -1794,6 +1884,7 @@ def search_model_pool_multi(
             medium_spec=medium_spec,
             strict_medium=strict_medium,
             medium_notes=medium_notes,
+            medium_pool=medium_pool,
         )
         for members in candidates
     ]
@@ -1810,6 +1901,7 @@ def search_model_pool_multi(
             strict_medium=strict_medium,
             ids=ids,
             medium_notes=medium_notes,
+            medium_pool=medium_pool,
         )
     evals: list[_ComboEval] = []
     for members, capability in zip(candidates, capability_evals, strict=True):
@@ -1829,6 +1921,7 @@ def search_model_pool_multi(
                 strict_medium=strict_medium,
                 metric=config.metric,
                 medium_notes=medium_notes,
+                medium_pool=medium_pool,
             )
         )
     all_rows, normalizer = rank_multi_target(
@@ -1872,6 +1965,7 @@ def _pareto_search(
     strict_medium: bool,
     ids: list[str],
     medium_notes: set[str] | None = None,
+    medium_pool: Any | None = None,
 ) -> MultiTargetSearchResult:
     """Report the non-dominated trade-off set instead of one scalarised winner (item 9).
 
@@ -1902,6 +1996,7 @@ def _pareto_search(
             medium_spec=medium_spec,
             strict_medium=strict_medium,
             medium_notes=medium_notes,
+            medium_pool=medium_pool,
             **cast(
                 dict[str, Any],
                 {"growth_policy": config.growth_policy}
@@ -1937,6 +2032,7 @@ def _pareto_search(
                 point.missing_targets,
                 point.flux_basis,
                 sampling_status=point.sampling_status,
+                medium_not_applicable=point.medium_not_applicable,
             )
         )
     # Deduplicate identical achieved vectors from different epsilon levels of the same consortium.
@@ -2014,6 +2110,7 @@ def unevaluated_ranks(evals: list[_ComboEval], metabolites: list[str]) -> list[M
             e.diagnostic,
             e.missing_targets,
             e.flux_basis,
+            medium_not_applicable=e.medium_not_applicable,
         )
         for e in evals
     ]

@@ -5,6 +5,34 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Changed — medium rule for pool workflows (`medium_policy` v3)
+
+- Workflows that evaluate sub-communities or single members of the selected pool —
+  `search` (single and multi-target, including `--validate-top` and robustness FVA),
+  `host-search-bigg`, `gene-ko-search` (the `--members` consortium drawn from the taxonomy),
+  `sweep --member-sets` (without `--namespace-decisions`) and `medium-gap` over a
+  `--taxonomy`/`--model-dir` — now check the medium in two layers. An id that **no** model of
+  the selected pool can take up (matched on metabolite) is an input error before any
+  candidate is evaluated (exit 2; `--allow-unknown-medium` keeps its meaning for those ids).
+  An id some pool model can take up but this candidate cannot is **not applicable** to the
+  candidate: it is listed per candidate as `medium_not_applicable` and neither refuses the
+  candidate, degrades the run, nor counts as `medium_unapplied`. It cannot enter any member,
+  so the LP is identical without it — MICOM's own `grow`/`tradeoff` workflows filter the
+  medium to the community's exchanges the same way. Previously the shipped `gut_overlay_*`
+  presets (written for the whole bundled pool) failed every Combination Search candidate.
+- `medium_policy` provenance marker: `exchange_reactions_by_metabolite_v2` →
+  `exchange_reactions_by_metabolite_pool_scoped_v3`. **No hash moves**: the solve `run_hash`
+  (11 components) and every workflow hash are unchanged, so a v2 and a v3 run of the same
+  inputs share a `run_hash`. Candidates that v2 refused for a pool-only medium row now have
+  answers; every number v2 produced is unchanged. The search checkpoint identity now includes
+  `medium_policy`, so a checkpoint written before this change cannot be resumed (start a new
+  checkpoint path).
+- New outputs: `medium_not_applicable` per candidate in `search_summary.json` (`top_ranked`,
+  `unevaluated`) and `search_evaluations.json`, plus a run-level
+  `medium_not_applicable: {ids, n_candidates}`; per row in `host_search_summary.json`; in
+  `gene_ko_summary.json`; in a sweep condition's solve-manifest `provenance`; and a
+  `medium_not_applicable` column in `medium_gap.csv`/`medium_gap.json`.
+
 ### Changed — GUI appearance
 
 - The GUI opens in light appearance by default, whatever the system setting is.
