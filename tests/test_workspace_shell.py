@@ -165,6 +165,20 @@ def test_window_fits_target_sizes(window, tmp_path: Path, size: tuple[int, int])
         assert window.width() <= size[0] and window.height() <= size[1], key
 
 
+def test_empty_results_line_sits_under_its_heading(window, tmp_path: Path) -> None:
+    make_project(tmp_path / "g", ["a"])
+    window.open_project(tmp_path / "g")
+    window.resize(1500, 950)
+    window.show()
+    window.show_analysis("gene_ko")
+    APP.processEvents()
+    results = window.gene_ko_page.results
+    assert results.empty_label.isVisible()
+    # heading, (empty) status line and the one-line note stack at the top of the area;
+    # the spare height stays below them instead of spreading the three lines apart
+    assert results.empty_label.geometry().bottom() < 100
+
+
 # ── controller rulings and shell behaviour beyond the brief ───────────────────────────────
 LOCK = ".cmig-project.lock"
 

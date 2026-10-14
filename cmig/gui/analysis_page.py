@@ -245,6 +245,9 @@ class ResultsArea(QWidget):
         layout.addWidget(self.status)
         layout.addWidget(self.empty_label)
         layout.addWidget(self.content, 1)
+        # With no results the spare height goes here, below the empty note; once results
+        # show, `content` (stretch 1) takes it all.
+        layout.addStretch(0)
         self.show_empty()
 
     def add(self, widget: QWidget, stretch: int = 0) -> None:
