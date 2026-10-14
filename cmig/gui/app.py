@@ -20,7 +20,7 @@ import re
 import shutil
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from dataclasses import replace
@@ -89,6 +89,9 @@ from cmig.gui.editors import (
 from cmig.gui.graph_view import GateBadge, InteractionGraphView
 from cmig.gui.host_view import HostImpactView
 from cmig.gui.inspector import InspectorPanel
+from cmig.gui.pages.gene_ko import GeneKoPage
+from cmig.gui.pages.ratio_impact import RatioImpactPage
+from cmig.gui.pages.strain_growth import StrainGrowthPage
 from cmig.gui.pickers import MediumPicker, ModelPicker
 from cmig.gui.project_session import (
     ProjectSession,
@@ -1145,6 +1148,9 @@ class CmigMainWindow(QMainWindow):
         self.sandbox_view = ConstraintSandboxView()
         self.scenario_compare = ScenarioCompareView()
         self.search_view = SearchView()
+        self.gene_ko_page = GeneKoPage()
+        self.strain_growth_page = StrainGrowthPage()
+        self.ratio_impact_page = RatioImpactPage()
         self.host_view = HostImpactView()
         self.dynamics_view = DfbaSpatialView()
         self.central_stack = QStackedWidget()  # kept: set_central() still docks extra views
@@ -1156,9 +1162,9 @@ class CmigMainWindow(QMainWindow):
         self.community_result_page.addTab(self.graph_tab, "Graph")
         self.analysis_pages: dict[str, QWidget] = {
             "search": self.search_view,
-            "gene_ko": self.search_view,        # Task 8 replaces
-            "strain_growth": self.search_view,  # Task 8 replaces
-            "ratio_impact": self.search_view,   # Task 8 replaces
+            "gene_ko": self.gene_ko_page,
+            "strain_growth": self.strain_growth_page,
+            "ratio_impact": self.ratio_impact_page,
             "community": self.community_builder,
             "host": self.host_view,
             "host_search": self.host_view,      # Task 10 replaces
@@ -1889,6 +1895,8 @@ class CmigMainWindow(QMainWindow):
         "search": "Search", "community": "Community", "host_model": "Host model",
         "host": "Host microbes", "dfba": "dFBA", "sweep": "Sweep",
         "medium": "Medium growth check", "medium_single": "Minimal medium",
+        "gene_ko": "Gene Knockout", "strain_growth": "Strain Growth",
+        "ratio_impact": "Ratio Impact",
     }
 
     def _model_pickers(self) -> dict[str, ModelPicker]:
@@ -1898,6 +1906,9 @@ class CmigMainWindow(QMainWindow):
         """
         return {
             "search": self.search_view.model_picker,
+            "gene_ko": self.gene_ko_page.model_picker,
+            "strain_growth": self.strain_growth_page.model_picker,
+            "ratio_impact": self.ratio_impact_page.model_picker,
             "community": self.community_builder.model_picker,
             "host_model": self.host_view.host_picker,
             "host": self.host_view.model_picker,
@@ -1911,6 +1922,9 @@ class CmigMainWindow(QMainWindow):
         """Every medium picker, keyed by (analysis setting, field) that remembers its choice."""
         return {
             ("search", "medium"): self.search_view.medium_picker,
+            ("gene_ko", "medium"): self.gene_ko_page.medium_picker,
+            ("strain_growth", "medium"): self.strain_growth_page.medium_picker,
+            ("ratio_impact", "medium"): self.ratio_impact_page.medium_picker,
             ("host", "host_medium"): self.host_view.host_medium_picker,
             ("host", "microbe_medium"): self.host_view.microbe_medium_picker,
         }
@@ -2080,9 +2094,9 @@ class CmigMainWindow(QMainWindow):
         """
         return {
             "search": self.search_view.run_btn,
-            "gene_ko": self.search_view.run_ko_btn,
-            "strain_growth": self.search_view.run_growth_btn,
-            "ratio_impact": self.search_view.run_abundance_btn,
+            "gene_ko": self.gene_ko_page.run_btn,
+            "strain_growth": self.strain_growth_page.run_btn,
+            "ratio_impact": self.ratio_impact_page.run_btn,
             "community": self.community_builder.run_btn,
             "host": self.host_view.run_btn,
             "host_search": self.host_view.run_search_btn,
@@ -2122,10 +2136,6 @@ class CmigMainWindow(QMainWindow):
         page = self.analysis_pages[key]
         self.current_analysis = key
         self._show_page(page)
-        if key == "gene_ko":
-            self.search_view.scroll_area.ensureWidgetVisible(self.search_view.ko_members_input)
-        elif key in ("strain_growth", "ratio_impact"):
-            self.search_view.scroll_area.ensureWidgetVisible(self.search_view.growth_member_input)
         blocked = self.sidebar.blockSignals(True)
         try:
             self.sidebar.select("analyses", key)  # a menu choice shows in the sidebar too
@@ -2839,10 +2849,14 @@ class CmigMainWindow(QMainWindow):
         self.search_view.browse_checkpoint_btn.clicked.connect(self._browse_search_checkpoint)
         self.search_view.run_btn.clicked.connect(self.run_search_fixture)
         self.search_view.cancel_btn.clicked.connect(self.cancel_search)
-        self.search_view.run_ko_btn.clicked.connect(self.run_gene_ko_search)
-        self.search_view.run_growth_btn.clicked.connect(self.run_strain_growth_report)
-        self.search_view.run_abundance_btn.clicked.connect(self.run_abundance_impact)
-        self.search_view.export_figure_btn.clicked.connect(self._export_search_figure)
+        self.gene_ko_page.run_btn.clicked.connect(self.run_gene_ko_search)
+        self.strain_growth_page.run_btn.clicked.connect(self.run_strain_growth_report)
+        self.ratio_impact_page.run_btn.clicked.connect(self.run_abundance_impact)
+        for page in (self.search_view, self.gene_ko_page, self.strain_growth_page,
+                     self.ratio_impact_page):
+            page.results_panel.export_figure_btn.clicked.connect(
+                lambda _c=False, p=page: self._export_ranked_figure(p)
+            )
         self.host_view.run_btn.clicked.connect(self.run_host_microbe_bigg)
         self.host_view.run_search_btn.clicked.connect(self.run_host_search_bigg)
         self.host_view.export_figure_btn.clicked.connect(self._export_host_figure)
@@ -2987,20 +3001,21 @@ class CmigMainWindow(QMainWindow):
         shutil.copyfile(src, target)
         self.host_view.run_status.setText(f"Exported figure: {target}")
 
-    def _export_search_figure(self) -> None:
+    def _export_ranked_figure(self, page: Any) -> None:
         # Same rule as the Host tab: export the run the table is displaying, and nothing else.
         # There is deliberately NO fallback to `current_search_dir`: invalidation clears
         # `current_run_dir` and tells the user the result was discarded, and a fallback would
         # then still export that discarded run and report success (verifier V-1).
-        run_dir = self.search_view.current_run_dir
+        panel = page.results_panel
+        run_dir = panel.current_run_dir
         if run_dir is None:
-            self.search_view.status.setText("No search result is loaded.")
+            page.status.setText("No search result is loaded.")
             return
-        artifact = self.search_view.selected_figure_artifact()
+        artifact = panel.selected_figure_artifact()
         src = run_dir / artifact
         if not src.exists():
-            self.search_view.refresh_figure_mode()
-            self.search_view.status.setText(f"Search figure artifact not found: {artifact}")
+            panel.refresh_figure_mode()
+            page.status.setText(f"Search figure artifact not found: {artifact}")
             return
         target, _ = QFileDialog.getSaveFileName(
             self,
@@ -3011,7 +3026,7 @@ class CmigMainWindow(QMainWindow):
         if not target:
             return
         shutil.copyfile(src, target)
-        self.search_view.status.setText(f"Exported figure: {target}")
+        page.status.setText(f"Exported figure: {target}")
 
     def _open_run_dialog(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Open CMIG Run")
@@ -3832,41 +3847,44 @@ class CmigMainWindow(QMainWindow):
         self._show_status("status_started", kind=self.tr_map["kind_host_search"], job_id=jid)
         return jid
 
-    def _search_tab_inputs(
-        self, kind: str, medium_ref: str
+    def _page_run_inputs(
+        self, page: Any, kind: str, medium_ref: str
     ) -> tuple[Path, Path | None, str | None] | None:
-        """Claim a run for a Search-page workflow: (out, taxonomy, medium file), or None after
-        the reason is shown on the page."""
-        model_ids = self.search_view.model_picker.selected_ids()
+        """Claim a run for a page with a model picker: (out, taxonomy, medium file), or None
+        after the reason is shown on the page."""
+        model_ids = page.model_picker.selected_ids()
         if not model_ids:
-            self.search_view.status.setText("Select at least one model.")
+            page.status.setText("Select at least one model.")
             return None
         try:
             medium_file = self._medium_arg(medium_ref)
             out_dir, taxonomy = self._prepare_run(kind, model_ids)
         except (ProjectError, ValueError) as exc:
-            self.search_view.status.setText(str(exc))
+            page.status.setText(str(exc))
             return None
         return out_dir, taxonomy, medium_file
 
     def run_gene_ko_search(self) -> str:
-        """Run fixed-combination single-gene KO screening from the Search tab."""
+        """Run fixed-combination single-gene KO screening from the Gene Knockout page."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        requested = self.search_view.request_fields("gene_ko")
+        page = self.gene_ko_page
+        requested = page.request_fields("gene_ko")
         members = requested["ko_members"]
         member = requested["ko_member"]
         genes = requested["ko_genes"]
-        target, direction, target_error = _single_target(self.search_view.target_rows())
+        target, direction, target_error = _single_target(
+            [(requested["target"], requested["direction"], "", "")]
+        )
         if target_error:
-            self.search_view.status.setText(target_error)
+            page.status.setText(target_error)
             return ""
         if not members:
-            self.search_view.status.setText("KO members are required.")
+            page.status.setText("KO members are required.")
             return ""
         if genes and not member:
-            self.search_view.status.setText("Gene ids require a specific edited member.")
+            page.status.setText("Gene ids require a specific edited member.")
             return ""
         # Snapshot every answer-determining widget value HERE, on the GUI thread, before the
         # closure is handed to the executor. Reading `.value()` inside `_job` meant a queued
@@ -3874,7 +3892,7 @@ class CmigMainWindow(QMainWindow):
         # QWidget from a worker thread (undefined behaviour in Qt). Coordinator CC-8.
         max_genes = requested["max_genes"]
         top_k = requested["ko_top_k"]
-        inputs = self._search_tab_inputs("gene-ko", requested["medium"])
+        inputs = self._page_run_inputs(page, "gene-ko", requested["medium"])
         if inputs is None:
             return ""
         out_dir, taxonomy, medium_file = inputs
@@ -3919,18 +3937,19 @@ class CmigMainWindow(QMainWindow):
         jid = self.submit_job("gene_ko_search", _job)
         self._record_command(jid, out_dir, argv)
         self._gene_ko_jobs[jid] = (out_dir, requested)
-        self.search_view.run_ko_btn.setEnabled(False)
-        self.search_view.status.setText(f"gene KO search started: {jid}")
+        page.run_btn.setEnabled(False)
+        page.status.setText(f"gene KO search started: {jid}")
         self._show_status("status_started", kind=self.tr_map["kind_gene_ko_search"], job_id=jid)
         return jid
 
     def run_strain_growth_report(self) -> str:
-        """Run per-strain single/community growth profiling from the Search tab."""
+        """Run per-strain single/community growth profiling from the Strain Growth page."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        requested = self.search_view.request_fields("strain_growth")
-        inputs = self._search_tab_inputs("strain-growth", requested["medium"])
+        page = self.strain_growth_page
+        requested = page.request_fields("strain_growth")
+        inputs = self._page_run_inputs(page, "strain-growth", requested["medium"])
         if inputs is None:
             return ""
         out_dir, taxonomy, medium_file = inputs
@@ -3963,27 +3982,30 @@ class CmigMainWindow(QMainWindow):
         jid = self.submit_job("strain_growth", _job)
         self._record_command(jid, out_dir, argv)
         self._strain_growth_jobs[jid] = (out_dir, requested)
-        self.search_view.run_growth_btn.setEnabled(False)
-        self.search_view.status.setText(f"strain growth started: {jid}")
+        page.run_btn.setEnabled(False)
+        page.status.setText(f"strain growth started: {jid}")
         self._show_status("status_started", kind=self.tr_map["kind_strain_growth"], job_id=jid)
         return jid
 
     def run_abundance_impact(self) -> str:
-        """Run one-member abundance sweep from the Search tab."""
+        """Run one-member abundance sweep from the Ratio Impact page."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        requested = self.search_view.request_fields("abundance_impact")
+        page = self.ratio_impact_page
+        requested = page.request_fields("abundance_impact")
         member = requested["growth_member"]
         fractions = requested["fractions"]
-        target, _direction, target_error = _single_target(self.search_view.target_rows())
+        target, _direction, target_error = _single_target(
+            [(requested["target"], "max_secretion", "", "")]
+        )
         if target_error:
-            self.search_view.status.setText(target_error)
+            page.status.setText(target_error)
             return ""
         if not member:
-            self.search_view.status.setText("Target member is required for ratio impact.")
+            page.status.setText("Target member is required for ratio impact.")
             return ""
-        inputs = self._search_tab_inputs("abundance-impact", requested["medium"])
+        inputs = self._page_run_inputs(page, "abundance-impact", requested["medium"])
         if inputs is None:
             return ""
         out_dir, taxonomy, medium_file = inputs
@@ -4023,8 +4045,8 @@ class CmigMainWindow(QMainWindow):
             out_dir,
             requested,
         )
-        self.search_view.run_abundance_btn.setEnabled(False)
-        self.search_view.status.setText(f"ratio impact started: {jid}")
+        page.run_btn.setEnabled(False)
+        page.status.setText(f"ratio impact started: {jid}")
         self._show_status("status_started", kind=self.tr_map["kind_ratio_impact"], job_id=jid)
         return jid
 
@@ -4837,107 +4859,9 @@ class CmigMainWindow(QMainWindow):
                 self.host_view.run_status.setText(
                     f"host-search {job.status.value}: {job.error or jid}"
                 )
-        for jid, (out_dir, requested) in list(self._gene_ko_jobs.items()):
-            job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, dict):
-                self._gene_ko_jobs.pop(jid, None)
-                self.search_view.run_ko_btn.setEnabled(True)
-                if self._inspect_gui_run(out_dir) is None:
-                    continue
-                self.current_search_dir = out_dir
-                summary = _gene_ko_summary_for_search_view(job.result)
-                self.search_view.figure_mode_combo.setCurrentText("Ranking")
-                self.search_view.load_summary(
-                    _with_search_conditions(summary, job.result),
-                    run_dir=out_dir,
-                    request_note=(self.search_view.effective_note(requested, "gene_ko")
-                                  + self.search_view.superseded_note(requested, "gene_ko")),
-                    workflow_kind="gene_ko",
-                    executed_request=requested,
-                    source_summary=job.result,
-                )
-                self._show_page(self.search_view)
-                self._register_run_output(out_dir)
-                self._show_status(
-                    "status_complete_out",
-                    kind=self.tr_map["kind_gene_ko_search"],
-                    job_id=jid,
-                    out_dir=out_dir,
-                )
-            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
-                self._gene_ko_jobs.pop(jid, None)
-                self.search_view.run_ko_btn.setEnabled(True)
-                self.search_view.status.setText(
-                    f"gene KO search {job.status.value}: {job.error or jid}"
-                )
-        for jid, (out_dir, requested) in list(self._strain_growth_jobs.items()):
-            job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, dict):
-                self._strain_growth_jobs.pop(jid, None)
-                self.search_view.run_growth_btn.setEnabled(True)
-                if self._inspect_gui_run(out_dir) is None:
-                    continue
-                self.current_search_dir = out_dir
-                summary = _strain_growth_summary_for_search_view(job.result)
-                self.search_view.figure_mode_combo.setCurrentText("Ranking")
-                self.search_view.load_summary(
-                    _with_search_conditions(summary, job.result),
-                    run_dir=out_dir,
-                    request_note=(self.search_view.effective_note(requested, "strain_growth")
-                                  + self.search_view.superseded_note(requested, "strain_growth")),
-                    workflow_kind="strain_growth",
-                    executed_request=requested,
-                    source_summary=job.result,
-                )
-                self._show_page(self.search_view)
-                self._register_run_output(out_dir)
-                self._show_status(
-                    "status_complete_out",
-                    kind=self.tr_map["kind_strain_growth"],
-                    job_id=jid,
-                    out_dir=out_dir,
-                )
-            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
-                self._strain_growth_jobs.pop(jid, None)
-                self.search_view.run_growth_btn.setEnabled(True)
-                self.search_view.status.setText(
-                    f"strain growth {job.status.value}: {job.error or jid}"
-                )
-        for jid, (out_dir, requested) in list(self._abundance_impact_jobs.items()):
-            job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, dict):
-                self._abundance_impact_jobs.pop(jid, None)
-                self.search_view.run_abundance_btn.setEnabled(True)
-                if self._inspect_gui_run(out_dir) is None:
-                    continue
-                self.current_search_dir = out_dir
-                summary = _abundance_impact_summary_for_search_view(job.result)
-                self.search_view.figure_mode_combo.setCurrentText("Ranking")
-                self.search_view.load_summary(
-                    _with_search_conditions(summary, job.result),
-                    run_dir=out_dir,
-                    request_note=(
-                        self.search_view.effective_note(requested, "abundance_impact")
-                        + self.search_view.superseded_note(requested, "abundance_impact")
-                    ),
-                    workflow_kind="abundance_impact",
-                    executed_request=requested,
-                    source_summary=job.result,
-                )
-                self._show_page(self.search_view)
-                self._register_run_output(out_dir)
-                self._show_status(
-                    "status_complete_out",
-                    kind=self.tr_map["kind_ratio_impact"],
-                    job_id=jid,
-                    out_dir=out_dir,
-                )
-            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
-                self._abundance_impact_jobs.pop(jid, None)
-                self.search_view.run_abundance_btn.setEnabled(True)
-                self.search_view.status.setText(
-                    f"ratio impact {job.status.value}: {job.error or jid}"
-                )
+        self._finish_ranked_jobs("gene_ko", self._gene_ko_jobs, "gene KO search")
+        self._finish_ranked_jobs("strain_growth", self._strain_growth_jobs, "strain growth")
+        self._finish_ranked_jobs("ratio_impact", self._abundance_impact_jobs, "ratio impact")
         for jid, out_dir in list(self._dfba_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE:
@@ -5169,6 +5093,62 @@ class CmigMainWindow(QMainWindow):
                 self.bridge.cancelling.discard(jid)
         if settled:
             self.session.refresh_runs()
+
+    def _ranked_spec(self, key: str) -> tuple[str, Callable[[dict[str, Any]], dict[str, Any]],
+                                              str, str]:
+        """(summary file, adapter to the ranked table, workflow kind, status label key)."""
+        return {
+            "gene_ko": ("gene_ko_summary.json", _gene_ko_summary_for_search_view,
+                        "gene_ko", "kind_gene_ko_search"),
+            "strain_growth": ("strain_growth_summary.json",
+                              _strain_growth_summary_for_search_view, "strain_growth",
+                              "kind_strain_growth"),
+            "ratio_impact": ("abundance_impact_summary.json",
+                             _abundance_impact_summary_for_search_view, "abundance_impact",
+                             "kind_ratio_impact"),
+        }[key]
+
+    def _show_ranked(
+        self, key: str, payload: dict[str, Any], out_dir: Path, requested: dict[str, str]
+    ) -> None:
+        _file, adapter, kind, _label = self._ranked_spec(key)
+        page = self.analysis_pages[key]
+        panel = page.results_panel  # type: ignore[attr-defined]
+        panel.figure_mode_combo.setCurrentText("Ranking")
+        panel.load_summary(
+            _with_search_conditions(adapter(payload), payload),
+            run_dir=out_dir,
+            request_note=(panel.effective_note(requested, kind)
+                          + panel.superseded_note(requested, kind)),
+            workflow_kind=kind,
+            executed_request=requested,
+            source_summary=payload,
+        )
+        self._show_page(page)
+
+    def _finish_ranked_jobs(
+        self, key: str, jobs: dict[str, tuple[Path, dict[str, str]]], failure_label: str
+    ) -> None:
+        page = self.analysis_pages[key]
+        for jid, (out_dir, requested) in list(jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status is JobStatus.DONE and isinstance(job.result, dict):
+                jobs.pop(jid, None)
+                page.run_btn.setEnabled(True)  # type: ignore[attr-defined]
+                if self._inspect_gui_run(out_dir) is None:
+                    continue
+                self.current_search_dir = out_dir
+                self._show_ranked(key, job.result, out_dir, requested)
+                self._register_run_output(out_dir)
+                self._show_status("status_complete_out",
+                                  kind=self.tr_map[self._ranked_spec(key)[3]],
+                                  job_id=jid, out_dir=out_dir)
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                jobs.pop(jid, None)
+                page.run_btn.setEnabled(True)  # type: ignore[attr-defined]
+                page.status.setText(  # type: ignore[attr-defined]
+                    f"{failure_label} {job.status.value}: {job.error or jid}"
+                )
 
 
 def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:

@@ -161,8 +161,8 @@ def test_failed_job_leaves_a_failed_run_never_a_question_mark(
     w, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _Main(monkeypatch, rc=1, partial="half.tmp")
-    w.search_view.model_picker.set_selected(["a"])
-    w.search_view.ko_members_input.setText("a")
+    w.gene_ko_page.model_picker.set_selected(["a"])
+    w.gene_ko_page.members_picker.set_selected(["a"])
     jid = w.run_gene_ko_search()
     _settle(w, jid)
     assert w.runner.poll(jid).status is JobStatus.FAILED
@@ -181,8 +181,8 @@ def test_failed_job_with_an_empty_folder_still_shows_failed(
     w, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _Main(monkeypatch, rc=1)
-    w.search_view.model_picker.set_selected(["a"])
-    w.search_view.ko_members_input.setText("a")
+    w.gene_ko_page.model_picker.set_selected(["a"])
+    w.gene_ko_page.members_picker.set_selected(["a"])
     jid = w.run_gene_ko_search()
     _settle(w, jid)
     [row] = _runs(w)
@@ -235,8 +235,8 @@ def test_job_cancelled_before_it_starts_is_listed_cancelled(
     main = _Main(monkeypatch, rc=0)
     gate = threading.Event()
     blocker = w.submit_job("blocker", lambda ctx: gate.wait(10))  # holds the only worker
-    w.search_view.model_picker.set_selected(["a"])
-    w.search_view.ko_members_input.setText("a")
+    w.gene_ko_page.model_picker.set_selected(["a"])
+    w.gene_ko_page.members_picker.set_selected(["a"])
     jid = w.run_gene_ko_search()
     assert w.runner.poll(jid).status is JobStatus.PENDING
     w._cancel_job_id(jid)
@@ -259,15 +259,16 @@ def test_failed_and_cancelled_marks_survive_a_restart(
     w, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rc: int, symbol: str
 ) -> None:
     main = _Main(monkeypatch, rc=rc)
-    w.search_view.model_picker.set_selected(["a"])
     if rc == 130:
+        w.search_view.model_picker.set_selected(["a"])
         main.release.clear()
         jid = w.run_search_fixture()
         assert main.started.wait(10)
         w._cancel_job_id(jid)
         main.release.set()
     else:
-        w.search_view.ko_members_input.setText("a")
+        w.gene_ko_page.model_picker.set_selected(["a"])
+        w.gene_ko_page.members_picker.set_selected(["a"])
         jid = w.run_gene_ko_search()
     _settle(w, jid)
     [before] = _runs(w)

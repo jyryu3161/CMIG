@@ -77,15 +77,15 @@ def test_gene_ko_argv_is_frozen_at_click_time(monkeypatch, tmp_path):
     # Occupy the single worker so the gene-KO job is queued, exactly like a busy session.
     runner.submit("occupy", lambda ctx: release.wait(timeout=20))
     open_test_project(w, tmp_path / "p", ["iHN637", "iYO844"])
-    w.search_view.ko_members_input.setText("iHN637")
-    w.search_view.set_target_rows(["ac"])
-    w.search_view.ko_max_genes_spin.setValue(50)
-    w.search_view.ko_top_k_spin.setValue(3)
+    w.gene_ko_page.members_picker.set_selected(["iHN637"])
+    w.gene_ko_page.target_input.setText("ac")
+    w.gene_ko_page.max_genes_spin.setValue(50)
+    w.gene_ko_page.top_k_spin.setValue(3)
     jid = w.run_gene_ko_search()
     assert jid
     # The researcher now prepares the *next* run while the first is still queued.
-    w.search_view.ko_max_genes_spin.setValue(5000)
-    w.search_view.ko_top_k_spin.setValue(97)
+    w.gene_ko_page.max_genes_spin.setValue(5000)
+    w.gene_ko_page.top_k_spin.setValue(97)
     release.set()
     _wait(runner, jid)
     argv = seen["argv"]
@@ -558,17 +558,24 @@ def test_multi_target_text_is_forwarded_without_truncation(tmp_path, monkeypatch
 
 
 def test_empty_target_is_rejected_by_every_search_button(tmp_path):
-    """P2: an empty Target box meant `but` for Run Search and `ac` for Rank Gene KOs."""
+    """P2: an empty Target box meant `but` for Run Search and `ac` for Rank Gene KOs.
+
+    Each page has its own target; an empty one is refused on every page.
+    """
     _app()
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
     open_test_project(w, tmp_path / "p", ["iHN637"])
-    w.search_view.ko_members_input.setText("iHN637")
-    w.search_view.growth_member_input.setText("iHN637")
     w.search_view.set_target_rows([""])
+    w.gene_ko_page.members_picker.set_selected(["iHN637"])
+    w.gene_ko_page.target_input.setText("")
+    w.ratio_impact_page.member_combo.setCurrentText("iHN637")
+    w.ratio_impact_page.target_input.setText("")
     assert w.run_search_fixture() == ""
     assert w.run_gene_ko_search() == ""
+    assert "does not substitute a default target" in w.gene_ko_page.status.text()
     assert w.run_abundance_impact() == ""
+    assert "does not substitute a default target" in w.ratio_impact_page.status.text()
     runner.shutdown()
 
 
@@ -608,7 +615,7 @@ def test_search_export_refuses_an_invalidated_run(monkeypatch, tmp_path):
     monkeypatch.setattr(
         QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), "SVG (*.svg)")
     )
-    w._export_search_figure()
+    w._export_ranked_figure(w.search_view)
     assert not target.exists(), "must not export a run the user was told was discarded"
     assert "No search result is loaded" in w.search_view.status.text()
 

@@ -539,9 +539,9 @@ def test_strain_growth_button_uses_taxonomy_command(monkeypatch, tmp_path):
     w._poll_completed_jobs()
     assert seen["argv"][0] == "strain-growth"
     assert taxonomy_ids(seen["argv"]) == ["producer"]
-    assert w.search_view.table.item(0, 0).text() == "producer"
-    assert w.search_view.table.item(0, 1).text() == "growth"
-    assert w.search_view.run_growth_btn.isEnabled()
+    assert w.strain_growth_page.results_panel.table.item(0, 0).text() == "producer"
+    assert w.strain_growth_page.results_panel.table.item(0, 1).text() == "growth"
+    assert w.strain_growth_page.run_btn.isEnabled()
     runner.shutdown()
 
 
@@ -580,18 +580,18 @@ def test_abundance_impact_button_uses_member_and_fractions(monkeypatch, tmp_path
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
     open_test_project(w, tmp_path / "p", ["producer", "other"])
-    w.search_view.growth_member_input.setText("producer")
-    w.search_view.abundance_fractions_input.setText("0.2,0.8")
-    w.search_view.set_target_rows(["ac"])
+    w.ratio_impact_page.member_combo.setCurrentText("producer")
+    w.ratio_impact_page.fractions_input.setText("0.2,0.8")
+    w.ratio_impact_page.target_input.setText("ac")
     jid = w.run_abundance_impact()
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
     assert seen["argv"][0] == "abundance-impact"
     assert seen["argv"][seen["argv"].index("--member") + 1] == "producer"
     assert seen["argv"][seen["argv"].index("--fractions") + 1] == "0.2,0.8"
-    assert w.search_view.table.item(0, 0).text() == "producer@0.2"
-    assert w.search_view.table.item(0, 1).text() == "ac"
-    assert w.search_view.run_abundance_btn.isEnabled()
+    assert w.ratio_impact_page.results_panel.table.item(0, 0).text() == "producer@0.2"
+    assert w.ratio_impact_page.results_panel.table.item(0, 1).text() == "ac"
+    assert w.ratio_impact_page.run_btn.isEnabled()
     runner.shutdown()
 
 
@@ -615,7 +615,7 @@ def test_search_figure_export_copies_selected_svg(monkeypatch, tmp_path):
         "getSaveFileName",
         lambda *args, **kwargs: (str(target), "SVG (*.svg)"),
     )
-    w._export_search_figure()
+    w._export_ranked_figure(w.search_view)
     assert target.read_text() == "<svg>scatter</svg>"
     assert "Exported figure" in w.search_view.status.text()
 

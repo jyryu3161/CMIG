@@ -27,13 +27,11 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
-    QScrollArea,
     QSlider,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -41,6 +39,7 @@ from PySide6.QtWidgets import (
 from cmig.core.delta import DeltaResult
 from cmig.core.sandbox import BoundConstraint
 from cmig.core.targets import TARGET_PRESETS, preset_targets
+from cmig.gui.analysis_page import AnalysisPage
 from cmig.gui.pickers import MediumPicker, ModelPicker
 from cmig.gui.search_results import (
     MERGE_MEDIUM_WARNING,
@@ -394,26 +393,16 @@ class ScenarioCompareView(QWidget):
         self.growth_label.setText(f"growth Δ: {delta.growth_delta:+.4g} · added: {added}{status}")
 
 
-class SearchView(QWidget):
-    """Consortium Search — ranked candidates + Pareto/strategy warnings."""
+class SearchView(AnalysisPage):
+    """Combination Search — ranked candidates + Pareto/strategy warnings."""
 
     def __init__(self) -> None:
-        super().__init__()
-        outer = QVBoxLayout(self)
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setMinimumSize(0, 0)
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        self.scroll_area.setWidget(content)
-        outer.addWidget(self.scroll_area)
-        self.title = QLabel("Find Best Model Combination")
-        pool_row = QHBoxLayout()
+        super().__init__(
+            "Combination Search", "Rank model combinations by a target metabolite.",
+            run_text="Run Search",
+        )
         self.model_picker = ModelPicker("Models")
         self.medium_picker = MediumPicker()
-        pool_row.addWidget(self.model_picker)
-        pool_row.addWidget(QLabel("Medium"))
-        pool_row.addWidget(self.medium_picker, 1)
         # Per-target rows replace the old comma box + shared Direction + References inputs:
         # every row carries its own direction, weight and fixed reference, exactly like the
         # CLI's --targets/--target-directions/--target-weights/--target-scales.
@@ -437,16 +426,16 @@ class SearchView(QWidget):
         self.multi_metric_combo.addItems([
             "normalized_weighted", "carbon_equivalent", "raw_sum", "pareto",
         ])
+        self.multi_metric_label = QLabel("Multi-target metric")
         target_btn_row = QHBoxLayout()
         target_btn_row.addWidget(self.add_target_btn)
         target_btn_row.addWidget(self.remove_target_btn)
         target_btn_row.addWidget(self.target_preset_combo)
-        target_btn_row.addWidget(QLabel("Multi-target metric"))
+        target_btn_row.addWidget(self.multi_metric_label)
         target_btn_row.addWidget(self.multi_metric_combo)
         target_btn_row.addStretch(1)
         target_note = QLabel(
-            "Targets: Search uses every row (Weight and Reference apply to 2+ rows). "
-            "Gene KO and Ratio Impact use the single row's target (Gene KO also its direction)."
+            "Each row is a target. Weight and Reference apply when there are two or more rows."
         )
         target_note.setWordWrap(True)
         self.weight_note = QLabel("Weights do not affect Pareto ranking.")
@@ -455,7 +444,6 @@ class SearchView(QWidget):
         self.reference_warning_label = QLabel("")
         self.reference_warning_label.setWordWrap(True)
         self.reference_warning_label.setVisible(False)
-        controls = QHBoxLayout()
         self.strategy_combo = QComboBox()
         self.strategy_combo.addItems(["auto", "exhaustive", "random", "ga"])
         self.min_size_spin = QSpinBox()
@@ -474,19 +462,6 @@ class SearchView(QWidget):
         self.search_top_k_spin.setRange(1, 2_147_483_647)
         self.search_top_k_spin.setValue(10)
         self.robustness_check = QCheckBox("FVA")
-        self.run_btn = QPushButton("Run Search")
-        controls.addWidget(QLabel("Size"))
-        controls.addWidget(self.min_size_spin)
-        controls.addWidget(QLabel("to"))
-        controls.addWidget(self.max_size_spin)
-        controls.addWidget(QLabel("Strategy"))
-        controls.addWidget(self.strategy_combo)
-        controls.addWidget(QLabel("Top K"))
-        controls.addWidget(self.search_top_k_spin)
-        controls.addWidget(self.robustness_check)
-        controls.addWidget(self.run_btn)
-        controls.addStretch(1)
-        settings = QHBoxLayout()
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(0, 2_000_000_000)
         self.workers_spin = QSpinBox()
@@ -498,34 +473,14 @@ class SearchView(QWidget):
         self.min_member_growth_spin = QDoubleSpinBox()
         self.min_member_growth_spin.setRange(0, 100)
         self.min_member_growth_spin.setDecimals(5)
-        growth_settings = QHBoxLayout()
-        for label, widget in (("Seed", self.seed_spin), ("Workers", self.workers_spin)):
-            settings.addWidget(QLabel(label))
-            settings.addWidget(widget)
-        settings.addStretch(1)
         # Medium mode lives in the collapsed advanced box; this line keeps the exact/merge
         # choice visible on screen at all times.
         self.medium_mode_summary = QLabel("")
         self.medium_mode_summary.setWordWrap(True)
-        for label, growth_widget in (("Growth fraction", self.growth_fraction_spin),
-                                     ("Member growth ≥", self.min_member_growth_spin)):
-            growth_settings.addWidget(QLabel(label))
-            growth_settings.addWidget(growth_widget)
-        growth_settings.addStretch(1)
         self.checkpoint_input = QLineEdit("")
         self.checkpoint_input.setPlaceholderText("Checkpoint JSON path")
         self.browse_checkpoint_btn = QPushButton("Browse")
         self.resume_check = QCheckBox("Resume")
-        self.cancel_btn = QPushButton("Cancel search")
-        self.cancel_btn.setEnabled(False)
-        checkpoint_row = QHBoxLayout()
-        checkpoint_row.addWidget(QLabel("Checkpoint"))
-        checkpoint_row.addWidget(self.checkpoint_input)
-        checkpoint_row.addWidget(self.browse_checkpoint_btn)
-        checkpoint_row.addWidget(self.resume_check)
-        checkpoint_row.addWidget(self.cancel_btn)
-        checkpoint_row.addStretch(1)
-        limits = QHBoxLayout()
         self.validation_top_spin = QSpinBox()
         self.validation_top_spin.setRange(0, 100)
         self.validation_top_spin.setSpecialValueText("Off")
@@ -535,68 +490,41 @@ class SearchView(QWidget):
         self.solve_timeout_spin = QSpinBox()
         self.solve_timeout_spin.setRange(0, 86400)
         self.solve_timeout_spin.setSpecialValueText("No limit")
-        for label, limit_widget in (("Validate top (extra solves)", self.validation_top_spin),
-                                    ("Community growth ≥", self.min_community_growth_spin),
-                                    ("Per-solve timeout (s)", self.solve_timeout_spin)):
-            limits.addWidget(QLabel(label))
-            limits.addWidget(limit_widget)
+        self.add_input_row(self.model_picker, "Medium", self.medium_picker)
+        self.inputs.addWidget(self.medium_mode_summary)
+        self.inputs.addWidget(target_note)
+        self.inputs.addWidget(self.target_table)
+        self.inputs.addLayout(target_btn_row)
+        self.inputs.addWidget(self.weight_note)
+        self.inputs.addWidget(self.reference_warning_label)
+        self.add_input_row("Size", self.min_size_spin, "to", self.max_size_spin)
+        self.advanced.add_row("Strategy", self.strategy_combo, "Top K", self.search_top_k_spin,
+                              self.robustness_check)
+        self.advanced.add_row("Seed", self.seed_spin, "Workers", self.workers_spin)
+        self.advanced.add_row("Growth fraction", self.growth_fraction_spin,
+                              "Member growth ≥", self.min_member_growth_spin,
+                              "Community growth ≥", self.min_community_growth_spin)
+        self.advanced.add_row("Validate top (extra solves)", self.validation_top_spin,
+                              "Per-solve timeout (s)", self.solve_timeout_spin)
+        self.advanced.add_row("Checkpoint", self.checkpoint_input, self.browse_checkpoint_btn,
+                              self.resume_check)
         self._build_advanced_settings()
-        ko_row = QHBoxLayout()
-        self.ko_members_input = QLineEdit("")
-        self.ko_members_input.setPlaceholderText("Fixed combo for KO, e.g. iHN637,iSFV_1184")
-        self.ko_member_input = QLineEdit("")
-        self.ko_member_input.setPlaceholderText("Optional member; blank = all")
-        self.ko_genes_input = QLineEdit("")
-        self.ko_genes_input.setPlaceholderText("Optional gene ids; blank = auto genes")
-        self.ko_max_genes_spin = QSpinBox()
-        self.ko_max_genes_spin.setRange(0, 10000)
-        self.ko_max_genes_spin.setValue(50)
-        # Gene KO keeps its own top-k (the `gene-ko-search` CLI default is 20), separate from
-        # the Search top-k so neither silently changes the other's request.
-        self.ko_top_k_spin = QSpinBox()
-        self.ko_top_k_spin.setRange(1, 100)
-        self.ko_top_k_spin.setValue(20)
-        self.run_ko_btn = QPushButton("Rank Gene KOs")
-        ko_row.addWidget(QLabel("Gene KO"))
-        ko_row.addWidget(self.ko_members_input)
-        ko_row.addWidget(self.ko_member_input)
-        ko_action_row = QHBoxLayout()
-        ko_action_row.addWidget(QLabel("Gene IDs"))
-        ko_action_row.addWidget(self.ko_genes_input)
-        ko_action_row.addWidget(QLabel("Max genes/member"))
-        ko_action_row.addWidget(self.ko_max_genes_spin)
-        ko_action_row.addWidget(QLabel("KO Top K"))
-        ko_action_row.addWidget(self.ko_top_k_spin)
-        ko_action_row.addWidget(self.run_ko_btn)
-        ko_action_row.addStretch(1)
-        growth_row = QHBoxLayout()
-        self.growth_member_input = QLineEdit("")
-        self.growth_member_input.setPlaceholderText("Member for ratio sweep, e.g. iML1515")
-        self.abundance_fractions_input = QLineEdit("0.1,0.25,0.5,0.75")
-        self.abundance_fractions_input.setPlaceholderText("Fractions, e.g. 0.1,0.25,0.5,0.75")
-        self.run_growth_btn = QPushButton("Strain Growth")
-        self.run_abundance_btn = QPushButton("Ratio Impact")
-        self.cooperative_tradeoff_spin = QDoubleSpinBox()
-        self.cooperative_tradeoff_spin.setRange(0.01, 1.0)
-        self.cooperative_tradeoff_spin.setDecimals(2)
-        self.cooperative_tradeoff_spin.setSingleStep(0.05)
-        self.cooperative_tradeoff_spin.setValue(0.5)
-        growth_row.addWidget(QLabel("Growth/Ratio"))
-        growth_row.addWidget(self.growth_member_input)
-        growth_row.addWidget(self.abundance_fractions_input)
-        growth_action_row = QHBoxLayout()
-        growth_action_row.addWidget(self.run_growth_btn)
-        growth_action_row.addWidget(self.run_abundance_btn)
-        growth_action_row.addStretch(1)
-        workflow_note = QLabel(
-            "Gene KO: the selected models, medium (exact), the single target row's target "
-            "and direction, target growth fraction and KO Top K apply. "
-            "Strain Growth / Ratio: the selected models, medium (exact) and cooperative "
-            "tradeoff apply; Search strategy, GA and advanced search settings do not."
+        self.advanced.track(
+            self.strategy_combo, self.search_top_k_spin, self.robustness_check, self.seed_spin,
+            self.workers_spin, self.growth_fraction_spin, self.min_member_growth_spin,
+            self.min_community_growth_spin, self.validation_top_spin, self.solve_timeout_spin,
+            self.checkpoint_input, self.resume_check, self.exhaustive_max_spin,
+            self.n_samples_spin, self.ga_pop_size_spin, self.ga_generations_spin,
+            self.ga_mutation_rate_spin, self.ga_immigrant_fraction_spin,
+            self.ga_tournament_k_spin, self.ga_elitism_spin, self.ga_budget_spin,
+            self.ga_patience_spin, self.ga_restart_after_spin,
+            self.ga_local_search_fraction_spin, self.ga_preserve_common_check,
+            self.solver_threads_spin, self.pareto_resolution_spin, self.medium_mode_combo,
+            self.allow_unknown_medium_check,
         )
-        workflow_note.setWordWrap(True)
-        workflow_note.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.results_panel = SearchResultsPanel(self.request_fields)
+        self.results_panel = SearchResultsPanel(self.request_fields, status=self.status,
+                                                area=self.results)
+        self.results.add(self.results_panel, 1)
         panel = self.results_panel
         self.status: QLabel = panel.status
         self.details: QPlainTextEdit = panel.details
@@ -609,51 +537,15 @@ class SearchView(QWidget):
         self.figure_view: QWidget = panel.figure_view
         self.figure_placeholder: QLabel = panel.figure_placeholder
         self.figure_stack: QStackedWidget = panel.figure_stack
-        layout.addWidget(self.title)
-        layout.addLayout(pool_row)
-        layout.addWidget(target_note)
-        layout.addWidget(self.target_table)
-        layout.addLayout(target_btn_row)
-        layout.addWidget(self.weight_note)
-        layout.addWidget(self.reference_warning_label)
-        layout.addLayout(controls)
-        layout.addLayout(settings)
-        layout.addWidget(self.medium_mode_summary)
-        layout.addLayout(growth_settings)
-        layout.addLayout(checkpoint_row)
-        layout.addLayout(limits)
-        layout.addWidget(self.advanced_toggle)
-        layout.addWidget(self.advanced_box)
-        layout.addLayout(ko_row)
-        layout.addLayout(ko_action_row)
-        layout.addLayout(growth_row)
-        layout.addLayout(growth_action_row)
-        tradeoff_row = QHBoxLayout()
-        tradeoff_row.addWidget(QLabel("Cooperative tradeoff f (Growth / Ratio)"))
-        tradeoff_row.addWidget(self.cooperative_tradeoff_spin)
-        tradeoff_row.addStretch(1)
-        layout.addLayout(tradeoff_row)
-        layout.addWidget(workflow_note)
-        layout.addWidget(self.results_panel)
         # The CLI's own default request: one row, `--target but --direction max_secretion`.
         self.add_target_row("but")
         # Any edit to an answer-determining input invalidates the displayed ranking: a table
         # computed for pool/target/size A must never sit under inputs that now say B.
-        for line_edit in (
-            self.ko_members_input,
-            self.ko_member_input,
-            self.ko_genes_input,
-            self.growth_member_input,
-            self.abundance_fractions_input,
-            self.checkpoint_input,
-        ):
-            line_edit.textChanged.connect(self.invalidate_results)
+        self.checkpoint_input.textChanged.connect(self.invalidate_results)
         for spin in (
             self.min_size_spin,
             self.max_size_spin,
             self.search_top_k_spin,
-            self.ko_top_k_spin,
-            self.ko_max_genes_spin,
             self.seed_spin,
             self.workers_spin,
             self.growth_fraction_spin,
@@ -690,7 +582,6 @@ class SearchView(QWidget):
             self.medium_mode_combo,
         ):
             combo.currentTextChanged.connect(self.invalidate_results)
-        self.cooperative_tradeoff_spin.valueChanged.connect(self.invalidate_results)
         # The model and medium choice determine the answer like any other input. Passing an
         # argument makes the invalidation compare the request, so a picker rebuild that keeps
         # the same choice never clears a result.
@@ -702,26 +593,56 @@ class SearchView(QWidget):
         self.medium_picker.currentIndexChanged.connect(self._refresh_medium_notes)
         self.medium_mode_combo.currentIndexChanged.connect(self._refresh_medium_notes)
         self.allow_unknown_medium_check.toggled.connect(self._refresh_medium_notes)
-        self.advanced_toggle.toggled.connect(self._toggle_advanced)
         self._refresh_target_notes()
         self._refresh_medium_notes()
+        # Inputs a reopened run restores, the model picker first.
+        self.register("models", self.model_picker)
+        self.register("medium", self.medium_picker)
+        self.register_custom("targets", lambda: [list(r) for r in self.target_rows()],
+                             self._restore_targets)
+        for name, widget in (
+            ("multi_metric", self.multi_metric_combo), ("min_size", self.min_size_spin),
+            ("max_size", self.max_size_spin), ("strategy", self.strategy_combo),
+            ("top_k", self.search_top_k_spin), ("fva", self.robustness_check),
+            ("seed", self.seed_spin), ("workers", self.workers_spin),
+            ("growth_fraction", self.growth_fraction_spin),
+            ("min_member_growth", self.min_member_growth_spin),
+            ("min_community_growth", self.min_community_growth_spin),
+            ("validate_top", self.validation_top_spin), ("timeout", self.solve_timeout_spin),
+            ("checkpoint", self.checkpoint_input), ("resume", self.resume_check),
+            ("exhaustive_max", self.exhaustive_max_spin), ("n_samples", self.n_samples_spin),
+            ("ga_pop_size", self.ga_pop_size_spin), ("ga_generations", self.ga_generations_spin),
+            ("ga_mutation_rate", self.ga_mutation_rate_spin),
+            ("ga_immigrant_fraction", self.ga_immigrant_fraction_spin),
+            ("ga_tournament_k", self.ga_tournament_k_spin), ("ga_elitism", self.ga_elitism_spin),
+            ("ga_budget", self.ga_budget_spin), ("ga_patience", self.ga_patience_spin),
+            ("ga_restart_after", self.ga_restart_after_spin),
+            ("ga_local_search_fraction", self.ga_local_search_fraction_spin),
+            ("ga_preserve_common", self.ga_preserve_common_check),
+            ("solver_threads", self.solver_threads_spin),
+            ("pareto_resolution", self.pareto_resolution_spin),
+            ("medium_mode", self.medium_mode_combo),
+            ("allow_unknown_medium", self.allow_unknown_medium_check),
+        ):
+            self.register(name, widget)
+
+    def _restore_targets(self, rows: object) -> str | None:
+        try:
+            self.set_target_rows([tuple(str(cell) for cell in row) for row in rows])  # type: ignore[attr-defined]
+        except (TypeError, ValueError) as exc:
+            return f"targets could not be restored ({exc})"
+        return None
 
     def _build_advanced_settings(self) -> None:
-        """Collapsible "Advanced search settings" group — every value here is Search only.
+        """The strategy, GA, solver and medium-mode rows of the Advanced options section.
 
         Defaults equal the `cmig search` parser / `GAConfig` defaults. An option whose
         applicability condition does not hold on screen (e.g. GA options with the exhaustive
         strategy) is left out of the argv by the caller.
         """
-        self.advanced_toggle = QToolButton()
-        self.advanced_toggle.setText("Advanced search settings (Search only)")
-        self.advanced_toggle.setCheckable(True)
-        self.advanced_toggle.setChecked(False)
-        self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
-        self.advanced_box = QWidget()
-        box = QVBoxLayout(self.advanced_box)
-        box.setContentsMargins(12, 0, 0, 0)
+        self.advanced_toggle = self.advanced.toggle
+        self.advanced_box = self.advanced.body
+        box = self.advanced.body_layout
 
         def note(text: str) -> QLabel:
             label = QLabel(text)
@@ -827,13 +748,6 @@ class SearchView(QWidget):
             "Medium mode and unknown-medium apply to Search only; Gene KO, Strain Growth "
             "and Ratio Impact always use exact medium."
         ))
-        self.advanced_box.setVisible(False)
-
-    def _toggle_advanced(self, expanded: bool) -> None:
-        self.advanced_box.setVisible(expanded)
-        self.advanced_toggle.setArrowType(
-            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
-        )
 
     def _refresh_medium_notes(self, *_args: object) -> None:
         if not self.medium_picker.current_ref():
@@ -954,6 +868,9 @@ class SearchView(QWidget):
         warning = self.reference_warning()
         self.reference_warning_label.setText(warning)
         self.reference_warning_label.setVisible(bool(warning))
+        multi = self.target_table.rowCount() >= 2
+        self.multi_metric_label.setVisible(multi)
+        self.multi_metric_combo.setVisible(multi)
 
     def reference_warning(self) -> str:
         """Pre-run warning (never a block): normalized_weighted without References.
@@ -984,15 +901,6 @@ class SearchView(QWidget):
                    "ga_tournament_k", "ga_elitism", "ga_budget", "ga_patience",
                    "ga_restart_after", "ga_local_search_fraction", "ga_preserve_common",
                    "checkpoint", "resume", "min_community_growth", "validate_top", "timeout"),
-        "gene_ko": (
-            "models", "target", "ko_members", "ko_member", "ko_genes", "max_genes",
-            "ko_top_k", "medium", "direction", "growth_fraction",
-        ),
-        "strain_growth": ("models", "medium", "cooperative_tradeoff"),
-        "abundance_impact": (
-            "models", "target", "growth_member", "fractions", "medium",
-            "cooperative_tradeoff",
-        ),
         "host_search": (),  # driven by the Host tab's own controls, not these
     }
 
@@ -1009,14 +917,7 @@ class SearchView(QWidget):
             "max_size": str(self.max_size_spin.value()),
             "strategy": self.strategy_combo.currentText(),
             "top_k": str(self.search_top_k_spin.value()),
-            "ko_top_k": str(self.ko_top_k_spin.value()),
             "fva": str(self.robustness_check.isChecked()),
-            "ko_members": self.ko_members_input.text().strip(),
-            "ko_member": self.ko_member_input.text().strip(),
-            "ko_genes": self.ko_genes_input.text().strip(),
-            "max_genes": str(self.ko_max_genes_spin.value()),
-            "growth_member": self.growth_member_input.text().strip(),
-            "fractions": self.abundance_fractions_input.text().strip(),
             "medium": self.medium_picker.current_ref(),
             "medium_mode": str(self.medium_mode_combo.currentData()),
             "allow_unknown_medium": str(self.allow_unknown_medium_check.isChecked()),
@@ -1024,7 +925,6 @@ class SearchView(QWidget):
             "workers": str(self.workers_spin.value()),
             "solver_threads": str(self.solver_threads_spin.value()),
             "growth_fraction": str(self.growth_fraction_spin.value()),
-            "cooperative_tradeoff": str(self.cooperative_tradeoff_spin.value()),
             "min_member_growth": str(self.min_member_growth_spin.value()),
             "multi_metric": self.multi_metric_combo.currentText(),
             "pareto_resolution": str(self.pareto_resolution_spin.value()),

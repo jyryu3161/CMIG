@@ -82,12 +82,13 @@ def test_no_models_selected_is_refused_before_running(setup) -> None:
 
 def test_gene_ko_strain_ratio_use_taxonomy(setup) -> None:
     w, calls = setup
-    w.search_view.model_picker.set_selected(["a", "b"])
-    w.search_view.ko_members_input.setText("a,b")
+    w.gene_ko_page.model_picker.set_selected(["a", "b"])
+    w.gene_ko_page.members_picker.set_selected(["a", "b"])
     w.run_gene_ko_search()
     argv = _wait_calls(w, calls, 1)
     assert argv[0] == "gene-ko-search" and _taxonomy_ids(argv) == ["a", "b"]
     assert Path(argv[argv.index("--out") + 1]).name.startswith("gene-ko-")
+    w.strain_growth_page.model_picker.set_selected(["a", "b"])
     w.run_strain_growth_report()
     argv = _wait_calls(w, calls, 2)
     assert argv[0] == "strain-growth" and "--taxonomy" in argv

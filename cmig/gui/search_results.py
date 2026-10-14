@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from cmig.gui.analysis_page import ResultsArea
+
 #: Default SearchView column labels. Adapters may override them per workflow so a growth
 #: rate is never displayed under a header that says "Flux" (round-5 P2 F7/F21).
 SEARCH_COLUMNS = ("Members", "Target", "Score", "Flux", "Growth", "FVA Range", "Status")
@@ -182,9 +184,11 @@ class SearchResultsPanel(QWidget):
         self,
         request_fields: Callable[[str], dict[str, str]],
         status: QLabel | None = None,
+        area: ResultsArea | None = None,
     ) -> None:
         super().__init__()
         self._request_fields = request_fields
+        self._area = area
         self._own_status = status is None
         self.status = QLabel("") if status is None else status
         if self._own_status:
@@ -316,6 +320,8 @@ class SearchResultsPanel(QWidget):
         self.export_figure_btn.setEnabled(False)
         self.details.clear()
         self.status.setText("Inputs changed — previous result cleared; re-run to update.")
+        if self._area is not None:
+            self._area.show_empty()
 
     def _clear_inspector(self) -> None:
         self._row_records = []
@@ -645,6 +651,8 @@ class SearchResultsPanel(QWidget):
             "" if not pareto_count else f"Pareto frontier candidates: {pareto_count}"
         )
         self.refresh_figure_mode()
+        if self._area is not None:
+            self._area.show_results()
 
 
 _NOT_RECORDED = "not recorded"

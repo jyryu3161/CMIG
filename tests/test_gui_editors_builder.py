@@ -21,6 +21,8 @@ from cmig.gui.builder import (  # noqa: E402
     SearchView,
 )
 from cmig.gui.editors import MediumEditor, ModelManagerPanel  # noqa: E402
+from cmig.gui.pages.ratio_impact import RatioImpactPage  # noqa: E402
+from cmig.gui.pages.strain_growth import StrainGrowthPage  # noqa: E402
 from cmig.io.model_import import ModelSummary  # noqa: E402
 
 
@@ -146,9 +148,10 @@ def test_search_view_loads_advanced_summary(tmp_path):
     assert view.min_size_spin.value() == 200
     assert view.max_size_spin.value() == 200
     assert view.robustness_check.text() == "FVA"
-    assert view.run_growth_btn.text() == "Strain Growth"
-    assert view.run_abundance_btn.text() == "Ratio Impact"
-    assert view.abundance_fractions_input.text() == "0.1,0.25,0.5,0.75"
+    assert StrainGrowthPage().run_btn.text() == "Run Strain Growth"
+    ratio = RatioImpactPage()
+    assert ratio.run_btn.text() == "Run Ratio Impact"
+    assert ratio.fractions_input.text() == "0.1,0.25,0.5,0.75"
     (tmp_path / "search_plot.svg").write_text("<svg>ranking</svg>")
     (tmp_path / "search_scatter.svg").write_text("<svg>scatter</svg>")
     view.load_summary({

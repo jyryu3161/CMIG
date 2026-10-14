@@ -33,20 +33,21 @@ def search_advanced(w: Any) -> str:
 
 
 def gene_ko(w: Any) -> str:
-    v = w.search_view
+    v = w.gene_ko_page
     v.model_picker.set_selected(["a", "b", "host"])
     v.medium_picker.set_ref("preset:high_fiber")
-    v.set_target_rows([["ac", "min_uptake", "1", ""]])
-    v.ko_members_input.setText("a,b")
-    v.ko_member_input.setText("a")
-    v.ko_max_genes_spin.setValue(10)
-    v.ko_top_k_spin.setValue(5)
+    v.target_input.setText("ac")
+    v.direction_combo.setCurrentText("min_uptake")
+    v.members_picker.set_selected(["a", "b"])
+    v.member_combo.setCurrentText("a")
+    v.max_genes_spin.setValue(10)
+    v.top_k_spin.setValue(5)
     v.growth_fraction_spin.setValue(0.3)
     return w.run_gene_ko_search()
 
 
 def strain_growth(w: Any) -> str:
-    v = w.search_view
+    v = w.strain_growth_page
     v.model_picker.set_selected(["a", "b"])
     v.medium_picker.set_ref("preset:high_fiber")
     v.cooperative_tradeoff_spin.setValue(0.4)
@@ -54,11 +55,11 @@ def strain_growth(w: Any) -> str:
 
 
 def ratio_impact(w: Any) -> str:
-    v = w.search_view
+    v = w.ratio_impact_page
     v.model_picker.set_selected(["a", "b"])
-    v.set_target_rows([["but", "max_secretion", "1", ""]])
-    v.growth_member_input.setText("b")
-    v.abundance_fractions_input.setText("0.2,0.8")
+    v.target_input.setText("but")
+    v.member_combo.setCurrentText("b")
+    v.fractions_input.setText("0.2,0.8")
     v.cooperative_tradeoff_spin.setValue(0.6)
     return w.run_abundance_impact()
 
