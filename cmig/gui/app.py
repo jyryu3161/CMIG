@@ -920,6 +920,8 @@ def _with_search_conditions(summary: dict[str, Any], source: dict[str, Any]) -> 
 
 
 CHECKPOINT_EXISTS = "checkpoint exists; enable Resume or choose a new path"
+#: a job's final states
+_ENDED = (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
 _UNREADABLE_RESULT = (
     "{kind} finished, but its result could not be read back — see the inspector ({out_dir})"
 )
@@ -1309,6 +1311,8 @@ class CmigMainWindow(QMainWindow):
         self._last_run_dir: Path | None = None
         #: run folders whose job ended since the last poll: (folder, error text)
         self._just_finished: list[tuple[Path, str]] = []
+        #: runs/ folders of projects closed in this window (see `_from_closed_project`)
+        self._closed_runs_dirs: list[Path] = []
         self.solver_label = QLabel("")
         self.statusBar().addPermanentWidget(self.solver_label)
         self._refresh_solver_label()
@@ -1543,6 +1547,15 @@ class CmigMainWindow(QMainWindow):
         """A run folder directly under the open project's runs/ (never an outside run)."""
         project = self.session.project
         return project is not None and _same_folder(project.runs_dir, Path(run_dir).parent)
+
+    def _from_closed_project(self, run_dir: Path) -> bool:
+        """A job's run folder belongs to a project this window has closed since (and not to
+        the open one): its result is never drawn, shown or listed here. Its run state is
+        still recorded (`_settle_run_jobs`) and its page's buttons are released."""
+        if self._in_project_runs(run_dir):
+            return False
+        parent = Path(run_dir).parent
+        return any(_same_folder(runs, parent) for runs in self._closed_runs_dirs)
 
     def _clear_readback_marker(self, run_dir: Path) -> bool:
         """Drop a project run's `unreadable` marker before it is read back again."""
@@ -2026,6 +2039,8 @@ class CmigMainWindow(QMainWindow):
     def _close_session(self) -> None:
         """Close the project; a failed final save is reported here, never raised into Qt."""
         self._clear_last_run()
+        if self.session.project is not None:
+            self._closed_runs_dirs.append(self.session.project.runs_dir)
         try:
             self.session.close()
         except ProjectError as exc:
@@ -5780,6 +5795,11 @@ class CmigMainWindow(QMainWindow):
             if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
                 self._search_cancel_pending.discard(jid)
                 self.bridge.cancelling.discard(jid)
+                if self._from_closed_project(out_dir):
+                    self._search_jobs.pop(jid, None)
+                    self.search_view.run_btn.setEnabled(True)
+                    self.search_view.cancel_btn.setEnabled(False)
+                    continue
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._search_jobs.pop(jid, None)
                 self.search_view.run_btn.setEnabled(True)
@@ -5885,7 +5905,10 @@ class CmigMainWindow(QMainWindow):
                         )
         for jid, out_dir in list(self._host_microbe_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE:
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                self._host_microbe_jobs.pop(jid, None)
+                self.host_view.run_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE:
                 self._host_microbe_jobs.pop(jid, None)
                 self.host_view.run_btn.setEnabled(True)
                 # A completion message must not cover a failed readback (status bar + inspector).
@@ -5911,7 +5934,10 @@ class CmigMainWindow(QMainWindow):
         self._finish_ranked_jobs("ratio_impact", self._abundance_impact_jobs, "ratio impact")
         for jid, out_dir in list(self._dfba_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE:
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                self._dfba_jobs.pop(jid, None)
+                self.dynamics_view.run_dfba_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE:
                 self._dfba_jobs.pop(jid, None)
                 self.dynamics_view.run_dfba_btn.setEnabled(True)
                 if self.load_dfba_dir(out_dir):
@@ -5928,7 +5954,10 @@ class CmigMainWindow(QMainWindow):
                 )
         for jid, out_dir in list(self._spatial_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE:
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                self._spatial_jobs.pop(jid, None)
+                self.spatial_page.run_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE:
                 self._spatial_jobs.pop(jid, None)
                 self.spatial_page.run_btn.setEnabled(True)
                 if self.load_spatial_dir(out_dir):
@@ -5946,7 +5975,10 @@ class CmigMainWindow(QMainWindow):
                 )
         for jid, out_dir in list(self._community_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE:
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                self._community_jobs.pop(jid, None)
+                self.community_builder.run_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE:
                 self._community_jobs.pop(jid, None)
                 self.community_builder.run_btn.setEnabled(True)
                 manifest = (
@@ -5974,7 +6006,10 @@ class CmigMainWindow(QMainWindow):
                 )
         for jid, (out_dir, mode) in list(self._sweep_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE:
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                self._sweep_jobs.pop(jid, None)
+                self.sweep_view.run_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE:
                 self._sweep_jobs.pop(jid, None)
                 self.sweep_view.run_btn.setEnabled(True)
                 rows = _load_sweep_rows(out_dir / "sweep.parquet")
@@ -6023,7 +6058,10 @@ class CmigMainWindow(QMainWindow):
                 )
         for jid, (out_dir, request) in list(self._medium_growth_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, dict):
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                self._medium_growth_jobs.pop(jid, None)
+                self.medium_editor.check_growth_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._medium_growth_jobs.pop(jid, None)
                 self.medium_editor.check_growth_btn.setEnabled(True)
                 self._register_run_output(out_dir)
@@ -6116,7 +6154,10 @@ class CmigMainWindow(QMainWindow):
                 )
         for jid, out_dir in list(self._minimal_medium_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, dict):
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                self._minimal_medium_jobs.pop(jid, None)
+                self.medium_editor.minimal_medium_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._minimal_medium_jobs.pop(jid, None)
                 self.medium_editor.minimal_medium_btn.setEnabled(True)
                 self.medium_editor.load_minimal_result(job.result)
@@ -6196,7 +6237,10 @@ class CmigMainWindow(QMainWindow):
         page = self.analysis_pages[key]
         for jid, (out_dir, requested) in list(jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, dict):
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                jobs.pop(jid, None)
+                page.run_btn.setEnabled(True)  # type: ignore[attr-defined]
+            elif job.status is JobStatus.DONE and isinstance(job.result, dict):
                 jobs.pop(jid, None)
                 page.run_btn.setEnabled(True)  # type: ignore[attr-defined]
                 if self._inspect_gui_run(out_dir) is None:
