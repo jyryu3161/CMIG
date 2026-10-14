@@ -14,7 +14,8 @@ pytest.importorskip("PySide6.QtWidgets")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.core.sweep import SweepAxis  # noqa: E402
-from cmig.gui.views import DfbaSpatialView, ExternalProfileView, SweepView  # noqa: E402
+from cmig.gui.pages.spatial import SpatialPage  # noqa: E402
+from cmig.gui.views import DfbaView, ExternalProfileView, SweepView  # noqa: E402
 from cmig.service import JobRunner, JobStatus  # noqa: E402
 
 
@@ -100,17 +101,18 @@ def test_profile_view_empty():
 def test_dynamics_view_requests_and_summaries():
     """Dynamics view exposes runnable dFBA/spatial requests and result summaries."""
     _app()
-    view = DfbaSpatialView()
+    view = DfbaView()
+    spatial = SpatialPage()
     assert view.dfba_request()["model"] == ""
     view.model_picker.set_choices([("e_coli", True, ""), ("broken", False, "its file is missing")])
     view.model_picker.set_selected(["broken"])
     assert view.dfba_request()["model"] == ""  # a model that cannot run is never picked
     view.model_picker.set_selected(["e_coli"])
     assert view.dfba_request()["model"] == "e_coli"
-    assert "out_dir" not in view.dfba_request() and "out_dir" not in view.spatial_request()
-    assert view.spatial_request()["width"] == view.spatial_request()["height"]
-    view.spatial_dt_spin.setValue(0.25)
-    assert view.spatial_request()["dt"] == 0.25
+    assert "out_dir" not in view.dfba_request() and "out_dir" not in spatial.spatial_request()
+    assert spatial.spatial_request()["width"] == spatial.spatial_request()["height"]
+    spatial.spatial_dt_spin.setValue(0.25)
+    assert spatial.spatial_request()["dt"] == 0.25
     view.load_dfba_summary(
         {
             "status": "completed",
@@ -121,18 +123,18 @@ def test_dynamics_view_requests_and_summaries():
         run_dir=Path("/tmp"),
     )
     assert view.table.item(0, 0).text() == "dFBA"
-    view.load_spatial_summary(
+    spatial.load_spatial_summary(
         {"status": "completed", "final_t": 8.0, "final_min": 0.0, "final_max": 10.0},
         run_dir=Path("/tmp"),
     )
-    assert view.table.item(0, 0).text() == "Spatial"
+    assert spatial.table.item(0, 0).text() == "Spatial"
 
 
 def test_dynamics_view_loads_svg_without_tiff(tmp_path):
     pytest.importorskip("PySide6.QtSvg")
 
     _app()
-    view = DfbaSpatialView()
+    view = DfbaView()
     (tmp_path / "figure.svg").write_text(
         "<svg xmlns='http://www.w3.org/2000/svg' width='120' height='80'>"
         "<rect width='120' height='80' fill='white'/>"

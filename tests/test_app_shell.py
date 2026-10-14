@@ -243,9 +243,9 @@ def test_load_spatial_dir_updates_dynamics_tab(tmp_path):
     )
     w = build_main_window()
     assert w.load_spatial_dir(tmp_path) is True
-    assert w.pages.currentWidget() is w.dynamics_view
-    assert w.dynamics_view.table.item(0, 0).text() == "Spatial"
-    assert "range=0..10" in w.dynamics_view.table.item(0, 3).text()
+    assert w.pages.currentWidget() is w.spatial_page
+    assert w.spatial_page.table.item(0, 0).text() == "Spatial"
+    assert "range=0..10" in w.spatial_page.table.item(0, 3).text()
 
 
 def test_run_spatial_preview_passes_dt_to_cli(monkeypatch, tmp_path):
@@ -277,7 +277,7 @@ def test_run_spatial_preview_passes_dt_to_cli(monkeypatch, tmp_path):
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
     project = open_test_project(w, tmp_path / "p", ["a"])
-    w.dynamics_view.spatial_dt_spin.setValue(0.25)
+    w.spatial_page.spatial_dt_spin.setValue(0.25)
     jid = w.run_spatial_preview()
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
@@ -285,7 +285,7 @@ def test_run_spatial_preview_passes_dt_to_cli(monkeypatch, tmp_path):
     out = Path(seen["argv"][seen["argv"].index("--out") + 1])
     assert out.parent == project.runs_dir and out.name.startswith("spatial-")
     assert seen["argv"][seen["argv"].index("--dt") + 1] == "0.25"
-    assert w.dynamics_view.run_spatial_btn.isEnabled()
+    assert w.spatial_page.run_btn.isEnabled()
     runner.shutdown()
 
 

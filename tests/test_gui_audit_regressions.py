@@ -949,11 +949,11 @@ def test_valid_digest_cannot_certify_invalid_summary_schema(tmp_path, kind):
     assert loaded is False
     assert "Status: readback invalid/unreadable" in _shown(window)
     assert "Artifact digest: verified" in _shown(window)
-    view_status = (window.search_view.status if kind == "search"
-                   else window.dynamics_view.status).text()
-    assert "Readback invalid/unreadable" in view_status
+    page = {"search": window.search_view, "dfba": window.dynamics_view,
+            "spatial": window.spatial_page}[kind]
+    assert "Readback invalid/unreadable" in page.status.text()
     assert (window.search_view.current_run_dir if kind == "search"
-            else window.dynamics_view.table.rowCount()) in (None, 0)
+            else page.table.rowCount()) in (None, 0)
     window.close()
 
 

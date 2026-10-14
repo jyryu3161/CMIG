@@ -112,7 +112,7 @@ def dfba(w: Any) -> str:
 
 
 def spatial(w: Any) -> str:
-    v = w.dynamics_view
+    v = w.spatial_page
     v.spatial_metabolite_input.setText("EX_ac_e")
     v.grid_size_spin.setValue(16)
     v.steps_spin.setValue(10)

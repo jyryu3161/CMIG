@@ -92,6 +92,7 @@ from cmig.gui.inspector import InspectorPanel
 from cmig.gui.pages.gene_ko import GeneKoPage
 from cmig.gui.pages.host_search import HostSearchPage
 from cmig.gui.pages.ratio_impact import RatioImpactPage
+from cmig.gui.pages.spatial import SpatialPage
 from cmig.gui.pages.strain_growth import StrainGrowthPage
 from cmig.gui.pickers import MediumPicker, ModelPicker
 from cmig.gui.project_session import (
@@ -109,7 +110,7 @@ from cmig.gui.sidebar import (
 )
 from cmig.gui.views import (
     CONTRIBUTION_BASIS_NOTE,
-    DfbaSpatialView,
+    DfbaView,
     ExternalProfileView,
     SweepView,
 )
@@ -1154,7 +1155,8 @@ class CmigMainWindow(QMainWindow):
         self.ratio_impact_page = RatioImpactPage()
         self.host_view = HostImpactView()
         self.host_search_page = HostSearchPage()
-        self.dynamics_view = DfbaSpatialView()
+        self.dynamics_view = DfbaView()
+        self.spatial_page = SpatialPage()
         self.central_stack = QStackedWidget()  # kept: set_central() still docks extra views
         self.pages = self.central_stack
         self.welcome_page = self._build_welcome_page()
@@ -1171,7 +1173,7 @@ class CmigMainWindow(QMainWindow):
             "host": self.host_view,
             "host_search": self.host_search_page,
             "dfba": self.dynamics_view,
-            "spatial": self.dynamics_view,      # Task 11 replaces
+            "spatial": self.spatial_page,
             "medium": self.medium_editor,       # Task 12 wraps
             "sweep": self.sweep_view,           # Task 12 wraps
             "sandbox": self.sandbox_view,       # Task 12 wraps
@@ -1857,6 +1859,8 @@ class CmigMainWindow(QMainWindow):
                            self.ratio_impact_page, self.host_search_page):
                 self._clear_ranked(ranked)
                 ranked.status.clear()
+            for dynamics in (self.dynamics_view, self.spatial_page):
+                dynamics._clear_dynamics("")
         # Rebuilding a group drops its rows' selection; put it back unless the project changed.
         current = None if switched else self._sidebar_current()
         selected_models = [] if switched else self.sidebar.selected_keys("models")
@@ -2141,7 +2145,7 @@ class CmigMainWindow(QMainWindow):
             "host": self.host_view.run_btn,
             "host_search": self.host_search_page.run_btn,
             "dfba": self.dynamics_view.run_dfba_btn,
-            "spatial": self.dynamics_view.run_spatial_btn,
+            "spatial": self.spatial_page.run_btn,
             "medium": self.medium_editor.check_growth_btn,
             "sweep": self.sweep_view.run_btn,
         }
@@ -2904,7 +2908,7 @@ class CmigMainWindow(QMainWindow):
             lambda _c=False: self._export_ranked_figure(self.host_search_page)
         )
         self.dynamics_view.run_dfba_btn.clicked.connect(self.run_dfba)
-        self.dynamics_view.run_spatial_btn.clicked.connect(self.run_spatial_preview)
+        self.spatial_page.run_btn.clicked.connect(self.run_spatial_preview)
         self.community_builder.run_btn.clicked.connect(self.run_community_solve)
         self.sweep_view.browse_mediums_btn.clicked.connect(self._browse_sweep_mediums)
         self.sweep_view.browse_abundance_btn.clicked.connect(self._browse_sweep_abundances)
@@ -3464,11 +3468,13 @@ class CmigMainWindow(QMainWindow):
                 "status_summary_missing", kind=self.tr_map["kind_dfba"], path=summary_path
             )
             self._summary_missing(run_dir, summary_path)
+            self.dynamics_view._clear_dynamics(
+                f"Readback invalid/unreadable: {summary_path.name} not found"
+            )
             return False
         inspected = self._inspect_gui_run(run_dir)
         if inspected is None:
-            self.dynamics_view.invalidate_results()
-            self.dynamics_view.status.setText(f"Readback invalid/unreadable: {run_dir}")
+            self.dynamics_view._clear_dynamics(f"Readback invalid/unreadable: {run_dir}")
             return False
         try:
             payload = json.loads(summary_path.read_text())
@@ -3492,8 +3498,7 @@ class CmigMainWindow(QMainWindow):
                     float(value)
         except (OSError, ValueError, TypeError) as e:
             self._reject_gui_summary(run_dir, e)
-            self.dynamics_view.invalidate_results()
-            self.dynamics_view.status.setText(f"Readback invalid/unreadable: {e}")
+            self.dynamics_view._clear_dynamics(f"Readback invalid/unreadable: {e}")
             self._show_status("status_load_failed", kind=self.tr_map["kind_dfba"], error=e)
             return False
         self.dynamics_view.load_dfba_summary(payload, run_dir=run_dir)
@@ -3514,11 +3519,13 @@ class CmigMainWindow(QMainWindow):
                 "status_summary_missing", kind=self.tr_map["kind_spatial"], path=summary_path
             )
             self._summary_missing(run_dir, summary_path)
+            self.spatial_page._clear_dynamics(
+                f"Readback invalid/unreadable: {summary_path.name} not found"
+            )
             return False
         inspected = self._inspect_gui_run(run_dir)
         if inspected is None:
-            self.dynamics_view.invalidate_results()
-            self.dynamics_view.status.setText(f"Readback invalid/unreadable: {run_dir}")
+            self.spatial_page._clear_dynamics(f"Readback invalid/unreadable: {run_dir}")
             return False
         try:
             payload = json.loads(summary_path.read_text())
@@ -3536,17 +3543,16 @@ class CmigMainWindow(QMainWindow):
                     float(payload[key])
         except (OSError, ValueError, TypeError) as e:
             self._reject_gui_summary(run_dir, e)
-            self.dynamics_view.invalidate_results()
-            self.dynamics_view.status.setText(f"Readback invalid/unreadable: {e}")
+            self.spatial_page._clear_dynamics(f"Readback invalid/unreadable: {e}")
             self._show_status("status_load_failed", kind=self.tr_map["kind_spatial"], error=e)
             return False
-        self.dynamics_view.load_spatial_summary(payload, run_dir=run_dir)
-        self.dynamics_view.status.setText(
-            self.dynamics_view.status.text()
+        self.spatial_page.load_spatial_summary(payload, run_dir=run_dir)
+        self.spatial_page.status.setText(
+            self.spatial_page.status.text()
             + f" · integrity {inspected['artifact_integrity']}"
         )
         self._register_run_output(run_dir)
-        self._show_page(self.dynamics_view)
+        self._show_page(self.spatial_page)
         self._show_status("status_loaded_spatial", run_dir=run_dir)
         return True
 
@@ -4139,15 +4145,15 @@ class CmigMainWindow(QMainWindow):
         return jid
 
     def run_spatial_preview(self) -> str:
-        """Run COMETS-inspired spatial medium preview from the Dynamics tab."""
+        """Run COMETS-inspired spatial medium preview from the Spatial Preview page."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        request = self.dynamics_view.spatial_request()
+        request = self.spatial_page.spatial_request()
         try:
             out_dir, _ = self._prepare_run("spatial", [])
         except ProjectError as exc:
-            self.dynamics_view.status.setText(str(exc))
+            self.spatial_page.status.setText(str(exc))
             return ""
         argv = [
             "spatial-preview",
@@ -4186,8 +4192,8 @@ class CmigMainWindow(QMainWindow):
         jid = self.submit_job("spatial_preview", _job)
         self._record_command(jid, out_dir, argv)
         self._spatial_jobs[jid] = out_dir
-        self.dynamics_view.run_spatial_btn.setEnabled(False)
-        self.dynamics_view.status.setText(f"spatial preview started: {jid}")
+        self.spatial_page.run_btn.setEnabled(False)
+        self.spatial_page.status.setText(f"spatial preview started: {jid}")
         self._show_status("status_started", kind=self.tr_map["kind_spatial"], job_id=jid)
         return jid
 
@@ -4877,28 +4883,31 @@ class CmigMainWindow(QMainWindow):
                 if self.load_dfba_dir(out_dir):
                     self._show_status("status_complete", kind=self.tr_map["kind_dfba"], job_id=jid)
                 else:
-                    self.dynamics_view.status.setText(_UNREADABLE_RESULT.format(
+                    self.dynamics_view._clear_dynamics(_UNREADABLE_RESULT.format(
                         kind="dFBA", out_dir=out_dir))
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._dfba_jobs.pop(jid, None)
                 self.dynamics_view.run_dfba_btn.setEnabled(True)
-                self.dynamics_view.status.setText(f"dFBA {job.status.value}: {job.error or jid}")
+                # A failed rerun must not leave the previous timecourse drawn under its message.
+                self.dynamics_view._clear_dynamics(
+                    f"dFBA {job.status.value}: {job.error or jid}"
+                )
         for jid, out_dir in list(self._spatial_jobs.items()):
             job = self.runner.poll(jid)
             if job.status is JobStatus.DONE:
                 self._spatial_jobs.pop(jid, None)
-                self.dynamics_view.run_spatial_btn.setEnabled(True)
+                self.spatial_page.run_btn.setEnabled(True)
                 if self.load_spatial_dir(out_dir):
                     self._show_status(
                         "status_complete", kind=self.tr_map["kind_spatial"], job_id=jid
                     )
                 else:
-                    self.dynamics_view.status.setText(_UNREADABLE_RESULT.format(
+                    self.spatial_page._clear_dynamics(_UNREADABLE_RESULT.format(
                         kind="spatial preview", out_dir=out_dir))
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._spatial_jobs.pop(jid, None)
-                self.dynamics_view.run_spatial_btn.setEnabled(True)
-                self.dynamics_view.status.setText(
+                self.spatial_page.run_btn.setEnabled(True)
+                self.spatial_page._clear_dynamics(
                     f"spatial preview {job.status.value}: {job.error or jid}"
                 )
         for jid, out_dir in list(self._community_jobs.items()):
