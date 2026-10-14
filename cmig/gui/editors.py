@@ -786,6 +786,9 @@ class ModelManagerPanel(QWidget):
         self.summary_label.setText(f"{len(models)} models in this project")
         self.exchange_table.setColumnCount(4)
         self.exchange_table.setHorizontalHeaderLabels(["Model", "Check", "Reactions", "File"])
+        header = self.exchange_table.horizontalHeader()
+        for column in (1, 2):  # the reason is never cut; the count needs little room
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         self.exchange_table.setRowCount(len(models))
         for row, entry in enumerate(models):
             reasons = check_reasons(entry)

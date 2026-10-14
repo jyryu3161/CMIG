@@ -387,3 +387,20 @@ def test_another_model_starts_with_no_row_selected() -> None:
     assert b.reactions_tab.table.selectedItems() == []
     assert b.reactions_tab.detail.toPlainText() == ""
 
+
+def test_model_table_check_column_is_not_cut_at_1280(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "p", ["a_model_with_a_long_id", "b"])
+    proj.confirm_namespace(project, "b")
+    proj.save_project(project)
+    w = build_main_window()
+    _open(w, tmp_path / "p", tmp_path)
+    try:
+        w.resize(1280, 800)
+        w.show()
+        APP.processEvents()
+        table = w.model_manager.exchange_table
+        for row in range(table.rowCount()):
+            text = table.item(row, 1).text()
+            assert table.columnWidth(1) > table.fontMetrics().horizontalAdvance(text), text
+    finally:
+        w.close_project()
