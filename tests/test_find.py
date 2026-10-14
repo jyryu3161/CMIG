@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from cmig.gui.find import FindRow, build_table, find, footer_lines
 
 ROWS = {
@@ -65,3 +67,36 @@ def test_footer() -> None:
         "2 models still indexing", "1 model could not be searched",
     ]
     assert footer_lines(_table()) == []
+
+
+def test_find_expands_only_the_rows_shown_at_scale(monkeypatch) -> None:
+    import cmig.gui.find as find_module
+
+    shared = [("metabolite", f"m{i}", f"name {i}") for i in range(2000)]
+    table = build_table([], {f"model{j:03d}": shared for j in range(300)}, [], [])
+    made: list[int] = []
+
+    def counted(*args, **kwargs):  # type: ignore[no-untyped-def]
+        made.append(1)
+        return FindRow(*args, **kwargs)
+
+    monkeypatch.setattr(find_module, "FindRow", counted)
+    started = time.perf_counter()
+    groups = find(table, "m1")
+    elapsed = time.perf_counter() - started
+    (group,) = groups
+    # m1 exactly, then m10-m19, m100-m199, m1000-m1999: 1,111 ids in 300 models each
+    assert [r.text for r in group.rows[:2]] == ["m1 · model000 — name 1", "m1 · model001 — name 1"]
+    assert len(group.rows) == 8 and {r.key for r in group.rows} == {"m1"}
+    assert group.more == 1111 * 300 - 8
+    assert elapsed < 0.5, f"find took {elapsed:.2f} s"
+    assert len(made) == 8  # one row per row shown, not one per (id, model) match
+
+
+def test_more_rows_spill_into_the_next_entity_in_rank_order() -> None:
+    rows = {f"m{i}": [("gene", "ab", ""), ("gene", "abc", "")] for i in range(5)}
+    (group,) = find(build_table([], rows, [], []), "ab")
+    assert [(r.key, r.model) for r in group.rows] == (
+        [("ab", f"m{i}") for i in range(5)] + [("abc", f"m{i}") for i in range(3)]
+    )
+    assert group.more == 2

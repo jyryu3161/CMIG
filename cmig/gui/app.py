@@ -1120,6 +1120,11 @@ class CmigMainWindow(QMainWindow):
         self._search_rows: dict[str, list[tuple[str, str, str]]] = {}
         self._search_unreadable: set[str] = set()
         self._search_rows_job: str | None = None
+        #: the shas that job reads and the project root it reads them for
+        self._search_rows_wanted: tuple[Path, list[str]] | None = None
+        #: the search table, built on the first search after anything in it changed
+        self._search_cache: SearchTable | None = None
+        self._search_building = False
         #: medium ref -> its exchange ids, for the project search
         self._medium_exchange_cache: dict[str, list[str]] = {}
         self.find_field = FindField(self._search_table, self)
@@ -2088,6 +2093,7 @@ class CmigMainWindow(QMainWindow):
             self._show_models_overview()
         self.model_manager.show_project_models([] if project is None else project.models)
         self._update_run_action()
+        self._search_changed()  # models, media or runs may have changed
 
     def _update_model_actions(self) -> None:
         """Rename… needs exactly one selected model; Remove from Project at least one."""
@@ -2623,7 +2629,14 @@ class CmigMainWindow(QMainWindow):
         """An index job finished: read the search rows of the indexes now usable."""
         # A rebuilt index may be one the search job could not read before.
         self._search_unreadable -= self._index_checked
+        self._search_changed()  # the footer counts depend on the index state
         self._refresh_search_rows()
+
+    def _search_changed(self) -> None:
+        """Drop the cached search table; an open result list is redrawn from a new one."""
+        self._search_cache = None
+        if not self._search_building:  # a medium check inside the build may refresh the window
+            self.find_field.refresh()
 
     # ── project search (⌘F) ──────────────────────────────────────────────────────────────
     def _refresh_search_rows(self) -> None:
@@ -2655,6 +2668,7 @@ class CmigMainWindow(QMainWindow):
 
         # A read of small files, not a user job: kept out of Activity.
         self._search_rows_job = self.runner.submit("search_rows", _job)
+        self._search_rows_wanted = (root, wanted)
 
     def _finish_search_rows_job(self) -> None:
         jid = self._search_rows_job
@@ -2663,17 +2677,32 @@ class CmigMainWindow(QMainWindow):
         job = self.runner.poll(jid)
         if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
             return
-        self._search_rows_job = None
+        wanted = self._search_rows_wanted
+        self._search_rows_job, self._search_rows_wanted = None, None
         project = self.session.project
         result = job.result if isinstance(job.result, dict) else {}
         # Rows read for a previous project (closed or switched while it ran) are dropped.
         if project is not None and result.get("root") == str(project.root):
             self._search_rows.update(result.get("rows", {}))
             self._search_unreadable.update(result.get("bad", []))
+        elif (job.status is JobStatus.FAILED and project is not None and wanted is not None
+              and wanted[0] == project.root):
+            # Not searchable, rather than read again (and fail again) at every poll.
+            self._search_unreadable.update(wanted[1])
         self.runner.release_payload(jid)
+        self._search_changed()
         self._refresh_search_rows()  # an index built meanwhile, or the new project's rows
 
     def _search_table(self) -> SearchTable:
+        if self._search_cache is None:
+            self._search_building = True
+            try:
+                self._search_cache = self._build_search_table()
+            finally:
+                self._search_building = False
+        return self._search_cache
+
+    def _build_search_table(self) -> SearchTable:
         project = self.session.project
         if project is None:
             return SearchTable()
@@ -2715,7 +2744,10 @@ class CmigMainWindow(QMainWindow):
         if project is None:
             return
         if kind == "run":
-            self._open_run_entry(Path(key))
+            before = self._sidebar_current()
+            self.sidebar.select("runs", key)  # selecting a new RUNS row opens the run
+            if self._sidebar_current() == before:  # already selected, or not listed in RUNS
+                self._open_run_entry(Path(key))
         elif kind == "medium":
             self.sidebar.select("media", key)
         else:
@@ -2739,6 +2771,7 @@ class CmigMainWindow(QMainWindow):
         self._index_cache.pop(entry.sha256, None)
         self._index_checked.discard(entry.sha256)
         self.model_browser.set_contents(None, "")
+        self._search_changed()  # no longer "could not be searched": being indexed again
         self._ensure_indexes()
 
     # ── namespace confirmation and Check Growth (model browser) ──────────────────────────

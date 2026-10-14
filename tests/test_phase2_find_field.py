@@ -141,3 +141,113 @@ def test_a_rebuilt_index_becomes_searchable(window) -> None:
         time.sleep(0.05)
         window._poll_completed_jobs()
     assert sha in window._search_rows and window._search_table().unreadable == 0
+
+
+def test_one_character_never_builds_the_table() -> None:
+    from PySide6.QtWidgets import QWidget
+
+    from cmig.gui.find import FindField, SearchTable
+
+    calls: list[int] = []
+
+    def source() -> SearchTable:
+        calls.append(1)
+        return SearchTable()
+
+    host = QWidget()
+    field = FindField(source, host)
+    host.show()
+    QTest.keyClicks(field, "a")
+    assert calls == [] and not field.popup.isVisible()
+    QTest.keyClicks(field, "c")
+    assert calls == [1] and field.popup.isVisible()
+    QTest.keyClick(field, Qt.Key.Key_Backspace)
+    assert calls == [1] and not field.popup.isVisible()
+
+
+def test_the_table_is_built_once_until_something_changes(window, monkeypatch) -> None:
+    builds: list[int] = []
+    real = window._build_search_table
+    monkeypatch.setattr(window, "_build_search_table", lambda: (builds.append(1), real())[1])
+    window._search_changed()
+    QTest.keyClicks(window.find_field, "pgi")
+    assert builds == [1]
+    window.refresh_workspace()  # e.g. a run finished: the open list is redrawn from a new table
+    assert builds == [1, 1]
+    QTest.keyClick(window.find_field, Qt.Key.Key_Backspace)
+    assert builds == [1, 1]
+
+
+def test_focus_elsewhere_hides_the_list(window) -> None:
+    window.activateWindow()
+    field = window.find_field
+    field.setFocus()
+    APP.processEvents()
+    QTest.keyClicks(field, "pgi")
+    assert field.popup.isVisible()
+    window.sidebar.setFocus()
+    APP.processEvents()
+    assert not field.popup.isVisible()
+
+
+def test_resizing_the_window_hides_the_list(window) -> None:
+    field = window.find_field
+    QTest.keyClicks(field, "pgi")
+    assert field.popup.isVisible()
+    window.resize(window.width() + 40, window.height())  # it may already be at its minimum
+    APP.processEvents()
+    assert not field.popup.isVisible()
+
+
+def test_a_failed_rows_job_marks_the_model_unsearchable_once(window, monkeypatch) -> None:
+    from cmig.io import model_index
+
+    def broken(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise RuntimeError("disk gone")
+
+    sha = window.session.project.models[0].sha256
+    window._search_rows.pop(sha)
+    monkeypatch.setattr(model_index, "load_index", broken)
+    window._refresh_search_rows()
+    deadline = time.time() + 20
+    while window._search_rows_job is not None and time.time() < deadline:
+        APP.processEvents()
+        time.sleep(0.05)
+        window._poll_completed_jobs()
+    assert sha in window._search_unreadable
+    window._poll_completed_jobs()
+    assert window._search_rows_job is None  # not submitted again
+    assert window._search_table().unreadable == 1
+
+
+def test_opening_a_run_selects_its_row_and_opens_it_once(window, monkeypatch) -> None:
+    run_dir = window.session.require().runs_dir / "dfba-20261014-101010"
+    run_dir.mkdir()
+    window.refresh_workspace()
+    opened: list[Path] = []
+    monkeypatch.setattr(window, "_open_run_entry", lambda path: opened.append(Path(path)))
+    (row,) = [r for g in __import__("cmig.gui.find", fromlist=["find"]).find(
+        window._search_table(), "dfba") if g.kind == "run" for r in g.rows]
+    window._find_activated("run", row.key, None)
+    assert window._sidebar_current() == ("runs", row.key)
+    assert opened == [run_dir]
+    window._find_activated("run", row.key, None)  # already selected: still opens, once
+    assert opened == [run_dir, run_dir]
+
+
+def test_an_open_list_shows_rows_that_arrive(window) -> None:
+    sha = window.session.project.models[0].sha256
+    window._search_rows.pop(sha)
+    window._search_changed()
+    field = window.find_field
+    QTest.keyClicks(field, "pgi")
+    texts = [field.popup.item(i).text() for i in range(field.popup.count())]
+    assert not any("PGI ·" in t for t in texts) and "1 model still indexing" in texts
+    window._refresh_search_rows()
+    deadline = time.time() + 20
+    while sha not in window._search_rows and time.time() < deadline:
+        APP.processEvents()
+        time.sleep(0.05)
+        window._poll_completed_jobs()
+    texts = [field.popup.item(i).text() for i in range(field.popup.count())]
+    assert field.popup.isVisible() and any("PGI · e_coli_core" in t for t in texts)

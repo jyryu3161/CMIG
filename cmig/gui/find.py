@@ -6,11 +6,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, Signal
-from PySide6.QtGui import QFont, QKeyEvent
+from PySide6.QtGui import QFocusEvent, QFont, QKeyEvent
 from PySide6.QtWidgets import QLineEdit, QListWidget, QListWidgetItem, QWidget
 
 GROUPS = (("model", "Models"), ("reaction", "Reactions"), ("metabolite", "Metabolites"),
           ("gene", "Genes"), ("medium", "Media"), ("run", "Runs"))
+#: the kinds a model index holds (SearchTable.entities)
+_ENTITY_KINDS = ("reaction", "metabolite", "gene")
 
 
 @dataclass(frozen=True)
@@ -84,14 +86,15 @@ def find(table: SearchTable, query: str, per_group: int = 8) -> list[FindGroup]:
                 (rank, model_id, FindRow("model", model_id, f"{model_id} · {file_name}",
                                          model_id))
             )
+    # Each entity is ranked once, however many models have it; only the rows shown are
+    # expanded per model (a few thousand shared ids x hundreds of models must stay cheap).
+    entities: dict[str, list[tuple[int, str, str, list[str]]]] = {}
     for (kind, key), (name, model_ids) in table.entities.items():
-        rank = _rank(q, key, name)
-        if rank is None or kind not in found:
+        if kind not in _ENTITY_KINDS:
             continue
-        for model_id in model_ids:
-            text = f"{key} · {model_id}" + (f" — {name}" if name else "")
-            found[kind].append((rank, f"{key}\0{model_id}",
-                                FindRow(kind, key, text, model_id)))
+        rank = _rank(q, key, name)
+        if rank is not None:
+            entities.setdefault(kind, []).append((rank, key, name, model_ids))
     for ref, label, exchanges in table.media:
         rank = _rank(q, label, *exchanges)
         if rank is not None:
@@ -103,11 +106,23 @@ def find(table: SearchTable, query: str, per_group: int = 8) -> list[FindGroup]:
     # Groups go by their best match (an exact id first), then in GROUPS order.
     ranked: list[tuple[int, int, FindGroup]] = []
     for position, (kind, title) in enumerate(GROUPS):
-        hits = sorted(found[kind], key=lambda hit: (hit[0], hit[1]))
-        if hits:
-            ranked.append((hits[0][0], position,
-                           FindGroup(kind, title, tuple(h[2] for h in hits[:per_group]),
-                                     max(0, len(hits) - per_group))))
+        rows: list[FindRow] = []
+        if kind in entities:
+            matches = sorted(entities[kind], key=lambda match: (match[0], match[1]))
+            best, total = matches[0][0], 0
+            for _r, key, name, model_ids in matches:
+                total += len(model_ids)
+                if len(rows) < per_group:
+                    for model_id in sorted(model_ids)[: per_group - len(rows)]:
+                        text = f"{key} · {model_id}" + (f" — {name}" if name else "")
+                        rows.append(FindRow(kind, key, text, model_id))
+        else:
+            hits = sorted(found[kind], key=lambda hit: (hit[0], hit[1]))
+            if not hits:
+                continue
+            best, total = hits[0][0], len(hits)
+            rows = [hit[2] for hit in hits[:per_group]]
+        ranked.append((best, position, FindGroup(kind, title, tuple(rows), total - len(rows))))
     return [group for _rank_, _position, group in sorted(ranked, key=lambda r: r[:2])]
 
 
@@ -140,6 +155,12 @@ class FindField(QLineEdit):
         self.popup.itemClicked.connect(self._activate_item)
         self.textChanged.connect(self._refresh)
         self.installEventFilter(self)
+        host.installEventFilter(self)  # a resized window would leave the list misplaced
+
+    def refresh(self) -> None:
+        """Redraw an open result list (e.g. new search rows arrived)."""
+        if self.popup.isVisible():
+            self._refresh(self.text())
 
     def _selectable(self) -> list[int]:
         return [i for i in range(self.popup.count())
@@ -147,11 +168,11 @@ class FindField(QLineEdit):
 
     def _refresh(self, text: str) -> None:
         self.popup.clear()
+        if len(text.strip()) < 2:
+            self.popup.setVisible(False)  # nothing to find: the table is not even built
+            return
         table = self._source()
         groups = find(table, text)
-        if not groups and len(text.strip()) < 2:
-            self.popup.setVisible(False)
-            return
         bold = QFont(self.popup.font())
         bold.setBold(True)
         for group in groups:
@@ -202,6 +223,15 @@ class FindField(QLineEdit):
             self.activated.emit(row.kind, row.key, row.model)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt override
+        if watched is self._host and event.type() == QEvent.Type.Resize:
+            self.popup.setVisible(False)
+        elif watched is self and event.type() == QEvent.Type.FocusOut and isinstance(
+            event, QFocusEvent
+        ):
+            # Focus moved elsewhere: the list goes too (the list itself never takes focus;
+            # the field's own context menu does not count as leaving it).
+            if event.reason() != Qt.FocusReason.PopupFocusReason:
+                self.popup.setVisible(False)
         if watched is self and event.type() == QEvent.Type.KeyPress and isinstance(
             event, QKeyEvent
         ):
