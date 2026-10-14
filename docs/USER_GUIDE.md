@@ -220,7 +220,8 @@ my-study/
   reports a folder it cannot read.
   Supported: SBML (`.xml`, `.sbml`, also gzipped), JSON and MAT.
 - Each file is copied into `models/`, hashed (SHA-256) and read once to record its reaction,
-  metabolite and gene counts, biomass reaction, BiGG namespace coverage and warnings. The
+  metabolite and gene counts, objective, namespace mapping counts and warnings, and to write
+  its browse index (`models/.index/<sha256>.json`, see the model browser below). The
   work runs in the background, one import or download at a time; the sidebar shows a
   placeholder row per file (a dropped folder shows one row until its files are found). A file
   that cannot be read stays in the list as failed, with the reason, and the other files
@@ -228,15 +229,18 @@ my-study/
 - A file whose SHA-256 matches a model already in the project is refused as a duplicate.
   Model ids come from the file names; a clash gets a short digest suffix. **Edit > Rename…**
   (one model selected) changes an id; analyses that remembered the model keep it selected
-  under the new id.
+  under the new id. A remembered id of a model removed earlier is dropped first, so a rename
+  onto that id never makes the old choice point at the renamed model.
 - Marks in MODELS: ✓ readable, ⚠ readable with warnings or the project copy changed or went
-  missing, ✗ failed to read, … still importing. A failed model, or a copy whose checksum no
-  longer matches, cannot be picked for an analysis; it is greyed out with the reason.
+  missing, ✗ failed to read, … still importing. The model table says which reason applies
+  (see below). A failed model, or a copy whose checksum no longer matches, cannot be picked
+  for an analysis; it is greyed out with the reason.
 - The checksum of every copy is checked again when the project opens and once more just
   before a run uses it. A run that would include a changed or missing copy is refused.
 - **Edit > Remove from Project** (one or more models selected; or Delete in the sidebar)
   only drops the list entry; the copy stays in `models/` because earlier runs may refer to
-  it. **Edit > Undo / Redo** cover Add, Remove and Rename Model(s) and Add Medium.
+  it. **Edit > Undo / Redo** cover Add, Remove and Rename Model(s), Add Medium, and
+  confirming or revoking a model's namespace.
 - **File > Add Models from AGORA2…** searches the catalogue by strain or genus (a
   case-insensitive match on the strain id, for example `Roseburia` or
   `Roseburia intestinalis`) and downloads the strains you select with `cmig agora2-fetch`.
@@ -251,43 +255,58 @@ my-study/
 ### The window
 
 - **Menus.** File (project, adding models and media, Open Run…, Show Project in Finder),
-  Edit (Undo, Redo, Rename…, Remove from Project), View (show or hide the sidebar,
-  inspector and activity pane), Analysis, Window and Help (CMIG User Guide, Try Demo Run).
-  A command that cannot be used right now is greyed out, not hidden.
+  Edit (Undo, Redo, Rename…, Remove from Project, Find…), View (show or hide the sidebar,
+  inspector and activity pane), Analysis (the thirteen analyses in four groups, Run,
+  Cancel), Window and Help (CMIG User Guide, Try Demo Run). A command that cannot be used
+  right now is greyed out, not hidden.
 - **Toolbar.** Sidebar toggle and project name, **Add Models…**, **New Analysis** (the
-  Analysis menu), inspector toggle and **Run**. Every toolbar item is also in a menu. Run
-  presses the centre page's own Run button and is greyed out whenever that button is (its
-  job is running or being cancelled), when the page has its own buttons (Strain Growth &
-  Ratio, Constraint Sandbox, Compare Runs) or no project is open.
+  Analysis menu), the project search field, inspector toggle and **Run**. Every toolbar
+  item is also in a menu. Run presses the centre page's own Run button and is greyed out
+  whenever that button is (its job is running or being cancelled), on Constraint Sandbox
+  and Compare Runs (they have their own buttons), away from an analysis page, or when no
+  project is open.
 - **Sidebar.** MODELS (several can be selected; right-click for Search with Selected…,
   Rename…, Remove from Project, Show in Finder), MEDIA (presets and project media),
-  ANALYSES and RUNS, newest first, labelled `<analysis> · <target> · HH:MM`. Run marks: ✓
-  succeeded, ⚠ warning or degraded, ✗ failed or unreadable, ⊘ cancelled. The mark follows
-  the same verdict as `cmig inspect-run`, and a run the GUI could not read back also shows ✗.
-  A job that failed or was cancelled leaves its folder in place, and a small marker
+  ANALYSES in four groups separated by lines (see [Analysis pages](#analysis-pages)) and
+  RUNS, newest first, labelled `<analysis> · <target> · HH:MM` (a Check Growth run:
+  `Check Growth · <model> · HH:MM`). Run marks: ✓ succeeded, ⚠ warning or degraded, ✗
+  failed or unreadable, ⊘ cancelled. The mark follows the same verdict as
+  `cmig inspect-run`, and a run the GUI could not read back also shows ✗. A job that failed
+  or was cancelled leaves its folder in place, and a small marker
   `runs/_inputs/<run>-state.json` keeps that mark after a restart; a marker can only make a
   run look worse, never better. A run the GUI could not read back gets an `unreadable`
   marker the same way, removed when a later readback succeeds.
-- **Centre.** The page of the selected sidebar item: an analysis page, or the result viewer
-  for a run (a community run offers Profile and Graph).
-- **Inspector** (right, follows the selection, read-only). A model shows its checks (size,
-  biomass, BiGG namespace coverage, warnings, original path, SHA-256) and a filterable
-  exchange list that loads in the background. Error and Warnings read "none" when the check
-  found none and "not recorded" when no check recorded them. A medium shows its rows and
-  source. A run
-  shows its status, artifact integrity, `run_hash` and solver wording as the run recorded
-  it (Gurobi full-flux, OSQP QP-only approximation, non-parsimonious or no flux), with
-  **Copy Command** and **Show in Finder**. If the GUI cannot read a run's summary back, the
-  inspector says so and the run is not treated as a loaded result.
+- **Centre.** The page of the selected sidebar item: the model table (shown when a project
+  opens), a model's browser, an analysis page, or the result viewer for a run of a kind no
+  page shows.
+- **Inspector** (right, follows the selection, read-only). With a project just opened it
+  sums the project up (models and how many are ready, project media, runs, the newest run
+  and its status). A model shows every check reason, warnings, error, size, objective,
+  namespace confirmation and mappings, file integrity, SHA-256, original path and format;
+  its reactions and exchanges are in the [model browser](#models-the-browser-and-check-growth).
+  Error and Warnings read "none" when the check found none and "not recorded" when no check
+  recorded them. A medium shows its rows and source. A run shows its status, artifact
+  integrity, `run_hash` and solver wording as the run recorded it (Gurobi full-flux, OSQP
+  QP-only approximation, non-parsimonious or no flux), with **Copy Command** and **Show in
+  Finder**. If the GUI cannot read a run's summary back, the inspector says so and the run
+  is not treated as a loaded result.
 - **Activity** (bottom; opens when a job starts). Every job you started (Search, Import
-  Models, AGORA2 Download, …) with status and progress;
+  Models, Index Models, Check Growth, AGORA2 Download, …) with status and progress;
   select one for its log or error and its `cmig` command. **Cancel** (⌘.) shows "cancelling"
   until the job actually stops. A running solve stops at its next boundary, an import
   after the current file, and an AGORA2 download cannot be interrupted (its files are then
   not added).
+- **Status bar.** After a run of the open project finishes in this session, the right side
+  names it: `✓ <analysis> · <run folder> · <solver>` (⚠ degraded or warning, ✗ failed with
+  the first line of the reason, ⊘ cancelled). The tooltip has the full reason and the
+  folder; clicking it opens the run. It holds no numbers, it stays visible while a status
+  message shows, and it is cleared when the project closes or another opens.
+- **Reading back a run** (its artifact hashes) and the AGORA2 catalogue lookup run off the
+  window's thread. The window keeps repainting; a click or key press made during the hash
+  waits until the hash is done, so a result never appears under inputs changed meanwhile.
 
-New / Open / Close Project and Undo / Redo use the platform's standard keys (⌘N, ⌘O, ⌘W,
-⌘Z and ⇧⌘Z on macOS). The others are fixed:
+New / Open / Close Project, Undo / Redo and Find use the platform's standard keys (⌘N, ⌘O,
+⌘W, ⌘Z, ⇧⌘Z and ⌘F on macOS). The others are fixed:
 
 | Action | macOS | Windows / Linux |
 | --- | --- | --- |
@@ -299,52 +318,212 @@ New / Open / Close Project and Undo / Redo use the platform's standard keys (⌘
 | Show or hide activity | ⇧⌘Y | Ctrl+Shift+Y |
 | Run / Cancel | ⌘R / ⌘. | Ctrl+R / Ctrl+. |
 
+### Analysis pages
+
+ANALYSES lists one page per analysis, in four groups (the Analysis menu has the same
+groups):
+
+| Group | Page | CLI command |
+| --- | --- | --- |
+| Community | Combination Search · Gene Knockout · Strain Growth · Ratio Impact · Community Solve | `search` · `gene-ko-search` · `strain-growth` · `abundance-impact` · `solve` |
+| Host | Host–Microbe · Host Combination Search | `host-microbe-bigg` · `host-search-bigg` |
+| Dynamics | dFBA · Spatial Preview | `dfba` · `spatial-preview` |
+| Tools | Medium Editor · Sweep · Constraint Sandbox · Compare Runs | `solve` / `minimal-medium` · `sweep` · sandbox preview · reads two run folders |
+
+Every page has the same frame: a title and one-line description, an **inputs card** with
+the inputs that decide the answer and the page's Run button, a collapsed **Advanced
+options** section, and **Results**.
+
+- **Advanced options** holds the remaining settings. While it is collapsed its button
+  counts the settings that differ from their defaults ("Advanced options · 3 changed"),
+  so a hidden setting that changes the result is not missed. Values and defaults are the
+  CLI's; only where they appear changed.
+- **Results** reads "No results yet — set the inputs above and press Run." until a result
+  is shown. Then a status line (the run, its status and integrity) sits above the result
+  tables and figures. Changing an input that decides the shown result clears it ("Inputs
+  changed — previous result cleared; re-run to update."). A failed or cancelled run, a
+  result the GUI cannot read back, and opening another project also clear the page's
+  result, so an older result never looks current.
+- Combination Search has its own **Cancel** beside Run. Other analyses are cancelled in
+  Activity.
+- Gene Knockout picks its fixed combination (`--members`) from that page's models (it
+  starts with none chosen) and the edited member (`--member`) from that combination or
+  "All members". Ratio Impact picks the member whose share changes from that page's models.
+- Community Solve: the member picker is the member table. Picking or dropping a model adds
+  or removes its row; only the abundance is edited (a re-added model starts again at 1).
+- When the window is small, a page scrolls down; it never scrolls sideways.
+- Compare Runs and Constraint Sandbox overlays show only the comparison: the run that was
+  on show (its profile table, targets, graph and badge) is cleared, and "Clear comparison
+  overlay" does not bring it back.
+
 ### Analyses and runs
 
 - An analysis needs an open project: its models and media come from the project and its
-  result goes to `runs/`. Model pickers ("Models: n selected") default to every model that
-  can run, so a model added later is included until you choose your own set (running an
-  analysis does not count as choosing). The list stays open while you tick models; type in
-  its filter field to narrow it, and Select All / Select None act on the rows shown. One-model
-  inputs (the Host model, Dynamics, Minimal medium) use a single-choice picker; the Host
-  microbes leave out the chosen host. Your picks are remembered per analysis in the
-  project. A remembered model that can no longer run is left out and named in the status bar.
+  result goes to `runs/`. Multi-model pickers ("Models: n selected") default to every model
+  that can run, so a model added later is included until you choose your own set (running
+  an analysis does not count as choosing). The list stays open while you tick models. From
+  the filter field, ↓ or Tab moves into the list and ↑ at the top of the list moves back;
+  Space ticks the current row; Tab then reaches Select All and Select None (they act on the
+  rows shown); Return or Esc closes the list and returns focus to the picker. One-model
+  inputs (the Host model, dFBA, the Minimal medium model) use a single-choice picker
+  (Return picks the current row); the Host microbes leave out the chosen host. Your picks
+  are remembered per page in the project. A remembered model that can no longer run is left
+  out and named in the status bar.
 - Medium pickers list the model default, the installed presets and the project's media. A
   project medium whose copy changed or went missing is refused, never passed to the CLI.
 - Every run writes to a new `runs/<kind>-YYYYMMDD-HHMMSS` folder (`-2`, `-3`… on a clash)
-  that is never reused, passed as `--out`; for example `search-…`, `host-microbe-…`, `dfba-…`.
-  The Search "Output folder" field and the temporary output folders of the other pages are
-  gone.
+  that is never reused, passed as `--out`; for example `search-…`, `gene-ko-…`,
+  `host-microbe-…`, `dfba-…`, `check-growth-…`. Constraint Sandbox previews write no run.
 - Before the run the GUI writes `runs/_inputs/<run>-taxonomy.csv` (`id,file,abundance`, with
   the project copies' absolute paths) and passes it as `--taxonomy`. It is written beside the
   run folder, not inside it, because the CLI publishes the run folder as a whole.
   Single-model pages pass `--host` or `--model`; a medium built in the Medium Editor is
   written as `runs/_inputs/<run>-medium.json`.
-- Model and medium choices decide the answer. On the Search page (Combination Search, Gene
-  Knockout, Strain Growth & Ratio), Host–Microbe and Dynamics, changing one invalidates the
-  displayed result, like the page's other settings. The Medium Editor clears only its
-  growth-delta overlay, and Sweep and Community Solve keep what their page shows; each run is
-  its own folder in RUNS, so check which run you are looking at.
+- The page's inputs are recorded as `runs/_inputs/<run>-request.json` (`schema_version` 1,
+  the page, its input values, the chosen model ids and media, time, CMIG version). If that
+  file cannot be written the run is refused with the reason. It never changes the CLI's
+  output, `run_hash` or manifest.
+- Model and medium choices decide the answer. On every analysis page except the Tools,
+  changing one clears the shown result like the page's other inputs. The Medium Editor
+  clears only its growth-delta overlay and Sweep keeps what it shows; each run is its own
+  folder in RUNS, so check which run you are looking at.
 - Medium controls differ by page. Combination Search has the medium picker plus exact/merge
-  mode and `--allow-unknown-medium` under "Advanced search settings". Gene Knockout, Strain
-  Growth and Ratio use that same picker and always apply the medium as exact. Host–Microbe has
-  host and microbe medium pickers and an allow-unknown option. Sweep and the Medium Editor have
-  their own exact-medium and allow-unknown checkboxes. Community Solve and Dynamics have no
-  medium control.
+  mode and `--allow-unknown-medium` under Advanced options. Gene Knockout, Strain Growth and
+  Ratio Impact have the same picker and always apply the medium as exact. Host–Microbe and
+  Host Combination Search have host and microbe medium pickers and an allow-unknown option.
+  Sweep and the Medium Editor have their own exact-medium and allow-unknown checkboxes.
+  Community Solve and dFBA have no medium control. Check Growth is described below.
 
 **Hash caveat.** Earlier GUI versions passed a model folder (`--model-dir`); the GUI now
 passes `--taxonomy`. The CLI contract and hash definition are unchanged, but a run started
 this way can have a different `run_hash` from an earlier GUI run of the same models. Compare
 `run_hash` values only between runs started the same way.
 
+### Models: the browser and Check Growth
+
+- **Model table.** When a project opens, the centre lists its models with one short reason
+  in the Check column, the worst first: `✗ Unreadable`, `⚠ File changed` / `⚠ File missing`,
+  `⚠ Namespace not reviewed`, `⚠ No objective`, `⚠ Objective is not growth`, otherwise
+  `✓ Ready` (`✓ Ready · namespace confirmed` once you confirmed it). The tooltip lists every
+  reason and warning. Double-click a row, or select the model in the sidebar, to browse it.
+- **Model browser** (read-only). The header names the model and its size, the namespace
+  state with **Confirm…** or **Revoke**, the objective and the latest growth check. Tabs
+  list Reactions (id, name, bounds, subsystem), Metabolites (id, name, formula,
+  compartment), Genes and Exchanges; the filter matches id and name (for reactions also the
+  equation), case-insensitively, as you type. Selecting a row shows its detail (a reaction's
+  equation by name and by id, bounds, GPR, subsystem; a metabolite's formula, charge,
+  compartment and reactions; a gene's reactions); a linked metabolite, reaction or gene
+  opens in its tab.
+- **Objective.** A single-term objective with no structure warning reads
+  `Objective: <id> (biomass)`. Anything else gives the number of terms and the warning (for
+  example 283 terms of iAF987), with the terms under **Show terms**; only the first case is
+  called biomass.
+- **Contents.** The browser and the project search read a per-model index,
+  `models/.index/<sha256>.json`, made from the same read as the import check. When a
+  project opens, a missing, unreadable, older or mismatched index is rebuilt in the
+  background ("Index Models" in Activity, cancellable). A model whose index cannot be built
+  shows "Model contents unavailable: <reason>" and **Retry**; it can still be picked for
+  analyses. The index is a viewing cache only: it is never an analysis input, a taxonomy
+  row or a CLI argument, and it stays when a model is removed (Undo may need it).
+- **Namespace confirmation.** The namespace line reads `Namespace not reviewed — needed
+  before community analyses` (or `Namespace not confirmed — …`), `✓ Namespace confirmed by
+  you · <date>` or `⚠ Changed since confirmed — confirm again before running it`, followed
+  by `mappings: <resolved> of <total> reviewed`. **Confirm…** asks "I reviewed <model>; its
+  exchange ids already use the BiGG namespace." and, on Yes, records the confirmation for
+  that file's SHA-256 (Edit > Undo Confirm Namespace undoes it; **Revoke** removes it). A
+  confirmation counts only while the copy's SHA-256 is the one confirmed and its file check
+  is ok. Only a model that was read successfully and whose copy is unchanged can be
+  confirmed.
+- **Confirmation on analysis pages.** Community Solve and the Medium Editor tick their
+  "already BiGG" box only when every chosen model is confirmed in this project, and say so
+  ("All 3 models confirmed in this project", "<model> is confirmed in this project" or
+  "<models> not confirmed"). A box you tick or clear yourself stays as you set it until
+  that page's model choice changes. The box passes the same `--assume-bigg-namespace` as
+  before.
+- **Check Growth** (browser header). Pick a medium ("Model default (no medium file)" by
+  default) and optionally tick "Skip medium metabolites this model lacks", then press
+  **Check Growth**. It runs `cmig single --model <copy> --fba --out
+  runs/check-growth-YYYYMMDD-HHMMSS [--medium <file> --exact-medium]
+  [--allow-unknown-medium] --assume-bigg-namespace` in the background, with no `--solver`
+  (the CLI default). A chosen medium is always applied as exact. The button is disabled
+  until the model's namespace is confirmed (its tooltip says why); a model that is not
+  confirmed is refused with "confirm this model's namespace first (Confirm…)".
+- **Growth line.** It shows the newest Check Growth run of this exact file (same SHA-256),
+  found again after a restart; otherwise "Growth: not checked yet".
+
+  | Result | Growth line |
+  | --- | --- |
+  | Optimal FBA, growth above the threshold | `✓ Growth 0.8739 h⁻¹ · Gurobi (full-flux) · western_diet (exact) · 10:31` |
+  | Optimal FBA, but the objective is not a growth rate | `⚠ Objective value 12.3 — <objective warning> · …` |
+  | Optimal FBA below the growth threshold | `✗ No growth (below 1e-06) · …` |
+  | FBA not optimal (also when `cmig single` records a failed solve) | `✗ Infeasible · …` (the FBA status, with the solver's diagnostic) |
+  | The CLI refused or failed | `✗ Failed: <last line of the error>`; a medium metabolite without a counterpart adds a hint to tick the Skip box |
+  | Unreadable result / result changed since the run | `✗ Failed: the result could not be read back — see the inspector` / `✗ Result changed since the run — see the inspector` |
+  | Cancelled | `⊘ Cancelled` |
+
+  A degraded summary is marked ⚠ and its warnings follow the line. The solver comes from
+  the run's summary: Gurobi (full-flux) or OSQP (QP-only approximate). A skipped-metabolite
+  run names its medium `<name> (exact, model-lacking metabolites skipped)`. Opening a Check
+  Growth run from RUNS shows its model's browser with that run's line; if the model (that
+  file) is no longer in the project, the run opens in the inspector only.
+
+### Project search (⌘F)
+
+**Edit > Find…** (⌘F) moves to the toolbar's "Search project" field. From two characters
+on, a list opens under it as you type, case-insensitively, over model ids and file names,
+the reactions, metabolites and genes in the model indexes (ids and names), media (names and
+the exchange ids they contain) and runs (folder name, analysis and status). Results are
+grouped as Models, Reactions, Metabolites, Genes, Media and Runs; each group holds up to 8
+rows and then "+N more — refine the search". Within a group an exact id comes first, then
+ids that start with the text, then other matches, each by id; the group with the best match
+comes first. An item found in several models has one row per model (`glc__D_e ·
+iAF987 — D-Glucose`). A long row is cut with "…" (the tooltip has all of it). The list ends
+with "N models still indexing" or "N models could not be searched" when that applies.
+
+↑/↓ move through the rows, Return opens one, Esc closes the list and a second Esc clears
+the field; the list also closes when focus leaves the field or the window is resized.
+Opening a model shows its browser; a reaction, metabolite or gene opens that model's
+browser on its tab with the row selected; a medium selects it in MEDIA; a run opens as from
+RUNS. Nothing is kept as a search history.
+
+### Results display
+
+- Computed values (fluxes, growth, scores, transfers) in the result tables of the analysis
+  pages, the Community profile, Host–Microbe, dFBA and Spatial Preview, and the
+  Sandbox/Compare delta table are drawn in the system accent colour, and their column
+  tooltip says "Computed by CMIG". Inputs repeated in a table (abundance, medium limits,
+  fixed bounds) keep the normal text colour. Only text that reads as a finite number or a
+  numeric range is painted: a missing value, a status word, and every cell of a failed,
+  warned or unevaluated row keep the normal colour, and their ranking rules are unchanged.
+- Flux tables carry the legend `+ secretion / − uptake (mmol gDW⁻¹ h⁻¹)`.
+- Tables show no row numbers.
+- A saved search figure is previewed on white, as it is exported, in light and dark
+  appearance.
+
 ### Opening results
 
-**File > Open Run…** (⇧⌘O) opens any run folder. The run opens in the centre and the
-inspector shows its status. A run inside the project is already listed in RUNS (the row is not
-highlighted by Open Run). A run outside it (also a Help > Try Demo Run output, which goes to a
-folder you choose) is added to RUNS marked "(opened)" once it loads, read-only and for this
-session only; it is not copied into the project. Every run view reads the run's summary and
-artifacts back; an unsupported or malformed run is reported instead of being shown as a result.
+Selecting a run in RUNS opens it on its analysis page: the page's inputs are put back
+from `<run>-request.json`, the result is shown in Results, and a banner reads "Inputs
+restored from <run>." The restored inputs match the result, so it is not marked as
+changed. Inputs that can no longer be chosen (a removed model or medium, a model whose copy
+changed) are left out and named after "Not restored:". Restoring replaces the page's
+current inputs, without undo.
+
+A run without a usable request (a phase-1 run, a run from Open Run…, or a damaged record)
+opens on the page its manifest's workflow kind (or its summary file, or its GUI folder
+name) points to, keeps the inputs on screen and says "Inputs for <run> cannot be restored"
+with the reason. A ranked run reopened without its full inputs says that its inputs are
+not known instead of labelling the result with the inputs on screen. A run whose result
+cannot be shown leaves the page empty with "No result shown for <run>: <reason>". A run of
+a kind no page shows opens in the result viewer as before.
+
+**File > Open Run…** (⇧⌘O) opens any run folder the same way, and the inspector shows its
+status. A run inside the project is already listed in RUNS (the row is not highlighted by
+Open Run). A run outside it (also a Help > Try Demo Run output, which goes to a folder you
+choose) is added to RUNS marked "(opened)" once it loads, read-only and for this session
+only; it is not copied into the project. Every run view reads the run's summary and
+artifacts back; an unsupported or malformed run is reported instead of being shown as a
+result.
 
 ## Typical CLI Workflows
 
@@ -575,15 +754,15 @@ contributions or proof of a global abundance optimum. Multi-target comparisons
 use fresh joint weighted solutions at the same fixed scales, not arbitrary
 different points from the Pareto archive.
 
-The GUI Search panel mirrors `cmig search`. Targets are edited as rows
+The GUI Combination Search page mirrors `cmig search`. Targets are edited as rows
 (`Target | Direction | Weight | Reference`); one row runs a single-target search,
 two or more rows pass `--targets`, `--target-directions`, `--target-weights`
 (weighted metrics only; disabled for `pareto`) and `--target-scales` (all rows or
 none, finite and positive). A target preset such as `scfa` fills the rows. The
 pool is picked from the project's models ("Models: n selected") and passed as
 `--taxonomy`; the medium comes from a picker that lists the installed presets and
-the project's media. The
-collapsed "Advanced search settings (Search only)" group exposes `--exhaustive-max`,
+the project's media. Its
+collapsed "Advanced options" section exposes `--exhaustive-max`,
 `--n-samples`, every GA option,
 `--solver-threads`, `--pareto-resolution`, exact/merge medium mode (merge shows a
 warning and the active mode stays visible outside the group) and
@@ -600,11 +779,12 @@ folder, is refused before running. Selecting a ranking row shows its recorded
 details (fluxes, contributions, whether target fluxes were achieved together,
 growth, diagnostics and, for `pareto`, its epsilon attempts); unrecorded values are
 shown as "not recorded". Cancel disables itself immediately and the panel keeps
-"Cancellation requested" until the running solve actually stops. Gene KO, Strain
-Growth and Ratio use the single target row, their own top-k (Gene KO default 20),
-exact medium and a new run folder under `runs/`. Strain Growth and Ratio use
-cooperative tradeoff; they do not inherit the main Search direction and growth
-controls. The active workflow's settings
+"Cancellation requested" until the running solve actually stops. Gene Knockout and
+Ratio Impact are pages of their own with their own target input (Gene Knockout also its
+direction and its own top-k, default 20); Gene Knockout, Strain Growth and Ratio Impact
+apply a chosen medium as exact and write a new run folder under `runs/`. Strain Growth and
+Ratio Impact use cooperative tradeoff; they do not inherit Combination Search's direction
+and growth controls. The active workflow's settings
 are frozen when launched, and later relevant edits invalidate or mark the
 displayed result as superseded. Search uses the CLI service and output writer.
 The GUI lists only supported figure files present for that loaded run, clears

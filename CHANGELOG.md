@@ -5,6 +5,47 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Changed — GUI workspace (phase 2)
+
+- One page per analysis, in four sidebar and Analysis-menu groups: Community (Combination
+  Search, Gene Knockout, Strain Growth, Ratio Impact, Community Solve), Host (Host–Microbe,
+  Host Combination Search), Dynamics (dFBA, Spatial Preview) and Tools (Medium Editor,
+  Sweep, Constraint Sandbox, Compare Runs). Every page has an inputs card with its Run
+  button, a collapsed "Advanced options" section that counts changed settings, and a
+  Results area ("No results yet" until a result shows). Gene Knockout and Ratio Impact have
+  their own target inputs; their member ids are picked from the page's models. Community
+  Solve's member table follows its member picker (abundance is the only edit). The same
+  inputs produce the same CLI argv as before the split (`tests/test_phase2_argv_parity.py`).
+- Runs record the page's inputs in `runs/_inputs/<run>-request.json`; opening a run from
+  RUNS shows its page with the inputs restored, the result, and a banner. Runs without a
+  usable record open on the page their manifest, summary or folder name points to, with
+  the inputs left as they are.
+- Model table with a reason per model (`⚠ Namespace not reviewed`, `⚠ Objective is not
+  growth`, …), a read-only model browser (reactions, metabolites, genes, exchanges, linked
+  details) backed by a per-model index `models/.index/<sha256>.json` (a viewing cache only,
+  rebuilt in the background when missing or unusable), per-model namespace confirmation
+  tied to the file's SHA-256 (undoable, revocable; it pre-ticks the "already BiGG" box on
+  Community Solve and the Medium Editor only when every chosen model is confirmed), and
+  Check Growth (`cmig single --fba`; a chosen medium is applied as exact; a multi-term
+  objective's value is shown as "Objective value", never as growth; infeasible, no-growth,
+  failed and changed results never read as growth).
+- Project search (⌘F) over models, reactions, metabolites, genes, media and runs, grouped,
+  best match first.
+- Results: the last finished run in the status bar (opens it), computed values in the
+  system accent colour with a "Computed by CMIG" header tooltip (failed, warned and
+  unevaluated rows are never painted), a `+ secretion / − uptake` legend over flux tables,
+  no row numbers. Failed, cancelled and unreadable runs, and a project switch, clear the
+  page's previous result; Compare and Sandbox overlays no longer sit over an unrelated
+  loaded run.
+- Keyboard-operable multi-model picker; reading back a run's hashes and the AGORA2
+  catalogue lookup run off the window's thread; a rename onto a removed model's id no
+  longer revives that model's remembered choices; Host result column headers are short,
+  with their units in the tooltip.
+- CLI options, `run_hash`, workflow hashes and envelope, manifests, the tidy schema and
+  the golden results are unchanged. The one CLI-visible change: `cmig` model-folder
+  discovery no longer offers a CMIG browse-index JSON (`schema_version` + `sha256` +
+  `model_id` at the top level) as a cobra JSON model.
+
 ### Changed — GUI workspace (phase 1)
 
 - The desktop GUI is organised around an on-disk project folder (`cmig-project.json`,
