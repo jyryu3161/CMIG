@@ -151,6 +151,7 @@ class FindField(QLineEdit):
         self.setMaximumWidth(260)
         self.popup = QListWidget(host)
         self.popup.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.popup.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.popup.setVisible(False)
         self.popup.itemClicked.connect(self._activate_item)
         self.textChanged.connect(self._refresh)
@@ -175,14 +176,21 @@ class FindField(QLineEdit):
         groups = find(table, text)
         bold = QFont(self.popup.font())
         bold.setBold(True)
+        width = max(self.width(), 420)
+        # A long name is cut with "…" (the tooltip has all of it), never scrolled sideways.
+        room = width - 2 * self.popup.frameWidth() - self.popup.verticalScrollBar().sizeHint(
+        ).width() - 8
+        metrics = self.popup.fontMetrics()
         for group in groups:
             header = QListWidgetItem(group.title)
             header.setFont(bold)
             header.setFlags(Qt.ItemFlag.NoItemFlags)
             self.popup.addItem(header)
             for row in group.rows:
-                item = QListWidgetItem("   " + row.text)
+                text = metrics.elidedText("   " + row.text, Qt.TextElideMode.ElideRight, room)
+                item = QListWidgetItem(text)
                 item.setData(Qt.ItemDataRole.UserRole, row)
+                item.setToolTip(row.text)
                 self.popup.addItem(item)
             if group.more:
                 more = QListWidgetItem(f"   +{group.more} more — refine the search")
@@ -200,7 +208,6 @@ class FindField(QLineEdit):
         if selectable:
             self.popup.setCurrentRow(selectable[0])
         corner = self.mapTo(self._host, QPoint(0, self.height()))
-        width = max(self.width(), 420)
         x = min(corner.x(), max(0, self._host.width() - width))
         height = min(max(self.popup.sizeHintForRow(0), 18) * self.popup.count() + 6, 420)
         self.popup.setGeometry(x, corner.y(), width, height)

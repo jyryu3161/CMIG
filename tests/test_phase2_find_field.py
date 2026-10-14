@@ -251,3 +251,24 @@ def test_an_open_list_shows_rows_that_arrive(window) -> None:
         window._poll_completed_jobs()
     texts = [field.popup.item(i).text() for i in range(field.popup.count())]
     assert field.popup.isVisible() and any("PGI · e_coli_core" in t for t in texts)
+
+
+def test_a_long_row_is_shortened_not_scrolled_sideways() -> None:
+    from PySide6.QtWidgets import QWidget
+
+    from cmig.gui.find import FindField, build_table
+
+    name = "D-gluconate transport via proton symport, reversible " * 4
+    table = build_table([("iHN637", "iHN637.xml")],
+                        {"iHN637": [("reaction", "GLCNt2r", name)]}, [], [])
+    host = QWidget()
+    host.resize(1280, 800)
+    field = FindField(lambda: table, host)
+    host.show()
+    QTest.keyClicks(field, "glcn")
+    APP.processEvents()
+    row = next(field.popup.item(i) for i in range(field.popup.count())
+               if field.popup.item(i).data(Qt.ItemDataRole.UserRole) is not None)
+    assert field.popup.horizontalScrollBar().maximum() == 0
+    assert row.text().startswith("   GLCNt2r · iHN637") and row.text().endswith("…")
+    assert row.toolTip() == row.data(Qt.ItemDataRole.UserRole).text  # all of it
