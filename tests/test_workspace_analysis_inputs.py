@@ -82,12 +82,13 @@ def test_no_models_selected_is_refused_before_running(setup) -> None:
 
 def test_gene_ko_strain_ratio_use_taxonomy(setup) -> None:
     w, calls = setup
-    w.search_view.model_picker.set_selected(["a", "b"])
-    w.search_view.ko_members_input.setText("a,b")
+    w.gene_ko_page.model_picker.set_selected(["a", "b"])
+    w.gene_ko_page.members_picker.set_selected(["a", "b"])
     w.run_gene_ko_search()
     argv = _wait_calls(w, calls, 1)
     assert argv[0] == "gene-ko-search" and _taxonomy_ids(argv) == ["a", "b"]
     assert Path(argv[argv.index("--out") + 1]).name.startswith("gene-ko-")
+    w.strain_growth_page.model_picker.set_selected(["a", "b"])
     w.run_strain_growth_report()
     argv = _wait_calls(w, calls, 2)
     assert argv[0] == "strain-growth" and "--taxonomy" in argv
@@ -131,7 +132,7 @@ def test_dfba_uses_single_model(setup) -> None:
 def test_community_writes_abundances(setup) -> None:
     w, calls = setup
     w.community_builder.model_picker.set_selected(["a", "b"])
-    w.community_builder.add_member("a", 0.25)
+    w.community_builder.set_abundance("a", 0.25)
     w.community_builder.assume_bigg_check.setChecked(True)
     w.run_community_solve()
     argv = _wait_calls(w, calls)
@@ -281,12 +282,12 @@ def test_refused_community_abundance_keeps_runs_clean(setup) -> None:
     w, calls = setup
     project = w.session.project
     w.community_builder.model_picker.set_selected(["a"])
-    w.community_builder.add_member("b", 0.5)
+    # The table follows the picker: an unselected model has no abundance row to run with.
+    assert "b" not in w.community_builder.members()
+    with pytest.raises(KeyError):
+        w.community_builder.set_abundance("b", 0.5)
     w.community_builder.assume_bigg_check.setChecked(True)
-    assert w.run_community_solve() == ""
-    assert "unselected models: ['b']" in w.community_builder.status.text()
-    w.community_builder.table.setRowCount(0)
-    w.community_builder.add_member("a", 0.0)
+    w.community_builder.set_abundance("a", 0.0)
     assert w.run_community_solve() == ""
     assert "greater than 0" in w.community_builder.status.text()
     assert calls == []
@@ -311,7 +312,7 @@ def test_single_picker_never_holds_two_models_after_reopen(setup, tmp_path: Path
     _action(picker, "host").trigger()  # the user picks another model from the menu
     assert picker.selected_ids() == ["host"]
     assert picker.text() == "Model: host"
-    assert w.session.settings("dynamics")["models"] == ["host"]
+    assert w.session.settings("dfba")["models"] == ["host"]
     picker.set_selected(["c", "a", "b"])  # c failed: the first runnable one is kept
     assert picker.selected_ids() == ["a"]
 
@@ -327,7 +328,7 @@ def test_remembered_model_that_stops_running_is_reported(setup, tmp_path: Path) 
     assert w.search_view.model_picker.selected_ids() == ["a"]
     assert w.dynamics_view.model_picker.selected_ids() == []
     message = w.statusBar().currentMessage()
-    assert "b (Search)" in message and "b (Dynamics)" in message
+    assert "b (Search)" in message and "b (dFBA)" in message
     w.statusBar().clearMessage()
     w.refresh_workspace()  # reported once, not on every refresh
     assert w.statusBar().currentMessage() == ""

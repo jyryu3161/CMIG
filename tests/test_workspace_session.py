@@ -67,18 +67,18 @@ def test_rename_and_undo_keep_remembered_selections(tmp_path: Path) -> None:
     session = ProjectSession()
     session.open(tmp_path / "p")
     session.store_settings("search", {"models": ["a", "b"], "medium": "preset:western_diet"})
-    session.store_settings("dynamics", {"models": ["b"]})
+    session.store_settings("dfba", {"models": ["b"]})
     session.rename_model("b", "Bifido")
     assert session.settings("search")["models"] == ["a", "Bifido"]
-    assert session.settings("dynamics") == {"models": ["Bifido"]}
+    assert session.settings("dfba") == {"models": ["Bifido"]}
     saved = proj.open_project(tmp_path / "p").analysis_settings
-    assert saved["dynamics"] == {"models": ["Bifido"]}, "saved together with the rename"
+    assert saved["dfba"] == {"models": ["Bifido"]}, "saved together with the rename"
     session.undo_stack.undo()
     assert session.settings("search") == {"models": ["a", "b"], "medium": "preset:western_diet"}
-    assert session.settings("dynamics") == {"models": ["b"]}
-    assert proj.open_project(tmp_path / "p").analysis_settings["dynamics"] == {"models": ["b"]}
+    assert session.settings("dfba") == {"models": ["b"]}
+    assert proj.open_project(tmp_path / "p").analysis_settings["dfba"] == {"models": ["b"]}
     session.undo_stack.redo()
-    assert session.settings("dynamics") == {"models": ["Bifido"]}
+    assert session.settings("dfba") == {"models": ["Bifido"]}
     session.close()
 
 
@@ -422,3 +422,56 @@ def test_inspect_run_of_a_vanished_dir_is_unreadable_not_an_error(tmp_path: Path
     entry = inspect_run(tmp_path / "search-20261013-103100")
     assert entry.status == "unreadable"
     assert entry.mtime == 0.0
+
+
+def test_confirm_namespace_is_undoable(tmp_path: Path) -> None:
+    make_project(tmp_path / "p", ["a"])
+    session = ProjectSession()
+    session.open(tmp_path / "p")
+    try:
+        session.confirm_namespace("a")
+        assert proj.namespace_confirmed(session.require().model("a"))
+        assert session.undo_stack.undoText() == "Confirm Namespace"
+        session.undo_stack.undo()
+        assert session.require().model("a").namespace_confirmed is None
+        session.undo_stack.redo()
+        assert proj.namespace_confirmed(session.require().model("a"))
+        session.revoke_namespace("a")
+        assert session.require().model("a").namespace_confirmed is None
+        reopened = proj.open_project(tmp_path / "p")
+        assert reopened.model("a").namespace_confirmed is None  # saved
+    finally:
+        session.close()
+
+
+def test_undo_rename_restores_remembered_settings_exactly(tmp_path: Path) -> None:
+    project = make_project(tmp_path / "p", ["a", "b"])
+    project.analysis_settings["search"] = {"models": ["a", "b"]}
+    proj.save_project(project)
+    session = ProjectSession()
+    session.open(tmp_path / "p")
+    try:
+        session.remove_models(["a"])
+        session.rename_model("b", "a")
+        assert session.settings("search")["models"] == ["a"]
+        session.undo_stack.undo()  # undo rename
+        assert session.settings("search")["models"] == ["a", "b"]
+    finally:
+        session.close()
+
+
+def test_redo_of_confirmation_does_not_rehash_a_changed_file(tmp_path: Path) -> None:
+    make_project(tmp_path / "p", ["a"])
+    session = ProjectSession()
+    session.open(tmp_path / "p")
+    try:
+        session.confirm_namespace("a")
+        session.undo_stack.undo()
+        entry = session.require().model("a")
+        (tmp_path / "p" / entry.file).write_text("<sbml id='edited'/>")
+        proj.verify_checksums(session.require())
+        session.undo_stack.redo()  # must not raise: it restores the recorded confirmation
+        assert entry.namespace_confirmed is not None
+        assert proj.confirmation_state(entry) == "changed"
+    finally:
+        session.close()

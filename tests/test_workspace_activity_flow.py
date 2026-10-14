@@ -161,8 +161,8 @@ def test_failed_job_leaves_a_failed_run_never_a_question_mark(
     w, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _Main(monkeypatch, rc=1, partial="half.tmp")
-    w.search_view.model_picker.set_selected(["a"])
-    w.search_view.ko_members_input.setText("a")
+    w.gene_ko_page.model_picker.set_selected(["a"])
+    w.gene_ko_page.members_picker.set_selected(["a"])
     jid = w.run_gene_ko_search()
     _settle(w, jid)
     assert w.runner.poll(jid).status is JobStatus.FAILED
@@ -171,7 +171,9 @@ def test_failed_job_leaves_a_failed_run_never_a_question_mark(
     assert jid not in w.bridge.cancelling
     run = _only_run(w, "gene-ko")
     assert sorted(p.name for p in run.iterdir()) == ["half.tmp"], "nothing added to the CLI folder"
-    assert _inputs(w) == [f"{run.name}-state.json", f"{run.name}-taxonomy.csv"]
+    assert _inputs(w) == [
+        f"{run.name}-request.json", f"{run.name}-state.json", f"{run.name}-taxonomy.csv"
+    ]
     marker = json.loads((w.session.project.inputs_dir / f"{run.name}-state.json").read_text())
     assert marker["status"] == "failed" and marker["job_kind"] == "gene_ko_search"
     assert marker["recorded"]
@@ -181,8 +183,8 @@ def test_failed_job_with_an_empty_folder_still_shows_failed(
     w, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _Main(monkeypatch, rc=1)
-    w.search_view.model_picker.set_selected(["a"])
-    w.search_view.ko_members_input.setText("a")
+    w.gene_ko_page.model_picker.set_selected(["a"])
+    w.gene_ko_page.members_picker.set_selected(["a"])
     jid = w.run_gene_ko_search()
     _settle(w, jid)
     [row] = _runs(w)
@@ -226,7 +228,9 @@ def test_cancelled_search_that_published_nothing_still_shows_cancelled(
     assert row.startswith("⊘ "), row
     run = _only_run(w, "search")
     assert list(run.iterdir()) == [], "the folder is kept, empty"
-    assert _inputs(w) == [f"{run.name}-state.json", f"{run.name}-taxonomy.csv"]
+    assert _inputs(w) == [
+        f"{run.name}-request.json", f"{run.name}-state.json", f"{run.name}-taxonomy.csv"
+    ]
 
 
 def test_job_cancelled_before_it_starts_is_listed_cancelled(
@@ -235,8 +239,8 @@ def test_job_cancelled_before_it_starts_is_listed_cancelled(
     main = _Main(monkeypatch, rc=0)
     gate = threading.Event()
     blocker = w.submit_job("blocker", lambda ctx: gate.wait(10))  # holds the only worker
-    w.search_view.model_picker.set_selected(["a"])
-    w.search_view.ko_members_input.setText("a")
+    w.gene_ko_page.model_picker.set_selected(["a"])
+    w.gene_ko_page.members_picker.set_selected(["a"])
     jid = w.run_gene_ko_search()
     assert w.runner.poll(jid).status is JobStatus.PENDING
     w._cancel_job_id(jid)
@@ -259,15 +263,16 @@ def test_failed_and_cancelled_marks_survive_a_restart(
     w, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rc: int, symbol: str
 ) -> None:
     main = _Main(monkeypatch, rc=rc)
-    w.search_view.model_picker.set_selected(["a"])
     if rc == 130:
+        w.search_view.model_picker.set_selected(["a"])
         main.release.clear()
         jid = w.run_search_fixture()
         assert main.started.wait(10)
         w._cancel_job_id(jid)
         main.release.set()
     else:
-        w.search_view.ko_members_input.setText("a")
+        w.gene_ko_page.model_picker.set_selected(["a"])
+        w.gene_ko_page.members_picker.set_selected(["a"])
         jid = w.run_gene_ko_search()
     _settle(w, jid)
     [before] = _runs(w)

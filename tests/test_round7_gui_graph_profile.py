@@ -86,7 +86,8 @@ def test_open_run_feeds_first_class_graph_badge_and_both_profile_charts(tmp_path
     labels = [result.tabText(index) for index in range(result.count())]
     assert "Graph" in labels
     assert result.indexOf(window.graph_tab) >= 0
-    assert window.pages.currentWidget() is result
+    assert window.pages.currentWidget() is window.community_builder
+    assert window.community_builder.results.isAncestorOf(result)
     assert window.graph_view._base_payload is not None
     assert window.graph_view._base_payload["elements"]
     assert "CONFIRMED" in window.graph_gate_badge.text()

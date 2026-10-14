@@ -251,8 +251,8 @@ def objective_structure_warning(
     )
 
 
-def import_model(path: str | Path) -> ModelSummary:
-    """GEM 파일 → ModelSummary. 포맷 자동 감지 + cobra.io 위임."""
+def load_and_summarize(path: str | Path) -> tuple[ModelSummary, Any]:
+    """GEM 파일 → (ModelSummary, loaded cobra model): one read for callers needing both."""
     p = Path(path)
     if not p.exists():
         raise ModelImportError(f"모델 파일 없음: {p}")
@@ -275,7 +275,7 @@ def import_model(path: str | Path) -> ModelSummary:
             f"objective 검사 실패 ({p.name}): {type(e).__name__}: {e}. "
             "이 모델의 objective 구조를 읽을 수 없어 growth 보고 가능 여부를 판단할 수 없습니다."
         ) from e
-    return ModelSummary(
+    summary = ModelSummary(
         model_id=str(model.id) or _model_id_from_path(p),
         source_format=fmt,
         source_path=str(p),
@@ -286,6 +286,12 @@ def import_model(path: str | Path) -> ModelSummary:
         biomass_reactions=biomass_reactions,
         exchange_metabolites=exchange_metabolites,
     )
+    return summary, model
+
+
+def import_model(path: str | Path) -> ModelSummary:
+    """GEM 파일 → ModelSummary. 포맷 자동 감지 + cobra.io 위임."""
+    return load_and_summarize(path)[0]
 
 
 def exchange_metabolite_ids(summary: ModelSummary) -> list[str]:

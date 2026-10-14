@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -31,6 +32,8 @@ _KIND_LABELS = {
     "community": "Community",
     "sweep": "Sweep",
     "medium-growth": "Medium Growth",
+    "check-growth": "Check Growth",
+    "single": "Check Growth",
     "minimal_medium": "Minimal Medium",
     "minimal-medium": "Minimal Medium",
 }
@@ -75,6 +78,19 @@ def merge_run_status(status: str, marker: str | None) -> str:
 
 
 def _summary_hint(inspected: dict[str, object], run_dir: Path) -> str:
+    """The run's target(s) from its summary; a Check Growth run names its model instead."""
+    return _summary_target(inspected, run_dir) or _requested_model(run_dir)
+
+
+def _requested_model(run_dir: Path) -> str:
+    record, _problem = proj.read_run_request(run_dir)
+    if record is None or record["analysis"] != "check_growth":
+        return ""
+    model = record["values"].get("model")
+    return model if isinstance(model, str) else ""
+
+
+def _summary_target(inspected: dict[str, object], run_dir: Path) -> str:
     import json
 
     summary_file = inspected.get("summary_file")
@@ -226,12 +242,50 @@ class _RenameModel(_Command):
     def __init__(self, session: ProjectSession, old: str, new: str) -> None:
         super().__init__(session, "Rename Model")
         self._old, self._new = old, new
+        self._settings: dict[str, dict[str, object]] | None = None
 
     def apply(self) -> None:
-        proj.rename_model(self._session.require(), self._old, self._new)
+        project = self._session.require()
+        self._settings = copy.deepcopy(project.analysis_settings)
+        proj.rename_model(project, self._old, self._new)
 
     def revert(self) -> None:
-        proj.rename_model(self._session.require(), self._new, self._old)
+        project = self._session.require()
+        project.model(self._new).id = self._old
+        if self._settings is not None:
+            project.analysis_settings = copy.deepcopy(self._settings)
+
+
+class _SetNamespaceConfirmation(_Command):
+    def __init__(self, session: ProjectSession, model_id: str, confirmed: bool) -> None:
+        super().__init__(
+            session, "Confirm Namespace" if confirmed else "Revoke Namespace Confirmation"
+        )
+        self._id, self._confirmed = model_id, confirmed
+        self._before: dict[str, str] | None = None
+        self._after: dict[str, str] | None = None
+        self._applied = False
+
+    def apply(self) -> None:
+        entry = self._session.require().model(self._id)
+        if self._applied:
+            # redo: put back exactly what the first apply recorded, without re-hashing the file
+            entry.namespace_confirmed = None if self._after is None else dict(self._after)
+            return
+        project = self._session.require()
+        before = entry.namespace_confirmed
+        self._before = None if before is None else dict(before)
+        if self._confirmed:
+            proj.confirm_namespace(project, self._id)
+        else:
+            proj.revoke_namespace(project, self._id)
+        after = entry.namespace_confirmed
+        self._after = None if after is None else dict(after)
+        self._applied = True
+
+    def revert(self) -> None:
+        entry = self._session.require().model(self._id)
+        entry.namespace_confirmed = None if self._before is None else dict(self._before)
 
 
 class ProjectSession(QObject):
@@ -349,6 +403,12 @@ class ProjectSession(QObject):
 
     def rename_model(self, old: str, new: str) -> None:
         _RenameModel(self, old, new).execute()
+
+    def confirm_namespace(self, model_id: str) -> None:
+        _SetNamespaceConfirmation(self, model_id, True).execute()
+
+    def revoke_namespace(self, model_id: str) -> None:
+        _SetNamespaceConfirmation(self, model_id, False).execute()
 
     def add_medium(self, entry: proj.MediumEntry) -> None:
         _AddMedium(self, entry).execute()

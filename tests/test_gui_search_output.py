@@ -217,9 +217,8 @@ def test_other_search_page_workflows_also_write_to_project_runs(window, monkeypa
         return 0
 
     monkeypatch.setattr(cmig.cli.main, "main", fake_main)
-    view = window.search_view
-    view.ko_members_input.setText("a,b")
-    view.growth_member_input.setText("a")
+    window.gene_ko_page.members_picker.set_selected(["a", "b"])
+    window.ratio_impact_page.member_combo.setCurrentText("a")
     for method in ("run_gene_ko_search", "run_strain_growth_report", "run_abundance_impact"):
         jid = getattr(window, method)()
         assert jid

@@ -72,6 +72,9 @@ class ModelPicker(QToolButton):
         self.choice_list.setMinimumWidth(260)
         self.choice_list.itemClicked.connect(self._toggle)
         self.choice_list.installEventFilter(self)
+        for widget in (self.filter_input, self.select_all_btn, self.select_none_btn):
+            widget.installEventFilter(self)
+        menu.aboutToHide.connect(self._return_focus)
         buttons = QHBoxLayout()
         buttons.addWidget(self.select_all_btn)
         buttons.addWidget(self.select_none_btn)
@@ -208,18 +211,58 @@ class ModelPicker(QToolButton):
         QTimer.singleShot(0, self.filter_input.setFocus)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt override
-        """Space on the list toggles the current row, like a click."""
-        if (
-            watched is getattr(self, "choice_list", None)
-            and event.type() == QEvent.Type.KeyPress
-            and isinstance(event, QKeyEvent)
-            and event.key() == Qt.Key.Key_Space
-        ):
-            item = self.choice_list.currentItem()
-            if item is not None:
-                self._toggle(item)
+        """Keyboard path through the open list: filter ⇄ list ⇄ Select All ⇄ Select None.
+
+        QMenu would otherwise take Tab and the arrows for its own (single) action, so a
+        keyboard-only user could never reach the rows or the buttons.
+        """
+        if event.type() != QEvent.Type.KeyPress or not isinstance(event, QKeyEvent):
+            return super().eventFilter(watched, event)
+        if getattr(self, "choice_list", None) is None:
+            return super().eventFilter(watched, event)
+        key = event.key()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.menu().close()
             return True
+        order: list[QWidget] = [
+            self.filter_input, self.choice_list, self.select_all_btn, self.select_none_btn,
+        ]
+        if key in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab) and watched in order:
+            step = -1 if key == Qt.Key.Key_Backtab else 1
+            self._focus(order[(order.index(watched) + step) % len(order)])
+            return True
+        if watched is self.filter_input and key == Qt.Key.Key_Down:
+            self._focus(self.choice_list)
+            return True
+        if watched is self.choice_list:
+            if key == Qt.Key.Key_Space:
+                item = self.choice_list.currentItem()
+                if item is not None:
+                    self._toggle(item)
+                return True
+            if key == Qt.Key.Key_Up and self.choice_list.currentItem() is self._first_shown():
+                self._focus(self.filter_input)
+                return True
         return super().eventFilter(watched, event)
+
+    def _first_shown(self) -> QListWidgetItem | None:
+        for i in range(self.choice_list.count()):
+            item = self.choice_list.item(i)
+            if not item.isHidden():
+                return item
+        return None
+
+    def _focus(self, widget: QWidget) -> None:
+        if widget is self.choice_list:
+            current = self.choice_list.currentItem()
+            if current is None or current.isHidden():
+                first = self._first_shown()
+                if first is not None:
+                    self.choice_list.setCurrentItem(first)
+        widget.setFocus(Qt.FocusReason.TabFocusReason)
+
+    def _return_focus(self) -> None:
+        QTimer.singleShot(0, lambda: self.setFocus(Qt.FocusReason.PopupFocusReason))
 
     def _sync(self, *_args: object) -> None:
         self._update_text()

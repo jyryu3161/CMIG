@@ -38,7 +38,7 @@ from cmig.core.medium_spec import MediumSpec, load_medium
 from cmig.gui.builder import make_read_only, read_only_item
 from cmig.gui.pickers import ModelPicker
 from cmig.io.model_import import ModelSummary
-from cmig.io.project import ModelEntry
+from cmig.io.project import ModelEntry, check_reasons
 
 _NUTRIENT_ROLE = "nutrient"
 _POOL_CLOSURE_ROLE = "pool_closure"
@@ -197,7 +197,10 @@ class MediumEditor(QWidget):
             _editor_text(self.strings, "medium_check_growth", "Check Growth")
         )
         self.exact_medium_check.toggled.connect(lambda _checked: self.medium_changed.emit())
-        solve_options_row.addWidget(self.exact_medium_check)
+        # Two rows, so the page fits a 1280-wide window without scrolling sideways.
+        exact_row = QHBoxLayout()
+        exact_row.addWidget(self.exact_medium_check)
+        exact_row.addStretch(1)
         solve_options_row.addWidget(self.allow_unknown_check)
         solve_options_row.addStretch(1)
         solve_options_row.addWidget(self.check_growth_btn)
@@ -252,6 +255,10 @@ class MediumEditor(QWidget):
         layout.addLayout(btn_row)
         layout.addLayout(taxonomy_row)
         layout.addLayout(namespace_row)
+        self.namespace_note = QLabel("")
+        self.namespace_note.setWordWrap(True)
+        layout.addWidget(self.namespace_note)
+        layout.addLayout(exact_row)
         layout.addLayout(solve_options_row)
         layout.addWidget(self.growth_label)
         layout.addWidget(self.dropped_ids_label)
@@ -647,7 +654,6 @@ class MediumEditor(QWidget):
     def to_spec(self) -> MediumSpec:
         """표 → MediumSpec(검증). 빈 행 무시, 잘못된 값 → ValueError(status 표시)."""
         uptake: dict[str, float] = {}
-        first_rows: dict[str, int] = {}
         for r in range(self.table.rowCount()):
             if self.table.isRowHidden(r):
                 continue
@@ -661,10 +667,10 @@ class MediumEditor(QWidget):
                     _editor_text(
                         self.strings,
                         "medium_table_duplicate",
-                        "Duplicate exchange_id {exchange}: rows {first} and {row}.",
-                    ).format(exchange=ex, first=first_rows[ex], row=r + 1)
+                        "Duplicate exchange_id {exchange}: it is listed more than once.",
+                    ).format(exchange=ex)
                 )
-                raise ValueError(f"duplicate exchange_id {ex}: rows {first_rows[ex]} and {r + 1}")
+                raise ValueError(f"duplicate exchange_id {ex}")
             try:
                 uptake[ex] = float(lim_item.text()) if lim_item else 0.0
             except ValueError as e:
@@ -672,11 +678,10 @@ class MediumEditor(QWidget):
                     _editor_text(
                         self.strings,
                         "medium_invalid_uptake",
-                        "Invalid uptake_limit (row {row}: {exchange})",
-                    ).format(row=r + 1, exchange=ex)
+                        "Invalid uptake_limit for {exchange}",
+                    ).format(exchange=ex)
                 )
-                raise ValueError(f"uptake_limit is not numeric (row {r + 1})") from e
-            first_rows[ex] = r + 1
+                raise ValueError(f"uptake_limit of {ex} is not numeric") from e
         spec = MediumSpec(uptake=uptake)
         try:
             spec.validate()
@@ -744,6 +749,8 @@ class MediumEditor(QWidget):
 class ModelManagerPanel(QWidget):
     """Model Manager — import 된 GEM 요약 표시(reaction/metabolite/gene·exchange·biomass)."""
 
+    model_activated = Signal(str)
+
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
@@ -752,6 +759,8 @@ class ModelManagerPanel(QWidget):
         self.exchange_table.setHorizontalHeaderLabels(["Exchange reactions"])
         self.exchange_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         make_read_only(self.exchange_table)
+        self.exchange_table.verticalHeader().setVisible(False)
+        self.exchange_table.cellDoubleClicked.connect(lambda row, _col: self._activate(row))
         self.biomass_label = QLabel("")
         layout.addWidget(self.summary_label)
         layout.addWidget(self.exchange_table)
@@ -775,13 +784,27 @@ class ModelManagerPanel(QWidget):
         self.summary_label.setText(f"{len(models)} models in this project")
         self.exchange_table.setColumnCount(4)
         self.exchange_table.setHorizontalHeaderLabels(["Model", "Check", "Reactions", "File"])
+        header = self.exchange_table.horizontalHeader()
+        for column in (1, 2):  # the reason is never cut; the count needs little room
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         self.exchange_table.setRowCount(len(models))
         for row, entry in enumerate(models):
-            values = [entry.id, entry.status if entry.integrity == "ok" else entry.integrity,
+            reasons = check_reasons(entry)
+            symbol, text = reasons[0]
+            values = [entry.id, f"{symbol} {text}",
                       "—" if entry.n_reactions is None else str(entry.n_reactions), entry.file]
             for col, value in enumerate(values):
-                self.exchange_table.setItem(row, col, read_only_item(value))
-        self.biomass_label.setText("Select a model in the sidebar for its details.")
+                item = read_only_item(value)
+                if col == 1:
+                    item.setToolTip("\n".join([f"{s} {t}" for s, t in reasons] + entry.warnings))
+                self.exchange_table.setItem(row, col, item)
+        self.biomass_label.setText("Double-click a model, or select it in the sidebar, to "
+                                   "browse it.")
+
+    def _activate(self, row: int) -> None:
+        item = self.exchange_table.item(row, 0)
+        if item is not None and self.exchange_table.columnCount() == 4:
+            self.model_activated.emit(item.text())
 
 
 _PRESET_METADATA = "provenance_rows.csv"  # shipped beside the presets; not a medium

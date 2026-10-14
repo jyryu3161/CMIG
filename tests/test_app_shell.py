@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.gui.app import CmigMainWindow, build_main_window  # noqa: E402
 from cmig.gui.project_session import RecentProjects  # noqa: E402
-from cmig.gui.sidebar import ANALYSES, ANALYSIS_SEPARATOR_AFTER  # noqa: E402
+from cmig.gui.sidebar import ANALYSES, ANALYSIS_GROUPS  # noqa: E402
 from cmig.service import JobRunner, JobStatus  # noqa: E402
 from cmig.service.jobrunner import JobCancelled  # noqa: E402
 
@@ -86,20 +86,20 @@ def test_shell_has_file_workflow_actions():
 
 
 def test_advanced_tools_are_listed_apart_and_open_on_request():
-    """Non-primary tools should not look like unfinished default workflows: they sit after
-    the ANALYSES separator, are not shown by default, and open with show_analysis."""
+    """Non-primary tools sit in their own Tools group, are not shown by default, and open
+    with show_analysis."""
     _app()
     w = build_main_window()
-    keys = [key for key, _label in ANALYSES]
-    advanced = keys[keys.index(ANALYSIS_SEPARATOR_AFTER) + 1:]
-    assert advanced == ["community", "medium", "sweep", "sandbox", "compare"]
-    pages = [w.community_builder, w.medium_editor, w.sweep_view, w.sandbox_view,
-             w.scenario_compare]
+    advanced = [key for key, _l in dict(ANALYSIS_GROUPS)["Tools"]]
+    assert advanced == ["medium", "sweep", "sandbox", "compare"]
+    pages = [w.medium_page, w.sweep_page, w.sandbox_page, w.compare_page]
     assert w.pages.currentWidget() not in pages
     for key, page in zip(advanced, pages, strict=True):
         w.show_analysis(key)
         assert w.pages.currentWidget() is page
-    assert "Pick members" in w.community_builder.status.text()
+        assert w.pages.currentWidget() is w.analysis_pages[key]
+    w.show_analysis("community")
+    assert "Abundances start at 1" in w.community_builder.description.text()
     assert "Advanced editor" in w.medium_editor.status.text()
     assert "Advanced result view" in w.sweep_view.status.text()
     assert "Advanced sandbox" in w.sandbox_view.status.text()
@@ -122,7 +122,9 @@ def test_load_run_dir_updates_profile_and_runs_list(tmp_path):
     assert w.profile_view.table.rowCount() == 0
     assert w.current_manifest["run_hash"] == "abc1234567890"
     assert "elements" in w.current_graph_payload
-    assert w.pages.currentWidget() is w.community_result_page
+    assert w.pages.currentWidget() is w.community_builder
+    assert w.community_builder.results.isAncestorOf(w.community_result_page)
+    assert w.community_builder.results.has_results()
     assert w.community_result_page.currentWidget() is w.profile_view
 
 
@@ -138,7 +140,9 @@ def test_runs_list_entry_reopens_run(tmp_path):
     w._show_page(w.search_view)
     item = w.sidebar.topLevelItem(3).child(0)
     w._open_run_entry(Path(item.data(0, Qt.ItemDataRole.UserRole)))
-    assert w.pages.currentWidget() is w.community_result_page
+    assert w.pages.currentWidget() is w.community_builder
+    assert w.community_builder.results.isAncestorOf(w.community_result_page)
+    assert w.community_builder.results.has_results()
     assert w.community_result_page.currentWidget() is w.profile_view
     assert w.sidebar.topLevelItem(3).childCount() == 1
     # the inspector replaces the status-bar Integrity details
@@ -239,9 +243,9 @@ def test_load_spatial_dir_updates_dynamics_tab(tmp_path):
     )
     w = build_main_window()
     assert w.load_spatial_dir(tmp_path) is True
-    assert w.pages.currentWidget() is w.dynamics_view
-    assert w.dynamics_view.table.item(0, 0).text() == "Spatial"
-    assert "range=0..10" in w.dynamics_view.table.item(0, 3).text()
+    assert w.pages.currentWidget() is w.spatial_page
+    assert w.spatial_page.table.item(0, 0).text() == "Spatial"
+    assert "range=0..10" in w.spatial_page.table.item(0, 3).text()
 
 
 def test_run_spatial_preview_passes_dt_to_cli(monkeypatch, tmp_path):
@@ -273,7 +277,7 @@ def test_run_spatial_preview_passes_dt_to_cli(monkeypatch, tmp_path):
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
     project = open_test_project(w, tmp_path / "p", ["a"])
-    w.dynamics_view.spatial_dt_spin.setValue(0.25)
+    w.spatial_page.spatial_dt_spin.setValue(0.25)
     jid = w.run_spatial_preview()
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
@@ -281,7 +285,7 @@ def test_run_spatial_preview_passes_dt_to_cli(monkeypatch, tmp_path):
     out = Path(seen["argv"][seen["argv"].index("--out") + 1])
     assert out.parent == project.runs_dir and out.name.startswith("spatial-")
     assert seen["argv"][seen["argv"].index("--dt") + 1] == "0.25"
-    assert w.dynamics_view.run_spatial_btn.isEnabled()
+    assert w.spatial_page.run_btn.isEnabled()
     runner.shutdown()
 
 
@@ -539,9 +543,9 @@ def test_strain_growth_button_uses_taxonomy_command(monkeypatch, tmp_path):
     w._poll_completed_jobs()
     assert seen["argv"][0] == "strain-growth"
     assert taxonomy_ids(seen["argv"]) == ["producer"]
-    assert w.search_view.table.item(0, 0).text() == "producer"
-    assert w.search_view.table.item(0, 1).text() == "growth"
-    assert w.search_view.run_growth_btn.isEnabled()
+    assert w.strain_growth_page.results_panel.table.item(0, 0).text() == "producer"
+    assert w.strain_growth_page.results_panel.table.item(0, 1).text() == "growth"
+    assert w.strain_growth_page.run_btn.isEnabled()
     runner.shutdown()
 
 
@@ -580,18 +584,18 @@ def test_abundance_impact_button_uses_member_and_fractions(monkeypatch, tmp_path
     runner = JobRunner(max_workers=1)
     w = build_main_window(runner=runner)
     open_test_project(w, tmp_path / "p", ["producer", "other"])
-    w.search_view.growth_member_input.setText("producer")
-    w.search_view.abundance_fractions_input.setText("0.2,0.8")
-    w.search_view.set_target_rows(["ac"])
+    w.ratio_impact_page.member_combo.setCurrentText("producer")
+    w.ratio_impact_page.fractions_input.setText("0.2,0.8")
+    w.ratio_impact_page.target_input.setText("ac")
     jid = w.run_abundance_impact()
     runner.result(jid, timeout=5)
     w._poll_completed_jobs()
     assert seen["argv"][0] == "abundance-impact"
     assert seen["argv"][seen["argv"].index("--member") + 1] == "producer"
     assert seen["argv"][seen["argv"].index("--fractions") + 1] == "0.2,0.8"
-    assert w.search_view.table.item(0, 0).text() == "producer@0.2"
-    assert w.search_view.table.item(0, 1).text() == "ac"
-    assert w.search_view.run_abundance_btn.isEnabled()
+    assert w.ratio_impact_page.results_panel.table.item(0, 0).text() == "producer@0.2"
+    assert w.ratio_impact_page.results_panel.table.item(0, 1).text() == "ac"
+    assert w.ratio_impact_page.run_btn.isEnabled()
     runner.shutdown()
 
 
@@ -615,7 +619,7 @@ def test_search_figure_export_copies_selected_svg(monkeypatch, tmp_path):
         "getSaveFileName",
         lambda *args, **kwargs: (str(target), "SVG (*.svg)"),
     )
-    w._export_search_figure()
+    w._export_ranked_figure(w.search_view)
     assert target.read_text() == "<svg>scatter</svg>"
     assert "Exported figure" in w.search_view.status.text()
 
@@ -757,7 +761,7 @@ def test_community_solve_button_writes_taxonomy_and_overrides_abundance(monkeypa
     # GUI now mirrors that gate instead of always failing at rc=2. The GUI must never supply
     # the confirmation on the user's behalf, so the test confirms it explicitly.
     w.community_builder.assume_bigg_check.setChecked(True)
-    w.community_builder.add_member("iML1515", 0.75)
+    w.community_builder.set_abundance("iML1515", 0.75)
     w.community_builder.f_slider.setValue(30)
     jid = w.run_community_solve()
     runner.result(jid, timeout=5)

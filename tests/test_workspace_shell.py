@@ -46,7 +46,7 @@ def test_standard_menus_and_shortcuts(window) -> None:
     assert window.toggle_inspector_action.shortcut().toString() == "Ctrl+Alt+I"
     analysis = _menu(window, "Analysis")
     assert analysis[:5] == [
-        "Combination Search", "Gene Knockout", "Strain Growth & Ratio", "Host–Microbe", "Dynamics",
+        "Combination Search", "Gene Knockout", "Strain Growth", "Ratio Impact", "Community Solve",
     ]
     assert analysis[-2:] == ["Run", "Cancel"]
     assert "Try Demo Run" in _menu(window, "Help")
@@ -91,9 +91,11 @@ def test_selecting_analysis_switches_page_and_inspector(window, tmp_path: Path) 
     assert window.pages.currentWidget() is window.host_view
     assert window.inspector.title_label.text() == "Host–Microbe"
     assert window.run_action.isEnabled()
-    window.sidebar.select("analyses", "growth")
-    assert window.pages.currentWidget() is window.search_view
-    assert not window.run_action.isEnabled()
+    window.sidebar.select("analyses", "strain_growth")
+    assert window.pages.currentWidget() is window.strain_growth_page
+    # Run follows the Strain Growth button of the page on show
+    assert window.strain_growth_page.run_btn.isEnabled()
+    assert window.run_action.isEnabled()
 
 
 def test_selecting_model_updates_inspector(window, tmp_path: Path) -> None:
@@ -157,10 +159,39 @@ def test_window_fits_target_sizes(window, tmp_path: Path, size: tuple[int, int])
     window.open_project(tmp_path / "g")
     window.resize(*size)
     window.show()
-    for key in ("search", "host", "dynamics", "community", "medium", "sweep"):
+    for key in ("search", "host", "dfba", "community", "medium", "sweep"):
         window.show_analysis(key)
         APP.processEvents()
         assert window.width() <= size[0] and window.height() <= size[1], key
+
+
+def test_every_page_fits_1280_wide_without_sideways_scrolling(window, tmp_path: Path) -> None:
+    """A small window scrolls a page down, never sideways: input rows wrap instead."""
+    from cmig.gui.sidebar import ANALYSES
+
+    make_project(tmp_path / "g", ["a", "b"])
+    window.open_project(tmp_path / "g")
+    window.resize(1280, 800)
+    window.show()
+    for key, _label in ANALYSES:
+        window.show_analysis(key)
+        APP.processEvents()
+        bar = window.analysis_pages[key].scroll_area.horizontalScrollBar()
+        assert bar.maximum() == 0, key
+
+
+def test_empty_results_line_sits_under_its_heading(window, tmp_path: Path) -> None:
+    make_project(tmp_path / "g", ["a"])
+    window.open_project(tmp_path / "g")
+    window.resize(1500, 950)
+    window.show()
+    window.show_analysis("gene_ko")
+    APP.processEvents()
+    results = window.gene_ko_page.results
+    assert results.empty_label.isVisible()
+    # heading, (empty) status line and the one-line note stack at the top of the area;
+    # the spare height stays below them instead of spreading the three lines apart
+    assert results.empty_label.geometry().bottom() < 100
 
 
 # ── controller rulings and shell behaviour beyond the brief ───────────────────────────────
@@ -268,7 +299,7 @@ def test_menu_choice_is_reflected_in_the_sidebar(window, tmp_path: Path) -> None
     make_project(tmp_path / "s", ["a"])
     window.open_project(tmp_path / "s")
     window.analysis_actions["sweep"].trigger()
-    assert window.pages.currentWidget() is window.sweep_view
+    assert window.pages.currentWidget() is window.sweep_page
     assert window.sidebar.currentItem().data(0, 0x0100) == "sweep"
 
 
@@ -295,12 +326,33 @@ def _wait_for(window, condition, timeout: float = 10.0) -> None:
 
 
 def _exchange_texts(window) -> list[str]:
-    listing = window.inspector.exchange_list
-    return [listing.item(i).text() for i in range(listing.count())]
+    """The model browser's Exchanges tab ids, or its contents note while it has none."""
+    browser = window.model_browser
+    if browser.tabs.isHidden():
+        return [browser.contents_label.text()]
+    table = browser.exchanges_tab.table
+    return [table.item(r, 0).text() for r in range(table.rowCount())]
 
 
-def _profile_overlay_shown(window) -> bool:
-    return (window.pages.currentWidget() is window.community_result_page
+def _fake_index_build(build):
+    """A `model_index.build_index_file` stand-in: `build(path)` returns the exchange ids."""
+    from cmig.io import model_index
+
+    def fake(root, path, sha, model_id):
+        exchanges = build(path)
+        reactions = [{"id": rid, "name": "", "metabolites": {}, "lower": -10.0,
+                      "upper": 1000.0} for rid in exchanges]
+        return model_index.write_index(root, sha, model_id, {
+            "reactions": reactions, "metabolites": [], "genes": [],
+            "exchanges": list(exchanges), "objective": []})
+
+    return fake
+
+
+def _profile_overlay_shown(window, page) -> bool:
+    return (window.pages.currentWidget() is page
+            and page.results.isAncestorOf(window.community_result_page)
+            and page.results.has_results()
             and window.community_result_page.currentWidget() is window.profile_view
             and window.profile_view.net_chart.delta_active
             and not window.profile_view.delta_note.isHidden())
@@ -324,7 +376,7 @@ def test_compare_runs_overlay_is_shown_on_profile(window, tmp_path: Path) -> Non
     window.scenario_compare.run_a_input.setText(str(tmp_path / "a"))
     window.scenario_compare.run_b_input.setText(str(tmp_path / "b"))
     window.run_scenario_compare()
-    assert _profile_overlay_shown(window)
+    assert _profile_overlay_shown(window, window.compare_page)
 
 
 def _fake_sandbox_engine(monkeypatch: pytest.MonkeyPatch, gate=None) -> list[bool]:
@@ -361,7 +413,7 @@ def test_sandbox_overlay_is_shown_on_profile(window, monkeypatch: pytest.MonkeyP
     _fake_sandbox_engine(monkeypatch)
     _sandbox_with_bound(window).preview_btn.click()
     _wait_for(window, lambda: not window._sandbox_jobs)
-    assert _profile_overlay_shown(window)
+    assert _profile_overlay_shown(window, window.sandbox_page)
 
 
 def test_sandbox_commit_shows_profile(
@@ -374,7 +426,7 @@ def test_sandbox_commit_shows_profile(
     _sandbox_with_bound(window).commit_btn.click()
     _wait_for(window, lambda: not window._sandbox_jobs)
     assert calls == [True]
-    assert _profile_overlay_shown(window)
+    assert _profile_overlay_shown(window, window.sandbox_page)
 
 
 def test_auto_preview_after_a_bound_edit_stays_on_the_sandbox_page(
@@ -393,9 +445,11 @@ def test_auto_preview_after_a_bound_edit_stays_on_the_sandbox_page(
     loop.exec()
     _wait_for(window, lambda: bool(calls) and not window._sandbox_jobs)
     assert calls == [False]
-    assert window.pages.currentWidget() is view  # the delta table and its warning stay visible
+    # the delta table and its warning stay visible
+    assert window.pages.currentWidget() is window.sandbox_page
     assert "preview" in view.status.text()
     assert window.profile_view.net_chart.delta_active  # Profile still carries the overlay
+    assert window.sandbox_page.results.isAncestorOf(window.profile_view)  # on this page
 
 
 def test_auto_preview_waits_for_the_solve_in_flight_then_follows_the_latest_bound(
@@ -455,7 +509,7 @@ def test_explicit_preview_does_not_leave_a_cell_being_edited(
     assert view.bound_table.state() == QAbstractItemView.State.EditingState
     gate.set()
     _wait_for(window, lambda: not window._sandbox_jobs)
-    assert window.pages.currentWidget() is view
+    assert window.pages.currentWidget() is window.sandbox_page
     assert view.bound_table.state() == QAbstractItemView.State.EditingState
 
 
@@ -471,32 +525,31 @@ def test_model_exchanges_load_in_the_background(
 ) -> None:
     import threading
     import time
-    from types import SimpleNamespace
 
-    import cmig.io.model_import as model_import
+    from cmig.io import model_index
 
     gate = threading.Event()
     calls: list[Path] = []
 
-    def slow_import(path):
+    def slow_build(path):
         calls.append(path)
         assert gate.wait(10)
-        return SimpleNamespace(exchanges=["EX_ac_e", "EX_but_e"])
+        return ["EX_ac_e", "EX_but_e"]
 
-    monkeypatch.setattr(model_import, "import_model", slow_import)
-    make_project(tmp_path / "s", ["a"])
+    monkeypatch.setattr(model_index, "build_index_file", _fake_index_build(slow_build))
+    make_project(tmp_path / "s", ["a"], index=False)
     window.open_project(tmp_path / "s")
     started = time.monotonic()
     window.sidebar.select("models", "a")
     assert time.monotonic() - started < 1.0  # selection does not wait for the parse
-    assert _exchange_texts(window) == ["Loading exchanges…"]
-    assert window.activity.isHidden()  # a background lookup does not pop the pane open
+    assert _exchange_texts(window) == ["Building model contents…"]
+    assert window.activity.isHidden()  # a background index does not pop the pane open
     gate.set()
-    _wait_for(window, lambda: not window._exchange_jobs)
+    _wait_for(window, lambda: window._index_job is None)
     assert _exchange_texts(window) == ["EX_ac_e", "EX_but_e"]
     window.sidebar.select("media", "preset:western_diet")
     window.sidebar.select("models", "a")
-    assert _exchange_texts(window) == ["EX_ac_e", "EX_but_e"]  # cached by checksum
+    assert _exchange_texts(window) == ["EX_ac_e", "EX_but_e"]  # kept by checksum
     assert len(calls) == 1
 
 
@@ -504,44 +557,43 @@ def test_model_exchanges_fill_only_the_model_still_shown(
     window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import threading
-    from types import SimpleNamespace
 
-    import cmig.io.model_import as model_import
+    from cmig.io import model_index
 
     gate = threading.Event()
-    monkeypatch.setattr(model_import, "import_model",
-                        lambda path: gate.wait(10) and SimpleNamespace(exchanges=["EX_ac_e"]))
-    make_project(tmp_path / "s", ["a"])
+    monkeypatch.setattr(model_index, "build_index_file",
+                        _fake_index_build(lambda path: gate.wait(10) and ["EX_ac_e"]))
+    make_project(tmp_path / "s", ["a"], index=False)
     window.open_project(tmp_path / "s")
     window.sidebar.select("models", "a")
     window.sidebar.select("media", "preset:western_diet")  # the user moved on
     gate.set()
-    _wait_for(window, lambda: not window._exchange_jobs)
+    _wait_for(window, lambda: window._index_job is None)
     assert window.inspector.title_label.text() == "Medium · western_diet"
 
 
 def test_failed_exchange_lookup_is_shown_and_retried(
     window, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import cmig.io.model_import as model_import
+    from cmig.io import model_index
 
     attempts: list[Path] = []
 
-    def broken_import(path):
+    def broken_build(path):
         attempts.append(path)
         raise ValueError("not a model")
 
-    monkeypatch.setattr(model_import, "import_model", broken_import)
-    make_project(tmp_path / "s", ["a"])
+    monkeypatch.setattr(model_index, "build_index_file", _fake_index_build(broken_build))
+    make_project(tmp_path / "s", ["a"], index=False)
     window.open_project(tmp_path / "s")
     window.sidebar.select("models", "a")
-    _wait_for(window, lambda: not window._exchange_jobs)
+    _wait_for(window, lambda: window._index_job is None)
     [note] = _exchange_texts(window)
-    assert note.startswith("Exchange list unavailable:") and "not a model" in note
-    window.sidebar.select("media", "preset:western_diet")
-    window.sidebar.select("models", "a")
-    _wait_for(window, lambda: not window._exchange_jobs)
-    assert len(attempts) == 2  # a failure is not cached
+    assert note.startswith("Model contents unavailable:") and "not a model" in note
+    assert not window.model_browser.retry_btn.isHidden()
+    window.model_browser.retry_btn.click()
+    _wait_for(window, lambda: window._index_job is None)
+    assert len(attempts) == 2  # Retry builds it again
 
 
 # ── final review: a failed switch keeps the current project; closing asks about jobs ──────
@@ -744,46 +796,39 @@ def test_run_shortcut_is_refused_while_the_page_run_is_busy(
     assert window.run_action.isEnabled()
 
 
-# ── final review: exchange lookups stay out of Activity and never queue stale work ────────
-def test_exchange_lookups_are_hidden_and_cancelled_when_the_selection_moves_on(
+# ── model indexes: one Activity job for every missing index, never one per selection ───
+def test_model_indexes_build_in_one_activity_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import threading
-    from types import SimpleNamespace
 
-    import cmig.io.model_import as model_import
-    from cmig.service import JobRunner, JobStatus
+    from cmig.io import model_index
+    from cmig.service import JobRunner
 
     gate = threading.Event()
     calls: list[str] = []
 
-    def slow_import(path):
+    def slow_build(path):
         calls.append(Path(path).stem)
         assert gate.wait(10)
-        return SimpleNamespace(exchanges=["EX_ac_e"])
+        return ["EX_ac_e"]
 
-    monkeypatch.setattr(model_import, "import_model", slow_import)
+    monkeypatch.setattr(model_index, "build_index_file", _fake_index_build(slow_build))
     window = build_main_window(runner=JobRunner(max_workers=1))
     window.recent = RecentProjects(QSettings(str(tmp_path / "r.ini"), QSettings.Format.IniFormat))
-    make_project(tmp_path / "s", ["a", "b"])
+    make_project(tmp_path / "s", ["a", "b"], index=False)
     assert window.open_project(tmp_path / "s")
+    _wait_for(window, lambda: window._index_job_kind == "build")  # past the unlisted check
+    jid = window._index_job
+    assert jid is not None and jid in window.bridge._job_ids
     window.sidebar.select("models", "a")
-    _wait_for(window, lambda: calls == ["a"])
-    window.sidebar.select("models", "b")  # queued behind a's lookup
-    jobs = dict(window._exchange_jobs)
-    assert len(jobs) == 2
-    assert not set(jobs) & set(window.bridge._job_ids), "lookups are not Activity jobs"
-    assert window.jobs_panel.rowCount() == 0
-    window.sidebar.select("media", "preset:western_diet")  # the user moved on
+    window.sidebar.select("models", "b")
+    assert window._index_job == jid, "selecting models starts no further jobs"
+    assert window.jobs_panel.item(0, 1).text() == "Index Models"
     gate.set()
-    _wait_for(window, lambda: not window._exchange_jobs)
-    assert calls == ["a"], "b's queued lookup was cancelled before it ran"
-    b_job = next(jid for jid, (model_id, _sha) in jobs.items() if model_id == "b")
-    assert window.runner.poll(b_job).status is JobStatus.CANCELLED
-    assert window.inspector.title_label.text() == "Medium · western_diet"
-    window.sidebar.select("models", "b")  # coming back starts a fresh lookup
-    _wait_for(window, lambda: not window._exchange_jobs)
-    assert calls == ["a", "b"] and _exchange_texts(window) == ["EX_ac_e"]
+    _wait_for(window, lambda: window._index_job is None)
+    assert sorted(calls) == ["a", "b"]
+    assert _exchange_texts(window) == ["EX_ac_e"]
     window.close_project()
 
 

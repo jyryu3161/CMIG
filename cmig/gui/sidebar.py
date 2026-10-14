@@ -11,19 +11,16 @@ from PySide6.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem
 from cmig.gui.project_session import RunEntry
 from cmig.io.project import MediumEntry, ModelEntry, model_import_candidates
 
-ANALYSES: list[tuple[str, str]] = [
-    ("search", "Combination Search"),
-    ("gene_ko", "Gene Knockout"),
-    ("growth", "Strain Growth & Ratio"),
-    ("host", "Host–Microbe"),
-    ("dynamics", "Dynamics"),
-    ("community", "Community Solve"),
-    ("medium", "Medium Editor"),
-    ("sweep", "Sweep"),
-    ("sandbox", "Constraint Sandbox"),
-    ("compare", "Compare Runs"),
+ANALYSIS_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
+    ("Community", [("search", "Combination Search"), ("gene_ko", "Gene Knockout"),
+                   ("strain_growth", "Strain Growth"), ("ratio_impact", "Ratio Impact"),
+                   ("community", "Community Solve")]),
+    ("Host", [("host", "Host–Microbe"), ("host_search", "Host Combination Search")]),
+    ("Dynamics", [("dfba", "dFBA"), ("spatial", "Spatial Preview")]),
+    ("Tools", [("medium", "Medium Editor"), ("sweep", "Sweep"),
+               ("sandbox", "Constraint Sandbox"), ("compare", "Compare Runs")]),
 ]
-ANALYSIS_SEPARATOR_AFTER = "dynamics"
+ANALYSES: list[tuple[str, str]] = [item for _title, items in ANALYSIS_GROUPS for item in items]
 _GROUPS = ("models", "media", "analyses", "runs")
 _ROLE = Qt.ItemDataRole.UserRole
 
@@ -101,15 +98,16 @@ class WorkspaceSidebar(QTreeWidget):
 
     def _fill_analyses(self) -> None:
         group = self._groups["analyses"]
-        for key, label in ANALYSES:
-            item = QTreeWidgetItem([label])
-            item.setData(0, _ROLE, key)
-            group.addChild(item)
-            if key == ANALYSIS_SEPARATOR_AFTER:
+        for index, (_title, items) in enumerate(ANALYSIS_GROUPS):
+            if index:
                 separator = QTreeWidgetItem(["──────────"])
                 separator.setFlags(Qt.ItemFlag.NoItemFlags)
                 separator.setData(0, _ROLE, None)
                 group.addChild(separator)
+            for key, label in items:
+                item = QTreeWidgetItem([label])
+                item.setData(0, _ROLE, key)
+                group.addChild(item)
 
     def _reset(self, name: str) -> QTreeWidgetItem:
         group = self._groups[name]

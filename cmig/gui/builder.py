@@ -9,15 +9,14 @@ DeltaTable=core.delta.DeltaResult 표시(significant 강조·실패 명시), Sce
 
 from __future__ import annotations
 
-import json
-import math
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any
 
-from PySide6.QtCore import QModelIndex, QPersistentModelIndex, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemDelegate,
     QAbstractItemView,
     QCheckBox,
     QComboBox,
@@ -29,15 +28,11 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
-    QScrollArea,
     QSlider,
     QSpinBox,
     QStackedWidget,
-    QStyledItemDelegate,
-    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -45,13 +40,30 @@ from PySide6.QtWidgets import (
 from cmig.core.delta import DeltaResult
 from cmig.core.sandbox import BoundConstraint
 from cmig.core.targets import TARGET_PRESETS, preset_targets
+from cmig.gui.analysis_page import AnalysisPage, mark_computed_headers, paint_computed
 from cmig.gui.pickers import MediumPicker, ModelPicker
+from cmig.gui.search_results import (
+    MERGE_MEDIUM_WARNING,
+    SEARCH_COLUMNS,
+    SearchResultsPanel,
+    _matching_evaluation,
+    make_read_only,
+    medium_mode_text,
+    read_only_item,
+    validate_search_summary,
+)
 
-#: Default SearchView column labels. Adapters may override them per workflow so a growth
-#: rate is never displayed under a header that says "Flux" (round-5 P2 F7/F21).
-SEARCH_COLUMNS = ("Members", "Target", "Score", "Flux", "Growth", "FVA Range", "Status")
-
-_DIAGNOSTIC_COLOR = QColor("#d62728")
+# The result-table helpers moved to cmig.gui.search_results; these names stay importable from
+# here, and the explicit __all__ entries make them public re-exports for strict mypy.
+__all__ = [
+    "MERGE_MEDIUM_WARNING",
+    "SEARCH_COLUMNS",
+    "_matching_evaluation",
+    "make_read_only",
+    "medium_mode_text",
+    "read_only_item",
+    "validate_search_summary",
+]
 
 #: The four `--direction` / `--target-directions` choices of `cmig search`, in CLI order.
 TARGET_DIRECTIONS = ("max_secretion", "min_secretion", "max_uptake", "min_uptake")
@@ -61,166 +73,22 @@ REFERENCE_WARNING = (
     "If the search runs as GA or random, normalized_weighted needs a Reference for every "
     "target."
 )
-MERGE_MEDIUM_WARNING = (
-    "Metabolites missing from the medium file stay at the model defaults (e.g. unlimited "
-    "oxygen); use exact for reported results."
-)
 
 
-def medium_mode_text(medium: str, mode: str) -> str:
-    """One line naming the Search medium mode explicitly (merge carries its warning)."""
-    if not medium:
-        return "medium: model default (medium mode not applied)"
-    if mode == "merge":
-        return f"medium: merge — {MERGE_MEDIUM_WARNING}"
-    return "medium: exact"
-
-
-def validate_search_summary(summary: dict[str, object]) -> None:
-    """Validate the ranking fields consumed by SearchView before publishing a run.
-
-    Missing or null numeric readouts mean unknown in older and failed-run schemas.
-    A present value of another type cannot silently become that unknown readout.
-    """
-    if "warnings" in summary and not isinstance(summary["warnings"], list):
-        raise ValueError("search summary warnings must be a list")
-    if "n_pareto_points" in summary and summary["n_pareto_points"] is not None:
-        try:
-            int(str(summary["n_pareto_points"]))
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("search summary n_pareto_points must be an integer") from exc
-    ranked = summary.get("top_ranked")
-    if isinstance(ranked, list):
-        groups = [("top_ranked", ranked)]
-    elif isinstance(ranked, dict):
-        if not all(isinstance(key, str) for key in ranked):
-            raise ValueError("search ranking target names must be strings")
-        groups = [(f"top_ranked.{key}", rows) for key, rows in ranked.items()]
-    else:
-        raise ValueError("search summary has no valid top_ranked collection")
-
-    def numeric(value: object, field: str) -> None:
-        if value is None:
-            return
-        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-            raise ValueError(f"{field} must be numeric or null")
-        try:
-            if not math.isfinite(float(value)):
-                raise ValueError(f"{field} must be finite or null")
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"{field} must be numeric or null") from exc
-
-    for group, rows in groups:
-        if not isinstance(rows, list):
-            raise ValueError(f"{group} must be a list")
-        for index, row in enumerate(rows):
-            where = f"{group}[{index}]"
-            if not isinstance(row, dict):
-                raise ValueError(f"{where} must be an object")
-            if "members" in row and (
-                not isinstance(row["members"], list)
-                or not all(isinstance(member, str) for member in row["members"])
-            ):
-                raise ValueError(f"{where}.members must be a list of names")
-            for field in (
-                "score", "weighted_score", "target_flux", "community_growth",
-                "robustness_fva_lo", "robustness_fva_hi",
-            ):
-                if field in row:
-                    numeric(row[field], f"{where}.{field}")
-            if "target_fluxes" in row:
-                fluxes = row["target_fluxes"]
-                if not isinstance(fluxes, dict) or not all(
-                    isinstance(target, str) for target in fluxes
-                ):
-                    raise ValueError(f"{where}.target_fluxes must be an object")
-                for target, flux in fluxes.items():
-                    numeric(flux, f"{where}.target_fluxes.{target}")
-            for field in ("status", "robustness_status", "aux_text"):
-                if field in row and row[field] is not None and not isinstance(row[field], str):
-                    raise ValueError(f"{where}.{field} must be text or null")
-            if "diagnostic" in row:
-                diagnostic = row["diagnostic"]
-                if diagnostic is not None and not isinstance(diagnostic, (str, dict)):
-                    raise ValueError(f"{where}.diagnostic must be text or an object")
-                if isinstance(diagnostic, dict):
-                    for field in ("code", "message", "detail"):
-                        if (field in diagnostic and diagnostic[field] is not None
-                                and not isinstance(diagnostic[field], str)):
-                            raise ValueError(f"{where}.diagnostic.{field} must be text or null")
-
-
-class _NoEditorDelegate(QStyledItemDelegate):
-    """Item delegate that can never produce an editor.
-
-    `setEditTriggers(NoEditTriggers)` closes every *user* path into edit mode, but it is not
-    the whole guarantee: `QAbstractItemView.edit(index, AllEditTriggers, None)` bypasses the
-    trigger check entirely, and the items themselves still carry `ItemIsEditable`. Refusing
-    to build an editor closes the remaining door in one place, for every read-only table,
-    without touching the ~15 population loops that create the items.
-    """
-
-    def createEditor(
-        self,
-        parent: QWidget,
-        option: QStyleOptionViewItem,
-        index: QModelIndex | QPersistentModelIndex,
-    ) -> QWidget:
-        # Qt accepts a null QWidget pointer to refuse editing, while PySide6's stub declares
-        # a non-optional QWidget return. The cast keeps the exact override signature without
-        # changing the runtime null-pointer contract.
-        return cast(QWidget, None)
-
-
-def make_read_only(table: QTableWidget) -> QTableWidget:
-    """Mark a table as *computed output*: the user must not be able to type into it.
-
-    A hand-typed 999.9 is visually indistinguishable from a solved flux, so every table
-    that renders a computed number is read-only. Input tables (medium, bounds, community
-    members) deliberately stay editable.
-
-    Two layers, because neither alone is sufficient (see `_NoEditorDelegate`): edit triggers
-    close the user paths, and the delegate closes the programmatic `edit()` path. Populate
-    these tables with `read_only_item()` so the *model* also reports the cell as
-    non-editable — that third layer is per-item because doing it from here (via an
-    `itemChanged` hook) costs a Python round trip per cell and measured 46 ms on a 2712-row
-    profile against a 3 ms baseline.
-    """
-    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-    table.setItemDelegate(_NoEditorDelegate(table))  # parented, so it outlives this call
-    return table
-
-
-def read_only_item(text: str) -> QTableWidgetItem:
-    """Build a cell for a computed value, with `ItemIsEditable` already cleared.
-
-    Clearing the flag before the item is inserted costs one C++ call and emits nothing,
-    where clearing it afterwards would emit `itemChanged` for every cell in the table.
-    """
-    item = QTableWidgetItem(text)
-    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-    return item
-
-
-class CommunityBuilderView(QWidget):
-    """Community Builder — 멤버 추가/제거·abundance·tradeoff f 슬라이더 → taxonomy 구성."""
+class CommunityBuilderView(AnalysisPage):
+    """Community Solve: the picked members are the table's rows; only abundances are edited."""
 
     def __init__(self) -> None:
-        super().__init__()
-        layout = QVBoxLayout(self)
-        self.title = QLabel("Community Builder")
-        self.status = QLabel(
-            "Pick members, set abundances below (default 1), then Run Community."
+        super().__init__(
+            "Community Solve",
+            "Community FBA of the selected members. Abundances start at 1; edit them in the "
+            "table.",
+            run_text="Run Community",
+            cancel=False,
         )
-        self.run_btn = QPushButton("Run Community")
-        pool_row = QHBoxLayout()
         self.model_picker = ModelPicker("Members")
-        pool_row.addWidget(self.model_picker)
-        pool_row.addStretch(1)
-        pool_row.addWidget(self.run_btn)
         # `cmig solve` refuses to run without an explicit namespace decision. Mirror that gate
         # here instead of failing at rc=2 with the real reason hidden on the process's stdout.
-        namespace_row = QHBoxLayout()
         self.assume_bigg_check = QCheckBox(
             "I reviewed these models and confirm they are already in BiGG namespace"
         )
@@ -229,46 +97,55 @@ class CommunityBuilderView(QWidget):
             "…or a reviewed namespace-decisions JSON file"
         )
         self.browse_namespace_decisions_btn = QPushButton("Decisions")
-        namespace_row.addWidget(self.assume_bigg_check)
-        namespace_row.addWidget(self.namespace_decisions_input)
-        namespace_row.addWidget(self.browse_namespace_decisions_btn)
+        self.namespace_note = QLabel("")
+        self.namespace_note.setWordWrap(True)
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["Member", "Abundance"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        member_btn_row = QHBoxLayout()
-        self.add_member_btn = QPushButton("Add member")
-        self.remove_member_btn = QPushButton("Remove selected")
-        self.add_member_btn.clicked.connect(lambda: self.add_member("", 1.0))
-        self.remove_member_btn.clicked.connect(self._remove_selected_member)
-        member_btn_row.addWidget(self.add_member_btn)
-        member_btn_row.addWidget(self.remove_member_btn)
-        member_btn_row.addStretch(1)
-        #: rows whose abundance could not be parsed on the last members() call
-        self.invalid_rows: list[int] = []
+        self.table.verticalHeader().setVisible(False)
+        self.table.setMaximumHeight(220)
+        #: members whose abundance could not be parsed on the last members() call
+        self.invalid_members: list[str] = []
+        self.add_input_row(self.model_picker)
+        self.inputs.addWidget(self.table)
+        self.add_input_row(self.assume_bigg_check)
+        self.add_input_row(self.namespace_decisions_input, self.browse_namespace_decisions_btn)
+        self.inputs.addWidget(self.namespace_note)
         # tradeoff f 슬라이더 (0..1, 0.01 step → 0..100)
-        f_row = QHBoxLayout()
         self.f_label = QLabel("tradeoff f: 0.50")
         self.f_slider = QSlider(Qt.Orientation.Horizontal)
         self.f_slider.setRange(1, 100)
         self.f_slider.setValue(50)
         self.f_slider.valueChanged.connect(self._on_f)
-        f_row.addWidget(self.f_label)
-        f_row.addWidget(self.f_slider)
-        layout.addWidget(self.title)
-        layout.addWidget(self.status)
-        layout.addLayout(pool_row)
-        layout.addLayout(namespace_row)
-        layout.addWidget(self.table)
-        layout.addLayout(member_btn_row)
-        layout.addLayout(f_row)
+        self.advanced.add_row(self.f_label, self.f_slider)
+        self.advanced.track(self.f_slider)
+        self.model_picker.selection_changed.connect(self._sync_rows)
+        # A shown result describes the inputs it ran with; any later change makes it stale.
+        self.model_picker.selection_changed.connect(self.invalidate_results)
+        self.table.itemChanged.connect(self.invalidate_results)
+        self.f_slider.valueChanged.connect(self.invalidate_results)
+        self.register("members", self.model_picker)
+        self.register_custom("abundances", self.members_snapshot, self._restore_abundances)
+        self.register_custom("tradeoff", lambda: self.f_slider.value(), self._restore_tradeoff)
+        self.register("assume_bigg", self.assume_bigg_check)
+        self.register("namespace_decisions", self.namespace_decisions_input)
+        self._sync_rows()
 
     def _on_f(self, v: int) -> None:
         self.f_label.setText(f"tradeoff f: {v / 100:.2f}")
 
-    def _remove_selected_member(self) -> None:
-        row = self.table.currentRow()
-        if row >= 0:
-            self.table.removeRow(row)
+    def _sync_rows(self) -> None:
+        """One row per picked member; a member that stays picked keeps its abundance."""
+        kept: dict[str, str] = {}
+        for row in range(self.table.rowCount()):
+            member, value = self.table.item(row, 0), self.table.item(row, 1)
+            if member is not None and value is not None:
+                kept[member.text()] = value.text()
+        chosen = self.model_picker.selected_ids()
+        self.table.setRowCount(len(chosen))
+        for row, member_id in enumerate(chosen):
+            self.table.setItem(row, 0, read_only_item(member_id))
+            self.table.setItem(row, 1, QTableWidgetItem(kept.get(member_id, "1")))
 
     def namespace_policy(self) -> tuple[list[str], str]:
         """Return (extra argv, error message) for the CLI's namespace gate.
@@ -296,35 +173,75 @@ class CommunityBuilderView(QWidget):
     def tradeoff_f(self) -> float:
         return self.f_slider.value() / 100.0
 
-    def add_member(self, member_id: str, abundance: float = 1.0) -> None:
-        r = self.table.rowCount()
-        self.table.insertRow(r)
-        self.table.setItem(r, 0, QTableWidgetItem(member_id))
-        self.table.setItem(r, 1, QTableWidgetItem(str(abundance)))
+    def invalidate_results(self, *_args: object) -> None:
+        if not self.results.has_results():
+            return
+        self.results.show_empty()
+        self.status.setText("Inputs changed — previous result cleared; re-run to update.")
 
-    def remove_member(self, row: int) -> None:
-        self.table.removeRow(row)
+    def _commit_open_editor(self) -> None:
+        """An abundance still being typed is the one on screen, so it is the one that runs.
+
+        Run Community (and ⌘R) does not take focus on macOS, so the cell editor is not
+        committed by the click itself.
+        """
+        if self.table.state() != QAbstractItemView.State.EditingState:
+            return
+        for editor in self.table.viewport().findChildren(QLineEdit):
+            self.table.commitData(editor)
+            self.table.closeEditor(editor, QAbstractItemDelegate.EndEditHint.NoHint)
+
+    def set_abundance(self, member_id: str, value: float) -> None:
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item is not None and item.text() == member_id:
+                self.table.setItem(row, 1, QTableWidgetItem(f"{value:g}"))
+                return
+        raise KeyError(f"{member_id!r} is not a selected member")
 
     def members(self) -> dict[str, float]:
-        """Return member→abundance overrides. Unparseable rows are recorded, never skipped.
+        """Return member→abundance for every row. Unparseable rows are recorded, never skipped.
 
         Silently dropping a row the user typed would run a *different* community than the
-        one on screen, so `invalid_rows` is populated and the caller must refuse to run.
+        one on screen, so `invalid_members` is populated and the caller must refuse to run.
         """
+        self._commit_open_editor()
         out: dict[str, float] = {}
-        self.invalid_rows = []
+        self.invalid_members = []
         for r in range(self.table.rowCount()):
             mid = self.table.item(r, 0)
             ab = self.table.item(r, 1)
-            if not (mid and mid.text().strip()):
+            if mid is None:
                 continue
             try:
-                value = float(ab.text()) if ab else 1.0
+                out[mid.text()] = float(ab.text()) if ab else 1.0
             except ValueError:
-                self.invalid_rows.append(r + 1)
-                continue
-            out[mid.text().strip()] = value
+                self.invalid_members.append(mid.text())
         return out
+
+    def members_snapshot(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for row in range(self.table.rowCount()):
+            member, value = self.table.item(row, 0), self.table.item(row, 1)
+            if member is not None and value is not None:
+                out[member.text()] = value.text()
+        return out
+
+    def _restore_abundances(self, values: object) -> str | None:
+        if not isinstance(values, dict):
+            return "abundances could not be restored"
+        for row in range(self.table.rowCount()):
+            member = self.table.item(row, 0)
+            if member is not None and member.text() in values:
+                self.table.setItem(row, 1, QTableWidgetItem(str(values[member.text()])))
+        return None
+
+    def _restore_tradeoff(self, value: object) -> str | None:
+        try:
+            self.f_slider.setValue(int(value))  # type: ignore[call-overload]
+        except (TypeError, ValueError):
+            return "tradeoff f could not be restored"
+        return None
 
 
 class DeltaTable(QTableWidget):
@@ -335,6 +252,7 @@ class DeltaTable(QTableWidget):
     def __init__(self) -> None:
         super().__init__(0, 4)
         self.setHorizontalHeaderLabels(["Metabolite", "Baseline", "Modified", "Δ"])
+        mark_computed_headers(self, [1, 2, 3])
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         make_read_only(self)
 
@@ -348,6 +266,7 @@ class DeltaTable(QTableWidget):
                 if d.metabolite in sig:
                     item.setForeground(QColor("#d62728"))  # 변화 있는 대사체 강조
                 self.setItem(i, c, item)
+        paint_computed(self, [1, 2, 3])
 
 
 class ConstraintSandboxView(QWidget):
@@ -376,8 +295,8 @@ class ConstraintSandboxView(QWidget):
         btn_row.addWidget(self.preview_btn)
         btn_row.addWidget(self.commit_btn)
         self.status = QLabel("Advanced sandbox: one bound constraint per preview run.")
-        #: rows whose lower/upper bound could not be parsed on the last constraints() call
-        self.invalid_rows: list[int] = []
+        #: reactions whose lower/upper bound could not be parsed on the last constraints() call
+        self.invalid_reactions: list[str] = []
         layout.addWidget(self.title)
         layout.addWidget(self.bound_table)
         layout.addLayout(btn_row)
@@ -414,10 +333,10 @@ class ConstraintSandboxView(QWidget):
 
         A raw `float()` ValueError used to escape the Qt slot (the debounce fires 500 ms
         after each keystroke), leaving the *previous* run's delta on screen next to the
-        newly typed bound. The caller checks `invalid_rows` and refuses to solve.
+        newly typed bound. The caller checks `invalid_reactions` and refuses to solve.
         """
         out: list[BoundConstraint] = []
-        self.invalid_rows = []
+        self.invalid_reactions = []
         for r in range(self.bound_table.rowCount()):
             rid = self.bound_table.item(r, 0)
             lo = self.bound_table.item(r, 1)
@@ -428,7 +347,7 @@ class ConstraintSandboxView(QWidget):
                 lower = float(lo.text()) if lo else 0.0
                 upper = float(hi.text()) if hi else 0.0
             except ValueError:
-                self.invalid_rows.append(r + 1)
+                self.invalid_reactions.append(rid.text().strip())
                 continue
             out.append(BoundConstraint(rid.text().strip(), lower, upper))
         return out
@@ -449,7 +368,7 @@ class ConstraintSandboxView(QWidget):
         suffix = f" · bound: {self.describe_bound(constraint)}"
         current = self.constraints()
         if (
-            self.invalid_rows
+            self.invalid_reactions
             or len(current) != 1
             or (
                 current[0].reaction_id != constraint.reaction_id
@@ -521,26 +440,16 @@ class ScenarioCompareView(QWidget):
         self.growth_label.setText(f"growth Δ: {delta.growth_delta:+.4g} · added: {added}{status}")
 
 
-class SearchView(QWidget):
-    """Consortium Search — ranked candidates + Pareto/strategy warnings."""
+class SearchView(AnalysisPage):
+    """Combination Search — ranked candidates + Pareto/strategy warnings."""
 
     def __init__(self) -> None:
-        super().__init__()
-        outer = QVBoxLayout(self)
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setMinimumSize(0, 0)
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        self.scroll_area.setWidget(content)
-        outer.addWidget(self.scroll_area)
-        self.title = QLabel("Find Best Model Combination")
-        pool_row = QHBoxLayout()
+        super().__init__(
+            "Combination Search", "Rank model combinations by a target metabolite.",
+            run_text="Run Search",
+        )
         self.model_picker = ModelPicker("Models")
         self.medium_picker = MediumPicker()
-        pool_row.addWidget(self.model_picker)
-        pool_row.addWidget(QLabel("Medium"))
-        pool_row.addWidget(self.medium_picker, 1)
         # Per-target rows replace the old comma box + shared Direction + References inputs:
         # every row carries its own direction, weight and fixed reference, exactly like the
         # CLI's --targets/--target-directions/--target-weights/--target-scales.
@@ -564,16 +473,16 @@ class SearchView(QWidget):
         self.multi_metric_combo.addItems([
             "normalized_weighted", "carbon_equivalent", "raw_sum", "pareto",
         ])
+        self.multi_metric_label = QLabel("Multi-target metric")
         target_btn_row = QHBoxLayout()
         target_btn_row.addWidget(self.add_target_btn)
         target_btn_row.addWidget(self.remove_target_btn)
         target_btn_row.addWidget(self.target_preset_combo)
-        target_btn_row.addWidget(QLabel("Multi-target metric"))
+        target_btn_row.addWidget(self.multi_metric_label)
         target_btn_row.addWidget(self.multi_metric_combo)
         target_btn_row.addStretch(1)
         target_note = QLabel(
-            "Targets: Search uses every row (Weight and Reference apply to 2+ rows). "
-            "Gene KO and Ratio Impact use the single row's target (Gene KO also its direction)."
+            "Each row is a target. Weight and Reference apply when there are two or more rows."
         )
         target_note.setWordWrap(True)
         self.weight_note = QLabel("Weights do not affect Pareto ranking.")
@@ -582,7 +491,6 @@ class SearchView(QWidget):
         self.reference_warning_label = QLabel("")
         self.reference_warning_label.setWordWrap(True)
         self.reference_warning_label.setVisible(False)
-        controls = QHBoxLayout()
         self.strategy_combo = QComboBox()
         self.strategy_combo.addItems(["auto", "exhaustive", "random", "ga"])
         self.min_size_spin = QSpinBox()
@@ -601,28 +509,6 @@ class SearchView(QWidget):
         self.search_top_k_spin.setRange(1, 2_147_483_647)
         self.search_top_k_spin.setValue(10)
         self.robustness_check = QCheckBox("FVA")
-        self.run_btn = QPushButton("Run Search")
-        self.export_figure_btn = QPushButton("Export Figure")
-        self.export_figure_btn.setEnabled(False)
-        self.figure_mode_combo = QComboBox()
-        self.figure_mode_combo.currentTextChanged.connect(self.refresh_figure_mode)
-        controls.addWidget(QLabel("Size"))
-        controls.addWidget(self.min_size_spin)
-        controls.addWidget(QLabel("to"))
-        controls.addWidget(self.max_size_spin)
-        controls.addWidget(QLabel("Strategy"))
-        controls.addWidget(self.strategy_combo)
-        controls.addWidget(QLabel("Top K"))
-        controls.addWidget(self.search_top_k_spin)
-        controls.addWidget(self.robustness_check)
-        controls.addWidget(self.run_btn)
-        controls.addStretch(1)
-        figure_row = QHBoxLayout()
-        figure_row.addWidget(QLabel("Figure"))
-        figure_row.addWidget(self.figure_mode_combo)
-        figure_row.addWidget(self.export_figure_btn)
-        figure_row.addStretch(1)
-        settings = QHBoxLayout()
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(0, 2_000_000_000)
         self.workers_spin = QSpinBox()
@@ -634,34 +520,14 @@ class SearchView(QWidget):
         self.min_member_growth_spin = QDoubleSpinBox()
         self.min_member_growth_spin.setRange(0, 100)
         self.min_member_growth_spin.setDecimals(5)
-        growth_settings = QHBoxLayout()
-        for label, widget in (("Seed", self.seed_spin), ("Workers", self.workers_spin)):
-            settings.addWidget(QLabel(label))
-            settings.addWidget(widget)
-        settings.addStretch(1)
         # Medium mode lives in the collapsed advanced box; this line keeps the exact/merge
         # choice visible on screen at all times.
         self.medium_mode_summary = QLabel("")
         self.medium_mode_summary.setWordWrap(True)
-        for label, growth_widget in (("Growth fraction", self.growth_fraction_spin),
-                                     ("Member growth ≥", self.min_member_growth_spin)):
-            growth_settings.addWidget(QLabel(label))
-            growth_settings.addWidget(growth_widget)
-        growth_settings.addStretch(1)
         self.checkpoint_input = QLineEdit("")
         self.checkpoint_input.setPlaceholderText("Checkpoint JSON path")
         self.browse_checkpoint_btn = QPushButton("Browse")
         self.resume_check = QCheckBox("Resume")
-        self.cancel_btn = QPushButton("Cancel search")
-        self.cancel_btn.setEnabled(False)
-        checkpoint_row = QHBoxLayout()
-        checkpoint_row.addWidget(QLabel("Checkpoint"))
-        checkpoint_row.addWidget(self.checkpoint_input)
-        checkpoint_row.addWidget(self.browse_checkpoint_btn)
-        checkpoint_row.addWidget(self.resume_check)
-        checkpoint_row.addWidget(self.cancel_btn)
-        checkpoint_row.addStretch(1)
-        limits = QHBoxLayout()
         self.validation_top_spin = QSpinBox()
         self.validation_top_spin.setRange(0, 100)
         self.validation_top_spin.setSpecialValueText("Off")
@@ -671,168 +537,62 @@ class SearchView(QWidget):
         self.solve_timeout_spin = QSpinBox()
         self.solve_timeout_spin.setRange(0, 86400)
         self.solve_timeout_spin.setSpecialValueText("No limit")
-        for label, limit_widget in (("Validate top (extra solves)", self.validation_top_spin),
-                                    ("Community growth ≥", self.min_community_growth_spin),
-                                    ("Per-solve timeout (s)", self.solve_timeout_spin)):
-            limits.addWidget(QLabel(label))
-            limits.addWidget(limit_widget)
+        self.add_input_row(self.model_picker, "Medium", self.medium_picker)
+        self.inputs.addWidget(self.medium_mode_summary)
+        self.inputs.addWidget(target_note)
+        self.inputs.addWidget(self.target_table)
+        self.inputs.addLayout(target_btn_row)
+        self.inputs.addWidget(self.weight_note)
+        self.inputs.addWidget(self.reference_warning_label)
+        self.add_input_row("Size", self.min_size_spin, "to", self.max_size_spin)
+        self.advanced.add_row("Strategy", self.strategy_combo, "Top K", self.search_top_k_spin,
+                              self.robustness_check)
+        self.advanced.add_row("Seed", self.seed_spin, "Workers", self.workers_spin)
+        self.advanced.add_row("Growth fraction", self.growth_fraction_spin,
+                              "Member growth ≥", self.min_member_growth_spin,
+                              "Community growth ≥", self.min_community_growth_spin)
+        self.advanced.add_row("Validate top (extra solves)", self.validation_top_spin,
+                              "Per-solve timeout (s)", self.solve_timeout_spin)
+        self.advanced.add_row("Checkpoint", self.checkpoint_input, self.browse_checkpoint_btn,
+                              self.resume_check)
         self._build_advanced_settings()
-        ko_row = QHBoxLayout()
-        self.ko_members_input = QLineEdit("")
-        self.ko_members_input.setPlaceholderText("Fixed combo for KO, e.g. iHN637,iSFV_1184")
-        self.ko_member_input = QLineEdit("")
-        self.ko_member_input.setPlaceholderText("Optional member; blank = all")
-        self.ko_genes_input = QLineEdit("")
-        self.ko_genes_input.setPlaceholderText("Optional gene ids; blank = auto genes")
-        self.ko_max_genes_spin = QSpinBox()
-        self.ko_max_genes_spin.setRange(0, 10000)
-        self.ko_max_genes_spin.setValue(50)
-        # Gene KO keeps its own top-k (the `gene-ko-search` CLI default is 20), separate from
-        # the Search top-k so neither silently changes the other's request.
-        self.ko_top_k_spin = QSpinBox()
-        self.ko_top_k_spin.setRange(1, 100)
-        self.ko_top_k_spin.setValue(20)
-        self.run_ko_btn = QPushButton("Rank Gene KOs")
-        ko_row.addWidget(QLabel("Gene KO"))
-        ko_row.addWidget(self.ko_members_input)
-        ko_row.addWidget(self.ko_member_input)
-        ko_action_row = QHBoxLayout()
-        ko_action_row.addWidget(QLabel("Gene IDs"))
-        ko_action_row.addWidget(self.ko_genes_input)
-        ko_action_row.addWidget(QLabel("Max genes/member"))
-        ko_action_row.addWidget(self.ko_max_genes_spin)
-        ko_action_row.addWidget(QLabel("KO Top K"))
-        ko_action_row.addWidget(self.ko_top_k_spin)
-        ko_action_row.addWidget(self.run_ko_btn)
-        ko_action_row.addStretch(1)
-        growth_row = QHBoxLayout()
-        self.growth_member_input = QLineEdit("")
-        self.growth_member_input.setPlaceholderText("Member for ratio sweep, e.g. iML1515")
-        self.abundance_fractions_input = QLineEdit("0.1,0.25,0.5,0.75")
-        self.abundance_fractions_input.setPlaceholderText("Fractions, e.g. 0.1,0.25,0.5,0.75")
-        self.run_growth_btn = QPushButton("Strain Growth")
-        self.run_abundance_btn = QPushButton("Ratio Impact")
-        self.cooperative_tradeoff_spin = QDoubleSpinBox()
-        self.cooperative_tradeoff_spin.setRange(0.01, 1.0)
-        self.cooperative_tradeoff_spin.setDecimals(2)
-        self.cooperative_tradeoff_spin.setSingleStep(0.05)
-        self.cooperative_tradeoff_spin.setValue(0.5)
-        growth_row.addWidget(QLabel("Growth/Ratio"))
-        growth_row.addWidget(self.growth_member_input)
-        growth_row.addWidget(self.abundance_fractions_input)
-        growth_action_row = QHBoxLayout()
-        growth_action_row.addWidget(self.run_growth_btn)
-        growth_action_row.addWidget(self.run_abundance_btn)
-        growth_action_row.addStretch(1)
-        workflow_note = QLabel(
-            "Gene KO: the selected models, medium (exact), the single target row's target "
-            "and direction, target growth fraction and KO Top K apply. "
-            "Strain Growth / Ratio: the selected models, medium (exact) and cooperative "
-            "tradeoff apply; Search strategy, GA and advanced search settings do not."
+        self.advanced.track(
+            self.strategy_combo, self.search_top_k_spin, self.robustness_check, self.seed_spin,
+            self.workers_spin, self.growth_fraction_spin, self.min_member_growth_spin,
+            self.min_community_growth_spin, self.validation_top_spin, self.solve_timeout_spin,
+            self.checkpoint_input, self.resume_check, self.exhaustive_max_spin,
+            self.n_samples_spin, self.ga_pop_size_spin, self.ga_generations_spin,
+            self.ga_mutation_rate_spin, self.ga_immigrant_fraction_spin,
+            self.ga_tournament_k_spin, self.ga_elitism_spin, self.ga_budget_spin,
+            self.ga_patience_spin, self.ga_restart_after_spin,
+            self.ga_local_search_fraction_spin, self.ga_preserve_common_check,
+            self.solver_threads_spin, self.pareto_resolution_spin, self.medium_mode_combo,
+            self.allow_unknown_medium_check,
         )
-        workflow_note.setWordWrap(True)
-        workflow_note.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.status = QLabel("")
-        self.status.setWordWrap(True)
-        self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.details = QPlainTextEdit()
-        self.details.setReadOnly(True)
-        self.details.setMaximumHeight(115)
-        self.details.setPlaceholderText("Run conditions, warnings and diagnostics appear here.")
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(list(SEARCH_COLUMNS))
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        make_read_only(self.table)
-        self.pareto_label = QLabel("")
-        # Read-only candidate inspector: shows the recorded summary/evaluation values of the
-        # ONE selected row. Each row carries the index of its own summary record, so the
-        # mapping never depends on table order or on members alone.
-        self.inspector_label = QLabel("Selected candidate — recorded values (read-only)")
-        self.inspector = QPlainTextEdit()
-        self.inspector.setReadOnly(True)
-        self.inspector.setMaximumHeight(160)
-        self.inspector.setPlaceholderText(
-            "Select a ranking row to see that candidate's recorded details."
-        )
-        self._row_records: list[tuple[str, dict[object, object]]] = []
-        self._inspector_summary: dict[str, object] = {}
-        self._evaluations: dict[str, object] | None = None
-        self._evaluations_error: str | None = None
-        self.table.itemSelectionChanged.connect(self._refresh_inspector)
-        self.current_run_dir: Path | None = None
-        try:
-            from PySide6.QtSvgWidgets import QSvgWidget
-
-            self.figure_view: QWidget = QSvgWidget()
-        except ImportError:  # pragma: no cover - optional GUI extra
-            try:
-                from PySide6.QtWebEngineWidgets import QWebEngineView
-
-                self.figure_view = QWebEngineView()
-            except ImportError:
-                self.figure_view = QLabel("SVG preview is unavailable.")
-        self.figure_placeholder = QLabel("No search result loaded.")
-        self.figure_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.figure_stack = QStackedWidget()
-        self.figure_stack.setMinimumHeight(320)
-        self.figure_stack.addWidget(self.figure_view)
-        self.figure_stack.addWidget(self.figure_placeholder)
-        self.figure_stack.setCurrentWidget(self.figure_placeholder)
-        layout.addWidget(self.title)
-        layout.addLayout(pool_row)
-        layout.addWidget(target_note)
-        layout.addWidget(self.target_table)
-        layout.addLayout(target_btn_row)
-        layout.addWidget(self.weight_note)
-        layout.addWidget(self.reference_warning_label)
-        layout.addLayout(controls)
-        layout.addLayout(figure_row)
-        layout.addLayout(settings)
-        layout.addWidget(self.medium_mode_summary)
-        layout.addLayout(growth_settings)
-        layout.addLayout(checkpoint_row)
-        layout.addLayout(limits)
-        layout.addWidget(self.advanced_toggle)
-        layout.addWidget(self.advanced_box)
-        layout.addLayout(ko_row)
-        layout.addLayout(ko_action_row)
-        layout.addLayout(growth_row)
-        layout.addLayout(growth_action_row)
-        tradeoff_row = QHBoxLayout()
-        tradeoff_row.addWidget(QLabel("Cooperative tradeoff f (Growth / Ratio)"))
-        tradeoff_row.addWidget(self.cooperative_tradeoff_spin)
-        tradeoff_row.addStretch(1)
-        layout.addLayout(tradeoff_row)
-        layout.addWidget(workflow_note)
-        layout.addWidget(self.status)
-        layout.addWidget(self.details)
-        layout.addWidget(self.table)
-        layout.addWidget(self.inspector_label)
-        layout.addWidget(self.inspector)
-        layout.addWidget(self.pareto_label)
-        layout.addWidget(self.figure_stack)
-        self._displayed_kind: str | None = None
-        self._displayed_request: dict[str, str] | None = None
-        self._executed_request: dict[str, str] | None = None
+        self.results_panel = SearchResultsPanel(self.request_fields, status=self.status,
+                                                area=self.results)
+        self.results.add(self.results_panel, 1)
+        panel = self.results_panel
+        self.status: QLabel = panel.status
+        self.details: QPlainTextEdit = panel.details
+        self.table: QTableWidget = panel.table
+        self.pareto_label: QLabel = panel.pareto_label
+        self.inspector_label: QLabel = panel.inspector_label
+        self.inspector: QPlainTextEdit = panel.inspector
+        self.figure_mode_combo: QComboBox = panel.figure_mode_combo
+        self.export_figure_btn: QPushButton = panel.export_figure_btn
+        self.figure_view: QWidget = panel.figure_view
+        self.figure_placeholder: QLabel = panel.figure_placeholder
+        self.figure_stack: QStackedWidget = panel.figure_stack
         # The CLI's own default request: one row, `--target but --direction max_secretion`.
         self.add_target_row("but")
         # Any edit to an answer-determining input invalidates the displayed ranking: a table
         # computed for pool/target/size A must never sit under inputs that now say B.
-        for line_edit in (
-            self.ko_members_input,
-            self.ko_member_input,
-            self.ko_genes_input,
-            self.growth_member_input,
-            self.abundance_fractions_input,
-            self.checkpoint_input,
-        ):
-            line_edit.textChanged.connect(self.invalidate_results)
+        self.checkpoint_input.textChanged.connect(self.invalidate_results)
         for spin in (
             self.min_size_spin,
             self.max_size_spin,
             self.search_top_k_spin,
-            self.ko_top_k_spin,
-            self.ko_max_genes_spin,
             self.seed_spin,
             self.workers_spin,
             self.growth_fraction_spin,
@@ -869,7 +629,6 @@ class SearchView(QWidget):
             self.medium_mode_combo,
         ):
             combo.currentTextChanged.connect(self.invalidate_results)
-        self.cooperative_tradeoff_spin.valueChanged.connect(self.invalidate_results)
         # The model and medium choice determine the answer like any other input. Passing an
         # argument makes the invalidation compare the request, so a picker rebuild that keeps
         # the same choice never clears a result.
@@ -881,26 +640,56 @@ class SearchView(QWidget):
         self.medium_picker.currentIndexChanged.connect(self._refresh_medium_notes)
         self.medium_mode_combo.currentIndexChanged.connect(self._refresh_medium_notes)
         self.allow_unknown_medium_check.toggled.connect(self._refresh_medium_notes)
-        self.advanced_toggle.toggled.connect(self._toggle_advanced)
         self._refresh_target_notes()
         self._refresh_medium_notes()
+        # Inputs a reopened run restores, the model picker first.
+        self.register("models", self.model_picker)
+        self.register("medium", self.medium_picker)
+        self.register_custom("targets", lambda: [list(r) for r in self.target_rows()],
+                             self._restore_targets)
+        for name, widget in (
+            ("multi_metric", self.multi_metric_combo), ("min_size", self.min_size_spin),
+            ("max_size", self.max_size_spin), ("strategy", self.strategy_combo),
+            ("top_k", self.search_top_k_spin), ("fva", self.robustness_check),
+            ("seed", self.seed_spin), ("workers", self.workers_spin),
+            ("growth_fraction", self.growth_fraction_spin),
+            ("min_member_growth", self.min_member_growth_spin),
+            ("min_community_growth", self.min_community_growth_spin),
+            ("validate_top", self.validation_top_spin), ("timeout", self.solve_timeout_spin),
+            ("checkpoint", self.checkpoint_input), ("resume", self.resume_check),
+            ("exhaustive_max", self.exhaustive_max_spin), ("n_samples", self.n_samples_spin),
+            ("ga_pop_size", self.ga_pop_size_spin), ("ga_generations", self.ga_generations_spin),
+            ("ga_mutation_rate", self.ga_mutation_rate_spin),
+            ("ga_immigrant_fraction", self.ga_immigrant_fraction_spin),
+            ("ga_tournament_k", self.ga_tournament_k_spin), ("ga_elitism", self.ga_elitism_spin),
+            ("ga_budget", self.ga_budget_spin), ("ga_patience", self.ga_patience_spin),
+            ("ga_restart_after", self.ga_restart_after_spin),
+            ("ga_local_search_fraction", self.ga_local_search_fraction_spin),
+            ("ga_preserve_common", self.ga_preserve_common_check),
+            ("solver_threads", self.solver_threads_spin),
+            ("pareto_resolution", self.pareto_resolution_spin),
+            ("medium_mode", self.medium_mode_combo),
+            ("allow_unknown_medium", self.allow_unknown_medium_check),
+        ):
+            self.register(name, widget)
+
+    def _restore_targets(self, rows: object) -> str | None:
+        try:
+            self.set_target_rows([tuple(str(cell) for cell in row) for row in rows])  # type: ignore[attr-defined]
+        except (TypeError, ValueError) as exc:
+            return f"targets could not be restored ({exc})"
+        return None
 
     def _build_advanced_settings(self) -> None:
-        """Collapsible "Advanced search settings" group — every value here is Search only.
+        """The strategy, GA, solver and medium-mode rows of the Advanced options section.
 
         Defaults equal the `cmig search` parser / `GAConfig` defaults. An option whose
         applicability condition does not hold on screen (e.g. GA options with the exhaustive
         strategy) is left out of the argv by the caller.
         """
-        self.advanced_toggle = QToolButton()
-        self.advanced_toggle.setText("Advanced search settings (Search only)")
-        self.advanced_toggle.setCheckable(True)
-        self.advanced_toggle.setChecked(False)
-        self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
-        self.advanced_box = QWidget()
-        box = QVBoxLayout(self.advanced_box)
-        box.setContentsMargins(12, 0, 0, 0)
+        self.advanced_toggle = self.advanced.toggle
+        self.advanced_box = self.advanced.body
+        box = self.advanced.body_layout
 
         def note(text: str) -> QLabel:
             label = QLabel(text)
@@ -1006,13 +795,6 @@ class SearchView(QWidget):
             "Medium mode and unknown-medium apply to Search only; Gene KO, Strain Growth "
             "and Ratio Impact always use exact medium."
         ))
-        self.advanced_box.setVisible(False)
-
-    def _toggle_advanced(self, expanded: bool) -> None:
-        self.advanced_box.setVisible(expanded)
-        self.advanced_toggle.setArrowType(
-            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
-        )
 
     def _refresh_medium_notes(self, *_args: object) -> None:
         if not self.medium_picker.current_ref():
@@ -1133,6 +915,9 @@ class SearchView(QWidget):
         warning = self.reference_warning()
         self.reference_warning_label.setText(warning)
         self.reference_warning_label.setVisible(bool(warning))
+        multi = self.target_table.rowCount() >= 2
+        self.multi_metric_label.setVisible(multi)
+        self.multi_metric_combo.setVisible(multi)
 
     def reference_warning(self) -> str:
         """Pre-run warning (never a block): normalized_weighted without References.
@@ -1163,16 +948,6 @@ class SearchView(QWidget):
                    "ga_tournament_k", "ga_elitism", "ga_budget", "ga_patience",
                    "ga_restart_after", "ga_local_search_fraction", "ga_preserve_common",
                    "checkpoint", "resume", "min_community_growth", "validate_top", "timeout"),
-        "gene_ko": (
-            "models", "target", "ko_members", "ko_member", "ko_genes", "max_genes",
-            "ko_top_k", "medium", "direction", "growth_fraction",
-        ),
-        "strain_growth": ("models", "medium", "cooperative_tradeoff"),
-        "abundance_impact": (
-            "models", "target", "growth_member", "fractions", "medium",
-            "cooperative_tradeoff",
-        ),
-        "host_search": (),  # driven by the Host tab's own controls, not these
     }
 
     def request_fields(self, kind: str) -> dict[str, str]:
@@ -1188,14 +963,7 @@ class SearchView(QWidget):
             "max_size": str(self.max_size_spin.value()),
             "strategy": self.strategy_combo.currentText(),
             "top_k": str(self.search_top_k_spin.value()),
-            "ko_top_k": str(self.ko_top_k_spin.value()),
             "fva": str(self.robustness_check.isChecked()),
-            "ko_members": self.ko_members_input.text().strip(),
-            "ko_member": self.ko_member_input.text().strip(),
-            "ko_genes": self.ko_genes_input.text().strip(),
-            "max_genes": str(self.ko_max_genes_spin.value()),
-            "growth_member": self.growth_member_input.text().strip(),
-            "fractions": self.abundance_fractions_input.text().strip(),
             "medium": self.medium_picker.current_ref(),
             "medium_mode": str(self.medium_mode_combo.currentData()),
             "allow_unknown_medium": str(self.allow_unknown_medium_check.isChecked()),
@@ -1203,7 +971,6 @@ class SearchView(QWidget):
             "workers": str(self.workers_spin.value()),
             "solver_threads": str(self.solver_threads_spin.value()),
             "growth_fraction": str(self.growth_fraction_spin.value()),
-            "cooperative_tradeoff": str(self.cooperative_tradeoff_spin.value()),
             "min_member_growth": str(self.min_member_growth_spin.value()),
             "multi_metric": self.multi_metric_combo.currentText(),
             "pareto_resolution": str(self.pareto_resolution_spin.value()),
@@ -1228,528 +995,48 @@ class SearchView(QWidget):
         }
         return {k: snapshot[k] for k in self.REQUEST_FIELDS.get(kind, ())}
 
-    def superseded_note(self, requested: dict[str, str], kind: str) -> str:
-        """Describe how the inputs on screen have moved away from a completed request.
+    # ── the ranked result lives in self.results_panel ────────────────────────────────
+    @property
+    def current_run_dir(self) -> Path | None:
+        return self.results_panel.current_run_dir
 
-        Invalidation only covers the *idle* case. A search that is already solving keeps its
-        result, so on completion the numbers for the OLD inputs would repopulate the table
-        under the NEW ones with nothing to say so. The run is real and stays on screen — it
-        is labelled, not discarded.
-        """
-        current = self.request_fields(kind)
-        changed = [
-            (key, was, current[key])
-            for key, was in requested.items()
-            if key in current and current[key] != was
-        ]
-        if not changed:
-            return ""
-        detail = "; ".join(f"{key}: {was} → {now}" for key, was, now in changed)
-        return (
-            f" ⚠ computed for a superseded request ({detail}) — "
-            f"the inputs on screen have changed since; re-run to match them"
-        )
+    @current_run_dir.setter
+    def current_run_dir(self, value: Path | None) -> None:
+        self.results_panel.current_run_dir = value
+
+    @property
+    def _displayed_kind(self) -> str | None:
+        return self.results_panel._displayed_kind
+
+    @_displayed_kind.setter
+    def _displayed_kind(self, value: str | None) -> None:
+        self.results_panel._displayed_kind = value
+
+    @property
+    def _displayed_request(self) -> dict[str, str] | None:
+        return self.results_panel._displayed_request
+
+    @_displayed_request.setter
+    def _displayed_request(self, value: dict[str, str] | None) -> None:
+        self.results_panel._displayed_request = value
+
+    def invalidate_results(self, *args: object) -> None:
+        self.results_panel.invalidate_results(*args)
+
+    def superseded_note(self, requested: dict[str, str], kind: str) -> str:
+        return self.results_panel.superseded_note(requested, kind)
 
     def effective_note(self, requested: dict[str, str], kind: str) -> str:
-        medium = requested.get("medium") or "model default"
-        policy = "exact replacement" if requested.get("medium") else "model default"
-        if kind == "gene_ko":
-            return (f"Executed Gene KO: medium={medium} ({policy}); "
-                    f"direction={requested['direction']}; target growth fraction="
-                    f"{requested['growth_fraction']}")
-        if kind in ("strain_growth", "abundance_impact"):
-            return (f"Executed {kind}: medium={medium} ({policy}); "
-                    f"cooperative tradeoff f={requested['cooperative_tradeoff']}; "
-                    "single-medium=community for Strain Growth; Search direction and "
-                    "target growth fraction do not apply")
-        return ""
-
-    def invalidate_results(self, *_args: object) -> None:
-        """Drop the displayed ranking when the request that produced it no longer applies."""
-        if self.table.rowCount() == 0 and self.current_run_dir is None:
-            return
-        if _args and self._displayed_request is not None and self._displayed_kind is not None:
-            if self.request_fields(self._displayed_kind) == self._displayed_request:
-                return
-        self._clear_inspector()
-        self.table.setRowCount(0)
-        self.table.setHorizontalHeaderLabels(list(SEARCH_COLUMNS))
-        self.pareto_label.setText("")
-        self.current_run_dir = None
-        self._displayed_kind = None
-        self._displayed_request = None
-        self._executed_request = None
-        self._refresh_figure_choices()
-        self.figure_stack.setCurrentWidget(self.figure_placeholder)
-        self.figure_placeholder.setText("Inputs changed — no figure loaded.")
-        self.export_figure_btn.setEnabled(False)
-        self.details.clear()
-        self.status.setText("Inputs changed — previous result cleared; re-run to update.")
-
-    def _clear_inspector(self) -> None:
-        self._row_records = []
-        self._inspector_summary = {}
-        self._evaluations = None
-        self._evaluations_error = None
-        self.inspector.clear()
+        return self.results_panel.effective_note(requested, kind)
 
     def row_record(self, row: int) -> dict[object, object] | None:
-        """The summary record the given table row was built from (None if none)."""
-        item = self.table.item(row, 0)
-        index = None if item is None else item.data(Qt.ItemDataRole.UserRole)
-        if isinstance(index, int) and 0 <= index < len(self._row_records):
-            return self._row_records[index][1]
-        return None
-
-    def _refresh_inspector(self) -> None:
-        rows = {index.row() for index in self.table.selectedIndexes()}
-        if len(rows) != 1:
-            self.inspector.clear()
-            return
-        item = self.table.item(rows.pop(), 0)
-        index = None if item is None else item.data(Qt.ItemDataRole.UserRole)
-        if not isinstance(index, int) or not 0 <= index < len(self._row_records):
-            self.inspector.clear()
-            return
-        group, record = self._row_records[index]
-        self.inspector.setPlainText("\n".join(self._inspector_lines(group, record)))
-
-    def _inspector_lines(self, group: str, record: dict[object, object]) -> list[str]:
-        """Render only recorded values; anything absent is "not recorded", never 0."""
-        summary = self._inspector_summary
-        pareto_metric = summary.get("metric") == "pareto"
-        lines = [
-            f"Rank: {_recorded(record, 'rank')}",
-            f"Members: {_recorded(record, 'members')}",
-            f"Effective members: {_recorded(record, 'effective_members')}",
-            f"Status: {_recorded(record, 'status')}",
-        ]
-        fluxes = record.get("target_fluxes")
-        if isinstance(fluxes, dict):
-            scores = record.get("target_scores")
-            score_map = scores if isinstance(scores, dict) else {}
-            listed = summary.get("targets")
-            order = [str(t) for t in listed] if isinstance(listed, list) else []
-            order += [str(t) for t in (*fluxes, *score_map) if str(t) not in order]
-            lines.append(f"Weighted score: {_recorded(record, 'weighted_score')}")
-            lines.append("Per-target flux and contribution:")
-            for target in order:
-                if target not in fluxes and target not in score_map:
-                    continue
-                flux = _format_recorded(fluxes.get(target))
-                contribution = _format_recorded(score_map.get(target))
-                lines.append(f"  {target}: flux {flux} · contribution {contribution}")
-            basis = record.get("flux_basis")
-            basis_text = (
-                _NOT_RECORDED if basis is None
-                else f"{_FLUX_BASIS_TEXT[basis]} ({basis})" if basis in _FLUX_BASIS_TEXT
-                else str(basis)
-            )
-            lines.append(f"Flux basis: {basis_text}")
-            missing = record.get("missing_targets")
-            lines.append("Missing targets: " + (
-                _NOT_RECORDED if missing is None
-                else "none" if isinstance(missing, list) and not missing
-                else ", ".join(str(m) for m in missing) if isinstance(missing, list)
-                else str(missing)
-            ))
-            lines.append(f"Sampling status: {_recorded(record, 'sampling_status')}")
-            if pareto_metric:
-                lines.append(f"On Pareto frontier: {_recorded(record, 'pareto')}")
-        else:
-            lines.append(f"Target: {group or _NOT_RECORDED}")
-            lines.append(f"Score: {_recorded(record, 'score')}")
-            lines.append(f"Target flux: {_recorded(record, 'target_flux')}")
-            lo = _optional_float(record.get("robustness_fva_lo"))
-            hi = _optional_float(record.get("robustness_fva_hi"))
-            lines.append("FVA range: " + (
-                f"{lo:.6g}..{hi:.6g}" if lo is not None and hi is not None else _NOT_RECORDED
-            ))
-            if "robustness_status" in record:
-                lines.append(f"FVA status: {_recorded(record, 'robustness_status')}")
-        lines.append(f"Community growth: {_recorded(record, 'community_growth')}")
-        lines.append(f"Member growth: {_recorded(record, 'member_growth')}")
-        lines.append(f"Abundances: {_recorded(record, 'abundances')}")
-        diagnostic = record.get("diagnostic", _ABSENT)
-        lines.append("Diagnostic: " + (
-            _NOT_RECORDED if diagnostic is _ABSENT
-            else "none" if diagnostic is None or diagnostic == ""
-            else _diagnostic_text(diagnostic)
-        ))
-        if self._displayed_kind != "search" or self.current_run_dir is None:
-            return lines
-        if self._evaluations_error is not None:
-            lines.append(f"search_evaluations.json: unreadable ({self._evaluations_error})")
-            lines.append("Timings: unreadable")
-            if pareto_metric:
-                lines.append("Pareto ε attempts: unreadable")
-            return lines
-        evaluations = self._evaluations or {}
-        match = _matching_evaluation(record, evaluations.get("rows"))
-        timings = None if match is None else match.get("timings")
-        lines.append(f"Timings: {_format_recorded(timings)}")
-        if pareto_metric:
-            lines.extend(_pareto_attempt_lines(record, evaluations))
-        return lines
+        return self.results_panel.row_record(row)
 
     def selected_figure_artifact(self) -> str:
-        return str(self.figure_mode_combo.currentData() or "")
+        return self.results_panel.selected_figure_artifact()
 
-    def _refresh_figure_choices(self) -> None:
-        choices = (
-            ("Ranking", "search_plot.svg"), ("Scatter", "search_scatter.svg"),
-            ("Ranking", "host_search_plot.svg"), ("Ranking", "gene_ko_plot.svg"),
-            ("Ranking", "strain_growth_plot.svg"),
-            ("Ranking", "abundance_impact_plot.svg"),
-            ("Pareto trade-off", "search_pareto.svg"),
-        )
-        self.figure_mode_combo.blockSignals(True)
-        self.figure_mode_combo.clear()
-        if self.current_run_dir is not None:
-            for label, name in choices:
-                if (self.current_run_dir / name).is_file():
-                    self.figure_mode_combo.addItem(label, name)
-        self.figure_mode_combo.blockSignals(False)
+    def refresh_figure_mode(self, mode: str | None = None) -> None:
+        self.results_panel.refresh_figure_mode(mode)
 
-    def refresh_figure_mode(self, _mode: str | None = None) -> None:
-        """Load the selected saved search SVG into the preview pane."""
-        name = self.selected_figure_artifact()
-        if self.current_run_dir is None or not name:
-            self.figure_stack.setCurrentWidget(self.figure_placeholder)
-            self.figure_placeholder.setText("No figure artifact is available for this run.")
-            self.export_figure_btn.setEnabled(False)
-            return
-        artifact = self.current_run_dir / name
-        if not artifact.is_file():
-            self.figure_stack.setCurrentWidget(self.figure_placeholder)
-            self.figure_placeholder.setText(f"Figure artifact missing: {name}")
-            self.export_figure_btn.setEnabled(False)
-            return
-        self.export_figure_btn.setEnabled(True)
-        self.figure_stack.setCurrentWidget(self.figure_view)
-        if hasattr(self.figure_view, "load"):
-            self.figure_view.load(str(artifact))
-            if hasattr(self.figure_view, "renderer"):
-                if not self.figure_view.renderer().isValid():
-                    self.figure_stack.setCurrentWidget(self.figure_placeholder)
-                    self.figure_placeholder.setText(f"Figure artifact unreadable: {name}")
-                    self.export_figure_btn.setEnabled(False)
-                    return
-                self.figure_view.renderer().setAspectRatioMode(
-                    Qt.AspectRatioMode.KeepAspectRatio
-                )
-            return
-        if hasattr(self.figure_view, "setHtml"):
-            uri = artifact.as_uri()
-            self.figure_view.setHtml(
-                "<!doctype html><html><head><style>"
-                "html,body{margin:0;width:100%;height:100%;overflow:hidden;background:white;}"
-                "img{width:100%;height:100%;object-fit:contain;display:block;}"
-                "</style></head><body>"
-                f"<img src='{uri}' alt='{artifact.name}'>"
-                "</body></html>",
-                QUrl.fromLocalFile(str(artifact.parent)),
-            )
-
-    def load_summary(
-        self,
-        summary: dict[str, object],
-        *,
-        run_dir: Path | None = None,
-        request_note: str = "",
-        workflow_kind: str = "search",
-        executed_request: dict[str, str] | None = None,
-        source_summary: dict[str, object] | None = None,
-    ) -> None:
-        """search_advanced_summary.json 형태를 표로 표시.
-
-        `request_note` names the request the numbers belong to when the user has edited the
-        inputs while the run was in flight (see `superseded_note`).
-        """
-        validate_search_summary(summary)
-        self._clear_inspector()
-        self.current_run_dir = None if run_dir is None else run_dir.resolve()
-        self._inspector_summary = summary
-        if workflow_kind == "search" and self.current_run_dir is not None:
-            self._evaluations, self._evaluations_error = _read_search_evaluations(
-                self.current_run_dir
-            )
-        self._displayed_kind = workflow_kind
-        self._displayed_request = self.request_fields(workflow_kind)
-        self._executed_request = None if executed_request is None else dict(executed_request)
-        self._refresh_figure_choices()
-        labels = summary.get("column_labels")
-        headers = (
-            [str(x) for x in labels]
-            if isinstance(labels, list) and len(labels) == self.table.columnCount()
-            else list(SEARCH_COLUMNS)
-        )
-        self.table.setHorizontalHeaderLabels(headers)
-        strategy = str(summary.get("strategy", ""))
-        warnings = summary.get("warnings")
-        warning_list = [str(w) for w in warnings] if isinstance(warnings, list) else []
-        status_text = f"status: {summary.get('status', 'unknown')} · strategy: {strategy}"
-        if warning_list:
-            status_text += f" · {len(warning_list)} warning(s); see details"
-        details = [f"Run: {self.current_run_dir or 'unknown'}", f"Strategy: {strategy}"]
-        for key in (
-            "status", "score_unit", "normalizer", "solution_semantics", "metric",
-            "directions", "weights", "normalization_ranges", "ga_metadata",
-            "effective_request", "effective_conditions", "growth_fraction",
-            "min_member_growth", "min_community_growth", "seed", "target_scales",
-            "ga_max_evaluations", "n_candidates_total",
-            "n_candidates_evaluated", "n_candidates_failed", "n_candidates_ranked",
-            "n_pareto_points", "n_pareto_attempts", "n_pareto_resolved_attempts",
-            "n_pareto_failed_attempts", "pareto_attempts", "candidate_sampling_status",
-            "cli_exit_code", "cli_error", "input_diagnostic", "output_dir",
-        ):
-            if key in summary:
-                details.append(f"{key}: {summary[key]}")
-        details.extend(f"Warning {i}: {warning}" for i, warning in enumerate(warning_list, 1))
-        unevaluated = summary.get("unevaluated")
-        if isinstance(unevaluated, list):
-            for i, candidate in enumerate(unevaluated, 1):
-                if isinstance(candidate, dict):
-                    details.append(
-                        f"Unevaluated {i}: {candidate.get('members')} · "
-                        f"{candidate.get('status')} · "
-                        f"{_diagnostic_text(candidate.get('diagnostic'))}"
-                    )
-        if request_note:
-            details.append(request_note)
-        if executed_request:
-            if workflow_kind == "search" and "medium_mode" in executed_request:
-                details.append("Medium mode: " + medium_mode_text(
-                    executed_request.get("medium", ""), executed_request["medium_mode"]
-                ).removeprefix("medium: "))
-            details.append(f"Executed request: {executed_request}")
-        details.append("Recorded summary JSON:\n" + json.dumps(
-            source_summary if source_summary is not None else summary,
-            ensure_ascii=False, indent=2, default=str,
-        ))
-        self.details.setPlainText("\n".join(details))
-        ranked = summary.get("top_ranked", {})
-        rows: list[tuple[str, str, float | None, float | str | None, float | None, str, str]] = []
-        diagnostics: list[object] = []
-        records: list[tuple[str, dict[object, object]]] = []
-        if isinstance(ranked, dict):
-            groups = [
-                (str(target), items) for target, items in ranked.items() if isinstance(items, list)
-            ]
-        elif isinstance(ranked, list):
-            groups = [(str(summary.get("target", "")), ranked)]
-        else:
-            groups = []
-        for target, items in groups:
-            group_target = target
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                members = item.get("members", [])
-                score = _optional_float(item.get("score", item.get("weighted_score")))
-                target_flux: float | str | None = _optional_float(item.get("target_flux"))
-                fluxes = item.get("target_fluxes")
-                if isinstance(fluxes, dict):
-                    target = ", ".join(str(key) for key in fluxes)
-                    target_flux = ", ".join(
-                        f"{key}={float(value):.4g}" if isinstance(value, (int, float))
-                        else f"{key}=—" for key, value in fluxes.items()
-                    )
-                growth = _optional_float(item.get("community_growth"))
-                aux = item.get("aux_text")
-                aux_text = _fva_range_text(item) if aux is None else str(aux)
-                diagnostic = item.get("diagnostic")
-                diagnostics.append(diagnostic)
-                records.append((group_target, item))
-                status = str(item.get("status", "ok"))
-                if diagnostic:
-                    # The CSV/JSON carry the diagnostic; the table used to print a bare
-                    # "optimal" for a row whose flux stage had actually failed.
-                    status = f"{status} ⚠ diagnostic"
-                rows.append(
-                    (
-                        "+".join(str(x) for x in members) if isinstance(members, list) else "",
-                        target,
-                        score,
-                        # No fallback to `score`: a missing target_flux renders as "—" like every
-                        # other missing value, never as a different quantity wearing its label.
-                        target_flux,
-                        growth,
-                        aux_text,
-                        status,
-                    )
-                )
-        n_flagged = sum(1 for d in diagnostics if d)
-        if n_flagged:
-            status_text += f" · {n_flagged} row(s) carry a solver diagnostic"
-        self.status.setText(status_text + request_note)
-        self.table.setRowCount(len(rows))
-        for r, row in enumerate(rows):
-            diagnostic = diagnostics[r]
-            tooltip = "" if not diagnostic else _diagnostic_text(diagnostic)
-            for c, value in enumerate(row):
-                text = (
-                    "—"
-                    if value is None
-                    else f"{value:.4g}"
-                    if isinstance(value, float)
-                    else str(value)
-                )
-                item_widget = read_only_item(text)
-                if diagnostic:
-                    item_widget.setForeground(_DIAGNOSTIC_COLOR)
-                    item_widget.setToolTip(tooltip)
-                if c == 0:
-                    # The row's own summary record, by identity: not table order, not members.
-                    item_widget.setData(Qt.ItemDataRole.UserRole, r)
-                self.table.setItem(r, c, item_widget)
-        self._row_records = records
-        pareto = summary.get("pareto_frontier")
-        try:
-            pareto_count = (len(pareto) if isinstance(pareto, list)
-                            else int(str(summary.get("n_pareto_points", 0))))
-        except (TypeError, ValueError):
-            pareto_count = 0
-        self.pareto_label.setText(
-            "" if not pareto_count else f"Pareto frontier candidates: {pareto_count}"
-        )
-        self.refresh_figure_mode()
-
-
-_NOT_RECORDED = "not recorded"
-_ABSENT = object()
-_FLUX_BASIS_TEXT = {
-    "joint_weighted_lp": "joint — all target fluxes achieved together in one solution",
-    "per_target_capability_not_simultaneous": (
-        "per-target capability — each target solved separately; "
-        "not simultaneously achievable"
-    ),
-    "unevaluated": "unevaluated — no flux solution was recorded",
-}
-
-
-def _format_recorded(value: object) -> str:
-    """Format one recorded value; missing, null or empty never becomes 0."""
-    if value is None:
-        return _NOT_RECORDED
-    if isinstance(value, bool):
-        return "yes" if value else "no"
-    if isinstance(value, (int, float)):
-        return f"{float(value):.6g}" if math.isfinite(float(value)) else _NOT_RECORDED
-    if isinstance(value, list):
-        return " + ".join(str(v) for v in value) if value else _NOT_RECORDED
-    if isinstance(value, dict):
-        return (", ".join(f"{k}={_format_recorded(v)}" for k, v in value.items())
-                if value else _NOT_RECORDED)
-    text = str(value)
-    return text if text else _NOT_RECORDED
-
-
-def _recorded(record: dict[object, object], key: str) -> str:
-    return _format_recorded(record.get(key))
-
-
-def _read_search_evaluations(run_dir: Path) -> tuple[dict[str, object] | None, str | None]:
-    """Read search_evaluations.json; every failure is reported, none escapes."""
-    path = run_dir / "search_evaluations.json"
-    if not path.is_file():
-        return None, "file missing"
-    try:
-        payload = json.loads(path.read_text())
-    except (OSError, ValueError, TypeError, RecursionError) as exc:
-        return None, str(exc) or type(exc).__name__
-    if not isinstance(payload, dict) or not isinstance(payload.get("rows", []), list):
-        return None, "not a search evaluations object"
-    attempts = payload.get("pareto_attempts")
-    if attempts is not None and not isinstance(attempts, list):
-        return None, "pareto_attempts is not a list"
-    return cast(dict[str, object], payload), None
-
-
-def _matching_evaluation(
-    record: dict[object, object], rows: object
-) -> dict[object, object] | None:
-    """The single evaluation row with this record's rank, members and flux vector.
-
-    Pareto archive rows are renumbered in report order, so their rank need not equal the
-    evaluation ledger's; members plus the exact flux vector is then the identity.
-    """
-    if not isinstance(rows, list):
-        return None
-    keys = ("rank", "members", "target_fluxes", "target_flux")
-    wanted = {key: record[key] for key in keys if key in record}
-    if "rank" not in wanted or not any(k in wanted for k in ("target_fluxes", "target_flux")):
-        return None
-    for criteria in (wanted, {k: v for k, v in wanted.items() if k != "rank"}):
-        matches = [
-            row for row in rows
-            if isinstance(row, dict) and all(row.get(k) == v for k, v in criteria.items())
-        ]
-        if len(matches) == 1:
-            return matches[0]
-        if matches:
-            return None
-    return None
-
-
-def _pareto_attempt_lines(
-    record: dict[object, object], evaluations: dict[str, object]
-) -> list[str]:
-    attempts = evaluations.get("pareto_attempts")
-    if not isinstance(attempts, list):
-        return [f"Pareto ε attempts: {_NOT_RECORDED}"]
-    members = record.get("members")
-    own = [a for a in attempts if isinstance(a, dict) and a.get("members") == members]
-    if not own:
-        return ["Pareto ε attempts: none recorded for these members"]
-
-    def condition(value: object) -> str:
-        return "none" if value == {} else _format_recorded(value)
-
-    def diagnostic_text(value: object) -> str:
-        return "none" if value is None or value == "" else _diagnostic_text(value)
-
-    lines = [f"Pareto ε attempts ({len(own)}):"]
-    for attempt in own:
-        lines.append(
-            f"  {_format_recorded(attempt.get('attempt_key'))} · "
-            f"{_format_recorded(attempt.get('outcome'))} · "
-            f"phase={_format_recorded(attempt.get('phase'))} · "
-            f"target={_format_recorded(attempt.get('target'))} · "
-            f"direction={_format_recorded(attempt.get('direction'))} · "
-            f"weights: {condition(attempt.get('objective_weights'))} · "
-            f"floors: {condition(attempt.get('constraint_floors'))} · "
-            f"achieved: {condition(attempt.get('achieved_vector'))} · "
-            f"diagnostic: {diagnostic_text(attempt.get('diagnostic'))}"
-        )
-    return lines
-
-
-def _optional_float(value: object) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float, str)):
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    return None
-
-
-def _diagnostic_text(diagnostic: object) -> str:
-    """Render a structured Diagnostic (or free text) for a table tooltip, losslessly enough
-    that the researcher can see *why* the row is flagged without opening the CSV."""
-    if isinstance(diagnostic, dict):
-        code = diagnostic.get("code", "diagnostic")
-        message = diagnostic.get("message") or diagnostic.get("detail") or ""
-        return f"{code}: {message}".strip().rstrip(":")
-    return str(diagnostic)
-
-
-def _fva_range_text(item: dict[object, object]) -> str:
-    lo = _optional_float(item.get("robustness_fva_lo"))
-    hi = _optional_float(item.get("robustness_fva_hi"))
-    status = item.get("robustness_status")
-    if lo is not None and hi is not None:
-        return f"{lo:.4g}..{hi:.4g}"
-    return "" if status is None else str(status)
+    def load_summary(self, summary: dict[str, object], **kwargs: Any) -> None:
+        self.results_panel.load_summary(summary, **kwargs)

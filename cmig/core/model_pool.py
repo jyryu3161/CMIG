@@ -39,6 +39,10 @@ def _is_cobra_json_candidate(path: Path) -> bool:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return True
+    if isinstance(payload, dict) and all(
+        key in payload for key in ("schema_version", "sha256", "model_id")
+    ):
+        return False  # a CMIG browse index (cmig/io/model_index.py), not a model
     return (
         isinstance(payload, dict)
         and isinstance(payload.get("reactions"), list)

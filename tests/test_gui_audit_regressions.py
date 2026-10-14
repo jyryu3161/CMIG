@@ -19,6 +19,8 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from cmig.core.workflow_manifest import artifact_result_digest  # noqa: E402
 from cmig.gui.app import build_main_window  # noqa: E402
 from cmig.gui.builder import SearchView  # noqa: E402
+from cmig.gui.pages.ratio_impact import RatioImpactPage  # noqa: E402
+from cmig.gui.pages.strain_growth import StrainGrowthPage  # noqa: E402
 from cmig.service import JobRunner, JobStatus  # noqa: E402
 
 
@@ -79,26 +81,35 @@ def test_adjacent_workflows_forward_only_applicable_frozen_settings(monkeypatch,
     runner.submit("block", lambda ctx: release.wait(10))
     window = build_main_window(runner=runner)
     project = open_test_project(window, tmp_path / "p", ["member_a", "member_b"])
-    view = window.search_view
-    view.medium_picker.set_ref(add_test_medium(window, tmp_path / "defined-medium.csv"))
+    ko_page = window.gene_ko_page
+    growth_page = window.strain_growth_page
+    ratio_page = window.ratio_impact_page
+    pages = (ko_page, growth_page, ratio_page)
+    medium_ref = add_test_medium(window, tmp_path / "defined-medium.csv")
+    for page in pages:
+        page.medium_picker.set_ref(medium_ref)
     medium = str(project.root / project.media[0].file)
-    view.set_target_rows(["ac"])
-    view.target_direction_combo(0).setCurrentText("min_uptake")
-    view.growth_fraction_spin.setValue(0.75)
-    view.cooperative_tradeoff_spin.setValue(0.65)
-    growth_request = view.request_fields("strain_growth")
-    view.target_direction_combo(0).setCurrentText("max_secretion")
-    view.growth_fraction_spin.setValue(0.6)
-    assert view.superseded_note(growth_request, "strain_growth") == ""
-    view.target_direction_combo(0).setCurrentText("min_uptake")
-    view.growth_fraction_spin.setValue(0.75)
-    view.ko_members_input.setText("member_a")
-    view.growth_member_input.setText("member_a")
+    ko_page.target_input.setText("ac")
+    ratio_page.target_input.setText("ac")
+    ko_page.direction_combo.setCurrentText("min_uptake")
+    ko_page.growth_fraction_spin.setValue(0.75)
+    growth_page.cooperative_tradeoff_spin.setValue(0.65)
+    ratio_page.cooperative_tradeoff_spin.setValue(0.65)
+    growth_request = growth_page.request_fields("strain_growth")
+    ko_page.direction_combo.setCurrentText("max_secretion")
+    ko_page.growth_fraction_spin.setValue(0.6)
+    assert growth_page.results_panel.superseded_note(growth_request, "strain_growth") == ""
+    ko_page.direction_combo.setCurrentText("min_uptake")
+    ko_page.growth_fraction_spin.setValue(0.75)
+    ko_page.members_picker.set_selected(["member_a"])
+    ratio_page.member_combo.setCurrentText("member_a")
     jobs = [window.run_gene_ko_search(), window.run_strain_growth_report(),
             window.run_abundance_impact()]
-    view.medium_picker.set_ref("preset:western_diet")
-    view.target_direction_combo(0).setCurrentText("max_secretion")
-    view.cooperative_tradeoff_spin.setValue(0.8)
+    for page in pages:
+        page.medium_picker.set_ref("preset:western_diet")
+    ko_page.direction_combo.setCurrentText("max_secretion")
+    growth_page.cooperative_tradeoff_spin.setValue(0.8)
+    ratio_page.cooperative_tradeoff_spin.setValue(0.8)
     release.set()
     for job in jobs:
         runner.result(job, timeout=20)
@@ -115,8 +126,9 @@ def test_adjacent_workflows_forward_only_applicable_frozen_settings(monkeypatch,
     assert growth[growth.index("--tradeoff-f") + 1] == "0.65"
     assert ratio[ratio.index("--tradeoff-f") + 1] == "0.65"
     assert growth[growth.index("--single-medium") + 1] == "community"
-    assert "cooperative tradeoff f=0.65" in view.details.toPlainText()
-    assert "superseded request" in view.details.toPlainText()
+    for page in (growth_page, ratio_page):
+        assert "cooperative tradeoff f=0.65" in page.results_panel.details.toPlainText()
+        assert "superseded request" in page.results_panel.details.toPlainText()
     window.close()
 
 
@@ -614,44 +626,51 @@ def test_real_host_writer_sparse_fva_ranges_round_trip(tmp_path, monkeypatch):
 @pytest.mark.parametrize("kind", ["abundance_impact", "strain_growth", "search"])
 def test_completed_workflow_invalidates_only_applicable_edits(tmp_path, kind):
     _app()
-    view = SearchView()
-    request = view.request_fields(kind)
-    view.load_summary(
+    search, growth, ratio = SearchView(), StrainGrowthPage(), RatioImpactPage()
+    page = {"search": search, "strain_growth": growth, "abundance_impact": ratio}[kind]
+    panel = page.results_panel
+    request = page.request_fields(kind)
+    panel.load_summary(
         {"top_ranked": [], "strategy": kind}, run_dir=tmp_path,
         workflow_kind=kind, executed_request=request,
     )
     if kind == "search":
-        view.cooperative_tradeoff_spin.setValue(0.8)
-        assert view.current_run_dir == tmp_path.resolve()
-        view.target_direction_combo(0).setCurrentText("min_uptake")
+        growth.cooperative_tradeoff_spin.setValue(0.8)
+        ratio.cooperative_tradeoff_spin.setValue(0.8)
+        assert panel.current_run_dir == tmp_path.resolve()
+        search.target_direction_combo(0).setCurrentText("min_uptake")
     else:
-        view.target_direction_combo(0).setCurrentText("min_uptake")
-        view.growth_fraction_spin.setValue(0.8)
-        assert view.current_run_dir == tmp_path.resolve()
-        view.cooperative_tradeoff_spin.setValue(0.8)
-    assert view.current_run_dir is None
-    view.close()
+        search.target_direction_combo(0).setCurrentText("min_uptake")
+        search.growth_fraction_spin.setValue(0.8)
+        assert panel.current_run_dir == tmp_path.resolve()
+        page.cooperative_tradeoff_spin.setValue(0.8)
+    assert panel.current_run_dir is None
+    for view in (search, growth, ratio):
+        view.close()
 
 
 def test_irrelevant_edit_keeps_completed_superseded_ratio_result(tmp_path):
     _app()
-    view = SearchView()
+    view = RatioImpactPage()
+    search = SearchView()
+    panel = view.results_panel
     executed = view.request_fields("abundance_impact")
     view.medium_picker.set_choices(["western_diet"], [])
     view.medium_picker.set_ref("preset:western_diet")
     view.cooperative_tradeoff_spin.setValue(0.9)
-    view.load_summary(
+    panel.load_summary(
         {"top_ranked": [], "strategy": "ratio"}, run_dir=tmp_path,
         workflow_kind="abundance_impact", executed_request=executed,
-        request_note=view.superseded_note(executed, "abundance_impact"),
+        request_note=panel.superseded_note(executed, "abundance_impact"),
     )
-    assert "superseded" in view.details.toPlainText()
-    view.target_direction_combo(0).setCurrentText("min_uptake")
-    assert view.current_run_dir == tmp_path.resolve()
-    assert "superseded" in view.details.toPlainText()
+    assert "superseded" in panel.details.toPlainText()
+    search.target_direction_combo(0).setCurrentText("min_uptake")
+    assert panel.current_run_dir == tmp_path.resolve()
+    assert "superseded" in panel.details.toPlainText()
     view.cooperative_tradeoff_spin.setValue(0.8)
-    assert view.current_run_dir is None
+    assert panel.current_run_dir is None
     view.close()
+    search.close()
 
 
 def test_present_search_conditions_survive_direct_and_adapted_details(tmp_path):
@@ -930,11 +949,11 @@ def test_valid_digest_cannot_certify_invalid_summary_schema(tmp_path, kind):
     assert loaded is False
     assert "Status: readback invalid/unreadable" in _shown(window)
     assert "Artifact digest: verified" in _shown(window)
-    view_status = (window.search_view.status if kind == "search"
-                   else window.dynamics_view.status).text()
-    assert "Readback invalid/unreadable" in view_status
+    page = {"search": window.search_view, "dfba": window.dynamics_view,
+            "spatial": window.spatial_page}[kind]
+    assert "Readback invalid/unreadable" in page.status.text()
     assert (window.search_view.current_run_dir if kind == "search"
-            else window.dynamics_view.table.rowCount()) in (None, 0)
+            else page.table.rowCount()) in (None, 0)
     window.close()
 
 

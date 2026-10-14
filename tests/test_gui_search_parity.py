@@ -27,6 +27,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.gui.app import build_main_window  # noqa: E402
 from cmig.gui.builder import SearchView  # noqa: E402
+from cmig.gui.pages.gene_ko import GeneKoPage  # noqa: E402
 from cmig.service import JobRunner, JobStatus  # noqa: E402
 
 
@@ -221,7 +222,7 @@ def test_advanced_settings_collapsed_by_default():
     assert view.advanced_box.isHidden()
     view.advanced_toggle.setChecked(True)
     assert not view.advanced_box.isHidden()
-    assert "Search only" in view.advanced_toggle.text()
+    assert "Advanced options" in view.advanced_toggle.text()
     view.close()
 
 
@@ -288,22 +289,31 @@ def test_every_search_page_workflow_passes_the_selected_models(window, monkeypat
     for removed in ("model_dir_input", "model_source_combo", "taxonomy_input",
                     "recursive_check"):
         assert not hasattr(view, removed)
-    view.model_picker.set_selected(["b"])
-    view.ko_members_input.setText("b")
-    view.growth_member_input.setText("b")
-    for method in ("run_search_fixture", "run_gene_ko_search", "run_strain_growth_report",
-                   "run_abundance_impact"):
+    pages = {"run_search_fixture": view, "run_gene_ko_search": window.gene_ko_page,
+             "run_strain_growth_report": window.strain_growth_page,
+             "run_abundance_impact": window.ratio_impact_page}
+    for page in pages.values():
+        page.model_picker.set_selected(["b"])
+    window.gene_ko_page.members_picker.set_selected(["b"])
+    window.ratio_impact_page.member_combo.setCurrentText("b")
+    for method in pages:
         assert _run(window, method)
         argv = rec.calls[-1]
         assert taxonomy_ids(argv) == ["b"], method
         assert "--model-dir" not in argv and "--recursive" not in argv
-    # With nothing selected every workflow is refused before the CLI is called.
-    view.model_picker.set_selected([])
+    # With nothing selected every workflow is refused before the CLI is called. The Gene KO
+    # combination and the Ratio member come from the selected models, so with none selected
+    # those pages refuse for their now-empty member choice.
+    for page in pages.values():
+        page.model_picker.set_selected([])
     n = len(rec.calls)
-    for method in ("run_search_fixture", "run_gene_ko_search", "run_strain_growth_report",
-                   "run_abundance_impact"):
+    refusals = {"run_search_fixture": "Select at least one model.",
+                "run_gene_ko_search": "KO members are required.",
+                "run_strain_growth_report": "Select at least one model.",
+                "run_abundance_impact": "Target member is required for ratio impact."}
+    for method, page in pages.items():
         assert getattr(window, method)() == ""
-        assert view.status.text() == "Select at least one model."
+        assert page.status.text() == refusals[method], method
     assert len(rec.calls) == n
 
 
@@ -350,9 +360,12 @@ def test_medium_mode_exact_merge_and_unknown(window, monkeypatch, tmp_path):
     assert "--exact-medium" not in argv
     assert "--allow-unknown-medium" in argv
     # other workflows keep exact medium and never inherit merge/unknown
-    view.set_target_rows([("ac",)])
-    view.ko_members_input.setText("a,b")
-    view.growth_member_input.setText("a")
+    for page in (window.gene_ko_page, window.strain_growth_page, window.ratio_impact_page):
+        page.medium_picker.set_ref(ref)
+    window.gene_ko_page.target_input.setText("ac")
+    window.gene_ko_page.members_picker.set_selected(["a", "b"])
+    window.ratio_impact_page.target_input.setText("ac")
+    window.ratio_impact_page.member_combo.setCurrentText("a")
     for method in ("run_gene_ko_search", "run_strain_growth_report", "run_abundance_impact"):
         assert _run(window, method)
         argv = rec.calls[-1]
@@ -423,10 +436,13 @@ def test_search_top_k_bounds():
 def test_gene_ko_top_k_is_separate_default_twenty(window, monkeypatch):
     rec = _Recorder(monkeypatch)
     view = window.search_view
-    assert view.ko_top_k_spin.value() == _defaults("gene-ko-search")["top_k"] == 20
-    view.set_target_rows([("ac", "min_uptake")])
-    view.ko_members_input.setText("a,b")
+    page = window.gene_ko_page
+    assert page.top_k_spin.value() == _defaults("gene-ko-search")["top_k"] == 20
+    page.target_input.setText("ac")
+    page.direction_combo.setCurrentText("min_uptake")
+    page.members_picker.set_selected(["a", "b"])
     view.search_top_k_spin.setValue(3)
+    page.medium_picker.set_ref("preset:western_diet")
     view.medium_picker.set_ref("preset:western_diet")
     view.medium_mode_combo.setCurrentIndex(view.medium_mode_combo.findData("merge"))
     assert _run(window, "run_gene_ko_search")
@@ -435,24 +451,27 @@ def test_gene_ko_top_k_is_separate_default_twenty(window, monkeypatch):
     assert _value(argv, "--direction") == "min_uptake"
     assert _value(argv, "--target") == "ac"
     assert "--exact-medium" in argv
-    assert "ko_top_k" in SearchView.REQUEST_FIELDS["gene_ko"]
-    assert "top_k" not in SearchView.REQUEST_FIELDS["gene_ko"]
+    assert "ko_top_k" in GeneKoPage.REQUEST_FIELDS
+    assert "top_k" not in GeneKoPage.REQUEST_FIELDS
     assert "ko_top_k" not in SearchView.REQUEST_FIELDS["search"]
 
 
 @pytest.mark.parametrize("kind", ["search", "gene_ko"])
 def test_top_k_invalidation_is_scoped(tmp_path, kind):
     _app()
-    view = SearchView()
-    view.load_summary({"top_ranked": [], "strategy": kind}, run_dir=tmp_path,
-                      workflow_kind=kind, executed_request=view.request_fields(kind))
-    other, own = ((view.ko_top_k_spin, view.search_top_k_spin) if kind == "search"
-                  else (view.search_top_k_spin, view.ko_top_k_spin))
+    search, gene_ko = SearchView(), GeneKoPage()
+    page = search if kind == "search" else gene_ko
+    panel = page.results_panel
+    panel.load_summary({"top_ranked": [], "strategy": kind}, run_dir=tmp_path,
+                       workflow_kind=kind, executed_request=page.request_fields(kind))
+    other, own = ((gene_ko.top_k_spin, search.search_top_k_spin) if kind == "search"
+                  else (search.search_top_k_spin, gene_ko.top_k_spin))
     other.setValue(other.value() + 1)
-    assert view.current_run_dir == tmp_path.resolve()
+    assert panel.current_run_dir == tmp_path.resolve()
     own.setValue(own.value() + 1)
-    assert view.current_run_dir is None
-    view.close()
+    assert panel.current_run_dir is None
+    search.close()
+    gene_ko.close()
 
 
 def test_new_search_settings_invalidate_search_result(tmp_path):
@@ -480,14 +499,6 @@ def test_new_search_settings_invalidate_search_result(tmp_path):
         assert view.current_run_dir is not None
         edit()
         assert view.current_run_dir is None
-    # Search-only settings do not invalidate a Gene KO result.
-    view.set_target_rows([("but",)])
-    view.load_summary({"top_ranked": [], "strategy": "x"}, run_dir=tmp_path,
-                      workflow_kind="gene_ko", executed_request=view.request_fields("gene_ko"))
-    view.solver_threads_spin.setValue(5)
-    view.medium_mode_combo.setCurrentIndex(0)
-    view.allow_unknown_medium_check.setChecked(False)
-    assert view.current_run_dir == tmp_path.resolve()
     view.close()
 
 
@@ -496,17 +507,19 @@ def test_new_search_settings_invalidate_search_result(tmp_path):
 
 @pytest.mark.parametrize("method", ["run_gene_ko_search", "run_abundance_impact"])
 def test_gene_ko_and_ratio_need_exactly_one_row(window, monkeypatch, method):
+    """Gene KO and Ratio Impact each have one target field: one metabolite, never blank."""
     rec = _Recorder(monkeypatch)
-    view = window.search_view
-    view.ko_members_input.setText("a,b")
-    view.growth_member_input.setText("a")
-    view.set_target_rows([("ac",), ("but",)])
+    window.gene_ko_page.members_picker.set_selected(["a", "b"])
+    window.ratio_impact_page.member_combo.setCurrentText("a")
+    page = window.gene_ko_page if method == "run_gene_ko_search" else window.ratio_impact_page
+    page.target_input.setText("ac,but")
     assert getattr(window, method)() == ""
-    assert view.status.text() == "Gene KO and Ratio Impact need exactly one target row."
-    view.set_target_rows([("",)])
+    assert page.status.text() == "Enter a single metabolite id in the target row."
+    page.target_input.setText("")
     assert getattr(window, method)() == ""
+    assert "does not substitute a default target" in page.status.text()
     assert rec.calls == []
-    view.set_target_rows([("succ", "max_uptake")])
+    page.target_input.setText("succ")
     assert _run(window, method)
     assert _value(rec.calls[-1], "--target") == "succ"
 
@@ -596,7 +609,8 @@ def test_korean_mode_new_paths_do_not_raise(monkeypatch, tmp_path):
     view.set_target_rows([("ac",), ("ac",)])
     assert w.run_search_fixture() == ""
     view.set_target_rows([("ac",), ("but",)])
-    view.ko_members_input.setText("a,b")
+    w.gene_ko_page.members_picker.set_selected(["a", "b"])
+    w.gene_ko_page.target_input.setText("ac,but")
     assert w.run_gene_ko_search() == ""
     jid = w.run_search_fixture()
     assert jid

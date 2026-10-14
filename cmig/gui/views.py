@@ -17,7 +17,6 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDoubleSpinBox,
     QGridLayout,
     QHBoxLayout,
@@ -25,14 +24,20 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QScrollArea,
-    QSpinBox,
     QTableWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from cmig.gui.analysis_page import (
+    FLUX_LEGEND,
+    AnalysisPage,
+    ResultsArea,
+    connect_change,
+    mark_computed_headers,
+    paint_computed,
+)
 from cmig.gui.builder import make_read_only, read_only_item
 from cmig.gui.pickers import ModelPicker
 from cmig.service import JobRunner, make_sweep_job
@@ -867,12 +872,18 @@ class SweepView(QWidget):
             )
         )
         self.run_btn = QPushButton(_view_text(self.strings, "sweep_run", "Run Sweep"))
+        # Three rows, so the page fits a 1280-wide window without scrolling sideways (one
+        # row squeezed the FVA metabolites field to nothing).
         options_row.addWidget(self.fva_check)
-        options_row.addWidget(self.fva_metabolites_input)
-        options_row.addWidget(self.exact_medium_check)
-        options_row.addWidget(self.allow_unknown_medium_check)
-        options_row.addWidget(self.fixture_check)
-        options_row.addWidget(self.run_btn)
+        options_row.addWidget(self.fva_metabolites_input, 1)
+        medium_options_row = QHBoxLayout()
+        medium_options_row.addWidget(self.exact_medium_check)
+        medium_options_row.addWidget(self.allow_unknown_medium_check)
+        medium_options_row.addStretch(1)
+        run_row = QHBoxLayout()
+        run_row.addWidget(self.fixture_check)
+        run_row.addStretch(1)
+        run_row.addWidget(self.run_btn)
 
         self.table = QTableWidget(0, len(self._COLS))
         self.table.setHorizontalHeaderLabels(
@@ -903,6 +914,8 @@ class SweepView(QWidget):
         layout.addLayout(axis_grid)
         layout.addLayout(namespace_row)
         layout.addLayout(options_row)
+        layout.addLayout(medium_options_row)
+        layout.addLayout(run_row)
         layout.addWidget(self.table)
         self._job_id: str | None = None
 
@@ -979,6 +992,7 @@ class ExternalProfileView(QWidget):
         self.table.setHorizontalHeaderLabels(
             ["Metabolite", "Net flux (mmol gDW⁻¹ h⁻¹)", "Direction", "FVA [lo, hi]"]
         )
+        mark_computed_headers(self.table, [1, 3])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         make_read_only(self.table)
         self.net_chart = DivergingProfileChart(self.strings)
@@ -1028,6 +1042,7 @@ class ExternalProfileView(QWidget):
         layout.addWidget(self.chart_note)
         layout.addWidget(self.contribution_basis_label)
         layout.addLayout(delta_row)
+        layout.addWidget(QLabel(FLUX_LEGEND))
         layout.addWidget(self.table)
         layout.addWidget(self.target_label)
 
@@ -1082,6 +1097,7 @@ class ExternalProfileView(QWidget):
                 if c == 2 and label in _LABEL_COLOR:
                     item.setForeground(QColor(_LABEL_COLOR[label]))
                 self.table.setItem(i, c, item)
+        paint_computed(self.table, [1, 3])
 
     def show_delta_overlay(
         self,
@@ -1171,29 +1187,103 @@ class ExternalProfileView(QWidget):
         self.target_label.setText("Targets: " + ", ".join(parts))
 
 
-class DfbaSpatialView(QWidget):
-    """Dynamics tab — user-model dFBA plus lightweight spatial medium preview."""
+class DynamicsResults:
+    """The results both dynamics pages draw: a warnings line, a one-row table and a figure."""
+
+    results: ResultsArea
+    status: QLabel
+    warning_label: QLabel
+    table: QTableWidget
+    figure_label: QLabel
+
+    def _build_dynamics_results(self) -> None:
+        self.warning_label = QLabel("")
+        self.warning_label.setWordWrap(True)
+        self.warning_label.setStyleSheet("color: #d62728;")
+        self.warning_label.setVisible(False)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Run", "Status", "Final time (h)", "Readout"])
+        mark_computed_headers(self.table, [2, 3])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setMaximumHeight(130)
+        make_read_only(self.table)
+        self.figure_label = QLabel("No dynamics figure loaded.")
+        self.figure_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.figure_label.setMinimumHeight(460)
+        self.figure_label.setStyleSheet("background: white; border: 1px solid #d9dee3;")
+        self.results.add(self.warning_label)
+        self.results.add(self.table)
+        self.results.add(self.figure_label, 1)
+
+    def _clear_dynamics(self, text: str) -> None:
+        """Drop the displayed timecourse and leave `text` as the explanation."""
+        self.table.setRowCount(0)
+        self.warning_label.setVisible(False)
+        self.warning_label.setText("")
+        self.figure_label.setPixmap(QPixmap())
+        self.figure_label.setText(text or "No dynamics figure loaded.")
+        self.status.setText(text)
+        self.results.show_empty()
+
+    def _show_warnings(self, warnings: list[str]) -> None:
+        if not warnings:
+            self.warning_label.setVisible(False)
+            self.warning_label.setText("")
+            return
+        self.warning_label.setText("⚠ " + "\n⚠ ".join(warnings))
+        self.warning_label.setVisible(True)
+
+    def _set_single_row(
+        self, run_type: str, status: str, final_t: float | None, readout: str
+    ) -> None:
+        self.table.setRowCount(1)
+        values = [run_type, status, "unknown" if final_t is None else f"{final_t:.4g}", readout]
+        for idx, value in enumerate(values):
+            self.table.setItem(0, idx, read_only_item(value))
+        paint_computed(self.table, [2, 3], status_column=1)
+        self.results.show_results()
+
+    def _load_figure(self, run_dir: Any, artifact: str) -> None:
+        # A new result never keeps the previous run's figure drawn beneath it.
+        self.figure_label.setPixmap(QPixmap())
+        self.figure_label.setText("No dynamics figure loaded.")
+        path = run_dir / artifact
+        # Prefer the vector artifact: it always decodes (QtSvg) and is a fraction of the
+        # 600-dpi TIFF's pixmap. The TIFF is the fallback, not the other way round — a Qt
+        # build without the TIFF image plugin used to show "Could not load figure" while a
+        # perfectly good SVG sat beside it.
+        candidates = [candidate for candidate in (path, path.with_suffix(".tiff"))
+                      if candidate.exists()]
+        if not candidates:
+            return
+        pixmap = QPixmap()
+        for candidate in candidates:
+            pixmap = _load_pixmap(candidate)
+            if not pixmap.isNull():
+                break
+        if pixmap.isNull():
+            self.figure_label.setText(f"Could not load figure: {candidates[0].name}")
+            return
+        target_width = max(600, self.figure_label.width() - 20)
+        target_height = max(280, self.figure_label.height() - 20)
+        self.figure_label.setPixmap(
+            pixmap.scaled(
+                target_width,
+                target_height,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+
+class DfbaView(AnalysisPage, DynamicsResults):
+    """dFBA — well-mixed dynamic FBA of one user model."""
 
     def __init__(self) -> None:
-        super().__init__()
-        outer = QVBoxLayout(self)
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setMinimumSize(0, 0)
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        self.scroll_area.setWidget(content)
-        outer.addWidget(self.scroll_area)
-        self.title = QLabel("Dynamics")
-
-        model_row = QHBoxLayout()
+        super().__init__(
+            "dFBA", "Well-mixed dynamic FBA of one model.", run_text="Run dFBA", cancel=False
+        )
         self.model_picker = ModelPicker("Model", single=True)
-        model_row.addWidget(QLabel("dFBA"))
-        model_row.addWidget(self.model_picker)
-        model_row.addStretch(1)
-
-        # Two-row grids keep every input visible at a 1280-px window.
-        dfba_row = QGridLayout()
         self.initial_input = QLineEdit("EX_glc__D_e=10,EX_o2_e=20,EX_ac_e=0,EX_lac__D_e=0")
         self.initial_input.setPlaceholderText("EX_glc__D_e=10,EX_o2_e=20,EX_ac_e=0")
         self.t_end_spin = QDoubleSpinBox()
@@ -1220,106 +1310,26 @@ class DfbaSpatialView(QWidget):
             "Close every uptake exchange outside 'Initial' before integrating, so a "
             "substrate/Km experiment is actually controlled."
         )
-        self.run_dfba_btn = QPushButton("Run dFBA")
-        dfba_row.addWidget(QLabel("Initial (mmol L⁻¹)"), 0, 0)
-        dfba_row.addWidget(self.initial_input, 0, 1, 1, 3)
-        dfba_row.addWidget(self.close_untracked_check, 0, 4, 1, 3)
-        dfba_row.addWidget(QLabel("T end"), 1, 0)
-        dfba_row.addWidget(self.t_end_spin, 1, 1)
-        dfba_row.addWidget(QLabel("dt"), 1, 2)
-        dfba_row.addWidget(self.dt_spin, 1, 3)
-        dfba_row.addWidget(QLabel("Biomass"), 1, 4)
-        dfba_row.addWidget(self.biomass_spin, 1, 5)
-        dfba_row.addWidget(self.run_dfba_btn, 1, 6)
-
-        spatial_row = QGridLayout()
-        self.spatial_metabolite_input = QLineEdit("EX_glc__D_e")
-        self.spatial_metabolite_input.setPlaceholderText("Metabolite")
-        self.grid_size_spin = QSpinBox()
-        self.grid_size_spin.setRange(8, 256)
-        self.grid_size_spin.setValue(32)
-        self.steps_spin = QSpinBox()
-        self.steps_spin.setRange(1, 10000)
-        self.steps_spin.setValue(80)
-        self.spatial_dt_spin = QDoubleSpinBox()
-        self.spatial_dt_spin.setRange(1e-5, 1000.0)
-        self.spatial_dt_spin.setValue(0.1)
-        self.spatial_dt_spin.setDecimals(5)
-        self.diffusion_spin = QDoubleSpinBox()
-        self.diffusion_spin.setRange(0.0, 1000.0)
-        self.diffusion_spin.setValue(0.15)
-        self.diffusion_spin.setDecimals(5)
-        self.source_combo = QComboBox()
-        self.source_combo.addItems(["left", "right", "top", "bottom", "center", "none"])
-        self.sink_combo = QComboBox()
-        self.sink_combo.addItems(["right", "left", "top", "bottom", "center", "none"])
-        self.run_spatial_btn = QPushButton("Preview Spatial Medium")
-        spatial_row.addWidget(QLabel("Spatial"), 0, 0)
-        spatial_row.addWidget(self.spatial_metabolite_input, 0, 1)
-        spatial_row.addWidget(QLabel("Grid"), 0, 2)
-        spatial_row.addWidget(self.grid_size_spin, 0, 3)
-        spatial_row.addWidget(QLabel("Steps"), 0, 4)
-        spatial_row.addWidget(self.steps_spin, 0, 5)
-        spatial_row.addWidget(QLabel("dt"), 0, 6)
-        spatial_row.addWidget(self.spatial_dt_spin, 0, 7)
-        spatial_row.addWidget(QLabel("Diffusion"), 1, 0)
-        spatial_row.addWidget(self.diffusion_spin, 1, 1)
-        spatial_row.addWidget(QLabel("Source"), 1, 2)
-        spatial_row.addWidget(self.source_combo, 1, 3)
-        spatial_row.addWidget(QLabel("Sink"), 1, 4)
-        spatial_row.addWidget(self.sink_combo, 1, 5)
-        spatial_row.addWidget(self.run_spatial_btn, 1, 6, 1, 2)
-
-        self.status = QLabel("")
-        self.warning_label = QLabel("")
-        self.warning_label.setWordWrap(True)
-        self.warning_label.setStyleSheet("color: #d62728;")
-        self.warning_label.setVisible(False)
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Run", "Status", "Final time (h)", "Readout"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.setMaximumHeight(130)
-        make_read_only(self.table)
-        self.figure_label = QLabel("No dynamics figure loaded.")
-        self.figure_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.figure_label.setMinimumHeight(460)
-        self.figure_label.setStyleSheet("background: white; border: 1px solid #d9dee3;")
-
-        layout.addWidget(self.title)
-        layout.addLayout(model_row)
-        layout.addLayout(dfba_row)
-        layout.addLayout(spatial_row)
-        layout.addWidget(self.status)
-        layout.addWidget(self.warning_label)
-        layout.addWidget(self.table)
-        layout.addWidget(self.figure_label)
-        self.model_picker.selection_changed.connect(self.invalidate_results)
-        for line_edit in (self.initial_input, self.spatial_metabolite_input):
-            line_edit.textChanged.connect(self.invalidate_results)
-        for spin in (
-            self.t_end_spin,
-            self.dt_spin,
-            self.biomass_spin,
-            self.grid_size_spin,
-            self.steps_spin,
-            self.spatial_dt_spin,
-            self.diffusion_spin,
-        ):
-            spin.valueChanged.connect(self.invalidate_results)
-        for combo in (self.source_combo, self.sink_combo):
-            combo.currentTextChanged.connect(self.invalidate_results)
-        self.close_untracked_check.toggled.connect(self.invalidate_results)
+        self.run_dfba_btn = self.run_btn
+        self.add_input_row(self.model_picker)
+        self.add_input_row("Initial (mmol L⁻¹)", self.initial_input)
+        self.add_input_row("T end", self.t_end_spin)
+        self.advanced.add_row("dt", self.dt_spin, "Initial biomass", self.biomass_spin)
+        self.advanced.add_row(self.close_untracked_check)
+        self.advanced.track(self.dt_spin, self.biomass_spin, self.close_untracked_check)
+        self._build_dynamics_results()
+        for name, widget in (("model", self.model_picker), ("initial", self.initial_input),
+                             ("t_end", self.t_end_spin), ("dt", self.dt_spin),
+                             ("biomass", self.biomass_spin),
+                             ("close_untracked", self.close_untracked_check)):
+            self.register(name, widget)
+            connect_change(widget, self.invalidate_results)
 
     def invalidate_results(self, *_args: Any) -> None:
         """Drop the displayed timecourse when its inputs no longer describe it."""
         if self.table.rowCount() == 0:
             return
-        self.table.setRowCount(0)
-        self.warning_label.setVisible(False)
-        self.warning_label.setText("")
-        self.figure_label.setPixmap(QPixmap())
-        self.figure_label.setText("Inputs changed — previous result cleared; re-run to update.")
-        self.status.setText("Inputs changed — previous result cleared; re-run to update.")
+        self._clear_dynamics("Inputs changed — previous result cleared; re-run to update.")
 
     def dfba_request(self) -> dict[str, Any]:
         return {
@@ -1329,19 +1339,6 @@ class DfbaSpatialView(QWidget):
             "dt": self.dt_spin.value(),
             "initial_biomass": self.biomass_spin.value(),
             "close_untracked_uptake": self.close_untracked_check.isChecked(),
-        }
-
-    def spatial_request(self) -> dict[str, Any]:
-        size = self.grid_size_spin.value()
-        return {
-            "metabolite": self.spatial_metabolite_input.text().strip() or "EX_glc__D_e",
-            "width": size,
-            "height": size,
-            "steps": self.steps_spin.value(),
-            "dt": self.spatial_dt_spin.value(),
-            "diffusion": self.diffusion_spin.value(),
-            "source_edge": self.source_combo.currentText(),
-            "sink_edge": self.sink_combo.currentText(),
         }
 
     def load_dfba_summary(self, payload: dict[str, Any], *, run_dir: Any) -> None:
@@ -1377,68 +1374,6 @@ class DfbaSpatialView(QWidget):
         )
         self._show_warnings(warnings)
         self._load_figure(run_dir, "dfba_timecourse.svg")
-
-    def load_spatial_summary(self, payload: dict[str, Any], *, run_dir: Any) -> None:
-        warnings = [str(w) for w in (payload.get("warnings") or [])]
-        status = str(payload.get("status", ""))
-        self._set_single_row(
-            "Spatial",
-            f"{status} ⚠ see warnings" if warnings else status,
-            _finite_float(payload.get("final_t")),
-            "range=" + _number_text(payload.get("final_min"))
-            + ".." + _number_text(payload.get("final_max")),
-        )
-        self.status.setText(
-            f"Spatial preview loaded: {run_dir}"
-            + (f" · {len(warnings)} warning(s)" if warnings else "")
-        )
-        self._show_warnings(warnings)
-        self._load_figure(run_dir, "spatial_snapshots.svg")
-
-    def _show_warnings(self, warnings: list[str]) -> None:
-        if not warnings:
-            self.warning_label.setVisible(False)
-            self.warning_label.setText("")
-            return
-        self.warning_label.setText("⚠ " + "\n⚠ ".join(warnings))
-        self.warning_label.setVisible(True)
-
-    def _set_single_row(
-        self, run_type: str, status: str, final_t: float | None, readout: str
-    ) -> None:
-        self.table.setRowCount(1)
-        values = [run_type, status, "unknown" if final_t is None else f"{final_t:.4g}", readout]
-        for idx, value in enumerate(values):
-            self.table.setItem(0, idx, read_only_item(value))
-
-    def _load_figure(self, run_dir: Any, artifact: str) -> None:
-        path = run_dir / artifact
-        # Prefer the vector artifact: it always decodes (QtSvg) and is a fraction of the
-        # 600-dpi TIFF's pixmap. The TIFF is the fallback, not the other way round — a Qt
-        # build without the TIFF image plugin used to show "Could not load figure" while a
-        # perfectly good SVG sat beside it.
-        candidates = [candidate for candidate in (path, path.with_suffix(".tiff"))
-                      if candidate.exists()]
-        if not candidates:
-            return
-        pixmap = QPixmap()
-        for candidate in candidates:
-            pixmap = _load_pixmap(candidate)
-            if not pixmap.isNull():
-                break
-        if pixmap.isNull():
-            self.figure_label.setText(f"Could not load figure: {candidates[0].name}")
-            return
-        target_width = max(600, self.figure_label.width() - 20)
-        target_height = max(280, self.figure_label.height() - 20)
-        self.figure_label.setPixmap(
-            pixmap.scaled(
-                target_width,
-                target_height,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
 
 
 def _load_pixmap(path: Any) -> QPixmap:

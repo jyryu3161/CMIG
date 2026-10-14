@@ -15,9 +15,17 @@ def ok_check(_path: Path) -> proj.ModelCheck:
 
 
 def make_project(
-    root: Path, model_names: list[str], *, statuses: dict[str, str] | None = None
+    root: Path,
+    model_names: list[str],
+    *,
+    statuses: dict[str, str] | None = None,
+    index: bool = True,
 ) -> proj.Project:
-    """A saved project whose models are tiny placeholder files marked as checked."""
+    """A saved project whose models are tiny placeholder files marked as checked.
+
+    With `index`, each model gets an empty browse index, so the window's background index
+    job does not try (and fail) to read the placeholder files.
+    """
     project = proj.create_project(root)
     source = root.parent / f"{root.name}-sources"
     source.mkdir(parents=True, exist_ok=True)
@@ -26,6 +34,12 @@ def make_project(
         path.write_text(f"<sbml id='{name}'/>")
         entry = proj.add_model_file(project, path, check=ok_check)
         entry.status = (statuses or {}).get(name, "ok")
+        if index:
+            from cmig.io import model_index
+
+            model_index.write_index(project.root, entry.sha256, entry.id,
+                                    {"reactions": [], "metabolites": [], "genes": [],
+                                     "exchanges": [], "objective": []})
     proj.save_project(project)
     return project
 
@@ -62,6 +76,15 @@ def taxonomy_ids(argv: list[str]) -> list[str]:
     path = Path(argv[argv.index("--taxonomy") + 1])
     with path.open(newline="") as handle:
         return [row["id"] for row in csv.DictReader(handle)]
+
+
+def textbook_sbml(path: Path) -> Path:
+    """cobra's bundled e_coli_core ("textbook") written as SBML at `path` (no network)."""
+    import cobra
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cobra.io.write_sbml_model(cobra.io.load_model("textbook"), str(path))
+    return path
 
 
 @pytest.fixture(autouse=True)

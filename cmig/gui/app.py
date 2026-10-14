@@ -20,19 +20,21 @@ import re
 import shutil
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from dataclasses import replace
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, TextIO, cast
+from typing import Any, TextIO, TypeVar, cast
 
 from PySide6.QtCore import (
     QEvent,
     QEventLoop,
     QItemSelectionModel,
+    QMetaObject,
     QModelIndex,
     QObject,
     Qt,
@@ -42,6 +44,7 @@ from PySide6.QtGui import QAction, QCursor, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractItemView,
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -56,6 +59,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QStyle,
+    QTableWidget,
     QTabWidget,
     QToolButton,
     QVBoxLayout,
@@ -71,6 +75,7 @@ from cmig.gui.agora2_dialog import (
     Agora2Strain,
     download_estimate,
 )
+from cmig.gui.analysis_page import AnalysisPage, RankedPage, hide_row_numbers
 from cmig.gui.builder import (
     WEIGHTED_METRICS,
     CommunityBuilderView,
@@ -86,9 +91,17 @@ from cmig.gui.editors import (
     installed_medium_preset_path,
     installed_medium_presets,
 )
+from cmig.gui.find import FindField, SearchTable, build_table
 from cmig.gui.graph_view import GateBadge, InteractionGraphView
-from cmig.gui.host_view import HostImpactView
+from cmig.gui.host_view import HostImpactView, HostInputWidgets
 from cmig.gui.inspector import InspectorPanel
+from cmig.gui.model_browser import ModelBrowser
+from cmig.gui.pages.gene_ko import GeneKoPage
+from cmig.gui.pages.host_search import HostSearchPage
+from cmig.gui.pages.ratio_impact import RatioImpactPage
+from cmig.gui.pages.spatial import SpatialPage
+from cmig.gui.pages.strain_growth import StrainGrowthPage
+from cmig.gui.pages.tools import ToolPage
 from cmig.gui.pickers import MediumPicker, ModelPicker
 from cmig.gui.project_session import (
     ProjectSession,
@@ -99,13 +112,13 @@ from cmig.gui.project_session import (
 )
 from cmig.gui.sidebar import (
     ANALYSES,
-    ANALYSIS_SEPARATOR_AFTER,
+    ANALYSIS_GROUPS,
     WorkspaceSidebar,
     droppable_paths,
 )
 from cmig.gui.views import (
     CONTRIBUTION_BASIS_NOTE,
-    DfbaSpatialView,
+    DfbaView,
     ExternalProfileView,
     SweepView,
 )
@@ -205,10 +218,8 @@ I18N: dict[str, dict[str, str]] = {
         "medium_namespace_required": (
             "Namespace 검토가 필요합니다. 검토된 판정 파일을 선택하거나 BiGG임을 확인하세요."
         ),
-        "medium_table_duplicate": (
-            "exchange_id {exchange} 중복: {first}행과 {row}행."
-        ),
-        "medium_invalid_uptake": "잘못된 uptake_limit({row}행: {exchange})",
+        "medium_table_duplicate": "Duplicate exchange_id {exchange}: it is listed more than once.",
+        "medium_invalid_uptake": "Invalid uptake_limit for {exchange}",
         "medium_validation_failed": (
             "{error} — mmol gDW⁻¹ h⁻¹ 단위의 양의 흡수 크기를 입력하세요(예: -10이 "
             "아닌 10). CMIG가 내부적으로 흡수 부호를 적용합니다."
@@ -453,10 +464,8 @@ I18N: dict[str, dict[str, str]] = {
         "medium_namespace_required": (
             "Namespace review is required: choose reviewed decisions or confirm BiGG namespace."
         ),
-        "medium_table_duplicate": (
-            "Duplicate exchange_id {exchange}: rows {first} and {row}."
-        ),
-        "medium_invalid_uptake": "Invalid uptake_limit (row {row}: {exchange})",
+        "medium_table_duplicate": "Duplicate exchange_id {exchange}: it is listed more than once.",
+        "medium_invalid_uptake": "Invalid uptake_limit for {exchange}",
         "medium_validation_failed": (
             "{error} — enter a POSITIVE uptake magnitude in mmol gDW⁻¹ h⁻¹ (e.g. 10, not "
             "-10); CMIG applies the uptake sign internally."
@@ -773,6 +782,9 @@ def _search_argv(
     return argv, ""
 
 
+T = TypeVar("T")
+
+
 class _ThreadStderrRouter:
     """Pass-through `sys.stderr` that also copies writes made by a *registered* thread.
 
@@ -810,6 +822,26 @@ def _install_stderr_router() -> None:
     """Install the pass-through router (GUI thread only; idempotent)."""
     if not isinstance(sys.stderr, _ThreadStderrRouter):
         sys.stderr = cast(TextIO, _ThreadStderrRouter(sys.stderr))
+
+
+def _install_stdout_router() -> None:
+    """Install the pass-through router on stdout (GUI thread only; idempotent)."""
+    if sys.stdout is not None and not isinstance(sys.stdout, _ThreadStderrRouter):
+        sys.stdout = cast(TextIO, _ThreadStderrRouter(sys.stdout))
+
+
+@contextmanager
+def _captured_thread_stdout() -> Iterator[list[str]]:
+    """Collect what the *current* thread prints (other threads' output is untouched)."""
+    chunks: list[str] = []
+    router = sys.stdout if isinstance(sys.stdout, _ThreadStderrRouter) else None
+    if router is not None:
+        router.attach(chunks)
+    try:
+        yield chunks
+    finally:
+        if router is not None:
+            router.detach()
 
 
 @contextmanager
@@ -886,6 +918,8 @@ def _with_search_conditions(summary: dict[str, Any], source: dict[str, Any]) -> 
 
 
 CHECKPOINT_EXISTS = "checkpoint exists; enable Resume or choose a new path"
+#: a job's final states
+_ENDED = (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED)
 _UNREADABLE_RESULT = (
     "{kind} finished, but its result could not be read back — see the inspector ({out_dir})"
 )
@@ -1094,11 +1128,31 @@ class CmigMainWindow(QMainWindow):
         #: what the inspector shows: a run folder, or a model's (id, sha256)
         self._inspector_run: str | None = None
         self._inspected_model: tuple[str, str] | None = None
-        #: model sha256 -> exchange ids (successful loads only); job id -> (model id, sha256)
-        self._exchange_cache: dict[str, list[str]] = {}
-        self._exchange_jobs: dict[str, tuple[str, str]] = {}
-        #: exchange lookups cancelled because the inspector moved on (not Activity jobs)
-        self._stale_exchange_jobs: set[str] = set()
+        #: model sha256 -> why its browse index could not be built (this project only)
+        self._index_failures: dict[str, str] = {}
+        #: the one index job ("check": an unlisted read of the index files; "build": the
+        #: Activity job that rebuilds the unusable ones), and the project root it is for
+        self._index_job: str | None = None
+        self._index_job_kind = "check"
+        self._index_job_root: Path | None = None
+        #: model sha256 -> loaded browse index (a few recent ones)
+        self._index_cache: dict[str, dict[str, Any]] = {}
+        #: model sha256s an index job found usable or rebuilt (this project only)
+        self._index_checked: set[str] = set()
+        #: model sha256 -> its (kind, id, name) search rows, read from its index by an
+        #: unlisted job (this project only); sha256s whose index that job could not read
+        self._search_rows: dict[str, list[tuple[str, str, str]]] = {}
+        self._search_unreadable: set[str] = set()
+        self._search_rows_job: str | None = None
+        #: the shas that job reads and the project root it reads them for
+        self._search_rows_wanted: tuple[Path, list[str]] | None = None
+        #: the search table, built on the first search after anything in it changed
+        self._search_cache: SearchTable | None = None
+        self._search_building = False
+        #: medium ref -> its exchange ids, for the project search
+        self._medium_exchange_cache: dict[str, list[str]] = {}
+        self.find_field = FindField(self._search_table, self)
+        self.find_field.activated.connect(self._find_activated)
         self.bridge = JobsBridge(self.runner, self.jobs_panel)
         self._fixture_jobs: dict[str, Path] = {}
         # Each Search-tab map holds (out_dir, the answer-determining inputs at submit time)
@@ -1119,6 +1173,15 @@ class CmigMainWindow(QMainWindow):
         #: growth job id -> (artifact directory, answer-determining request snapshot)
         self._medium_growth_jobs: dict[str, tuple[Path, dict[str, Any]]] = {}
         self._minimal_medium_jobs: dict[str, Path] = {}
+        #: Check Growth job id -> (run folder, model id, model sha256)
+        self._check_growth_jobs: dict[str, tuple[Path, str, str]] = {}
+        #: whether the user ticked/unticked the namespace box since that page's models changed
+        self._namespace_user_set: dict[str, bool] = {"community": False, "medium": False}
+        #: the box state the last default set (None: none since that page's models changed);
+        #: a box that no longer matches it was set since (restored inputs, a script) and stays
+        self._namespace_defaults: dict[str, bool | None] = {"community": None, "medium": None}
+        #: (model id, sha256, confirmation state, status, integrity) the browser header shows
+        self._browser_shown: tuple[str, str, str, str, str] | None = None
         #: The most recent completed Check Growth is the baseline for a later medium edit.
         self._last_medium_growth_check: tuple[Path, dict[str, Any]] | None = None
         self._medium_delta_active = False
@@ -1131,6 +1194,7 @@ class CmigMainWindow(QMainWindow):
         self.current_host_microbe_dir: Path | None = None
 
         self.model_manager = ModelManagerPanel()
+        self.model_browser = ModelBrowser()
         self.community_builder = CommunityBuilderView()
         self.medium_editor = MediumEditor(strings=self.tr_map)
         self.profile_view = ExternalProfileView(strings=self.tr_map)
@@ -1145,8 +1209,54 @@ class CmigMainWindow(QMainWindow):
         self.sandbox_view = ConstraintSandboxView()
         self.scenario_compare = ScenarioCompareView()
         self.search_view = SearchView()
+        self.gene_ko_page = GeneKoPage()
+        self.strain_growth_page = StrainGrowthPage()
+        self.ratio_impact_page = RatioImpactPage()
         self.host_view = HostImpactView()
-        self.dynamics_view = DfbaSpatialView()
+        self.host_search_page = HostSearchPage()
+        self.dynamics_view = DfbaView()
+        self.spatial_page = SpatialPage()
+        self.medium_page = ToolPage(
+            "Medium Editor",
+            "Edit a medium, check whether the selected models grow on it, or find a minimal "
+            "medium.", self.medium_editor, results=True)
+        self.sweep_page = ToolPage(
+            "Sweep", "Run the community across media, abundances and solvers.",
+            self.sweep_view, results=False)
+        self.sandbox_page = ToolPage(
+            "Constraint Sandbox", "Preview one bound change before committing it.",
+            self.sandbox_view, results=True)
+        self.compare_page = ToolPage(
+            "Compare Runs", "Compare two completed runs.", self.scenario_compare,
+            results=True)
+        editor = self.medium_editor
+        self.medium_page.register("models", editor.model_picker)
+        self.medium_page.register("model", editor.single_model_picker)
+        for name, widget in (("exact", editor.exact_medium_check),
+                             ("allow_unknown", editor.allow_unknown_check),
+                             ("assume_bigg", editor.assume_bigg_check),
+                             ("namespace_decisions", editor.namespace_decisions_input),
+                             ("min_growth", editor.min_growth_spin),
+                             ("oxygen_mode", editor.oxygen_mode_combo)):
+            self.medium_page.register(name, widget)
+        # After "exact": the nutrients-only view it restores is judged against the exact mode.
+        self.medium_page.register_custom("rows", self._medium_rows, self._restore_medium_rows)
+        # "Already BiGG" is restored only for models confirmed now (it keeps its place, after
+        # the models it covers).
+        for key, namespace_page, check in (
+            ("community", self.community_builder, self.community_builder.assume_bigg_check),
+            ("medium", self.medium_page, editor.assume_bigg_check),
+        ):
+            namespace_page.register_custom(
+                "assume_bigg", check.isChecked, partial(self._restore_assume_bigg, key)
+            )
+        sweep = self.sweep_view
+        self.sweep_page.register("models", sweep.model_picker)
+        for name in ("mediums", "abundance_variants", "member_sets", "bounds_variants",
+                     "tradeoff_fs", "solvers", "namespace_decisions", "fva_metabolites"):
+            self.sweep_page.register(name, getattr(sweep, f"{name}_input"))
+        for name in ("assume_bigg", "fva", "exact_medium", "allow_unknown_medium"):
+            self.sweep_page.register(name, getattr(sweep, f"{name}_check"))
         self.central_stack = QStackedWidget()  # kept: set_central() still docks extra views
         self.pages = self.central_stack
         self.welcome_page = self._build_welcome_page()
@@ -1154,21 +1264,28 @@ class CmigMainWindow(QMainWindow):
         self.community_result_page = QTabWidget()
         self.community_result_page.addTab(self.profile_view, "Profile")
         self.community_result_page.addTab(self.graph_tab, "Graph")
-        self.analysis_pages: dict[str, QWidget] = {
+        self.analysis_pages: dict[str, AnalysisPage] = {
             "search": self.search_view,
-            "gene_ko": self.search_view,
-            "growth": self.search_view,
-            "host": self.host_view,
-            "dynamics": self.dynamics_view,
+            "gene_ko": self.gene_ko_page,
+            "strain_growth": self.strain_growth_page,
+            "ratio_impact": self.ratio_impact_page,
             "community": self.community_builder,
-            "medium": self.medium_editor,
-            "sweep": self.sweep_view,
-            "sandbox": self.sandbox_view,
-            "compare": self.scenario_compare,
+            "host": self.host_view,
+            "host_search": self.host_search_page,
+            "dfba": self.dynamics_view,
+            "spatial": self.spatial_page,
+            "medium": self.medium_page,
+            "sweep": self.sweep_page,
+            "sandbox": self.sandbox_page,
+            "compare": self.compare_page,
         }
-        for page in [self.welcome_page, self.empty_models_page, self.community_result_page,
-                     self.model_manager, *dict.fromkeys(self.analysis_pages.values())]:
+        for page in [self.welcome_page, self.empty_models_page, self.model_manager,
+                     self.model_browser, *dict.fromkeys(self.analysis_pages.values())]:
             self.pages.addWidget(page)
+        # The community result (Profile | Graph) sits in one page's results area at a time;
+        # it starts on Community Solve, whose results area stays empty until a run shows.
+        self.community_builder.results.add(self.community_result_page, 1)
+        self._community_result_host: str | None = "community"
         self.current_analysis: str | None = None
 
         vertical = QSplitter(Qt.Orientation.Vertical)
@@ -1190,6 +1307,19 @@ class CmigMainWindow(QMainWindow):
         #: Digest state of the last loaded run ("Integrity: verified", "Readback: …").
         self._last_integrity = "Integrity: no run loaded"
         self._integrity_detail = "No run loaded."
+        # A permanent widget: ordinary status-bar widgets are hidden while a message shows,
+        # and the window keeps one ("Ready") on screen.
+        self.last_run_button = QToolButton()
+        self.last_run_button.setAutoRaise(True)
+        self.last_run_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.last_run_button.clicked.connect(self._open_last_run)
+        self.statusBar().addPermanentWidget(self.last_run_button)
+        self.last_run_button.setVisible(False)  # empty, it draws as a bare box on macOS
+        self._last_run_dir: Path | None = None
+        #: run folders whose job ended since the last poll: (folder, error text)
+        self._just_finished: list[tuple[Path, str]] = []
+        #: runs/ folders of projects closed in this window (see `_from_closed_project`)
+        self._closed_runs_dirs: list[Path] = []
         self.solver_label = QLabel("")
         self.statusBar().addPermanentWidget(self.solver_label)
         self._refresh_solver_label()
@@ -1198,6 +1328,23 @@ class CmigMainWindow(QMainWindow):
         for button in self._run_buttons().values():
             button.installEventFilter(self)
         self.sidebar.selection_changed.connect(self._on_sidebar_selection)
+        self.model_manager.model_activated.connect(
+            lambda mid: self.sidebar.select("models", mid)
+        )
+        self.model_browser.retry_index_requested.connect(self._retry_index)
+        self.model_browser.confirm_requested.connect(self._confirm_namespace)
+        self.model_browser.revoke_requested.connect(self._revoke_namespace)
+        self.model_browser.check_growth_requested.connect(self.run_check_growth)
+        self.community_builder.assume_bigg_check.clicked.connect(
+            lambda _c=False: self._namespace_user_set.__setitem__("community", True))
+        self.medium_editor.assume_bigg_check.clicked.connect(
+            lambda _c=False: self._namespace_user_set.__setitem__("medium", True))
+        for key, pickers in (("community", (self.community_builder.model_picker,)),
+                             ("medium", (self.medium_editor.model_picker,
+                                         self.medium_editor.single_model_picker))):
+            for picker in pickers:
+                picker.selection_changed.connect(
+                    lambda k=key: self._namespace_selection_changed(k))
         self.sidebar.files_dropped.connect(self.add_model_paths)
         self.sidebar.context_requested.connect(self._show_sidebar_menu)
         self.sidebar.itemSelectionChanged.connect(self._update_model_actions)
@@ -1206,6 +1353,8 @@ class CmigMainWindow(QMainWindow):
         self.session.opened.connect(self.refresh_workspace)
         self.session.closed.connect(self.refresh_workspace)
         self.session.models_changed.connect(self.refresh_workspace)
+        # After the refresh: an undo/redo of a confirmation redraws the browsed model's header.
+        self.session.models_changed.connect(self._browser_models_changed)
         self.session.media_changed.connect(self.refresh_workspace)
         self.session.runs_changed.connect(self.refresh_workspace)
         # An undo/redo whose save failed was rolled back. Report it without a modal dialog:
@@ -1217,11 +1366,52 @@ class CmigMainWindow(QMainWindow):
             )
         )
         self.refresh_workspace()
+        self._polling = False
         self._completion_timer = QTimer(self)
         self._completion_timer.setInterval(500)
         self._completion_timer.timeout.connect(self._poll_completed_jobs)
         self._completion_timer.start()
         self.bridge.start()
+        for table in self.findChildren(QTableWidget):
+            hide_row_numbers(table)
+
+    def _medium_rows(self) -> dict[str, Any]:
+        """The medium table as typed (each cell's text) and its Nutrients-only view."""
+        editor = self.medium_editor
+        table = editor.table
+        rows = []
+        for r in range(table.rowCount()):
+            cells = [table.item(r, c) for c in range(3)]
+            rows.append(["" if cell is None else cell.text() for cell in cells])
+        return {"rows": rows, "nutrients_only": editor.nutrients_only_check.isChecked()}
+
+    def _restore_medium_rows(self, value: Any) -> str | None:
+        editor = self.medium_editor
+        try:
+            parsed = [(str(e), str(limit), str(role)) for e, limit, role in value["rows"]]
+            nutrients_only = value["nutrients_only"]
+        except (TypeError, ValueError, KeyError):
+            return "medium rows could not be restored"
+        if not isinstance(nutrients_only, bool):
+            return "medium rows could not be restored"
+        editor.clear_rows()
+        table = editor.table
+        blocked = table.blockSignals(True)
+        try:
+            for exchange, limit, role in parsed:
+                editor.add_row(exchange, 0.0, role, notify=False)
+                limit_item = table.item(table.rowCount() - 1, 1)
+                if limit_item is not None:  # add_row always sets it
+                    limit_item.setText(limit)  # verbatim: "10" stays "10", blank stays blank
+        finally:
+            table.blockSignals(blocked)
+        editor._update_role_presentation()  # add_row(notify=False) leaves the role column as is
+        check_blocked = editor.nutrients_only_check.blockSignals(True)
+        editor.nutrients_only_check.setChecked(nutrients_only)
+        editor.nutrients_only_check.blockSignals(check_blocked)
+        editor._apply_role_view(nutrients_only, notify=False)
+        editor.medium_changed.emit()
+        return None
 
     def _message(self, key: str, **values: Any) -> str:
         """Format one localized UI message from the active language catalogue."""
@@ -1229,6 +1419,35 @@ class CmigMainWindow(QMainWindow):
 
     def _show_status(self, key: str, **values: Any) -> None:
         self.statusBar().showMessage(self._message(key, **values))
+
+    def _run_off_thread(self, fn: Callable[..., T], *args: Any) -> T:
+        """Run `fn` on a worker thread; keep the window repainting until it is done.
+
+        User input is queued until the worker ends (a click or key press in the nested loop
+        would re-enter a run loader half way); timers and repaints continue. The loop and
+        timer have no parent, so nothing accumulates on the window.
+        """
+        loop = QEventLoop()
+        timer = QTimer()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(fn, *args)
+            # The worker thread posts the quit, so the loop ends the moment `fn` returns.
+            future.add_done_callback(
+                lambda _f: QMetaObject.invokeMethod(
+                    loop, "quit", Qt.ConnectionType.QueuedConnection
+                )
+            )
+            # Safety net only: the done callback is the normal way out of the loop.
+            timer.setInterval(50)
+            timer.timeout.connect(lambda: loop.quit() if future.done() else None)
+            timer.start()
+            try:
+                while not future.done():
+                    loop.exec(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            finally:
+                timer.stop()
+                timer.timeout.disconnect()
+        return future.result()
 
     def _inspect_gui_run(self, run_dir: Path) -> dict[str, Any] | None:
         """Strict manifest preflight around the CLI's shared digest inspector."""
@@ -1276,27 +1495,9 @@ class CmigMainWindow(QMainWindow):
                         or not isinstance(digest.get("artifacts"), dict)
                     ):
                         raise ValueError("workflow manifest result_digest is malformed")
-            # Digests of large runs are I/O bound. A nested event loop keeps repaint,
-            # cancellation and window input live while a read-only worker hashes files.
-            declared = manifest.get("artifacts", []) if manifest_path.exists() else []
-            large = any(
-                (run_dir / name).stat().st_size > 16 * 1024 * 1024
-                for name in declared if isinstance(name, str) and (run_dir / name).is_file()
-            )
-            if large:
-                with ThreadPoolExecutor(max_workers=1) as inspector_pool:
-                    future = inspector_pool.submit(_inspect_run_dir, run_dir)
-                    loop = QEventLoop(self)
-                    timer = QTimer(self)
-                    timer.setInterval(50)
-                    timer.timeout.connect(lambda: loop.quit() if future.done() else None)
-                    timer.start()
-                    while not future.done():
-                        loop.exec()
-                    timer.stop()
-                    inspected = future.result()
-            else:
-                inspected = _inspect_run_dir(run_dir)
+            # Digests are I/O bound: a worker hashes the files while a nested event loop
+            # keeps repaint, cancellation and window input live.
+            inspected = self._run_off_thread(_inspect_run_dir, run_dir)
             state = inspected["artifact_integrity"]
             detail = ""
             if state == "mismatch":
@@ -1354,6 +1555,15 @@ class CmigMainWindow(QMainWindow):
         project = self.session.project
         return project is not None and _same_folder(project.runs_dir, Path(run_dir).parent)
 
+    def _from_closed_project(self, run_dir: Path) -> bool:
+        """A job's run folder belongs to a project this window has closed since (and not to
+        the open one): its result is never drawn, shown or listed here. Its run state is
+        still recorded (`_settle_run_jobs`) and its page's buttons are released."""
+        if self._in_project_runs(run_dir):
+            return False
+        parent = Path(run_dir).parent
+        return any(_same_folder(runs, parent) for runs in self._closed_runs_dirs)
+
     def _clear_readback_marker(self, run_dir: Path) -> bool:
         """Drop a project run's `unreadable` marker before it is read back again."""
         if not self._in_project_runs(run_dir):
@@ -1374,7 +1584,9 @@ class CmigMainWindow(QMainWindow):
         inspected: dict[str, Any]
         try:
             fresh = cached[1] if cached is not None and cached[0] == key else None
-            inspected = dict(fresh if fresh is not None else _inspect_run_dir(run_dir))
+            if fresh is None:
+                fresh = self._run_off_thread(_inspect_run_dir, run_dir)
+            inspected = dict(fresh)
             inspected["artifact_integrity"] = _integrity_text(inspected)
         except Exception as exc:  # noqa: BLE001 - an unreadable run is shown as unreadable
             inspected = {"artifact_integrity": f"unreadable ({exc})"}
@@ -1430,7 +1642,7 @@ class CmigMainWindow(QMainWindow):
         for jid in list(self.bridge._job_ids):
             if self.runner.poll(jid).status in (JobStatus.PENDING, JobStatus.RUNNING):
                 self.runner.cancel(jid)
-        self._cancel_stale_exchange_jobs(everything=True)
+        self._cancel_unlisted_jobs()
         self.runner.shutdown(wait=False, cancel_futures=True)
         self._close_session()
         super().closeEvent(event)
@@ -1508,10 +1720,53 @@ class CmigMainWindow(QMainWindow):
             )
         self._update_run_action()
 
-    def _show_profile(self) -> None:
-        """The community result page with Profile current; whatever it holds stays drawn."""
-        self._show_page(self.community_result_page)
+    def _show_profile(self, host_key: str = "community") -> None:
+        """Show the community result (Profile | Graph) inside `host_key`'s results area."""
+        self._show_page(self._host_community_result(host_key))
+
+    def _host_community_result(self, host_key: str) -> QWidget:
+        """Put the community result in `host_key`'s results area without changing the page."""
+        page = self.analysis_pages[host_key]
+        previous = self._community_result_host
+        if previous is not None and previous != host_key:
+            self.analysis_pages[previous].results.show_empty()
+        if self._community_result_host != host_key:
+            page.results.add(self.community_result_page, 1)
+            self._community_result_host = host_key
+        page.results.show_results()
         self.community_result_page.setCurrentWidget(self.profile_view)
+        return page
+
+    def _blank_base_for_overlay(self) -> None:
+        """A Compare or Sandbox overlay is not about the loaded run: drop that run's table,
+        targets, graph and badge so neither the page nor "Clear comparison overlay" shows them."""
+        self._clear_community_result()
+        if self._medium_delta_active:  # the overlay on show is no longer the medium's
+            self._medium_delta_active = False
+            self.medium_editor.profile_delta_label.clear()
+
+    def _compare_failed(self) -> None:
+        """A failed Compare leaves no earlier comparison on show (its status says why)."""
+        self._empty_community_result_on("compare")
+        self.scenario_compare.delta_view.setRowCount(0)
+        self.scenario_compare.growth_label.clear()
+
+    def _empty_community_result_on(self, host_key: str) -> None:
+        """A failed run on `host_key` must not leave that page's previous result on show."""
+        if self._community_result_host == host_key:
+            self.analysis_pages[host_key].results.show_empty()
+
+    def _clear_community_result(self) -> None:
+        """Drop the shown community run (profile, graph, badge, manifest) and empty its page."""
+        self.current_manifest = None
+        self.current_graph_payload = None
+        self.graph_view.clear()
+        self.graph_gate_badge.set_unavailable()
+        self.profile_view.load_profile([])
+        self.profile_view.load_targets(None)
+        host = self._community_result_host
+        if host is not None:
+            self.analysis_pages[host].results.show_empty()
 
     def _show_models_overview(self) -> None:
         project = self.session.project
@@ -1557,6 +1812,7 @@ class CmigMainWindow(QMainWindow):
         # Delete removes the sidebar's selected models, so it must only fire while the sidebar
         # has focus — not when Delete is pressed in a table or editor elsewhere in the window.
         self.remove_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.find_action = self._action("Find…", self._focus_find, QKeySequence.StandardKey.Find)
         self.sidebar.addAction(self.remove_action)
         self.toggle_sidebar_action = self._action("Hide Sidebar",
                                                   lambda: self._toggle(self.sidebar, "Sidebar"),
@@ -1588,14 +1844,17 @@ class CmigMainWindow(QMainWindow):
         edit_menu.addActions([self.undo_action, self.redo_action])
         edit_menu.addSeparator()
         edit_menu.addActions([self.rename_action, self.remove_action])
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.find_action)
         view_menu = bar.addMenu("&View")
         view_menu.addActions([self.toggle_sidebar_action, self.toggle_inspector_action,
                               self.toggle_activity_action])
         analysis_menu = bar.addMenu("&Analysis")
-        for key, _label in ANALYSES:
-            analysis_menu.addAction(self.analysis_actions[key])
-            if key == ANALYSIS_SEPARATOR_AFTER:
+        for index, (_title, items) in enumerate(ANALYSIS_GROUPS):
+            if index:
                 analysis_menu.addSeparator()
+            for key, _label in items:
+                analysis_menu.addAction(self.analysis_actions[key])
         analysis_menu.addSeparator()
         analysis_menu.addActions([self.run_action, self.cancel_job_action])
         window_menu = bar.addMenu("&Window")
@@ -1626,8 +1885,13 @@ class CmigMainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
+        toolbar.addWidget(self.find_field)
         toolbar.addAction(self.toggle_inspector_action)
         toolbar.addAction(self.run_action)
+
+    def _focus_find(self) -> None:
+        self.find_field.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.find_field.selectAll()
 
     def _toggle(self, widget: QWidget, name: str) -> None:
         # isHidden() is the pane's own state; isVisible() is also False while the window is.
@@ -1758,7 +2022,14 @@ class CmigMainWindow(QMainWindow):
         for job_id in list(self.bridge._job_ids):
             if self.runner.poll(job_id).status in (JobStatus.PENDING, JobStatus.RUNNING):
                 self._cancel_job_id(job_id)
-        self._cancel_stale_exchange_jobs(everything=True)
+        self._cancel_unlisted_jobs()
+
+    def _cancel_unlisted_jobs(self) -> None:
+        """Cancel this project's jobs that Activity does not list (index check, search rows)."""
+        if self._index_job is not None and self._index_job_kind == "check":
+            self.runner.cancel(self._index_job)
+        if self._search_rows_job is not None:
+            self.runner.cancel(self._search_rows_job)
 
     def _close_project_command(self) -> None:
         """File > Close Project: asks first when jobs are running."""
@@ -1774,6 +2045,9 @@ class CmigMainWindow(QMainWindow):
 
     def _close_session(self) -> None:
         """Close the project; a failed final save is reported here, never raised into Qt."""
+        self._clear_last_run()
+        if self.session.project is not None:
+            self._closed_runs_dirs.append(self.session.project.runs_dir)
         try:
             self.session.close()
         except ProjectError as exc:
@@ -1814,6 +2088,45 @@ class CmigMainWindow(QMainWindow):
         if switched:
             self._pending_imports = []  # placeholders belong to the project they were queued in
             self._reported_unrunnable = {}
+            self._clear_community_result()  # the shown run belongs to the previous project
+            # A growth check of the previous project is no baseline for this one's medium delta.
+            self._last_medium_growth_check = None
+            self._medium_delta_active = False
+            # Tool results belong to the previous project too.
+            self.scenario_compare.delta_view.setRowCount(0)
+            self.scenario_compare.growth_label.clear()
+            self.sandbox_view.delta_view.setRowCount(0)
+            self.sweep_view.table.setRowCount(0)
+            for status in (self.scenario_compare.status, self.sandbox_view.status,
+                           self.sweep_view.status):
+                status.clear()
+            editor = self.medium_editor
+            for label in (editor.growth_label, editor.dropped_ids_label,
+                          editor.profile_delta_label, editor.minimal_status):
+                label.clear()
+            editor.minimal_table.setRowCount(0)
+            self.host_view.clear_result()
+            self.host_view.status.clear()
+            for ranked in (self.search_view, self.gene_ko_page, self.strain_growth_page,
+                           self.ratio_impact_page, self.host_search_page):
+                self._clear_ranked(ranked)
+                ranked.status.clear()
+            for dynamics in (self.dynamics_view, self.spatial_page):
+                dynamics._clear_dynamics("")
+            # Browse indexes, their failures and the browsed model belong to that project too.
+            self._index_failures = {}
+            self._index_cache = {}
+            self._index_checked = set()
+            self.model_browser.clear()
+            self._browser_shown = None
+            # So do its search rows and media; the open result list is the previous project's.
+            self._search_rows = {}
+            self._search_unreadable = set()
+            self._medium_exchange_cache = {}
+            self.find_field.popup.setVisible(False)
+            # A namespace choice made for the previous project's models is not one for these.
+            self._namespace_user_set = dict.fromkeys(self._namespace_user_set, False)
+            self._namespace_defaults = dict.fromkeys(self._namespace_defaults, None)
         # Rebuilding a group drops its rows' selection; put it back unless the project changed.
         current = None if switched else self._sidebar_current()
         selected_models = [] if switched else self.sidebar.selected_keys("models")
@@ -1833,19 +2146,29 @@ class CmigMainWindow(QMainWindow):
             self.welcome_recent.addItem(item)
         self.welcome_recent.setVisible(self.welcome_recent.count() > 0)
         self._refresh_pickers()
+        self._apply_namespace_defaults()
         if switched:
             # Opened, switched or closed: lay the centre out for the new state.
             self._shown_root = root
             self.current_analysis = None
-            self.inspector.clear()
+            self._show_project_summary()
             self._inspector_run, self._inspected_model = None, None
             self._show_models_overview()
+            self._ensure_indexes()
+            self._refresh_search_rows()
         elif project is not None and self.pages.currentWidget() in (
             self.welcome_page, self.empty_models_page, self.model_manager
         ):
             self._show_models_overview()
+        elif (project is not None and self.pages.currentWidget() is self.model_browser
+              and self.model_browser.model_id() not in {m.id for m in project.models}):
+            # The browsed model was removed or renamed: never keep showing it as current.
+            self.model_browser.clear()
+            self._browser_shown = None
+            self._show_models_overview()
         self.model_manager.show_project_models([] if project is None else project.models)
         self._update_run_action()
+        self._search_changed()  # models, media or runs may have changed
 
     def _update_model_actions(self) -> None:
         """Rename… needs exactly one selected model; Remove from Project at least one."""
@@ -1883,8 +2206,11 @@ class CmigMainWindow(QMainWindow):
     #: what each model picker is called in status messages
     _PICKER_LABELS = {
         "search": "Search", "community": "Community", "host_model": "Host model",
-        "host": "Host microbes", "dynamics": "Dynamics", "sweep": "Sweep",
+        "host": "Host microbes", "dfba": "dFBA", "sweep": "Sweep",
         "medium": "Medium growth check", "medium_single": "Minimal medium",
+        "gene_ko": "Gene Knockout", "strain_growth": "Strain Growth",
+        "ratio_impact": "Ratio Impact", "host_search_model": "Host search host",
+        "host_search": "Host search microbes",
     }
 
     def _model_pickers(self) -> dict[str, ModelPicker]:
@@ -1894,10 +2220,15 @@ class CmigMainWindow(QMainWindow):
         """
         return {
             "search": self.search_view.model_picker,
+            "gene_ko": self.gene_ko_page.model_picker,
+            "strain_growth": self.strain_growth_page.model_picker,
+            "ratio_impact": self.ratio_impact_page.model_picker,
             "community": self.community_builder.model_picker,
             "host_model": self.host_view.host_picker,
             "host": self.host_view.model_picker,
-            "dynamics": self.dynamics_view.model_picker,
+            "host_search_model": self.host_search_page.host_picker,
+            "host_search": self.host_search_page.model_picker,
+            "dfba": self.dynamics_view.model_picker,
             "sweep": self.sweep_view.model_picker,
             "medium": self.medium_editor.model_picker,
             "medium_single": self.medium_editor.single_model_picker,
@@ -1907,8 +2238,14 @@ class CmigMainWindow(QMainWindow):
         """Every medium picker, keyed by (analysis setting, field) that remembers its choice."""
         return {
             ("search", "medium"): self.search_view.medium_picker,
+            ("gene_ko", "medium"): self.gene_ko_page.medium_picker,
+            ("strain_growth", "medium"): self.strain_growth_page.medium_picker,
+            ("ratio_impact", "medium"): self.ratio_impact_page.medium_picker,
             ("host", "host_medium"): self.host_view.host_medium_picker,
             ("host", "microbe_medium"): self.host_view.microbe_medium_picker,
+            ("host_search", "host_medium"): self.host_search_page.host_medium_picker,
+            ("host_search", "microbe_medium"): self.host_search_page.microbe_medium_picker,
+            ("check_growth", "medium"): self.model_browser.medium_picker,
         }
 
     def _refresh_pickers(self) -> None:
@@ -1941,7 +2278,9 @@ class CmigMainWindow(QMainWindow):
                     left_out += [f"{m} ({self._PICKER_LABELS[key]})" for m in new]
                     self._reported_unrunnable[key] = lost
                 elif not picker.single:
-                    host = self.host_view.host_picker.selected_ids() if key == "host" else []
+                    host_pickers = {"host": self.host_view.host_picker,
+                                    "host_search": self.host_search_page.host_picker}
+                    host = host_pickers[key].selected_ids() if key in host_pickers else []
                     picker.set_selected([m for m in runnable if m not in host])
             for (key, field), medium_picker in self._medium_pickers().items():
                 medium_picker.set_choices(presets, media)
@@ -1962,14 +2301,14 @@ class CmigMainWindow(QMainWindow):
         if notes:
             self.statusBar().showMessage("; ".join(notes) + ".", 15000)
 
-    def _host_model_changed(self) -> None:
+    def _host_model_changed(self, page: HostInputWidgets) -> None:
         """A newly chosen host model is unticked from Microbes; re-ticking it is refused at run."""
         if self._refreshing_pickers:
             return
-        host = self.host_view.host_picker.selected_ids()
-        microbes = self.host_view.model_picker.selected_ids()
+        host = page.host_picker.selected_ids()
+        microbes = page.model_picker.selected_ids()
         if host and host[0] in microbes:
-            self.host_view.model_picker.set_selected([m for m in microbes if m != host[0]])
+            page.model_picker.set_selected([m for m in microbes if m != host[0]])
 
     def _store_settings(self, key: str, values: dict[str, object]) -> None:
         try:
@@ -1993,13 +2332,16 @@ class CmigMainWindow(QMainWindow):
         self._store_settings(key, values)
 
     def _prepare_run(
-        self, kind: str, model_ids: list[str], *, abundances: dict[str, float] | None = None
+        self, kind: str, model_ids: list[str], *, abundances: dict[str, float] | None = None,
+        analysis: str | None = None,
     ) -> tuple[Path, Path | None]:
-        """Claim a new `runs/<kind>-…` folder and write its `runs/_inputs` taxonomy.
+        """Claim a new `runs/<kind>-…` folder, write its `runs/_inputs` taxonomy and, for an
+        analysis page, the page's inputs (`<run>-request.json`, for reopening the run).
 
         Returns (run folder, taxonomy or None when `model_ids` is empty). A model that cannot
-        run raises `ProjectError`; the claimed folder is removed again, so a refused run
-        leaves nothing in RUNS, and the sidebar and pickers show the model's new state.
+        run, or inputs that cannot be recorded, raise `ProjectError`; the claimed folder and
+        its inputs are removed again, so a refused run leaves nothing in RUNS, and the sidebar
+        and pickers show the model's new state.
         """
         project = self.session.require()
         run_dir = proj.new_run_dir(project, kind)
@@ -2013,12 +2355,37 @@ class CmigMainWindow(QMainWindow):
                 run_dir.rmdir()
             self.refresh_workspace()  # a copy found changed or missing is shown and dropped
             raise
+        if analysis is not None:
+            try:
+                self._record_request(analysis, run_dir)
+            except ProjectError:
+                self._discard_run(run_dir, taxonomy)
+                raise
         return run_dir.resolve(), taxonomy
+
+    def _record_request(self, analysis: str, run_dir: Path) -> None:
+        """Write the page's inputs as the run's `runs/_inputs/<run>-request.json`."""
+        from cmig import __version__
+        from cmig.gui.run_restore import request_models_and_media
+
+        page: AnalysisPage | ModelBrowser = (
+            self.model_browser if analysis == "check_growth" else self.analysis_pages[analysis]
+        )
+        values = page.snapshot()
+        page.clear_banner()
+        models, media = request_models_and_media(values)
+        if analysis == "check_growth" and isinstance(values.get("model"), str):
+            models = [values["model"]]  # the browser names one model, not a picker list
+        proj.write_run_request(run_dir, analysis, values, models=models, media=media,
+                               cmig_version=__version__)
+
+    def _page_key(self, page: QWidget) -> str:
+        return next(key for key, shown in self.analysis_pages.items() if shown is page)
 
     @staticmethod
     def _discard_run(run_dir: Path, *inputs: Path | None) -> None:
         """Remove a claimed run folder (still empty) and its inputs when the GUI refuses it."""
-        for path in inputs:
+        for path in (*inputs, proj.run_request_path(run_dir)):
             if path is not None:
                 with suppress(OSError):
                     path.unlink()
@@ -2076,10 +2443,14 @@ class CmigMainWindow(QMainWindow):
         """
         return {
             "search": self.search_view.run_btn,
-            "gene_ko": self.search_view.run_ko_btn,
-            "host": self.host_view.run_btn,
-            "dynamics": self.dynamics_view.run_dfba_btn,
+            "gene_ko": self.gene_ko_page.run_btn,
+            "strain_growth": self.strain_growth_page.run_btn,
+            "ratio_impact": self.ratio_impact_page.run_btn,
             "community": self.community_builder.run_btn,
+            "host": self.host_view.run_btn,
+            "host_search": self.host_search_page.run_btn,
+            "dfba": self.dynamics_view.run_dfba_btn,
+            "spatial": self.spatial_page.run_btn,
             "medium": self.medium_editor.check_growth_btn,
             "sweep": self.sweep_view.run_btn,
         }
@@ -2094,12 +2465,15 @@ class CmigMainWindow(QMainWindow):
     _DESCRIPTIONS = {
         "search": ("Rank model combinations by a target metabolite.", "cmig search"),
         "gene_ko": ("Rank single-gene knockouts of a fixed combination.", "cmig gene-ko-search"),
-        "growth": ("Per-strain growth and one-member ratio sweep.",
-                   "cmig strain-growth / abundance-impact"),
-        "host": ("Couple a host model with microbial models.", "cmig host-microbe-bigg"),
-        "dynamics": ("Well-mixed dFBA and spatial medium preview.",
-                     "cmig dfba / spatial-preview"),
+        "strain_growth": ("Growth of each strain alone and in the community.",
+                          "cmig strain-growth"),
+        "ratio_impact": ("How one member's share changes a target metabolite.",
+                         "cmig abundance-impact"),
         "community": ("Community FBA of selected members.", "cmig solve"),
+        "host": ("Couple a host model with microbial models.", "cmig host-microbe-bigg"),
+        "host_search": ("Rank microbial combinations for a host.", "cmig host-search-bigg"),
+        "dfba": ("Well-mixed dynamic FBA of one model.", "cmig dfba"),
+        "spatial": ("Preview how one metabolite spreads on a grid.", "cmig spatial-preview"),
         "medium": ("Edit a medium, check growth, find a minimal medium.",
                    "cmig solve / minimal-medium"),
         "sweep": ("Parameter sweep across media, abundances and solvers.", "cmig sweep"),
@@ -2107,19 +2481,18 @@ class CmigMainWindow(QMainWindow):
         "compare": ("Compare two completed runs.", "cmig inspect-run"),
     }
 
-    def show_analysis(self, key: str) -> None:
+    def show_analysis(self, key: str, *, select: bool = True) -> None:
+        """Show `key`'s page; `select=False` leaves the sidebar's row (an opened run) as is."""
         page = self.analysis_pages[key]
+        getattr(page, "clear_banner", lambda: None)()  # a banner is about one reopened run
         self.current_analysis = key
         self._show_page(page)
-        if key == "gene_ko":
-            self.search_view.scroll_area.ensureWidgetVisible(self.search_view.ko_members_input)
-        elif key == "growth":
-            self.search_view.scroll_area.ensureWidgetVisible(self.search_view.growth_member_input)
-        blocked = self.sidebar.blockSignals(True)
-        try:
-            self.sidebar.select("analyses", key)  # a menu choice shows in the sidebar too
-        finally:
-            self.sidebar.blockSignals(blocked)
+        if select:
+            blocked = self.sidebar.blockSignals(True)
+            try:
+                self.sidebar.select("analyses", key)  # a menu choice shows in the sidebar too
+            finally:
+                self.sidebar.blockSignals(blocked)
         title = dict(ANALYSES)[key]
         description, cli = self._DESCRIPTIONS[key]
         self.inspector.show_analysis(title, description, cli)
@@ -2165,9 +2538,7 @@ class CmigMainWindow(QMainWindow):
             if group == "analyses":
                 self.show_analysis(key)
             elif group == "models" and project is not None:
-                self._inspect_model(project.model(key))
-                self.current_analysis = None
-                self._show_models_overview()
+                self._show_model(project.model(key))
             elif group == "media":
                 self._inspect_medium(key)
             elif group == "runs":
@@ -2175,82 +2546,564 @@ class CmigMainWindow(QMainWindow):
                 self._open_run_entry(Path(key))
         finally:
             self._following_sidebar = False
-            self._cancel_stale_exchange_jobs()  # lookups for a model no longer shown
 
     def _inspect_model(self, entry: ModelEntry) -> None:
-        """Show a model at once; its exchange list is parsed in a job (a GEM takes seconds)."""
-        from cmig.io.project import model_path
+        project = self.session.require()
+        self.inspector.show_model(project, entry)
+        self._inspector_run, self._inspected_model = None, (entry.id, entry.sha256)
+
+    def _show_model(self, entry: ModelEntry) -> None:
+        self._inspect_model(entry)
+        self.current_analysis = None
+        index = self._load_index(entry)
+        self.model_browser.show_model(entry, index, self._index_problem(entry))
+        self._browser_shown = self._browser_state(entry)
+        self._show_page(self.model_browser)
+        if index is None and entry.sha256 not in self._index_failures:
+            self._index_checked.discard(entry.sha256)  # unusable now, whatever a job found
+            self._ensure_indexes()
+        self._show_latest_growth(entry)
+
+    def _index_problem(self, entry: ModelEntry, unfinished: str = "") -> str:
+        """Why `entry` has no browse index, or "" while one is (or will be) built."""
+        if entry.sha256 in self._index_failures:
+            return self._index_failures[entry.sha256]
+        if entry.status not in ("ok", "warning") or entry.integrity != "ok":
+            return proj.check_reason(entry)[1].lower()  # never indexed: not "being built"
+        return unfinished
+
+    def _load_index(self, entry: ModelEntry) -> dict[str, Any] | None:
+        from cmig.io import model_index
 
         project = self.session.require()
-        if entry.status == "failed" or entry.integrity != "ok":
-            self.inspector.show_model(project, entry, None)
-        elif entry.sha256 in self._exchange_cache:
-            self.inspector.show_model(project, entry, self._exchange_cache[entry.sha256])
-        else:
-            self.inspector.show_model(project, entry, [])
-            self._exchange_placeholder("Loading exchanges…")
-            if all(sha != entry.sha256 or jid in self._stale_exchange_jobs
-                   for jid, (_id, sha) in self._exchange_jobs.items()):
-                path = model_path(project, entry)
+        cached = self._index_cache.get(entry.sha256)
+        if cached is not None:
+            return cached
+        index = model_index.load_index(project.root, entry.sha256)
+        if index is not None:
+            if len(self._index_cache) >= 4:
+                self._index_cache.pop(next(iter(self._index_cache)))
+            self._index_cache[entry.sha256] = index
+        return index
 
-                def _job(ctx: Any) -> list[str]:
-                    from cmig.io.model_import import import_model
+    def _ensure_indexes(self) -> None:
+        """Check the model indexes not yet checked, in the background.
 
-                    ctx.raise_if_cancelled()
-                    return [str(exchange) for exchange in import_model(path).exchanges]
-
-                # A lookup for the inspector, not a user job: kept out of Activity.
-                jid = self.runner.submit("model_exchanges", _job)
-                self._exchange_jobs[jid] = (entry.id, entry.sha256)
-        self._inspector_run, self._inspected_model = None, (entry.id, entry.sha256)
-        self._cancel_stale_exchange_jobs()
-
-    def _cancel_stale_exchange_jobs(self, everything: bool = False) -> None:
-        """Cancel lookups for models the inspector no longer shows (all, when `everything`).
-
-        A queued one never starts, so it cannot hold up a run the user starts next; a parse
-        already under way finishes, and its result still fills the cache.
+        Nothing is read on the GUI thread: an unlisted job opens the index files, and only
+        when some cannot be used (missing, corrupt, older schema, another model's) does an
+        "Index Models" job in Activity rebuild them.
         """
-        for jid, key in self._exchange_jobs.items():
-            if jid in self._stale_exchange_jobs:
-                continue
-            if everything or key != self._inspected_model:
-                self.runner.cancel(jid)
-                self._stale_exchange_jobs.add(jid)
+        from cmig.io import model_index
 
-    def _exchange_placeholder(self, text: str) -> None:
-        listing = self.inspector.exchange_list
-        listing.clear()
-        item = QListWidgetItem(text)
-        item.setFlags(Qt.ItemFlag.NoItemFlags)  # a note, not an exchange id
-        listing.addItem(item)
+        project = self.session.project
+        if project is None or self._index_job is not None:
+            return
+        wanted = [
+            (m.id, m.sha256, proj.model_path(project, m)) for m in project.models
+            if m.status in ("ok", "warning") and m.integrity == "ok"
+            and m.sha256 not in self._index_failures
+            and m.sha256 not in self._index_cache
+            and m.sha256 not in self._index_checked
+        ]
+        if not wanted:
+            return
+        root = project.root
 
-    def _finish_exchange_jobs(self) -> None:
-        self._cancel_stale_exchange_jobs()  # also when the inspector moved on outside the sidebar
-        for jid, (model_id, sha) in list(self._exchange_jobs.items()):
-            job = self.runner.poll(jid)
-            if job.status in (JobStatus.PENDING, JobStatus.RUNNING):
-                continue
-            self._exchange_jobs.pop(jid, None)
-            stale = jid in self._stale_exchange_jobs
-            self._stale_exchange_jobs.discard(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, list):
-                self._exchange_cache[sha] = job.result  # failures are not cached: retried
-            self.runner.release_payload(jid)
-            project = self.session.project
-            if project is None or self._inspected_model != (model_id, sha):
-                continue  # the user moved on; the cache serves the next selection
-            if stale and sha not in self._exchange_cache:
-                continue  # a fresh lookup for this model is under way
-            if sha in self._exchange_cache:
+        def _job(ctx: Any) -> dict[str, Any]:
+            valid: list[str] = []
+            needed: list[tuple[str, str, Path]] = []
+            for model_id, sha, path in wanted:
+                if ctx.cancelled:
+                    break
+                if model_index.load_index(root, sha) is None:
+                    needed.append((model_id, sha, path))
+                else:
+                    valid.append(sha)
+            return {"valid": valid, "needed": needed, "root": str(root),
+                    "cancelled": ctx.cancelled}
+
+        # A read of small files, not a user job: kept out of Activity.
+        self._index_job = self.runner.submit("index_check", _job)
+        self._index_job_kind, self._index_job_root = "check", root
+
+    def _build_indexes(self, wanted: list[tuple[str, str, Path]], root: Path) -> None:
+        """Rebuild the given model indexes in one background job (listed in Activity)."""
+        from cmig.io import model_index
+
+        def _job(ctx: Any) -> dict[str, Any]:
+            rebuilt: list[str] = []
+            failures: dict[str, str] = {}
+            for i, (model_id, sha, path) in enumerate(wanted):
+                if ctx.cancelled:
+                    break
+                ctx.report_progress(i, len(wanted))
                 try:
-                    entry = project.model(model_id)
-                except ProjectError:
-                    continue
-                self.inspector.show_model(project, entry, self._exchange_cache[sha])
+                    model_index.build_index_file(root, path, sha, model_id)
+                    rebuilt.append(sha)
+                except Exception as exc:  # noqa: BLE001 - one bad model must not stop the rest
+                    failures[sha] = str(exc) or type(exc).__name__
+            ctx.report_progress(len(wanted), len(wanted))
+            return {"rebuilt": rebuilt, "failures": failures, "root": str(root),
+                    "cancelled": ctx.cancelled}
+
+        self._index_job = self.runner.submit("index_models", _job)
+        self._index_job_kind, self._index_job_root = "build", root
+        self.bridge.track(self._index_job)
+        self._job_commands[self._index_job] = f"Index {len(wanted)} model(s)"
+
+    def _finish_index_job(self) -> None:
+        jid = self._index_job
+        if jid is None:
+            return
+        job = self.runner.poll(jid)
+        if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+            return
+        kind, job_root = self._index_job_kind, self._index_job_root
+        self._index_job, self._index_job_root = None, None
+        project = self.session.project
+        result = job.result if isinstance(job.result, dict) else {}
+        self.runner.release_payload(jid)
+        if project is None:
+            return
+        if job_root is None or not _same_folder(project.root, job_root):
+            self._ensure_indexes()  # it was the previous project's job: start this project's
+            return
+        cancelled = job.status is JobStatus.CANCELLED or bool(result.get("cancelled"))
+        finished = job.status is JobStatus.DONE and not cancelled
+        if kind == "check":
+            self._index_checked.update(result.get("valid", []))
+            needed = [item for item in result.get("needed", [])
+                      if item[1] not in self._index_failures]
+            if finished and needed:
+                self._build_indexes(needed, job_root)
+            elif finished:
+                self._ensure_indexes()  # models added or retried while it ran
+        else:
+            self._index_failures.update(result.get("failures", {}))
+            self._index_checked.update(result.get("rebuilt", []))
+            if finished:
+                self._ensure_indexes()  # models added or retried while this job ran
+        # Contents still missing after a cancelled or failed job are not "being built".
+        unfinished = (
+            "indexing was cancelled" if cancelled
+            else "" if job.status is JobStatus.DONE else f"indexing failed: {job.error or jid}"
+        )
+        # Only a browsed model still waiting for its contents is redrawn, and only its
+        # contents: the header (namespace, Check Growth result) and a shown index stay as they are.
+        model_id = self.model_browser.model_id()
+        if model_id is not None and not self.model_browser.has_index():
+            try:
+                entry = project.model(model_id)
+            except ProjectError:
+                entry = None
+            if entry is not None:
+                self.model_browser.set_contents(
+                    self._load_index(entry), self._index_problem(entry, unfinished)
+                )
+        self._index_changed()
+
+    def _index_changed(self) -> None:
+        """An index job finished: read the search rows of the indexes now usable."""
+        # A rebuilt index may be one the search job could not read before.
+        self._search_unreadable -= self._index_checked
+        self._search_changed()  # the footer counts depend on the index state
+        self._refresh_search_rows()
+
+    def _search_changed(self) -> None:
+        """Drop the cached search table; an open result list is redrawn from a new one."""
+        self._search_cache = None
+        if not self._search_building:  # a medium check inside the build may refresh the window
+            self.find_field.refresh()
+
+    # ── project search (⌘F) ──────────────────────────────────────────────────────────────
+    def _refresh_search_rows(self) -> None:
+        """Read the search rows of indexed models not read yet, in an unlisted job."""
+        from cmig.io import model_index
+
+        project = self.session.project
+        if project is None or self._search_rows_job is not None:
+            return
+        wanted = [m.sha256 for m in project.models
+                  if m.sha256 not in self._search_rows and m.sha256 not in self._search_unreadable
+                  and model_index.index_path(project.root, m.sha256).exists()]
+        if not wanted:
+            return
+        root = project.root
+
+        def _job(ctx: Any) -> dict[str, Any]:
+            rows: dict[str, list[tuple[str, str, str]]] = {}
+            bad: list[str] = []
+            for sha in wanted:
+                if ctx.cancelled:
+                    break
+                index = model_index.load_index(root, sha)
+                if index is None:
+                    bad.append(sha)
+                else:
+                    rows[sha] = model_index.search_rows(index)
+            return {"root": str(root), "rows": rows, "bad": bad}
+
+        # A read of small files, not a user job: kept out of Activity.
+        self._search_rows_job = self.runner.submit("search_rows", _job)
+        self._search_rows_wanted = (root, wanted)
+
+    def _finish_search_rows_job(self) -> None:
+        jid = self._search_rows_job
+        if jid is None:
+            return
+        job = self.runner.poll(jid)
+        if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+            return
+        wanted = self._search_rows_wanted
+        self._search_rows_job, self._search_rows_wanted = None, None
+        project = self.session.project
+        result = job.result if isinstance(job.result, dict) else {}
+        # Rows read for a previous project (closed or switched while it ran) are dropped.
+        if project is not None and result.get("root") == str(project.root):
+            self._search_rows.update(result.get("rows", {}))
+            self._search_unreadable.update(result.get("bad", []))
+        elif (job.status is JobStatus.FAILED and project is not None and wanted is not None
+              and wanted[0] == project.root):
+            # Not searchable, rather than read again (and fail again) at every poll.
+            self._search_unreadable.update(wanted[1])
+        self.runner.release_payload(jid)
+        self._search_changed()
+        self._refresh_search_rows()  # an index built meanwhile, or the new project's rows
+
+    def _search_table(self) -> SearchTable:
+        if self._search_cache is None:
+            self._search_building = True
+            try:
+                self._search_cache = self._build_search_table()
+            finally:
+                self._search_building = False
+        return self._search_cache
+
+    def _build_search_table(self) -> SearchTable:
+        project = self.session.project
+        if project is None:
+            return SearchTable()
+        by_model = {m.id: self._search_rows[m.sha256] for m in project.models
+                    if m.sha256 in self._search_rows}
+        indexing = sum(1 for m in project.models
+                       if m.sha256 not in self._search_rows
+                       and m.sha256 not in self._search_unreadable
+                       and m.sha256 not in self._index_failures
+                       and m.status in ("ok", "warning") and m.integrity == "ok")
+        unreadable = sum(1 for m in project.models
+                         if m.sha256 in self._search_unreadable
+                         or m.sha256 in self._index_failures)
+        media = [(f"preset:{name}", name, self._medium_exchanges(f"preset:{name}"))
+                 for name in installed_medium_presets()]
+        media += [(f"medium:{m.id}", m.id, self._medium_exchanges(f"medium:{m.id}"))
+                  for m in project.media]
+        runs = [(str(e.path), e.name, f"{e.label} · {e.status}")
+                for e in self._display_runs(self.session.runs())]
+        return build_table([(m.id, Path(m.file).name) for m in project.models], by_model,
+                           media, runs, indexing=indexing, unreadable=unreadable)
+
+    def _medium_exchanges(self, ref: str) -> list[str]:
+        cached = self._medium_exchange_cache.get(ref)
+        if cached is not None:
+            return cached
+        from cmig.core.medium_spec import load_medium
+
+        try:
+            path = self._medium_arg(ref)
+            ids = sorted(load_medium(path).uptake) if path else []
+        except Exception:  # noqa: BLE001 - an unreadable medium is simply not searchable
+            ids = []
+        self._medium_exchange_cache[ref] = ids
+        return ids
+
+    def _find_activated(self, kind: str, key: str, model: object) -> None:
+        project = self.session.project
+        if project is None:
+            return
+        if kind == "run":
+            before = self._sidebar_current()
+            self.sidebar.select("runs", key)  # selecting a new RUNS row opens the run
+            if self._sidebar_current() == before:  # already selected, or not listed in RUNS
+                self._open_run_entry(Path(key))
+        elif kind == "medium":
+            self.sidebar.select("media", key)
+        else:
+            model_id = key if kind == "model" else str(model)
+            try:
+                entry = project.model(model_id)
+            except ProjectError:
+                return  # removed or renamed since the result list was drawn
+            self.sidebar.select("models", model_id)
+            if self.model_browser.model_id() != model_id or (
+                self.pages.currentWidget() is not self.model_browser
+            ):
+                self._show_model(entry)
+            if kind != "model":
+                self.model_browser.select(kind, key)
+
+    def _retry_index(self, model_id: str) -> None:
+        project = self.session.require()
+        entry = project.model(model_id)
+        self._index_failures.pop(entry.sha256, None)
+        self._index_cache.pop(entry.sha256, None)
+        self._index_checked.discard(entry.sha256)
+        self.model_browser.set_contents(None, "")
+        self._search_changed()  # no longer "could not be searched": being indexed again
+        self._ensure_indexes()
+
+    # ── namespace confirmation and Check Growth (model browser) ──────────────────────────
+    @staticmethod
+    def _browser_state(entry: ModelEntry) -> tuple[str, str, str, str, str]:
+        return (entry.id, entry.sha256, proj.confirmation_state(entry), entry.status,
+                entry.integrity)
+
+    def _confirm_namespace(self, model_id: str) -> None:
+        answer = QMessageBox.question(
+            self, "Confirm Namespace",
+            f"I reviewed {model_id}; its exchange ids already use the BiGG namespace.\n\n"
+            "CMIG will pass --assume-bigg-namespace for runs whose models are all confirmed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.session.confirm_namespace(model_id)
+        except ProjectError as exc:
+            self.statusBar().showMessage(str(exc), 8000)
+            self.refresh_workspace()  # e.g. its file was found changed: the sidebar says so
+        self._refresh_browser(model_id)
+
+    def _revoke_namespace(self, model_id: str) -> None:
+        try:
+            self.session.revoke_namespace(model_id)
+        except ProjectError as exc:
+            self.statusBar().showMessage(str(exc), 8000)
+        self._refresh_browser(model_id)
+
+    def _refresh_browser(self, model_id: str) -> None:
+        """Redraw the browsed model when its state differs from what the browser shows."""
+        project = self.session.project
+        if project is None or self.model_browser.model_id() != model_id:
+            return
+        entry = next((m for m in project.models if m.id == model_id), None)
+        if entry is None or self._browser_state(entry) == self._browser_shown:
+            return
+        self.model_browser.show_model(entry, self._load_index(entry),
+                                      self._index_problem(entry))
+        self._browser_shown = self._browser_state(entry)
+        self._show_latest_growth(entry)
+
+    def _browser_models_changed(self) -> None:
+        model_id = self.model_browser.model_id()
+        if model_id is not None:
+            self._refresh_browser(model_id)
+
+    def _namespace_selection_changed(self, key: str) -> None:
+        self._namespace_user_set[key] = False
+        self._namespace_defaults[key] = None
+        self._apply_namespace_defaults()
+
+    def _namespace_targets(self) -> dict[str, tuple[QCheckBox, QLabel, list[str]]]:
+        """Community's and Medium's "already BiGG" box, its note and the models it covers."""
+        return {
+            "community": (self.community_builder.assume_bigg_check,
+                          self.community_builder.namespace_note,
+                          self.community_builder.model_picker.selected_ids()),
+            "medium": (self.medium_editor.assume_bigg_check, self.medium_editor.namespace_note,
+                       list(dict.fromkeys(self.medium_editor.model_picker.selected_ids()
+                                          + self.medium_editor.single_model_picker
+                                          .selected_ids()))),
+        }
+
+    def _restore_assume_bigg(self, key: str, value: Any) -> str | None:
+        """Put a run's "already BiGG" tick back only while every model it covers is confirmed
+        in this project now; a confirmation revoked or gone stale since is never restored."""
+        check, _note, ids = self._namespace_targets()[key]
+        project = self.session.project
+        if value is not True:
+            check.setChecked(False)
+            return None
+        known = [] if project is None else [i for i in ids
+                                            if any(m.id == i for m in project.models)]
+        confirmed_all, missing = (
+            (False, []) if project is None else proj.confirmation_summary(project, known)
+        )
+        if confirmed_all:
+            check.setChecked(True)
+            return None
+        check.setChecked(False)
+        return ("namespace confirmation not restored: "
+                + (f"{', '.join(missing)} not confirmed" if missing else "no model is chosen"))
+
+    def _apply_namespace_defaults(self) -> None:
+        """Tick "already BiGG" on Community and Medium only when every chosen model is
+        confirmed in this project (a box the user set stays until that page's models change)."""
+        project = self.session.project
+        for key, (check, note, ids) in self._namespace_targets().items():
+            if project is None or not ids:
+                note.setText("")
+                continue
+            known = [i for i in ids if any(m.id == i for m in project.models)]
+            confirmed_all, missing = proj.confirmation_summary(project, known)
+            if not confirmed_all:
+                note.setText(f"{', '.join(missing)} not confirmed")
+            elif len(known) == 1:
+                note.setText(f"{known[0]} is confirmed in this project")
             else:
-                reason = job.error or job.status.value
-                self._exchange_placeholder(f"Exchange list unavailable: {reason}")
+                note.setText(f"All {len(known)} models confirmed in this project")
+            last = self._namespace_defaults[key]
+            if not self._namespace_user_set[key] and (last is None or check.isChecked() == last):
+                self._namespace_defaults[key] = confirmed_all
+                if check.isChecked() == confirmed_all:
+                    continue
+                blocked = check.blockSignals(True)
+                try:
+                    check.setChecked(confirmed_all)
+                finally:
+                    check.blockSignals(blocked)
+                if key == "medium":
+                    self._medium_context_changed()  # its toggled handler, blocked above
+
+    def _growth_running(self, entry: ModelEntry) -> bool:
+        return any(model_id == entry.id and sha == entry.sha256
+                   for _run, model_id, sha in self._check_growth_jobs.values())
+
+    def run_check_growth(self, model_id: str | None = None) -> str:
+        """`cmig single --fba` of the browsed model; returns the job id, or "" when refused."""
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        project = self.session.require()
+        model_id = model_id or self.model_browser.model_id()
+        if model_id is None:
+            return ""
+        if model_id != self.model_browser.model_id():
+            # The browser's medium and options are the run's inputs: never another model's.
+            self.statusBar().showMessage(
+                f"Check Growth runs on the model shown in the browser; select {model_id} first",
+                8000,
+            )
+            return ""
+        entry = project.model(model_id)
+        if proj.refresh_integrity(project, entry) != "ok":
+            self.refresh_workspace()  # a changed or missing file is shown as such
+        if not proj.namespace_confirmed(entry):
+            self._refresh_browser(model_id)  # e.g. "Changed since confirmed"
+            self.model_browser.set_growth(
+                "✗ Not run: confirm this model's namespace first (Confirm…). `cmig single` "
+                "refuses to run without a namespace decision."
+            )
+            return ""
+        values = self.model_browser.snapshot()
+        try:
+            model_file = self._model_file(model_id)
+            medium_file = self._medium_arg(str(values["medium"]))
+            out_dir, _ = self._prepare_run("check-growth", [], analysis="check_growth")
+        except (ProjectError, ValueError) as exc:
+            self.model_browser.set_growth(f"✗ Not run: {exc}")
+            return ""
+        argv = ["single", "--model", str(model_file), "--fba", "--out", str(out_dir)]
+        if medium_file:
+            argv.extend(["--medium", medium_file, "--exact-medium"])
+        if values["skip_unknown"]:
+            argv.append("--allow-unknown-medium")
+        argv.append("--assume-bigg-namespace")
+        _install_stderr_router()
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            with _captured_job_stderr() as stderr_chunks:
+                rc = main(argv)
+            if rc != 0:
+                lines = "".join(stderr_chunks).strip().splitlines()
+                raise RuntimeError(lines[-1] if lines else f"cmig single exited {rc}")
+            _finish_after_artifacts(ctx)
+            return {"rc": rc}
+
+        jid = self.submit_job("check_growth", _job)
+        self._record_command(jid, out_dir, argv)
+        self._check_growth_jobs[jid] = (out_dir, entry.id, entry.sha256)
+        self.model_browser.check_growth_btn.setEnabled(False)
+        self.model_browser.set_growth("Checking growth…")
+        return jid
+
+    def _finish_check_growth_jobs(self) -> None:
+        for jid, (out_dir, model_id, sha) in list(self._check_growth_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+                continue
+            self._check_growth_jobs.pop(jid, None)
+            project = self.session.project
+            entry = (None if project is None or not self._in_project_runs(out_dir)
+                     else next((m for m in project.models if m.id == model_id), None))
+            # Only the same model file, in the project the run was made in, shows this result.
+            if (entry is not None and entry.sha256 == sha
+                    and self.model_browser.model_id() == model_id
+                    and self.model_browser.snapshot()["sha256"] == sha):
+                self.model_browser.set_growth(self._growth_text(out_dir, model_id, job))
+                self.model_browser.check_growth_btn.setEnabled(
+                    entry.status in ("ok", "warning") and entry.integrity == "ok"
+                    and proj.namespace_confirmed(entry) and not self._growth_running(entry)
+                )
+            self.refresh_workspace()
+
+    def _growth_text(self, out_dir: Path, model_id: str, job: Job | None) -> str:
+        """The browser's growth line for one Check Growth run (a failure never reads as growth)."""
+        from cmig.gui.growth import failed_summary, medium_text, read_growth, run_clock
+
+        def reading_text() -> str:
+            record, _problem = proj.read_run_request(out_dir)
+            values = (record or {}).get("values", {})
+            medium = medium_text(str(values.get("medium") or ""),
+                                 skip_unknown=values.get("skip_unknown") is True)
+            entry = self.session.require().model(model_id)
+            reading = read_growth(out_dir, objective_warning=proj.objective_warning_of(entry),
+                                  medium=medium, finished=run_clock(out_dir.name))
+            return f"{reading.symbol} {reading.text}"
+
+        if job is not None and job.status is JobStatus.CANCELLED:
+            return "⊘ Cancelled"
+        state = proj.read_run_state(out_dir)
+        failed = (job is not None and job.status is JobStatus.FAILED) or state == "failed"
+        if failed and failed_summary(out_dir):
+            return reading_text()  # a solve that failed (e.g. infeasible), told by its summary
+        if job is not None and job.status is JobStatus.FAILED:
+            message = str((parse_diagnostic(job.error) or {}).get("message") or "")
+            lines = message.removeprefix("RuntimeError: ").strip().splitlines()
+            reason = lines[-1] if lines else "the run failed"
+            hint = (" — tick “Skip medium metabolites this model lacks” to run without them"
+                    if "no counterpart" in reason else "")
+            return f"✗ Failed: {reason}{hint}"
+        if state is not None:
+            return {"cancelled": "⊘ Cancelled"}.get(state, f"✗ Failed ({state}) — see the run")
+        inspected = self._inspect_gui_run(out_dir)
+        if inspected is None:
+            return "✗ Failed: the result could not be read back — see the inspector"
+        if inspected.get("artifact_integrity") == "mismatch":
+            return "✗ Result changed since the run — see the inspector"
+        return reading_text()
+
+    def _show_latest_growth(self, entry: ModelEntry) -> None:
+        """The browsed model's running or newest Check Growth, for exactly this model file."""
+        from cmig.gui.growth import latest_check_growth
+
+        if self._growth_running(entry):
+            self.model_browser.check_growth_btn.setEnabled(False)
+            self.model_browser.set_growth("Checking growth…")
+            return
+        project = self.session.require()
+        run_dir = latest_check_growth(project.root, entry.id, entry.sha256)
+        if run_dir is not None:
+            self.model_browser.set_growth(self._growth_text(run_dir, entry.id, None))
+
+    def _show_project_summary(self) -> None:
+        project = self.session.project
+        if project is None:
+            self.inspector.clear()
+        else:
+            self.inspector.show_project_summary(project, self._display_runs(self.session.runs()))
 
     def _inspect_medium(self, key: str) -> None:
         from cmig.io.project import medium_path
@@ -2278,11 +3131,206 @@ class CmigMainWindow(QMainWindow):
         self._inspector_run, self._inspected_model = None, None
 
     def _open_run_entry(self, run_dir: Path) -> None:
+        """Open a run on its analysis page: its recorded inputs first, then its result.
+
+        A run of no page (or of no known kind) opens in its viewer as before. A run whose
+        result cannot be shown leaves its page empty, with the reason in the page's status:
+        never another run's result under this run's inputs.
+        """
+        from cmig.gui.run_restore import analysis_for_run, banner_text
+
         run_dir = Path(run_dir).resolve()
-        self._inspector_run = None
-        self.load_run_dir(run_dir)
-        if self._inspector_run != str(run_dir):  # e.g. a run kind without a viewer
-            self._show_run_in_inspector(run_dir)
+        key, record, problem = analysis_for_run(run_dir,
+                                                in_project=self._in_project_runs(run_dir))
+        if key == "check_growth" and self._open_check_growth_run(run_dir, record):
+            return
+        page = self.analysis_pages.get(key or "")
+        if page is None:
+            self._inspector_run = None
+            self.load_run_dir(run_dir)
+            if self._inspector_run != str(run_dir):  # e.g. a run kind without a viewer
+                self._show_run_in_inspector(run_dir)
+            return
+        assert key is not None
+        self.show_analysis(key, select=False)  # the opened run stays selected in RUNS
+        notes = page.restore(record["values"]) if record is not None else []
+        self._empty_run_result(key)  # inputs changed above; nothing older stays on show
+        inputs_known = record is not None and not notes
+        if not self._load_run_into_page(key, run_dir, inputs_known=inputs_known):
+            self._empty_run_result(key, keep_status=True)
+            status = self._run_status_label(key)
+            if not status.text():  # the loader gave no reason of its own
+                failure = self._readback_failures.get(_run_key(run_dir))
+                state = (proj.read_run_state(run_dir) if self._in_project_runs(run_dir)
+                         else None)
+                if failure is not None:
+                    reason = "; ".join(failure[1].splitlines()[1:]) or failure[0]
+                elif state is not None:
+                    reason = f"the run {state}"
+                else:
+                    reason = "it has no result this page can show"
+                status.setText(f"No result shown for {run_dir.name}: {reason}")
+        page.show_banner(banner_text(run_dir.name, record, problem, notes))
+        self._show_run_in_inspector(run_dir)
+
+    def _open_check_growth_run(self, run_dir: Path, record: dict[str, Any] | None) -> bool:
+        """Show a Check Growth run in its model's browser header; False when that model file
+        is no longer in the project (the run then opens like a run of no page)."""
+        project = self.session.project
+        values = {} if record is None else record["values"]
+        model_id, sha = values.get("model"), values.get("sha256")
+        entry = (None if project is None or not self._in_project_runs(run_dir)
+                 else next((m for m in project.models if m.id == model_id), None))
+        if entry is None or entry.sha256 != sha:
+            return False
+        self.sidebar.select("models", entry.id)  # shows the model, as a click on its row does
+        if (self.model_browser.model_id() != entry.id
+                or self.pages.currentWidget() is not self.model_browser):
+            self._show_model(entry)
+        self.model_browser.set_growth(self._growth_text(run_dir, entry.id, None))
+        self._show_run_in_inspector(run_dir)
+        return True
+
+    def _run_status_label(self, key: str) -> QLabel:
+        """The status line under `key`'s results (Sweep's frame has no results area)."""
+        if key == "sweep":
+            return self.sweep_view.status
+        return self.analysis_pages[key].status
+
+    def _empty_run_result(self, key: str, *, keep_status: bool = False) -> None:
+        """Empty `key`'s shown result (and, unless `keep_status`, its status line)."""
+        if key in ("search", "gene_ko", "strain_growth", "ratio_impact", "host_search"):
+            self._clear_ranked(self._ranked_page(key))
+            if key == "search":
+                self.current_search_dir = None
+        elif key in ("community", "medium"):
+            self._empty_community_result_on(key)
+            if key == "medium":
+                editor = self.medium_editor
+                for label in (editor.growth_label, editor.dropped_ids_label,
+                              editor.profile_delta_label, editor.minimal_status):
+                    label.clear()
+                editor.minimal_table.setRowCount(0)
+                self._medium_delta_active = False
+        elif key == "host":
+            self.host_view.clear_result()
+            self.current_host_microbe_dir = None
+        elif key in ("dfba", "spatial"):
+            (self.dynamics_view if key == "dfba" else self.spatial_page)._clear_dynamics("")
+        elif key == "sweep":
+            self.sweep_view.load_results([])
+        if not keep_status:
+            self._run_status_label(key).clear()
+
+    def _load_run_into_page(self, key: str, run_dir: Path, *, inputs_known: bool) -> bool:
+        """Show a run's result on its page; inputs are restored first, so it is not stale.
+
+        `inputs_known`: the run's recorded inputs are all back on screen, so they may label
+        the result as its executed request.
+        """
+        if key == "search":
+            return self.load_search_dir(run_dir)
+        if key in ("gene_ko", "strain_growth", "ratio_impact", "host_search"):
+            return self.load_ranked_dir(key, run_dir, inputs_known=inputs_known)
+        if key in ("community", "medium") and (run_dir / "nodes.parquet").exists():
+            return self.load_run_dir(run_dir, host_key=key)
+        if key == "medium" and (run_dir / "minimal_medium_summary.json").exists():
+            return self._load_minimal_medium_dir(run_dir)
+        if key == "host":
+            return self.load_host_microbe_bigg_dir(run_dir)
+        if key == "dfba":
+            return self.load_dfba_dir(run_dir)
+        if key == "spatial":
+            return self.load_spatial_dir(run_dir)
+        if key == "sweep" and (run_dir / "sweep.parquet").exists():
+            return self._load_sweep_dir(run_dir)
+        return False
+
+    def load_ranked_dir(self, key: str, run_dir: Path, *, inputs_known: bool = False) -> bool:
+        """Show a Gene KO / Strain Growth / Ratio Impact / Host Search run on its page.
+
+        Only with `inputs_known` (the run's record restored in full) are the inputs on screen
+        shown as the run's executed request.
+        """
+        summary_name, _adapter, kind, _label = self._ranked_spec(key)
+        page = self._ranked_page(key)
+        if self._inspect_gui_run(run_dir) is None:
+            self._clear_ranked(page)
+            page.status.setText(f"Readback invalid/unreadable: {run_dir}")
+            return False
+        try:
+            payload = json.loads((run_dir / summary_name).read_text())
+            if not isinstance(payload, dict):
+                raise ValueError(f"{summary_name} is not a JSON object")
+            requested = page.request_fields(kind) if inputs_known else None
+            self._show_ranked(key, payload, run_dir, requested)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self._reject_gui_summary(run_dir, exc)
+            self._clear_ranked(page)
+            page.status.setText(f"Readback invalid/unreadable: {exc}")
+            return False
+        if not inputs_known:
+            status = page.status
+            status.setText(
+                f"Inputs for {run_dir.name} are not known — labels show only what the run "
+                f"recorded. {status.text()}"
+            )
+        self._register_run_output(run_dir)
+        return True
+
+    def _load_sweep_dir(self, run_dir: Path) -> bool:
+        """Show a sweep run's rows, with the run's own status: a failed or cancelled job's
+        rows are labelled partial, never shown as a complete sweep."""
+        view = self.sweep_view
+        if self._inspect_gui_run(run_dir) is None:
+            view.load_results([])
+            view.status.setText(f"Readback invalid/unreadable: {run_dir}")
+            return False
+        summary_path = run_dir / "sweep_summary.json"
+        try:
+            rows = _load_sweep_rows(run_dir / "sweep.parquet")
+            summary = json.loads(summary_path.read_text()) if summary_path.exists() else None
+            if summary is not None and not isinstance(summary, dict):
+                raise ValueError("sweep_summary.json is not a JSON object")
+        except Exception as exc:  # pyarrow raises its own error types for a damaged file
+            self._reject_gui_summary(run_dir, exc)
+            view.load_results([])
+            view.status.setText(f"Readback invalid/unreadable: {exc}")
+            return False
+        view.load_results(rows)
+        job_state = proj.read_run_state(run_dir) if self._in_project_runs(run_dir) else None
+        if job_state in ("failed", "cancelled"):
+            text = (f"Sweep {run_dir.name} {job_state}: showing {len(rows)} condition(s) it "
+                    "recorded before it stopped — partial, not a complete sweep.")
+        elif summary is None:
+            text = (f"Sweep {run_dir.name}: no sweep_summary.json — showing {len(rows)} "
+                    "recorded condition(s); the sweep may be partial.")
+        else:
+            warnings = summary.get("warnings") or []
+            text = (f"Sweep {run_dir.name}: status {summary.get('status', 'unknown')} · "
+                    f"{len(rows)} condition(s)")
+            if isinstance(warnings, list) and warnings:
+                text += " · " + "; ".join(str(warning) for warning in warnings)
+        view.status.setText(text)
+        self._register_run_output(run_dir)
+        self._show_page(self.sweep_page)
+        return True
+
+    def _load_minimal_medium_dir(self, run_dir: Path) -> bool:
+        if self._inspect_gui_run(run_dir) is None:
+            return False
+        try:
+            payload = json.loads((run_dir / "minimal_medium_summary.json").read_text())
+            if not isinstance(payload, dict):
+                raise ValueError("minimal_medium_summary.json is not a JSON object")
+            self.medium_editor.load_minimal_result(payload)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self._reject_gui_summary(run_dir, exc)
+            self.medium_editor.minimal_table.setRowCount(0)
+            self.medium_editor.minimal_status.setText(f"Readback invalid/unreadable: {exc}")
+            return False
+        self._show_page(self.medium_page)
+        return True
 
     def _show_sidebar_menu(self, group: str, keys: list[str]) -> None:
         if group != "models" or not keys:
@@ -2547,6 +3595,7 @@ class CmigMainWindow(QMainWindow):
             self._show_job_in_activity(job_id)
         self.runner.release_payload(job_id)
         self.refresh_workspace()
+        self._ensure_indexes()
 
     def _add_imported(self, job_id: str, project: proj.Project, result: dict[str, Any]) -> None:
         # The project may have changed (a rename, an undo) since the worker took its snapshot.
@@ -2675,14 +3724,11 @@ class CmigMainWindow(QMainWindow):
     def _agora2_list(self, query: str) -> list[Agora2Strain]:
         """Strains matching `query`, from `cmig agora2-list` run in this process.
 
-        Runs on the GUI thread (the dialog calls it on Search): `redirect_stdout` swaps the
-        process-wide stream, so it must not be used from a job thread. The catalogue cache is
-        the project's, never the package data folder. A first lookup downloads the index.
+        Runs the CLI on a worker thread; only that thread's stdout is captured. The catalogue
+        cache is the project's, never the package data folder. A first lookup downloads the
+        index.
         """
-        import contextlib
-        import io
-
-        from cmig.cli.main import main
+        import cmig.cli.main as cli_main
 
         project = self.session.require()
         argv = ["agora2-list", "--format", "json", "--limit", str(SEARCH_LIMIT),
@@ -2694,16 +3740,28 @@ class CmigMainWindow(QMainWindow):
             raise ValueError("Enter part of a genus or strain name.")
         argv += ["--match", re.escape("_".join(words))]
         _install_stderr_router()
-        buffer = io.StringIO()
+        # The router is only needed for this lookup; leave sys.stdout as it was found.
+        original_stdout = sys.stdout
+        _install_stdout_router()
+        router = sys.stdout
+
+        def _call() -> tuple[int, str, str]:
+            with _captured_thread_stdout() as out, _captured_job_stderr() as err:
+                try:
+                    rc = cli_main.main(argv)
+                except SystemExit as exc:  # argparse rejected the query
+                    rc = exc.code if isinstance(exc.code, int) else 2
+            return rc, "".join(out), "".join(err)
+
         try:
-            with contextlib.redirect_stdout(buffer), _captured_job_stderr() as stderr_chunks:
-                rc = main(argv)
-        except SystemExit as exc:  # argparse rejected the query
-            rc = exc.code if isinstance(exc.code, int) else 2
+            rc, printed, errors = self._run_off_thread(_call)
+        finally:
+            if sys.stdout is router:
+                sys.stdout = original_stdout
         if rc != 0:
-            lines = "".join(stderr_chunks).strip().splitlines()
+            lines = errors.strip().splitlines()
             raise RuntimeError(lines[-1].strip() if lines else f"agora2-list exited {rc}")
-        return _parse_catalogue(buffer.getvalue())
+        return _parse_catalogue(printed)
 
     def _agora2_fetch(self, strains: list[str]) -> str:
         """Download `strains` into a new batch folder of `models/agora2/`, then add them.
@@ -2828,15 +3886,22 @@ class CmigMainWindow(QMainWindow):
         self.search_view.browse_checkpoint_btn.clicked.connect(self._browse_search_checkpoint)
         self.search_view.run_btn.clicked.connect(self.run_search_fixture)
         self.search_view.cancel_btn.clicked.connect(self.cancel_search)
-        self.search_view.run_ko_btn.clicked.connect(self.run_gene_ko_search)
-        self.search_view.run_growth_btn.clicked.connect(self.run_strain_growth_report)
-        self.search_view.run_abundance_btn.clicked.connect(self.run_abundance_impact)
-        self.search_view.export_figure_btn.clicked.connect(self._export_search_figure)
+        self.gene_ko_page.run_btn.clicked.connect(self.run_gene_ko_search)
+        self.strain_growth_page.run_btn.clicked.connect(self.run_strain_growth_report)
+        self.ratio_impact_page.run_btn.clicked.connect(self.run_abundance_impact)
+        for page in (self.search_view, self.gene_ko_page, self.strain_growth_page,
+                     self.ratio_impact_page):
+            page.results_panel.export_figure_btn.clicked.connect(
+                lambda _c=False, p=page: self._export_ranked_figure(p)
+            )
         self.host_view.run_btn.clicked.connect(self.run_host_microbe_bigg)
-        self.host_view.run_search_btn.clicked.connect(self.run_host_search_bigg)
         self.host_view.export_figure_btn.clicked.connect(self._export_host_figure)
+        self.host_search_page.run_btn.clicked.connect(self.run_host_search_bigg)
+        self.host_search_page.results_panel.export_figure_btn.clicked.connect(
+            lambda _c=False: self._export_ranked_figure(self.host_search_page)
+        )
         self.dynamics_view.run_dfba_btn.clicked.connect(self.run_dfba)
-        self.dynamics_view.run_spatial_btn.clicked.connect(self.run_spatial_preview)
+        self.spatial_page.run_btn.clicked.connect(self.run_spatial_preview)
         self.community_builder.run_btn.clicked.connect(self.run_community_solve)
         self.sweep_view.browse_mediums_btn.clicked.connect(self._browse_sweep_mediums)
         self.sweep_view.browse_abundance_btn.clicked.connect(self._browse_sweep_abundances)
@@ -2857,7 +3922,12 @@ class CmigMainWindow(QMainWindow):
         self.scenario_compare.compare_btn.clicked.connect(self.run_scenario_compare)
         for key, picker in self._model_pickers().items():
             picker.selection_changed.connect(lambda k=key, p=picker: self._remember(k, p))
-        self.host_view.host_picker.selection_changed.connect(self._host_model_changed)
+        self.host_view.host_picker.selection_changed.connect(
+            lambda p=self.host_view: self._host_model_changed(p)
+        )
+        self.host_search_page.host_picker.selection_changed.connect(
+            lambda p=self.host_search_page: self._host_model_changed(p)
+        )
         for (key, field), medium_picker in self._medium_pickers().items():
             medium_picker.currentIndexChanged.connect(
                 lambda _index, k=key, f=field, p=medium_picker: self._remember_medium(k, f, p)
@@ -2976,20 +4046,21 @@ class CmigMainWindow(QMainWindow):
         shutil.copyfile(src, target)
         self.host_view.run_status.setText(f"Exported figure: {target}")
 
-    def _export_search_figure(self) -> None:
+    def _export_ranked_figure(self, page: RankedPage) -> None:
         # Same rule as the Host tab: export the run the table is displaying, and nothing else.
         # There is deliberately NO fallback to `current_search_dir`: invalidation clears
         # `current_run_dir` and tells the user the result was discarded, and a fallback would
         # then still export that discarded run and report success (verifier V-1).
-        run_dir = self.search_view.current_run_dir
+        panel = page.results_panel
+        run_dir = panel.current_run_dir
         if run_dir is None:
-            self.search_view.status.setText("No search result is loaded.")
+            page.status.setText("No search result is loaded.")
             return
-        artifact = self.search_view.selected_figure_artifact()
+        artifact = panel.selected_figure_artifact()
         src = run_dir / artifact
         if not src.exists():
-            self.search_view.refresh_figure_mode()
-            self.search_view.status.setText(f"Search figure artifact not found: {artifact}")
+            panel.refresh_figure_mode()
+            page.status.setText(f"Search figure artifact not found: {artifact}")
             return
         target, _ = QFileDialog.getSaveFileName(
             self,
@@ -3000,7 +4071,7 @@ class CmigMainWindow(QMainWindow):
         if not target:
             return
         shutil.copyfile(src, target)
-        self.search_view.status.setText(f"Exported figure: {target}")
+        page.status.setText(f"Exported figure: {target}")
 
     def _open_run_dialog(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Open CMIG Run")
@@ -3042,11 +4113,11 @@ class CmigMainWindow(QMainWindow):
         from cmig.service import JobContext
 
         constraints = self.sandbox_view.constraints()
-        if self.sandbox_view.invalid_rows:
-            rows = ", ".join(str(r) for r in self.sandbox_view.invalid_rows)
+        if self.sandbox_view.invalid_reactions:
+            reactions = ", ".join(self.sandbox_view.invalid_reactions)
             self.sandbox_view.delta_view.setRowCount(0)
             self.sandbox_view.status.setText(
-                f"row {rows}: bound is not a number — fix it before previewing."
+                f"{reactions}: bound is not a number — fix it before previewing."
             )
             return ""
         if not constraints:
@@ -3103,7 +4174,7 @@ class CmigMainWindow(QMainWindow):
         self.toggle_activity_action.setText("Hide Activity")
         return jid
 
-    def load_run_dir(self, path: str | Path) -> bool:
+    def load_run_dir(self, path: str | Path, host_key: str = "community") -> bool:
         """Show a run in its viewer; a tidy community run goes to Profile and Graph.
 
         Returns True only when the run is now on screen. A failed readback (reported in the
@@ -3142,24 +4213,14 @@ class CmigMainWindow(QMainWindow):
                 kind = str(legacy_manifest.get("kind") or "unknown")
             if kind in ("tidy", "community", "solve", "fixture", "community_solve"):
                 self._reject_gui_summary(run_dir, "missing essential nodes.parquet")
-                self.current_manifest = None
-                self.current_graph_payload = None
-                self.graph_view.clear()
-                self.graph_gate_badge.set_unavailable()
-                self.profile_view.load_profile([])
-                self.profile_view.load_targets(None)
+                self._clear_community_result()
                 self._show_status("status_run_load_failed", error="missing essential nodes.parquet")
                 return False
             self._show_status("status_run_no_viewer", kind=kind, run_dir=run_dir)
             return False
         inspected = self._inspect_gui_run(run_dir)
         if inspected is None:
-            self.current_manifest = None
-            self.current_graph_payload = None
-            self.graph_view.clear()
-            self.graph_gate_badge.set_unavailable()
-            self.profile_view.load_profile([])
-            self.profile_view.load_targets(None)
+            self._clear_community_result()
             return False
         try:
             bundle = TidyBundle.read(run_dir)
@@ -3169,12 +4230,7 @@ class CmigMainWindow(QMainWindow):
             self._reject_gui_summary(run_dir, e)
             # A failed load must not leave the *previous* run's provenance on screen: the
             # run_hash in the status bar and the profile table would still describe run A.
-            self.current_manifest = None
-            self.current_graph_payload = None
-            self.graph_view.clear()
-            self.graph_gate_badge.set_unavailable()
-            self.profile_view.load_profile([])
-            self.profile_view.load_targets(None)
+            self._clear_community_result()
             self._show_status("status_run_load_failed", error=e)
             return False
         self.current_manifest = manifest
@@ -3191,7 +4247,7 @@ class CmigMainWindow(QMainWindow):
         self.profile_view.load_bundle(bundle)
         self.profile_view.load_targets(_read_target_summary(run_dir))
         self._register_run_output(run_dir)
-        self._show_profile()
+        self._show_profile(host_key)
         run_hash = None if self.current_manifest is None else self.current_manifest.get("run_hash")
         suffix = "" if run_hash is None else f" (run_hash {str(run_hash)[:12]})"
         self._show_status("status_loaded_run", run_dir=run_dir, suffix=suffix)
@@ -3405,11 +4461,13 @@ class CmigMainWindow(QMainWindow):
                 "status_summary_missing", kind=self.tr_map["kind_dfba"], path=summary_path
             )
             self._summary_missing(run_dir, summary_path)
+            self.dynamics_view._clear_dynamics(
+                f"Readback invalid/unreadable: {summary_path.name} not found"
+            )
             return False
         inspected = self._inspect_gui_run(run_dir)
         if inspected is None:
-            self.dynamics_view.invalidate_results()
-            self.dynamics_view.status.setText(f"Readback invalid/unreadable: {run_dir}")
+            self.dynamics_view._clear_dynamics(f"Readback invalid/unreadable: {run_dir}")
             return False
         try:
             payload = json.loads(summary_path.read_text())
@@ -3433,8 +4491,7 @@ class CmigMainWindow(QMainWindow):
                     float(value)
         except (OSError, ValueError, TypeError) as e:
             self._reject_gui_summary(run_dir, e)
-            self.dynamics_view.invalidate_results()
-            self.dynamics_view.status.setText(f"Readback invalid/unreadable: {e}")
+            self.dynamics_view._clear_dynamics(f"Readback invalid/unreadable: {e}")
             self._show_status("status_load_failed", kind=self.tr_map["kind_dfba"], error=e)
             return False
         self.dynamics_view.load_dfba_summary(payload, run_dir=run_dir)
@@ -3455,11 +4512,13 @@ class CmigMainWindow(QMainWindow):
                 "status_summary_missing", kind=self.tr_map["kind_spatial"], path=summary_path
             )
             self._summary_missing(run_dir, summary_path)
+            self.spatial_page._clear_dynamics(
+                f"Readback invalid/unreadable: {summary_path.name} not found"
+            )
             return False
         inspected = self._inspect_gui_run(run_dir)
         if inspected is None:
-            self.dynamics_view.invalidate_results()
-            self.dynamics_view.status.setText(f"Readback invalid/unreadable: {run_dir}")
+            self.spatial_page._clear_dynamics(f"Readback invalid/unreadable: {run_dir}")
             return False
         try:
             payload = json.loads(summary_path.read_text())
@@ -3477,17 +4536,16 @@ class CmigMainWindow(QMainWindow):
                     float(payload[key])
         except (OSError, ValueError, TypeError) as e:
             self._reject_gui_summary(run_dir, e)
-            self.dynamics_view.invalidate_results()
-            self.dynamics_view.status.setText(f"Readback invalid/unreadable: {e}")
+            self.spatial_page._clear_dynamics(f"Readback invalid/unreadable: {e}")
             self._show_status("status_load_failed", kind=self.tr_map["kind_spatial"], error=e)
             return False
-        self.dynamics_view.load_spatial_summary(payload, run_dir=run_dir)
-        self.dynamics_view.status.setText(
-            self.dynamics_view.status.text()
+        self.spatial_page.load_spatial_summary(payload, run_dir=run_dir)
+        self.spatial_page.status.setText(
+            self.spatial_page.status.text()
             + f" · integrity {inspected['artifact_integrity']}"
         )
         self._register_run_output(run_dir)
-        self._show_page(self.dynamics_view)
+        self._show_page(self.spatial_page)
         self._show_status("status_loaded_spatial", run_dir=run_dir)
         return True
 
@@ -3571,7 +4629,7 @@ class CmigMainWindow(QMainWindow):
             self.search_view.status.setText(f"{CHECKPOINT_EXISTS}: {checkpoint}")
             return ""
         try:
-            out_dir, taxonomy = self._prepare_run("search", model_ids)
+            out_dir, taxonomy = self._prepare_run("search", model_ids, analysis="search")
         except ProjectError as exc:
             self.search_view.status.setText(str(exc))
             return ""
@@ -3649,7 +4707,7 @@ class CmigMainWindow(QMainWindow):
         return jid
 
     def _host_inputs(
-        self, kind: str, request: dict[str, Any], biomass_error: str
+        self, page: AnalysisPage, kind: str, request: dict[str, Any], biomass_error: str
     ) -> tuple[Path, Path | None, str, str | None, str | None] | None:
         """Check the Host page's choices and claim a run: (out, taxonomy, host, media), or
         None after the reason is shown on the page."""
@@ -3670,15 +4728,17 @@ class CmigMainWindow(QMainWindow):
         ):
             message = biomass_error
         if message:
-            self.host_view.run_status.setText(message)
+            page.status.setText(message)
             return None
         try:
             host = str(self._model_file(request["host_id"]))
             host_medium = self._medium_arg(request["host_medium"])
             microbe_medium = self._medium_arg(request["microbe_medium"])
-            out_dir, taxonomy = self._prepare_run(kind, list(request["models"]))
+            out_dir, taxonomy = self._prepare_run(
+                kind, list(request["models"]), analysis=self._page_key(page)
+            )
         except (ProjectError, ValueError) as exc:
-            self.host_view.run_status.setText(str(exc))
+            page.status.setText(str(exc))
             return None
         return out_dir, taxonomy, host, host_medium, microbe_medium
 
@@ -3687,9 +4747,10 @@ class CmigMainWindow(QMainWindow):
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        request = self.host_view.request()
+        page = self.host_view
+        request = page.request()
         inputs = self._host_inputs(
-            "host-microbe", request,
+            page, "host-microbe", request,
             "Positive biomass gDW values, basis kind, and source are required.",
         )
         if inputs is None:
@@ -3749,13 +4810,14 @@ class CmigMainWindow(QMainWindow):
         return jid
 
     def run_host_search_bigg(self) -> str:
-        """Rank microbial combinations by host objective/target transfer from the Host tab."""
+        """Rank microbial combinations by host objective/target transfer for one host."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        request = self.host_view.request()
+        page = self.host_search_page
+        request = page.request()
         inputs = self._host_inputs(
-            "host-search", request,
+            page, "host-search", request,
             "Positive biomass gDW values, basis kind, and source are required for ranking.",
         )
         if inputs is None:
@@ -3815,47 +4877,50 @@ class CmigMainWindow(QMainWindow):
 
         jid = self.submit_job("host_search_bigg", _job)
         self._record_command(jid, out_dir, argv)
-        self._host_search_jobs[jid] = (out_dir, self.search_view.request_fields("host_search"))
-        self.host_view.run_search_btn.setEnabled(False)
-        self.host_view.run_status.setText(f"host-search started: {jid}")
+        self._host_search_jobs[jid] = (out_dir, page.request_fields("host_search"))
+        page.run_btn.setEnabled(False)
+        page.status.setText(f"host-search started: {jid}")
         self._show_status("status_started", kind=self.tr_map["kind_host_search"], job_id=jid)
         return jid
 
-    def _search_tab_inputs(
-        self, kind: str, medium_ref: str
+    def _page_run_inputs(
+        self, page: GeneKoPage | StrainGrowthPage | RatioImpactPage, kind: str, medium_ref: str
     ) -> tuple[Path, Path | None, str | None] | None:
-        """Claim a run for a Search-page workflow: (out, taxonomy, medium file), or None after
-        the reason is shown on the page."""
-        model_ids = self.search_view.model_picker.selected_ids()
+        """Claim a run for a page with a model picker: (out, taxonomy, medium file), or None
+        after the reason is shown on the page."""
+        model_ids = page.model_picker.selected_ids()
         if not model_ids:
-            self.search_view.status.setText("Select at least one model.")
+            page.status.setText("Select at least one model.")
             return None
         try:
             medium_file = self._medium_arg(medium_ref)
-            out_dir, taxonomy = self._prepare_run(kind, model_ids)
+            out_dir, taxonomy = self._prepare_run(kind, model_ids, analysis=self._page_key(page))
         except (ProjectError, ValueError) as exc:
-            self.search_view.status.setText(str(exc))
+            page.status.setText(str(exc))
             return None
         return out_dir, taxonomy, medium_file
 
     def run_gene_ko_search(self) -> str:
-        """Run fixed-combination single-gene KO screening from the Search tab."""
+        """Run fixed-combination single-gene KO screening from the Gene Knockout page."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        requested = self.search_view.request_fields("gene_ko")
+        page = self.gene_ko_page
+        requested = page.request_fields("gene_ko")
         members = requested["ko_members"]
         member = requested["ko_member"]
         genes = requested["ko_genes"]
-        target, direction, target_error = _single_target(self.search_view.target_rows())
+        target, direction, target_error = _single_target(
+            [(requested["target"], requested["direction"], "", "")]
+        )
         if target_error:
-            self.search_view.status.setText(target_error)
+            page.status.setText(target_error)
             return ""
         if not members:
-            self.search_view.status.setText("KO members are required.")
+            page.status.setText("KO members are required.")
             return ""
         if genes and not member:
-            self.search_view.status.setText("Gene ids require a specific edited member.")
+            page.status.setText("Gene ids require a specific edited member.")
             return ""
         # Snapshot every answer-determining widget value HERE, on the GUI thread, before the
         # closure is handed to the executor. Reading `.value()` inside `_job` meant a queued
@@ -3863,7 +4928,7 @@ class CmigMainWindow(QMainWindow):
         # QWidget from a worker thread (undefined behaviour in Qt). Coordinator CC-8.
         max_genes = requested["max_genes"]
         top_k = requested["ko_top_k"]
-        inputs = self._search_tab_inputs("gene-ko", requested["medium"])
+        inputs = self._page_run_inputs(page, "gene-ko", requested["medium"])
         if inputs is None:
             return ""
         out_dir, taxonomy, medium_file = inputs
@@ -3908,18 +4973,19 @@ class CmigMainWindow(QMainWindow):
         jid = self.submit_job("gene_ko_search", _job)
         self._record_command(jid, out_dir, argv)
         self._gene_ko_jobs[jid] = (out_dir, requested)
-        self.search_view.run_ko_btn.setEnabled(False)
-        self.search_view.status.setText(f"gene KO search started: {jid}")
+        page.run_btn.setEnabled(False)
+        page.status.setText(f"gene KO search started: {jid}")
         self._show_status("status_started", kind=self.tr_map["kind_gene_ko_search"], job_id=jid)
         return jid
 
     def run_strain_growth_report(self) -> str:
-        """Run per-strain single/community growth profiling from the Search tab."""
+        """Run per-strain single/community growth profiling from the Strain Growth page."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        requested = self.search_view.request_fields("strain_growth")
-        inputs = self._search_tab_inputs("strain-growth", requested["medium"])
+        page = self.strain_growth_page
+        requested = page.request_fields("strain_growth")
+        inputs = self._page_run_inputs(page, "strain-growth", requested["medium"])
         if inputs is None:
             return ""
         out_dir, taxonomy, medium_file = inputs
@@ -3952,27 +5018,30 @@ class CmigMainWindow(QMainWindow):
         jid = self.submit_job("strain_growth", _job)
         self._record_command(jid, out_dir, argv)
         self._strain_growth_jobs[jid] = (out_dir, requested)
-        self.search_view.run_growth_btn.setEnabled(False)
-        self.search_view.status.setText(f"strain growth started: {jid}")
+        page.run_btn.setEnabled(False)
+        page.status.setText(f"strain growth started: {jid}")
         self._show_status("status_started", kind=self.tr_map["kind_strain_growth"], job_id=jid)
         return jid
 
     def run_abundance_impact(self) -> str:
-        """Run one-member abundance sweep from the Search tab."""
+        """Run one-member abundance sweep from the Ratio Impact page."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        requested = self.search_view.request_fields("abundance_impact")
+        page = self.ratio_impact_page
+        requested = page.request_fields("abundance_impact")
         member = requested["growth_member"]
         fractions = requested["fractions"]
-        target, _direction, target_error = _single_target(self.search_view.target_rows())
+        target, _direction, target_error = _single_target(
+            [(requested["target"], "max_secretion", "", "")]
+        )
         if target_error:
-            self.search_view.status.setText(target_error)
+            page.status.setText(target_error)
             return ""
         if not member:
-            self.search_view.status.setText("Target member is required for ratio impact.")
+            page.status.setText("Target member is required for ratio impact.")
             return ""
-        inputs = self._search_tab_inputs("abundance-impact", requested["medium"])
+        inputs = self._page_run_inputs(page, "abundance-impact", requested["medium"])
         if inputs is None:
             return ""
         out_dir, taxonomy, medium_file = inputs
@@ -4012,8 +5081,8 @@ class CmigMainWindow(QMainWindow):
             out_dir,
             requested,
         )
-        self.search_view.run_abundance_btn.setEnabled(False)
-        self.search_view.status.setText(f"ratio impact started: {jid}")
+        page.run_btn.setEnabled(False)
+        page.status.setText(f"ratio impact started: {jid}")
         self._show_status("status_started", kind=self.tr_map["kind_ratio_impact"], job_id=jid)
         return jid
 
@@ -4028,7 +5097,7 @@ class CmigMainWindow(QMainWindow):
             return ""
         try:
             model = str(self._model_file(str(request["model"])))
-            out_dir, _ = self._prepare_run("dfba", [])
+            out_dir, _ = self._prepare_run("dfba", [], analysis="dfba")
         except (ProjectError, ValueError) as exc:
             self.dynamics_view.status.setText(str(exc))
             return ""
@@ -4071,15 +5140,15 @@ class CmigMainWindow(QMainWindow):
         return jid
 
     def run_spatial_preview(self) -> str:
-        """Run COMETS-inspired spatial medium preview from the Dynamics tab."""
+        """Run COMETS-inspired spatial medium preview from the Spatial Preview page."""
         from cmig.cli.main import main
         from cmig.service import JobContext
 
-        request = self.dynamics_view.spatial_request()
+        request = self.spatial_page.spatial_request()
         try:
-            out_dir, _ = self._prepare_run("spatial", [])
+            out_dir, _ = self._prepare_run("spatial", [], analysis="spatial")
         except ProjectError as exc:
-            self.dynamics_view.status.setText(str(exc))
+            self.spatial_page.status.setText(str(exc))
             return ""
         argv = [
             "spatial-preview",
@@ -4118,8 +5187,8 @@ class CmigMainWindow(QMainWindow):
         jid = self.submit_job("spatial_preview", _job)
         self._record_command(jid, out_dir, argv)
         self._spatial_jobs[jid] = out_dir
-        self.dynamics_view.run_spatial_btn.setEnabled(False)
-        self.dynamics_view.status.setText(f"spatial preview started: {jid}")
+        self.spatial_page.run_btn.setEnabled(False)
+        self.spatial_page.status.setText(f"spatial preview started: {jid}")
         self._show_status("status_started", kind=self.tr_map["kind_spatial"], job_id=jid)
         return jid
 
@@ -4138,10 +5207,10 @@ class CmigMainWindow(QMainWindow):
             self.community_builder.status.setText("Select at least one member model.")
             return ""
         members = self.community_builder.members()
-        if self.community_builder.invalid_rows:
-            rows = ", ".join(str(r) for r in self.community_builder.invalid_rows)
+        if self.community_builder.invalid_members:
+            invalid = ", ".join(self.community_builder.invalid_members)
             self.community_builder.status.setText(
-                f"row {rows}: abundance is not a number — fix it before running."
+                f"{invalid}: abundance is not a number — fix it before running."
             )
             return ""
         # An abundance row for a model that is not picked used to be dropped silently, so the
@@ -4161,7 +5230,9 @@ class CmigMainWindow(QMainWindow):
             return ""
         tradeoff_f = self.community_builder.tradeoff_f()
         try:
-            out_dir, tax_path = self._prepare_run("community", model_ids, abundances=members)
+            out_dir, tax_path = self._prepare_run(
+                "community", model_ids, abundances=members, analysis="community"
+            )
         except ProjectError as exc:
             self.community_builder.status.setText(str(exc))
             return ""
@@ -4220,7 +5291,7 @@ class CmigMainWindow(QMainWindow):
             self.sweep_view.status.setText(self.tr_map["sweep_namespace_required"])
             return ""
         try:
-            out_dir, taxonomy = self._prepare_run("sweep", model_ids)
+            out_dir, taxonomy = self._prepare_run("sweep", model_ids, analysis="sweep")
         except ProjectError as exc:
             self.sweep_view.status.setText(str(exc))
             return ""
@@ -4359,7 +5430,7 @@ class CmigMainWindow(QMainWindow):
         allow_unknown = self.medium_editor.allow_unknown_check.isChecked()
         medium_file: Path | None = None
         try:
-            out_dir, taxonomy = self._prepare_run("medium-growth", model_ids)
+            out_dir, taxonomy = self._prepare_run("medium-growth", model_ids, analysis="medium")
             if uptake:
                 try:
                     medium_file = self._medium_input_file(out_dir, uptake)
@@ -4456,7 +5527,7 @@ class CmigMainWindow(QMainWindow):
         medium_file: Path | None = None
         try:
             model = self._model_file(chosen[0])
-            out_dir, _ = self._prepare_run("minimal-medium", [])
+            out_dir, _ = self._prepare_run("minimal-medium", [], analysis="medium")
             if uptake:
                 try:
                     medium_file = self._medium_input_file(out_dir, uptake)
@@ -4522,10 +5593,12 @@ class CmigMainWindow(QMainWindow):
         dir_a = self.scenario_compare.run_a_input.text().strip()
         dir_b = self.scenario_compare.run_b_input.text().strip()
         if not dir_a or not dir_b:
+            self._compare_failed()
             self.scenario_compare.status.setText("Select both Run A and Run B directories.")
             return
         path_a, path_b = Path(dir_a), Path(dir_b)
         if not (path_a / "profile.parquet").exists() or not (path_b / "profile.parquet").exists():
+            self._compare_failed()
             self.scenario_compare.status.setText(
                 "Both directories must be completed CMIG runs (profile.parquet missing)."
             )
@@ -4537,15 +5610,17 @@ class CmigMainWindow(QMainWindow):
             # status/objective/external_exchange/members, all present on the namespace.
             delta = compute_delta(result_a, result_b)  # type: ignore[arg-type]
         except Exception as e:
+            self._compare_failed()
             self.scenario_compare.status.setText(f"Scenario compare failed: {e}")
             return
         self.scenario_compare.load_comparison(delta)
+        self._blank_base_for_overlay()
         self.profile_view.show_delta_overlay(
             delta,
             baseline_label=self._message("profile_scenario_baseline", name=path_a.name),
             variant_label=self._message("profile_scenario_variant", name=path_b.name),
         )
-        self._show_profile()
+        self._show_profile("compare")
         self.scenario_compare.status.setText(
             f"compare complete: {dir_a} vs {dir_b} · {self.tr_map['profile_overlay_available']}"
         )
@@ -4582,6 +5657,10 @@ class CmigMainWindow(QMainWindow):
             if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
                 continue
             del self._job_runs[job_id]
+            if self._in_project_runs(run_dir):  # a closed project's run is not shown here
+                self._just_finished.append(
+                    (run_dir, "" if job.status is JobStatus.DONE else (job.error or ""))
+                )
             if job.status is JobStatus.DONE:
                 continue  # a finished run is judged by what it holds
             changed = True
@@ -4592,9 +5671,80 @@ class CmigMainWindow(QMainWindow):
                 self.statusBar().showMessage(str(exc), 8000)
         return changed
 
+    _STATUS_SYMBOLS = {"ok": "✓", "degraded": "⚠", "warning": "⚠", "cancelled": "⊘"}
+
+    def _show_last_run(self, run_dir: Path, error: str = "") -> None:
+        """Name the last finished run in the status bar; clicking it opens that run."""
+        from cmig.gui.inspector import _solver_label
+        from cmig.gui.run_restore import analysis_for_run
+
+        if not self._in_project_runs(run_dir):
+            return
+        entry = self._run_entry(Path(run_dir).resolve())
+        key, _record, _problem = analysis_for_run(entry.path)
+        title = (dict(ANALYSES).get(key or "") or ("Check Growth" if key == "check_growth"
+                 else entry.label.split(" · ")[0]))
+        symbol = self._STATUS_SYMBOLS.get(entry.status, "✗")
+        parts = [f"{symbol} {title}", entry.name]
+        try:
+            manifest = json.loads((entry.path / "manifest.json").read_text())
+        except (OSError, ValueError):
+            manifest = None
+        solver = _solver_label(manifest)
+        if solver and symbol != "✗":
+            parts.append(solver)
+        full_reason = self._failure_reason(error, first_line_only=False)
+        tip = [str(entry.path)]
+        if symbol == "✗":
+            parts.append(self._failure_reason(error) or entry.status)
+            tip.insert(0, full_reason or f"Status: {entry.status}")
+        elif symbol == "⚠":
+            tip.insert(0, f"Status: {entry.status}")
+        # A long reason is cut at the bar's edge; the tooltip carries all of it.
+        self.last_run_button.setText(self.last_run_button.fontMetrics().elidedText(
+            " · ".join(parts), Qt.TextElideMode.ElideRight, 640))
+        self.last_run_button.setToolTip("\n".join(tip))
+        self.last_run_button.setVisible(True)
+        self._last_run_dir = entry.path
+
+    @staticmethod
+    def _failure_reason(error: str, *, first_line_only: bool = True) -> str:
+        """A job's error as readable text (a serialized Diagnostic or plain text)."""
+        message = str((parse_diagnostic(error) or {}).get("message") or error)
+        text = message.removeprefix("RuntimeError: ").strip()
+        lines = text.splitlines()
+        if not lines:
+            return ""
+        return lines[0] if first_line_only else text
+
+    def _open_last_run(self) -> None:
+        if self._last_run_dir is not None:
+            self._open_run_entry(self._last_run_dir)
+
+    def _clear_last_run(self) -> None:
+        """Forget the last run: a previous project's run is neither shown nor opened."""
+        self._last_run_dir = None
+        self._just_finished.clear()
+        self.last_run_button.setText("")
+        self.last_run_button.setToolTip("")
+        self.last_run_button.setVisible(False)
+
     def _poll_completed_jobs(self) -> None:
+        # A readback hash runs in a nested event loop (`_run_off_thread`), which lets this
+        # 500 ms timer fire again before the first pass is done. Skip; the next tick retries.
+        if self._polling:
+            return
+        self._polling = True
+        try:
+            self._poll_completed_jobs_pass()
+        finally:
+            self._polling = False
+
+    def _poll_completed_jobs_pass(self) -> None:
         settled = self._settle_run_jobs()
-        self._finish_exchange_jobs()
+        self._finish_index_job()
+        self._finish_search_rows_job()
+        self._finish_check_growth_jobs()
         for jid in list(self._import_jobs):
             job = self.runner.poll(jid)
             if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
@@ -4621,10 +5771,14 @@ class CmigMainWindow(QMainWindow):
             self.sandbox_view.preview_btn.setEnabled(True)
             self.sandbox_view.commit_btn.setEnabled(True)
             if job.status is not JobStatus.DONE:
+                self._empty_community_result_on("sandbox")
+                self.sandbox_view.delta_view.setRowCount(0)
                 self.sandbox_view.status.setText(f"Sandbox {job.status.value}: {job.error or jid}")
                 continue
             result = job.result
             if result is None or getattr(result, "delta", None) is None:
+                self._empty_community_result_on("sandbox")
+                self.sandbox_view.delta_view.setRowCount(0)
                 self.sandbox_view.status.setText(
                     f"Sandbox finished with no result to display: {jid}"
                 )
@@ -4636,6 +5790,7 @@ class CmigMainWindow(QMainWindow):
             else:
                 self.sandbox_view.show_preview(result.delta, constraint)
                 variant_label = self.tr_map["profile_sandbox_preview"]
+            self._blank_base_for_overlay()
             self.profile_view.show_delta_overlay(
                 result.delta,
                 baseline_label=self.tr_map["profile_sandbox_baseline"],
@@ -4644,13 +5799,16 @@ class CmigMainWindow(QMainWindow):
             # Only an explicit Preview / Commit moves the centre to Profile. A debounced preview
             # fires while the user is still typing bounds, and leaving the page would hide the
             # delta table and its "table has changed" warning — and commit a half-typed cell.
+            # Either way the overlay belongs to the Sandbox page, never to another page's run.
             editing = (
-                self.pages.currentWidget() is self.sandbox_view
+                self.pages.currentWidget() is self.sandbox_page
                 and self.sandbox_view.bound_table.state()
                 == QAbstractItemView.State.EditingState
             )
             if not auto and not editing:
-                self._show_profile()
+                self._show_profile("sandbox")
+            else:
+                self._host_community_result("sandbox")
             self.sandbox_view.status.setText(
                 f"{self.sandbox_view.status.text()} · {self.tr_map['profile_overlay_available']}"
             )
@@ -4672,6 +5830,11 @@ class CmigMainWindow(QMainWindow):
             if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
                 self._search_cancel_pending.discard(jid)
                 self.bridge.cancelling.discard(jid)
+                if self._from_closed_project(out_dir):
+                    self._search_jobs.pop(jid, None)
+                    self.search_view.run_btn.setEnabled(True)
+                    self.search_view.cancel_btn.setEnabled(False)
+                    continue
             if job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._search_jobs.pop(jid, None)
                 self.search_view.run_btn.setEnabled(True)
@@ -4777,7 +5940,10 @@ class CmigMainWindow(QMainWindow):
                         )
         for jid, out_dir in list(self._host_microbe_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE:
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                self._host_microbe_jobs.pop(jid, None)
+                self.host_view.run_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE:
                 self._host_microbe_jobs.pop(jid, None)
                 self.host_view.run_btn.setEnabled(True)
                 # A completion message must not cover a failed readback (status bar + inspector).
@@ -4786,182 +5952,68 @@ class CmigMainWindow(QMainWindow):
                         "status_complete", kind=self.tr_map["kind_host_microbe"], job_id=jid
                     )
                 else:
+                    # The earlier run must not stay drawn under this run's failure message.
+                    self.host_view.clear_result()
                     self.host_view.run_status.setText(_UNREADABLE_RESULT.format(
                         kind="host-microbe", out_dir=out_dir))
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._host_microbe_jobs.pop(jid, None)
                 self.host_view.run_btn.setEnabled(True)
+                self.host_view.clear_result()
                 self.host_view.run_status.setText(
                     f"host-microbe {job.status.value}: {job.error or jid}"
                 )
-        for jid, (out_dir, requested) in list(self._host_search_jobs.items()):
-            job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, dict):
-                self._host_search_jobs.pop(jid, None)
-                self.host_view.run_search_btn.setEnabled(True)
-                if self._inspect_gui_run(out_dir) is None:
-                    continue
-                self.current_search_dir = out_dir
-                summary = _host_search_summary_for_search_view(job.result)
-                self.search_view.figure_mode_combo.setCurrentText("Ranking")
-                self.search_view.load_summary(
-                    _with_search_conditions(summary, job.result),
-                    run_dir=out_dir,
-                    request_note=self.search_view.superseded_note(requested, "host_search"),
-                    workflow_kind="host_search",
-                    executed_request=requested,
-                    source_summary=job.result,
-                )
-                self._show_page(self.search_view)
-                self._register_run_output(out_dir)
-                self._show_status(
-                    "status_complete_out",
-                    kind=self.tr_map["kind_host_search"],
-                    job_id=jid,
-                    out_dir=out_dir,
-                )
-            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
-                self._host_search_jobs.pop(jid, None)
-                self.host_view.run_search_btn.setEnabled(True)
-                self.host_view.run_status.setText(
-                    f"host-search {job.status.value}: {job.error or jid}"
-                )
-        for jid, (out_dir, requested) in list(self._gene_ko_jobs.items()):
-            job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, dict):
-                self._gene_ko_jobs.pop(jid, None)
-                self.search_view.run_ko_btn.setEnabled(True)
-                if self._inspect_gui_run(out_dir) is None:
-                    continue
-                self.current_search_dir = out_dir
-                summary = _gene_ko_summary_for_search_view(job.result)
-                self.search_view.figure_mode_combo.setCurrentText("Ranking")
-                self.search_view.load_summary(
-                    _with_search_conditions(summary, job.result),
-                    run_dir=out_dir,
-                    request_note=(self.search_view.effective_note(requested, "gene_ko")
-                                  + self.search_view.superseded_note(requested, "gene_ko")),
-                    workflow_kind="gene_ko",
-                    executed_request=requested,
-                    source_summary=job.result,
-                )
-                self._show_page(self.search_view)
-                self._register_run_output(out_dir)
-                self._show_status(
-                    "status_complete_out",
-                    kind=self.tr_map["kind_gene_ko_search"],
-                    job_id=jid,
-                    out_dir=out_dir,
-                )
-            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
-                self._gene_ko_jobs.pop(jid, None)
-                self.search_view.run_ko_btn.setEnabled(True)
-                self.search_view.status.setText(
-                    f"gene KO search {job.status.value}: {job.error or jid}"
-                )
-        for jid, (out_dir, requested) in list(self._strain_growth_jobs.items()):
-            job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, dict):
-                self._strain_growth_jobs.pop(jid, None)
-                self.search_view.run_growth_btn.setEnabled(True)
-                if self._inspect_gui_run(out_dir) is None:
-                    continue
-                self.current_search_dir = out_dir
-                summary = _strain_growth_summary_for_search_view(job.result)
-                self.search_view.figure_mode_combo.setCurrentText("Ranking")
-                self.search_view.load_summary(
-                    _with_search_conditions(summary, job.result),
-                    run_dir=out_dir,
-                    request_note=(self.search_view.effective_note(requested, "strain_growth")
-                                  + self.search_view.superseded_note(requested, "strain_growth")),
-                    workflow_kind="strain_growth",
-                    executed_request=requested,
-                    source_summary=job.result,
-                )
-                self._show_page(self.search_view)
-                self._register_run_output(out_dir)
-                self._show_status(
-                    "status_complete_out",
-                    kind=self.tr_map["kind_strain_growth"],
-                    job_id=jid,
-                    out_dir=out_dir,
-                )
-            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
-                self._strain_growth_jobs.pop(jid, None)
-                self.search_view.run_growth_btn.setEnabled(True)
-                self.search_view.status.setText(
-                    f"strain growth {job.status.value}: {job.error or jid}"
-                )
-        for jid, (out_dir, requested) in list(self._abundance_impact_jobs.items()):
-            job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, dict):
-                self._abundance_impact_jobs.pop(jid, None)
-                self.search_view.run_abundance_btn.setEnabled(True)
-                if self._inspect_gui_run(out_dir) is None:
-                    continue
-                self.current_search_dir = out_dir
-                summary = _abundance_impact_summary_for_search_view(job.result)
-                self.search_view.figure_mode_combo.setCurrentText("Ranking")
-                self.search_view.load_summary(
-                    _with_search_conditions(summary, job.result),
-                    run_dir=out_dir,
-                    request_note=(
-                        self.search_view.effective_note(requested, "abundance_impact")
-                        + self.search_view.superseded_note(requested, "abundance_impact")
-                    ),
-                    workflow_kind="abundance_impact",
-                    executed_request=requested,
-                    source_summary=job.result,
-                )
-                self._show_page(self.search_view)
-                self._register_run_output(out_dir)
-                self._show_status(
-                    "status_complete_out",
-                    kind=self.tr_map["kind_ratio_impact"],
-                    job_id=jid,
-                    out_dir=out_dir,
-                )
-            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
-                self._abundance_impact_jobs.pop(jid, None)
-                self.search_view.run_abundance_btn.setEnabled(True)
-                self.search_view.status.setText(
-                    f"ratio impact {job.status.value}: {job.error or jid}"
-                )
+        self._finish_ranked_jobs("host_search", self._host_search_jobs, "host-search")
+        self._finish_ranked_jobs("gene_ko", self._gene_ko_jobs, "gene KO search")
+        self._finish_ranked_jobs("strain_growth", self._strain_growth_jobs, "strain growth")
+        self._finish_ranked_jobs("ratio_impact", self._abundance_impact_jobs, "ratio impact")
         for jid, out_dir in list(self._dfba_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE:
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                self._dfba_jobs.pop(jid, None)
+                self.dynamics_view.run_dfba_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE:
                 self._dfba_jobs.pop(jid, None)
                 self.dynamics_view.run_dfba_btn.setEnabled(True)
                 if self.load_dfba_dir(out_dir):
                     self._show_status("status_complete", kind=self.tr_map["kind_dfba"], job_id=jid)
                 else:
-                    self.dynamics_view.status.setText(_UNREADABLE_RESULT.format(
+                    self.dynamics_view._clear_dynamics(_UNREADABLE_RESULT.format(
                         kind="dFBA", out_dir=out_dir))
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._dfba_jobs.pop(jid, None)
                 self.dynamics_view.run_dfba_btn.setEnabled(True)
-                self.dynamics_view.status.setText(f"dFBA {job.status.value}: {job.error or jid}")
+                # A failed rerun must not leave the previous timecourse drawn under its message.
+                self.dynamics_view._clear_dynamics(
+                    f"dFBA {job.status.value}: {job.error or jid}"
+                )
         for jid, out_dir in list(self._spatial_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE:
+            if job.status in _ENDED and self._from_closed_project(out_dir):
                 self._spatial_jobs.pop(jid, None)
-                self.dynamics_view.run_spatial_btn.setEnabled(True)
+                self.spatial_page.run_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE:
+                self._spatial_jobs.pop(jid, None)
+                self.spatial_page.run_btn.setEnabled(True)
                 if self.load_spatial_dir(out_dir):
                     self._show_status(
                         "status_complete", kind=self.tr_map["kind_spatial"], job_id=jid
                     )
                 else:
-                    self.dynamics_view.status.setText(_UNREADABLE_RESULT.format(
+                    self.spatial_page._clear_dynamics(_UNREADABLE_RESULT.format(
                         kind="spatial preview", out_dir=out_dir))
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._spatial_jobs.pop(jid, None)
-                self.dynamics_view.run_spatial_btn.setEnabled(True)
-                self.dynamics_view.status.setText(
+                self.spatial_page.run_btn.setEnabled(True)
+                self.spatial_page._clear_dynamics(
                     f"spatial preview {job.status.value}: {job.error or jid}"
                 )
         for jid, out_dir in list(self._community_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE:
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                self._community_jobs.pop(jid, None)
+                self.community_builder.run_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE:
                 self._community_jobs.pop(jid, None)
                 self.community_builder.run_btn.setEnabled(True)
                 manifest = (
@@ -4982,12 +6034,17 @@ class CmigMainWindow(QMainWindow):
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._community_jobs.pop(jid, None)
                 self.community_builder.run_btn.setEnabled(True)
+                # A failed rerun must not leave the previous run drawn under its message.
+                self.community_builder.results.show_empty()
                 self.community_builder.status.setText(
                     f"community solve {job.status.value}: {job.error or jid}"
                 )
         for jid, (out_dir, mode) in list(self._sweep_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE:
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                self._sweep_jobs.pop(jid, None)
+                self.sweep_view.run_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE:
                 self._sweep_jobs.pop(jid, None)
                 self.sweep_view.run_btn.setEnabled(True)
                 rows = _load_sweep_rows(out_dir / "sweep.parquet")
@@ -5018,8 +6075,9 @@ class CmigMainWindow(QMainWindow):
                 self._sweep_jobs.pop(jid, None)
                 self.sweep_view.run_btn.setEnabled(True)
                 rows = _load_sweep_rows(out_dir / "sweep.parquet")
+                # Rows it wrote before failing are shown; none leaves no earlier sweep on show.
+                self.sweep_view.load_results(rows)
                 if rows:
-                    self.sweep_view.load_results(rows)
                     self._register_run_output(out_dir)
                 artifact_note = (
                     self._message("sweep_failed_artifacts", count=len(rows)) if rows else ""
@@ -5035,7 +6093,10 @@ class CmigMainWindow(QMainWindow):
                 )
         for jid, (out_dir, request) in list(self._medium_growth_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, dict):
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                self._medium_growth_jobs.pop(jid, None)
+                self.medium_editor.check_growth_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._medium_growth_jobs.pop(jid, None)
                 self.medium_editor.check_growth_btn.setEnabled(True)
                 self._register_run_output(out_dir)
@@ -5070,7 +6131,7 @@ class CmigMainWindow(QMainWindow):
                     )
 
                 previous = self._last_medium_growth_check
-                if not self.load_run_dir(out_dir):
+                if not self.load_run_dir(out_dir, host_key="medium"):
                     # The growth figure came from files the GUI could not read back: do not
                     # present it, and keep the failure in the status bar and the inspector.
                     self.medium_editor.growth_label.setText(_UNREADABLE_RESULT.format(
@@ -5118,6 +6179,7 @@ class CmigMainWindow(QMainWindow):
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 self._medium_growth_jobs.pop(jid, None)
                 self.medium_editor.check_growth_btn.setEnabled(True)
+                self._empty_community_result_on("medium")
                 self.medium_editor.growth_label.setText(
                     self._message(
                         "medium_growth_failed",
@@ -5127,7 +6189,10 @@ class CmigMainWindow(QMainWindow):
                 )
         for jid, out_dir in list(self._minimal_medium_jobs.items()):
             job = self.runner.poll(jid)
-            if job.status is JobStatus.DONE and isinstance(job.result, dict):
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                self._minimal_medium_jobs.pop(jid, None)
+                self.medium_editor.minimal_medium_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE and isinstance(job.result, dict):
                 self._minimal_medium_jobs.pop(jid, None)
                 self.medium_editor.minimal_medium_btn.setEnabled(True)
                 self.medium_editor.load_minimal_result(job.result)
@@ -5158,6 +6223,95 @@ class CmigMainWindow(QMainWindow):
                 self.bridge.cancelling.discard(jid)
         if settled:
             self.session.refresh_runs()
+        if self._just_finished:
+            run_dir, error = self._just_finished[-1]
+            self._just_finished.clear()
+            self._show_last_run(run_dir, error)
+
+    def _ranked_page(self, key: str) -> RankedPage:
+        pages: dict[str, RankedPage] = {
+            "search": self.search_view, "gene_ko": self.gene_ko_page,
+            "strain_growth": self.strain_growth_page, "ratio_impact": self.ratio_impact_page,
+            "host_search": self.host_search_page,
+        }
+        return pages[key]
+
+    def _ranked_spec(self, key: str) -> tuple[str, Callable[[dict[str, Any]], dict[str, Any]],
+                                              str, str]:
+        """(summary file, adapter to the ranked table, workflow kind, status label key)."""
+        return {
+            "gene_ko": ("gene_ko_summary.json", _gene_ko_summary_for_search_view,
+                        "gene_ko", "kind_gene_ko_search"),
+            "strain_growth": ("strain_growth_summary.json",
+                              _strain_growth_summary_for_search_view, "strain_growth",
+                              "kind_strain_growth"),
+            "ratio_impact": ("abundance_impact_summary.json",
+                             _abundance_impact_summary_for_search_view, "abundance_impact",
+                             "kind_ratio_impact"),
+            "host_search": ("host_search_summary.json", _host_search_summary_for_search_view,
+                            "host_search", "kind_host_search"),
+        }[key]
+
+    def _show_ranked(
+        self, key: str, payload: dict[str, Any], out_dir: Path,
+        requested: dict[str, str] | None,
+    ) -> None:
+        """Show a ranked result; `requested` None = the run's inputs are not known, so nothing
+        is labelled as executed (the screen's inputs may belong to another run)."""
+        _file, adapter, kind, _label = self._ranked_spec(key)
+        page = self._ranked_page(key)
+        panel = page.results_panel
+        panel.figure_mode_combo.setCurrentText("Ranking")
+        panel.load_summary(
+            _with_search_conditions(adapter(payload), payload),
+            run_dir=out_dir,
+            request_note="" if requested is None else (
+                panel.effective_note(requested, kind) + panel.superseded_note(requested, kind)
+            ),
+            workflow_kind=kind,
+            executed_request=requested,
+            source_summary=payload,
+        )
+        self._show_page(self.analysis_pages[key])
+
+    def _finish_ranked_jobs(
+        self, key: str, jobs: dict[str, tuple[Path, dict[str, str]]], failure_label: str
+    ) -> None:
+        page = self._ranked_page(key)
+        for jid, (out_dir, requested) in list(jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status in _ENDED and self._from_closed_project(out_dir):
+                jobs.pop(jid, None)
+                page.run_btn.setEnabled(True)
+            elif job.status is JobStatus.DONE and isinstance(job.result, dict):
+                jobs.pop(jid, None)
+                page.run_btn.setEnabled(True)
+                if self._inspect_gui_run(out_dir) is None:
+                    self._clear_ranked(page)
+                    page.status.setText(
+                        _UNREADABLE_RESULT.format(kind=failure_label, out_dir=out_dir)
+                    )
+                    continue
+                self.current_search_dir = out_dir
+                self._show_ranked(key, job.result, out_dir, requested)
+                self._register_run_output(out_dir)
+                self._show_status("status_complete_out",
+                                  kind=self.tr_map[self._ranked_spec(key)[3]],
+                                  job_id=jid, out_dir=out_dir)
+            elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
+                jobs.pop(jid, None)
+                page.run_btn.setEnabled(True)
+                # A failed rerun must not leave the previous ranking drawn under its message.
+                self._clear_ranked(page)
+                page.status.setText(
+                    f"{failure_label} {job.status.value}: {job.error or jid}"
+                )
+
+    @staticmethod
+    def _clear_ranked(page: RankedPage) -> None:
+        """Drop a ranked page's shown result and empty its results area."""
+        page.results_panel.invalidate_results()
+        page.results.show_empty()
 
 
 def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:

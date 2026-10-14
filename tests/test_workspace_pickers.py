@@ -10,7 +10,7 @@ pytest.importorskip("PySide6")
 from gui_project_helpers import _deterministic_qt_teardown  # noqa: E402,F401
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLineEdit, QVBoxLayout, QWidget  # noqa: E402
 
 from cmig.gui.pickers import ModelPicker  # noqa: E402
 
@@ -80,4 +80,99 @@ def test_multi_picker_keyboard_space_toggles_the_current_row() -> None:
     picker.set_selected([])
     picker.choice_list.setCurrentRow(1)
     QTest.keyClick(picker.choice_list, Qt.Key.Key_Space)
+    assert picker.selected_ids() == ["b"]
+
+
+def _open(picker: ModelPicker):
+    picker.show()
+    picker.window().activateWindow()  # offscreen: hasFocus() is false in an inactive window
+    QTest.qWait(10)
+    menu = picker.menu()
+    menu.popup(picker.mapToGlobal(QPoint(0, picker.height())))
+    APP.processEvents()
+    QTest.qWait(10)  # the filter takes focus on the next event-loop turn
+    APP.processEvents()
+    return menu
+
+
+def _hosted(picker: ModelPicker) -> tuple[QWidget, QLineEdit]:
+    """A window where another field has focus, so "focus returns to the picker" is observable."""
+    host = QWidget()
+    other = QLineEdit()
+    layout = QVBoxLayout(host)
+    layout.addWidget(other)
+    layout.addWidget(picker)
+    host.show()
+    host.activateWindow()
+    other.setFocus()
+    QTest.qWait(10)
+    return host, other
+
+
+def test_keyboard_reaches_list_buttons_and_back() -> None:
+    picker = ModelPicker()
+    host, other = _hosted(picker)
+    picker.set_choices([("alpha", True, ""), ("beta", True, ""), ("gamma", True, "")])
+    picker.set_selected([])
+    menu = _open(picker)
+    assert picker.filter_input.hasFocus()
+    QTest.keyClick(picker.filter_input, Qt.Key.Key_Down)
+    assert picker.choice_list.hasFocus()
+    assert picker.choice_list.currentItem().text() == "alpha"
+    QTest.keyClick(picker.choice_list, Qt.Key.Key_Space)
+    assert picker.selected_ids() == ["alpha"] and menu.isVisible()
+    QTest.keyClick(picker.choice_list, Qt.Key.Key_Up)
+    assert picker.filter_input.hasFocus(), "Up on the first row goes back to the filter"
+    QTest.keyClick(picker.filter_input, Qt.Key.Key_Tab)
+    assert picker.choice_list.hasFocus()
+    QTest.keyClick(picker.choice_list, Qt.Key.Key_Tab)
+    assert picker.select_all_btn.hasFocus()
+    QTest.keyClick(picker.select_all_btn, Qt.Key.Key_Space)
+    assert picker.selected_ids() == ["alpha", "beta", "gamma"]
+    QTest.keyClick(picker.select_all_btn, Qt.Key.Key_Tab)
+    assert picker.select_none_btn.hasFocus()
+    QTest.keyClick(picker.select_none_btn, Qt.Key.Key_Tab)
+    assert picker.filter_input.hasFocus()
+    QTest.keyClick(picker.filter_input, Qt.Key.Key_Backtab)
+    assert picker.select_none_btn.hasFocus()
+    QTest.keyClick(picker.select_none_btn, Qt.Key.Key_Return)
+    QTest.qWait(10)  # the picker button takes focus on the next event-loop turn
+    assert not menu.isVisible()
+    picker.window().activateWindow()  # offscreen has no window manager to re-activate it
+    QTest.qWait(10)
+    assert picker.hasFocus() and not other.hasFocus(), "focus returns to the picker button"
+    assert picker.selected_ids() == ["alpha", "beta", "gamma"], "Return closes, it does not act"
+
+
+def test_filter_then_down_starts_at_first_shown_row() -> None:
+    picker = ModelPicker()
+    host, other = _hosted(picker)
+    picker.set_choices([("alpha", True, ""), ("beta", True, ""), ("bravo", True, "")])
+    picker.set_selected([])
+    menu = _open(picker)
+    QTest.keyClicks(picker.filter_input, "br")
+    QTest.keyClick(picker.filter_input, Qt.Key.Key_Down)
+    assert picker.choice_list.currentItem().text() == "bravo"
+    QTest.keyClick(picker.choice_list, Qt.Key.Key_Space)
+    assert picker.selected_ids() == ["bravo"]
+    QTest.keyClick(picker.choice_list, Qt.Key.Key_Escape)
+    QTest.qWait(10)
+    assert not menu.isVisible()
+    picker.window().activateWindow()  # offscreen has no window manager to re-activate it
+    QTest.qWait(10)
+    assert picker.hasFocus() and not other.hasFocus()
+
+
+def test_single_picker_return_picks_and_closes() -> None:
+    picker = ModelPicker("Model", single=True)
+    picker.set_choices([("a", True, ""), ("b", True, "")])
+    picker.show()
+    menu = picker.menu()
+    menu.popup(picker.mapToGlobal(QPoint(0, picker.height())))
+    APP.processEvents()
+    QTest.keyClick(menu, Qt.Key.Key_Down)
+    QTest.keyClick(menu, Qt.Key.Key_Down)
+    QTest.keyClick(menu, Qt.Key.Key_Return)
+    APP.processEvents()
+    assert not menu.isVisible()
     assert picker.selected_ids() == ["b"]
