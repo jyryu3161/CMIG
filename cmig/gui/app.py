@@ -1105,11 +1105,15 @@ class CmigMainWindow(QMainWindow):
         self._inspected_model: tuple[str, str] | None = None
         #: model sha256 -> why its browse index could not be built (this project only)
         self._index_failures: dict[str, str] = {}
-        #: the one index-building job, and the project root it builds for
+        #: the one index job ("check": an unlisted read of the index files; "build": the
+        #: Activity job that rebuilds the unusable ones), and the project root it is for
         self._index_job: str | None = None
+        self._index_job_kind = "check"
         self._index_job_root: Path | None = None
         #: model sha256 -> loaded browse index (a few recent ones)
         self._index_cache: dict[str, dict[str, Any]] = {}
+        #: model sha256s an index job found usable or rebuilt (this project only)
+        self._index_checked: set[str] = set()
         self.bridge = JobsBridge(self.runner, self.jobs_panel)
         self._fixture_jobs: dict[str, Path] = {}
         # Each Search-tab map holds (out_dir, the answer-determining inputs at submit time)
@@ -1901,6 +1905,8 @@ class CmigMainWindow(QMainWindow):
         for job_id in list(self.bridge._job_ids):
             if self.runner.poll(job_id).status in (JobStatus.PENDING, JobStatus.RUNNING):
                 self._cancel_job_id(job_id)
+        if self._index_job is not None and self._index_job_kind == "check":
+            self.runner.cancel(self._index_job)  # the unlisted index check of this project
 
     def _close_project_command(self) -> None:
         """File > Close Project: asks first when jobs are running."""
@@ -1981,6 +1987,7 @@ class CmigMainWindow(QMainWindow):
             # Browse indexes, their failures and the browsed model belong to that project too.
             self._index_failures = {}
             self._index_cache = {}
+            self._index_checked = set()
             self.model_browser.clear()
         # Rebuilding a group drops its rows' selection; put it back unless the project changed.
         current = None if switched else self._sidebar_current()
@@ -2405,6 +2412,7 @@ class CmigMainWindow(QMainWindow):
         self.model_browser.show_model(entry, index, self._index_problem(entry))
         self._show_page(self.model_browser)
         if index is None and entry.sha256 not in self._index_failures:
+            self._index_checked.discard(entry.sha256)  # unusable now, whatever a job found
             self._ensure_indexes()
 
     def _index_problem(self, entry: ModelEntry, unfinished: str = "") -> str:
@@ -2430,26 +2438,51 @@ class CmigMainWindow(QMainWindow):
         return index
 
     def _ensure_indexes(self) -> None:
-        """Build missing model indexes in one background job (listed in Activity)."""
+        """Check the model indexes not yet checked, in the background.
+
+        Nothing is read on the GUI thread: an unlisted job opens the index files, and only
+        when some cannot be used (missing, corrupt, older schema, another model's) does an
+        "Index Models" job in Activity rebuild them.
+        """
         from cmig.io import model_index
 
         project = self.session.project
         if project is None or self._index_job is not None:
             return
-        # An index file that cannot be used (corrupt, older schema, another model's) counts
-        # as missing: it is rebuilt, never left "being built" with nothing building.
         wanted = [
             (m.id, m.sha256, proj.model_path(project, m)) for m in project.models
             if m.status in ("ok", "warning") and m.integrity == "ok"
             and m.sha256 not in self._index_failures
             and m.sha256 not in self._index_cache
-            and model_index.load_index(project.root, m.sha256) is None
+            and m.sha256 not in self._index_checked
         ]
         if not wanted:
             return
         root = project.root
 
         def _job(ctx: Any) -> dict[str, Any]:
+            valid: list[str] = []
+            needed: list[tuple[str, str, Path]] = []
+            for model_id, sha, path in wanted:
+                if ctx.cancelled:
+                    break
+                if model_index.load_index(root, sha) is None:
+                    needed.append((model_id, sha, path))
+                else:
+                    valid.append(sha)
+            return {"valid": valid, "needed": needed, "root": str(root),
+                    "cancelled": ctx.cancelled}
+
+        # A read of small files, not a user job: kept out of Activity.
+        self._index_job = self.runner.submit("index_check", _job)
+        self._index_job_kind, self._index_job_root = "check", root
+
+    def _build_indexes(self, wanted: list[tuple[str, str, Path]], root: Path) -> None:
+        """Rebuild the given model indexes in one background job (listed in Activity)."""
+        from cmig.io import model_index
+
+        def _job(ctx: Any) -> dict[str, Any]:
+            rebuilt: list[str] = []
             failures: dict[str, str] = {}
             for i, (model_id, sha, path) in enumerate(wanted):
                 if ctx.cancelled:
@@ -2457,13 +2490,15 @@ class CmigMainWindow(QMainWindow):
                 ctx.report_progress(i, len(wanted))
                 try:
                     model_index.build_index_file(root, path, sha, model_id)
+                    rebuilt.append(sha)
                 except Exception as exc:  # noqa: BLE001 - one bad model must not stop the rest
                     failures[sha] = str(exc) or type(exc).__name__
             ctx.report_progress(len(wanted), len(wanted))
-            return {"failures": failures, "root": str(root), "cancelled": ctx.cancelled}
+            return {"rebuilt": rebuilt, "failures": failures, "root": str(root),
+                    "cancelled": ctx.cancelled}
 
         self._index_job = self.runner.submit("index_models", _job)
-        self._index_job_root = root
+        self._index_job_kind, self._index_job_root = "build", root
         self.bridge.track(self._index_job)
         self._job_commands[self._index_job] = f"Index {len(wanted)} model(s)"
 
@@ -2474,7 +2509,7 @@ class CmigMainWindow(QMainWindow):
         job = self.runner.poll(jid)
         if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
             return
-        job_root = self._index_job_root
+        kind, job_root = self._index_job_kind, self._index_job_root
         self._index_job, self._index_job_root = None, None
         project = self.session.project
         result = job.result if isinstance(job.result, dict) else {}
@@ -2484,10 +2519,21 @@ class CmigMainWindow(QMainWindow):
         if job_root is None or not _same_folder(project.root, job_root):
             self._ensure_indexes()  # it was the previous project's job: start this project's
             return
-        self._index_failures.update(result.get("failures", {}))
         cancelled = job.status is JobStatus.CANCELLED or bool(result.get("cancelled"))
-        if job.status is JobStatus.DONE and not cancelled:
-            self._ensure_indexes()  # models added or retried while this job ran
+        finished = job.status is JobStatus.DONE and not cancelled
+        if kind == "check":
+            self._index_checked.update(result.get("valid", []))
+            needed = [item for item in result.get("needed", [])
+                      if item[1] not in self._index_failures]
+            if finished and needed:
+                self._build_indexes(needed, job_root)
+            elif finished:
+                self._ensure_indexes()  # models added or retried while it ran
+        else:
+            self._index_failures.update(result.get("failures", {}))
+            self._index_checked.update(result.get("rebuilt", []))
+            if finished:
+                self._ensure_indexes()  # models added or retried while this job ran
         # Contents still missing after a cancelled or failed job are not "being built".
         unfinished = (
             "indexing was cancelled" if cancelled
@@ -2515,6 +2561,7 @@ class CmigMainWindow(QMainWindow):
         entry = project.model(model_id)
         self._index_failures.pop(entry.sha256, None)
         self._index_cache.pop(entry.sha256, None)
+        self._index_checked.discard(entry.sha256)
         self.model_browser.set_contents(None, "")
         self._ensure_indexes()
 

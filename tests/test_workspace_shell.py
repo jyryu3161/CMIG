@@ -789,6 +789,7 @@ def test_model_indexes_build_in_one_activity_job(
     window.recent = RecentProjects(QSettings(str(tmp_path / "r.ini"), QSettings.Format.IniFormat))
     make_project(tmp_path / "s", ["a", "b"], index=False)
     assert window.open_project(tmp_path / "s")
+    _wait_for(window, lambda: window._index_job_kind == "build")  # past the unlisted check
     jid = window._index_job
     assert jid is not None and jid in window.bridge._job_ids
     window.sidebar.select("models", "a")

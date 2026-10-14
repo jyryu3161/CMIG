@@ -329,3 +329,36 @@ def test_model_derived_labels_are_plain_text() -> None:
     for label in (b.title_label, b.contents_label, b.objective_label, b.objective_terms,
                   b.namespace_label, b.growth_label):
         assert label.textFormat() == Qt.TextFormat.PlainText
+
+
+def test_ensure_indexes_reads_no_index_on_the_gui_thread(tmp_path: Path, monkeypatch) -> None:
+    import threading
+
+    from cmig.io import model_index
+
+    real_load = model_index.load_index
+    on_main: list[bool] = []
+
+    def recording(root, sha):  # type: ignore[no-untyped-def]
+        on_main.append(threading.current_thread() is threading.main_thread())
+        return real_load(root, sha)
+
+    monkeypatch.setattr(model_index, "load_index", recording)
+    make_project(tmp_path / "p", ["a", "b"])  # usable (empty) indexes on disk
+    w = build_main_window()
+    _open(w, tmp_path / "p", tmp_path)  # opening calls _ensure_indexes
+    try:
+        assert w._index_job is not None and w._index_job_kind == "check"
+        assert w._index_job not in w.bridge._job_ids, "a check alone is not an Activity job"
+        deadline = time.time() + 10
+        while w._index_job is not None and time.time() < deadline:
+            APP.processEvents()
+            time.sleep(0.05)
+            w._poll_completed_jobs()
+        assert w._index_job is None
+        assert w.jobs_panel.rowCount() == 0, "nothing to rebuild: nothing in Activity"
+        assert on_main and not any(on_main), "index files are read only inside the job"
+        w._ensure_indexes()
+        assert w._index_job is None, "indexes the job found usable are not checked again"
+    finally:
+        w.close_project()
