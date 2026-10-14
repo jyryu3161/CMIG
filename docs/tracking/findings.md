@@ -1,5 +1,12 @@
 # 미해결 문제
 
+## 모델 자체의 강제 흡수 경계와 배지 상한이 충돌하면 cobra 오류 문구로 실패
+
+- 증상: 번들 `iAF987`(Geobacter)의 SBML은 `EX_fe3_e`(−67.37, −49.21), `EX_ac_e`(−8.88, −6.84)처럼 흡수를 **강제**한다. 이 대사체 행을 작은 상한으로 담은 배지(예: `gut_overlay_agora_high_fiber`의 `EX_fe3_m` 0.1)를 적용하면 `boundary.set_supply_limit`가 lower bound −0.1을 upper bound −49.21 위에 쓰려 해 cobra의 "The lower bound must be less than or equal to the upper bound (-0.1 <= -49.21)."로 그 후보가 실패한다(exact·merge 모두). 2026-10-14 측정, `iAF987`이 들어간 모든 조합 탐색 후보.
+- 영향: 후보를 거부하는 것 자체는 맞다(모델이 요구하는 공급을 배지가 주지 않는다). 그러나 이유가 모델의 강제 경계와 배지 상한의 모순이라는 사실이 문구에 없고, GUI 상태 줄에도 이 cobra 문구가 "가장 흔한 원인"으로 그대로 보인다.
+- 지금 못 푸는 이유: 이번 변경(pool 단위 배지 규칙·GUI 실패 사유)의 범위 밖이다. `boundary.py`의 강제 공급 처리(`forced_supply`, strict 거부)와 문구를 함께 정해야 하는 별도 과학 규칙 변경이다.
+- 방향: 상한이 모델의 강제 흡수량보다 작으면 "<model>의 SBML이 <exchange> 흡수 ≥ X를 강제하지만 배지는 Y까지만 준다"로 명시적으로 거부하고 테스트로 고정.
+
 ## 원격 solver CI가 매번 실패
 
 - 증상: quality가 통과한 `3621868` push에서 CI `solver-tests`가 "Gurobi WLS secrets are required for solver-tests."로 라이선스 설정 단계에서 실패했다(2026-09-25). 그 전 run들은 quality 실패로 이 단계에 도달하지 못했다. golden gate, 전체 pytest, 출판 smoke가 원격에서 한 번도 돌지 않았다.
