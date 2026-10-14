@@ -38,6 +38,12 @@ semantic versioning for public releases.
 
 ### Fixed — GUI failure reasons
 
+- A medium cap below an uptake a model's own SBML bounds force is refused in plain words:
+  "iAF987 requires uptake of fe3 ≥ 49.21 (its SBML bounds force it through EX_fe3_m) but the
+  medium allows at most 0.1" instead of cobra's "The lower bound must be less than or equal to
+  the upper bound (-0.1 <= -49.21)." Message only: the same candidates are refused with the
+  same status, and no bound or result changes (every iAF987 pair on the `gut_overlay_*`
+  presets).
 - A failed analysis page now shows the CLI's own reason (e.g. `dfba input error: --initial
   exchange ids not found in model: […]`) as `"<kind> failed: <reason> (rc=N)"`, not a
   Diagnostic JSON blob. A CLI exit 2 is recorded as the new job error code `input_error`, never

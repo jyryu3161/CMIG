@@ -292,6 +292,38 @@ def _close_supply(reaction: Any) -> bool:
     return True
 
 
+def _boundary_metabolite(reaction: Any) -> str:
+    """``fe3`` for ``EX_fe3_e`` (falls back to the metabolite id, then the reaction id)."""
+    metabolites = list(getattr(reaction, "metabolites", {}) or {})
+    if len(metabolites) != 1:
+        return str(getattr(reaction, "id", "?"))
+    metabolite = metabolites[0]
+    met_id = str(getattr(metabolite, "id", ""))
+    compartment = str(getattr(metabolite, "compartment", "") or "")
+    if compartment and met_id.endswith(f"_{compartment}"):
+        return met_id[: -len(compartment) - 1]
+    return met_id or str(getattr(reaction, "id", "?"))
+
+
+def _forcing_owner(reaction: Any) -> str:
+    """Name the model whose bounds force this supply — for a message only.
+
+    In a MICOM community the shared exchange inherits a member's forced bound; the member is
+    found by its own copy of the exchange (MICOM suffixes member reactions ``__<taxon>``). This
+    reads names to word an error and changes nothing; without a match the model's id is used.
+    """
+    model = getattr(reaction, "model", None)
+    rid = str(getattr(reaction, "id", ""))
+    stem = rid.rsplit("_", 1)[0] + "_" if "_" in rid else rid
+    for taxon in sorted(str(t) for t in (getattr(model, "taxa", None) or [])):
+        for member in getattr(model, "reactions", []):
+            mid = str(member.id)
+            if (mid.startswith(stem) and mid.endswith(f"__{taxon}")
+                    and forced_supply(member) > 0.0):
+                return taxon
+    return str(getattr(model, "id", None) or "the model")
+
+
 def set_supply_limit(reaction: Any, limit: float) -> None:
     """Allow this boundary reaction to supply at most ``limit`` (>= 0).
 
@@ -302,6 +334,17 @@ def set_supply_limit(reaction: Any, limit: float) -> None:
     if value < 0.0:
         raise BoundaryIsolationError(
             f"supply limit must be >= 0 (magnitude, mmol gDW^-1 h^-1); got {reaction.id}={value}"
+        )
+    forced = forced_supply(reaction)
+    if forced > value:
+        # The model's own bounds demand more of this nutrient than the medium offers. Setting
+        # the cap would invert the bounds; cobra then refused with "The lower bound must be less
+        # than or equal to the upper bound (-0.1 <= -49.21)", which says nothing about why.
+        # Same refusal (a ValueError subclass), named in the terms of the request.
+        raise BoundaryIsolationError(
+            f"{_forcing_owner(reaction)} requires uptake of {_boundary_metabolite(reaction)} "
+            f"≥ {forced:.6g} (its SBML bounds force it through {reaction.id}) but the medium "
+            f"allows at most {value:.6g}"
         )
     if _supplies_at_negative_flux(reaction):
         reaction.lower_bound = -value
