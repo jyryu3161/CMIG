@@ -47,6 +47,10 @@ semantic versioning for public releases.
   that summary — status `failed`, an empty ranking — with a status line such as "10 of 10
   candidates could not be evaluated: <most common diagnostic>"; the details list every
   unevaluated candidate and its diagnostic before the run warnings.
+- dFBA checks the Initial concentrations against the chosen model's browse index before
+  running and, when ids are missing, does not start a run the CLI would refuse: it shows
+  "Not in iAF987: EX_glc__D_e, EX_o2_e, EX_lac__D_e." and where to find the model's exchange
+  ids. Without a usable index it runs as before. The default composition is unchanged.
 
 ### Changed — GUI appearance
 

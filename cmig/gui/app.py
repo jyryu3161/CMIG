@@ -5182,6 +5182,38 @@ class CmigMainWindow(QMainWindow):
         self._show_status("status_started", kind=self.tr_map["kind_ratio_impact"], job_id=jid)
         return jid
 
+    def _missing_exchange_ids(self, model_ids: list[str], initial: str) -> str:
+        """Why a dFBA run would be refused for ids its model(s) lack ("" when none are known).
+
+        Reads each model's browse index off the GUI thread (a cached one is used as is). A
+        model without a usable index is not checked: the run goes ahead and the CLI decides.
+        """
+        from cmig.gui.precheck import initial_exchange_ids, missing_from_index
+        from cmig.io import model_index
+
+        ids = initial_exchange_ids(initial)
+        project = self.session.project
+        if not ids or project is None:
+            return ""
+        lines: list[str] = []
+        for model_id in model_ids:
+            try:
+                entry = project.model(model_id)
+            except ProjectError:
+                continue
+            index = self._index_cache.get(entry.sha256)
+            if index is None:
+                index = self._run_off_thread(model_index.load_index, project.root, entry.sha256)
+            missing = missing_from_index(ids, index)
+            if missing:
+                lines.append(f"Not in {model_id}: {', '.join(missing)}.")
+        if not lines:
+            return ""
+        return " ".join(lines) + (
+            " Change Initial concentrations to exchange ids this model has — the model "
+            "browser's Exchanges tab lists them — or remove these ones."
+        )
+
     def run_dfba(self) -> str:
         """Run user-model dFBA from the Dynamics tab."""
         from cmig.cli.main import main
@@ -5190,6 +5222,10 @@ class CmigMainWindow(QMainWindow):
         request = self.dynamics_view.dfba_request()
         if not request["model"]:
             self.dynamics_view.status.setText("Choose a model.")
+            return ""
+        refusal = self._missing_exchange_ids([str(request["model"])], str(request["initial"]))
+        if refusal:
+            self.dynamics_view.status.setText(refusal)
             return ""
         try:
             model = str(self._model_file(str(request["model"])))
