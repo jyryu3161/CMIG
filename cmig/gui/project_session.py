@@ -78,6 +78,19 @@ def merge_run_status(status: str, marker: str | None) -> str:
 
 
 def _summary_hint(inspected: dict[str, object], run_dir: Path) -> str:
+    """The run's target(s) from its summary; a Check Growth run names its model instead."""
+    return _summary_target(inspected, run_dir) or _requested_model(run_dir)
+
+
+def _requested_model(run_dir: Path) -> str:
+    record, _problem = proj.read_run_request(run_dir)
+    if record is None or record["analysis"] != "check_growth":
+        return ""
+    model = record["values"].get("model")
+    return model if isinstance(model, str) else ""
+
+
+def _summary_target(inspected: dict[str, object], run_dir: Path) -> str:
     import json
 
     summary_file = inspected.get("summary_file")

@@ -1134,6 +1134,15 @@ class CmigMainWindow(QMainWindow):
         #: growth job id -> (artifact directory, answer-determining request snapshot)
         self._medium_growth_jobs: dict[str, tuple[Path, dict[str, Any]]] = {}
         self._minimal_medium_jobs: dict[str, Path] = {}
+        #: Check Growth job id -> (run folder, model id, model sha256)
+        self._check_growth_jobs: dict[str, tuple[Path, str, str]] = {}
+        #: whether the user ticked/unticked the namespace box since that page's models changed
+        self._namespace_user_set: dict[str, bool] = {"community": False, "medium": False}
+        #: the box state the last default set (None: none since that page's models changed);
+        #: a box that no longer matches it was set since (restored inputs, a script) and stays
+        self._namespace_defaults: dict[str, bool | None] = {"community": None, "medium": None}
+        #: (model id, sha256, confirmation state, status, integrity) the browser header shows
+        self._browser_shown: tuple[str, str, str, str, str] | None = None
         #: The most recent completed Check Growth is the baseline for a later medium edit.
         self._last_medium_growth_check: tuple[Path, dict[str, Any]] | None = None
         self._medium_delta_active = False
@@ -1262,6 +1271,19 @@ class CmigMainWindow(QMainWindow):
             lambda mid: self.sidebar.select("models", mid)
         )
         self.model_browser.retry_index_requested.connect(self._retry_index)
+        self.model_browser.confirm_requested.connect(self._confirm_namespace)
+        self.model_browser.revoke_requested.connect(self._revoke_namespace)
+        self.model_browser.check_growth_requested.connect(self.run_check_growth)
+        self.community_builder.assume_bigg_check.clicked.connect(
+            lambda _c=False: self._namespace_user_set.__setitem__("community", True))
+        self.medium_editor.assume_bigg_check.clicked.connect(
+            lambda _c=False: self._namespace_user_set.__setitem__("medium", True))
+        for key, pickers in (("community", (self.community_builder.model_picker,)),
+                             ("medium", (self.medium_editor.model_picker,
+                                         self.medium_editor.single_model_picker))):
+            for picker in pickers:
+                picker.selection_changed.connect(
+                    lambda k=key: self._namespace_selection_changed(k))
         self.sidebar.files_dropped.connect(self.add_model_paths)
         self.sidebar.context_requested.connect(self._show_sidebar_menu)
         self.sidebar.itemSelectionChanged.connect(self._update_model_actions)
@@ -1270,6 +1292,8 @@ class CmigMainWindow(QMainWindow):
         self.session.opened.connect(self.refresh_workspace)
         self.session.closed.connect(self.refresh_workspace)
         self.session.models_changed.connect(self.refresh_workspace)
+        # After the refresh: an undo/redo of a confirmation redraws the browsed model's header.
+        self.session.models_changed.connect(self._browser_models_changed)
         self.session.media_changed.connect(self.refresh_workspace)
         self.session.runs_changed.connect(self.refresh_workspace)
         # An undo/redo whose save failed was rolled back. Report it without a modal dialog:
@@ -1989,6 +2013,10 @@ class CmigMainWindow(QMainWindow):
             self._index_cache = {}
             self._index_checked = set()
             self.model_browser.clear()
+            self._browser_shown = None
+            # A namespace choice made for the previous project's models is not one for these.
+            self._namespace_user_set = dict.fromkeys(self._namespace_user_set, False)
+            self._namespace_defaults = dict.fromkeys(self._namespace_defaults, None)
         # Rebuilding a group drops its rows' selection; put it back unless the project changed.
         current = None if switched else self._sidebar_current()
         selected_models = [] if switched else self.sidebar.selected_keys("models")
@@ -2008,6 +2036,7 @@ class CmigMainWindow(QMainWindow):
             self.welcome_recent.addItem(item)
         self.welcome_recent.setVisible(self.welcome_recent.count() > 0)
         self._refresh_pickers()
+        self._apply_namespace_defaults()
         if switched:
             # Opened, switched or closed: lay the centre out for the new state.
             self._shown_root = root
@@ -2024,6 +2053,7 @@ class CmigMainWindow(QMainWindow):
               and self.model_browser.model_id() not in {m.id for m in project.models}):
             # The browsed model was removed or renamed: never keep showing it as current.
             self.model_browser.clear()
+            self._browser_shown = None
             self._show_models_overview()
         self.model_manager.show_project_models([] if project is None else project.models)
         self._update_run_action()
@@ -2103,6 +2133,7 @@ class CmigMainWindow(QMainWindow):
             ("host", "microbe_medium"): self.host_view.microbe_medium_picker,
             ("host_search", "host_medium"): self.host_search_page.host_medium_picker,
             ("host_search", "microbe_medium"): self.host_search_page.microbe_medium_picker,
+            ("check_growth", "medium"): self.model_browser.medium_picker,
         }
 
     def _refresh_pickers(self) -> None:
@@ -2225,7 +2256,7 @@ class CmigMainWindow(QMainWindow):
         from cmig import __version__
         from cmig.gui.run_restore import request_models_and_media
 
-        page = self.analysis_pages[analysis]
+        page = self.model_browser if analysis == "check_growth" else self.analysis_pages[analysis]
         values = page.snapshot()  # type: ignore[attr-defined]
         page.clear_banner()  # type: ignore[attr-defined]
         models, media = request_models_and_media(values)
@@ -2410,10 +2441,12 @@ class CmigMainWindow(QMainWindow):
         self.current_analysis = None
         index = self._load_index(entry)
         self.model_browser.show_model(entry, index, self._index_problem(entry))
+        self._browser_shown = self._browser_state(entry)
         self._show_page(self.model_browser)
         if index is None and entry.sha256 not in self._index_failures:
             self._index_checked.discard(entry.sha256)  # unusable now, whatever a job found
             self._ensure_indexes()
+        self._show_latest_growth(entry)
 
     def _index_problem(self, entry: ModelEntry, unfinished: str = "") -> str:
         """Why `entry` has no browse index, or "" while one is (or will be) built."""
@@ -2565,6 +2598,219 @@ class CmigMainWindow(QMainWindow):
         self.model_browser.set_contents(None, "")
         self._ensure_indexes()
 
+    # ── namespace confirmation and Check Growth (model browser) ──────────────────────────
+    @staticmethod
+    def _browser_state(entry: ModelEntry) -> tuple[str, str, str, str, str]:
+        return (entry.id, entry.sha256, proj.confirmation_state(entry), entry.status,
+                entry.integrity)
+
+    def _confirm_namespace(self, model_id: str) -> None:
+        answer = QMessageBox.question(
+            self, "Confirm Namespace",
+            f"I reviewed {model_id}; its exchange ids already use the BiGG namespace.\n\n"
+            "CMIG will pass --assume-bigg-namespace for runs whose models are all confirmed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.session.confirm_namespace(model_id)
+        except ProjectError as exc:
+            self.statusBar().showMessage(str(exc), 8000)
+            self.refresh_workspace()  # e.g. its file was found changed: the sidebar says so
+        self._refresh_browser(model_id)
+
+    def _revoke_namespace(self, model_id: str) -> None:
+        try:
+            self.session.revoke_namespace(model_id)
+        except ProjectError as exc:
+            self.statusBar().showMessage(str(exc), 8000)
+        self._refresh_browser(model_id)
+
+    def _refresh_browser(self, model_id: str) -> None:
+        """Redraw the browsed model when its state differs from what the browser shows."""
+        project = self.session.project
+        if project is None or self.model_browser.model_id() != model_id:
+            return
+        entry = next((m for m in project.models if m.id == model_id), None)
+        if entry is None or self._browser_state(entry) == self._browser_shown:
+            return
+        self.model_browser.show_model(entry, self._load_index(entry),
+                                      self._index_problem(entry))
+        self._browser_shown = self._browser_state(entry)
+        self._show_latest_growth(entry)
+
+    def _browser_models_changed(self) -> None:
+        model_id = self.model_browser.model_id()
+        if model_id is not None:
+            self._refresh_browser(model_id)
+
+    def _namespace_selection_changed(self, key: str) -> None:
+        self._namespace_user_set[key] = False
+        self._namespace_defaults[key] = None
+        self._apply_namespace_defaults()
+
+    def _apply_namespace_defaults(self) -> None:
+        """Tick "already BiGG" on Community and Medium only when every chosen model is
+        confirmed in this project (a box the user set stays until that page's models change)."""
+        project = self.session.project
+        targets = {
+            "community": (self.community_builder.assume_bigg_check,
+                          self.community_builder.namespace_note,
+                          self.community_builder.model_picker.selected_ids()),
+            "medium": (self.medium_editor.assume_bigg_check, self.medium_editor.namespace_note,
+                       list(dict.fromkeys(self.medium_editor.model_picker.selected_ids()
+                                          + self.medium_editor.single_model_picker
+                                          .selected_ids()))),
+        }
+        for key, (check, note, ids) in targets.items():
+            if project is None or not ids:
+                note.setText("")
+                continue
+            known = [i for i in ids if any(m.id == i for m in project.models)]
+            confirmed_all, missing = proj.confirmation_summary(project, known)
+            if not confirmed_all:
+                note.setText(f"{', '.join(missing)} not confirmed")
+            elif len(known) == 1:
+                note.setText(f"{known[0]} is confirmed in this project")
+            else:
+                note.setText(f"All {len(known)} models confirmed in this project")
+            last = self._namespace_defaults[key]
+            if not self._namespace_user_set[key] and (last is None or check.isChecked() == last):
+                self._namespace_defaults[key] = confirmed_all
+                if check.isChecked() == confirmed_all:
+                    continue
+                blocked = check.blockSignals(True)
+                try:
+                    check.setChecked(confirmed_all)
+                finally:
+                    check.blockSignals(blocked)
+                if key == "medium":
+                    self._medium_context_changed()  # its toggled handler, blocked above
+
+    def _growth_running(self, entry: ModelEntry) -> bool:
+        return any(model_id == entry.id and sha == entry.sha256
+                   for _run, model_id, sha in self._check_growth_jobs.values())
+
+    def run_check_growth(self, model_id: str | None = None) -> str:
+        """`cmig single --fba` of the browsed model; returns the job id, or "" when refused."""
+        from cmig.cli.main import main
+        from cmig.service import JobContext
+
+        project = self.session.require()
+        model_id = model_id or self.model_browser.model_id()
+        if model_id is None:
+            return ""
+        if model_id != self.model_browser.model_id():
+            # The browser's medium and options are the run's inputs: never another model's.
+            self.statusBar().showMessage(
+                f"Check Growth runs on the model shown in the browser; select {model_id} first",
+                8000,
+            )
+            return ""
+        entry = project.model(model_id)
+        if proj.refresh_integrity(project, entry) != "ok":
+            self.refresh_workspace()  # a changed or missing file is shown as such
+        if not proj.namespace_confirmed(entry):
+            self._refresh_browser(model_id)  # e.g. "Changed since confirmed"
+            self.model_browser.set_growth(
+                "✗ Not run: confirm this model's namespace first (Confirm…). `cmig single` "
+                "refuses to run without a namespace decision."
+            )
+            return ""
+        values = self.model_browser.snapshot()
+        try:
+            model_file = self._model_file(model_id)
+            medium_file = self._medium_arg(str(values["medium"]))
+            out_dir, _ = self._prepare_run("check-growth", [], analysis="check_growth")
+        except (ProjectError, ValueError) as exc:
+            self.model_browser.set_growth(f"✗ Not run: {exc}")
+            return ""
+        argv = ["single", "--model", str(model_file), "--fba", "--out", str(out_dir)]
+        if medium_file:
+            argv.extend(["--medium", medium_file, "--exact-medium"])
+        if values["skip_unknown"]:
+            argv.append("--allow-unknown-medium")
+        argv.append("--assume-bigg-namespace")
+        _install_stderr_router()
+
+        def _job(ctx: JobContext) -> dict[str, Any]:
+            ctx.report_progress(0, 1)
+            ctx.raise_if_cancelled()
+            with _captured_job_stderr() as stderr_chunks:
+                rc = main(argv)
+            if rc != 0:
+                lines = "".join(stderr_chunks).strip().splitlines()
+                raise RuntimeError(lines[-1] if lines else f"cmig single exited {rc}")
+            _finish_after_artifacts(ctx)
+            return {"rc": rc}
+
+        jid = self.submit_job("check_growth", _job)
+        self._record_command(jid, out_dir, argv)
+        self._check_growth_jobs[jid] = (out_dir, entry.id, entry.sha256)
+        self.model_browser.check_growth_btn.setEnabled(False)
+        self.model_browser.set_growth("Checking growth…")
+        return jid
+
+    def _finish_check_growth_jobs(self) -> None:
+        for jid, (out_dir, model_id, sha) in list(self._check_growth_jobs.items()):
+            job = self.runner.poll(jid)
+            if job.status not in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
+                continue
+            self._check_growth_jobs.pop(jid, None)
+            project = self.session.project
+            entry = (None if project is None or not self._in_project_runs(out_dir)
+                     else next((m for m in project.models if m.id == model_id), None))
+            # Only the same model file, in the project the run was made in, shows this result.
+            if (entry is not None and entry.sha256 == sha
+                    and self.model_browser.model_id() == model_id
+                    and self.model_browser.snapshot()["sha256"] == sha):
+                self.model_browser.set_growth(self._growth_text(out_dir, model_id, job))
+                self.model_browser.check_growth_btn.setEnabled(
+                    entry.status in ("ok", "warning") and entry.integrity == "ok"
+                    and proj.namespace_confirmed(entry) and not self._growth_running(entry)
+                )
+            self.refresh_workspace()
+
+    def _growth_text(self, out_dir: Path, model_id: str, job: Job | None) -> str:
+        """The browser's growth line for one Check Growth run (a failure never reads as growth)."""
+        from cmig.gui.growth import medium_text, read_growth, run_clock
+
+        if job is not None and job.status is JobStatus.CANCELLED:
+            return "⊘ Cancelled"
+        if job is not None and job.status is JobStatus.FAILED:
+            message = str((parse_diagnostic(job.error) or {}).get("message") or "")
+            lines = message.removeprefix("RuntimeError: ").strip().splitlines()
+            reason = lines[-1] if lines else "the run failed"
+            hint = (" — tick “Skip medium metabolites this model lacks” to run without them"
+                    if "no counterpart" in reason else "")
+            return f"✗ Failed: {reason}{hint}"
+        state = proj.read_run_state(out_dir)
+        if state is not None:
+            return {"cancelled": "⊘ Cancelled"}.get(state, f"✗ Failed ({state}) — see the run")
+        if self._inspect_gui_run(out_dir) is None:
+            return "✗ Failed: the result could not be read back — see the inspector"
+        record, _problem = proj.read_run_request(out_dir)
+        medium = medium_text(str((record or {}).get("values", {}).get("medium") or ""))
+        entry = self.session.require().model(model_id)
+        reading = read_growth(out_dir, objective_warning=proj.objective_warning_of(entry),
+                              medium=medium, finished=run_clock(out_dir.name))
+        return f"{reading.symbol} {reading.text}"
+
+    def _show_latest_growth(self, entry: ModelEntry) -> None:
+        """The browsed model's running or newest Check Growth, for exactly this model file."""
+        from cmig.gui.growth import latest_check_growth
+
+        if self._growth_running(entry):
+            self.model_browser.check_growth_btn.setEnabled(False)
+            self.model_browser.set_growth("Checking growth…")
+            return
+        project = self.session.require()
+        run_dir = latest_check_growth(project.root, entry.id, entry.sha256)
+        if run_dir is not None:
+            self.model_browser.set_growth(self._growth_text(run_dir, entry.id, None))
+
     def _show_project_summary(self) -> None:
         project = self.session.project
         if project is None:
@@ -2608,6 +2854,8 @@ class CmigMainWindow(QMainWindow):
 
         run_dir = Path(run_dir).resolve()
         key, record, problem = analysis_for_run(run_dir)
+        if key == "check_growth" and self._open_check_growth_run(run_dir, record):
+            return
         page = self.analysis_pages.get(key or "")
         if page is None:
             self._inspector_run = None
@@ -2636,6 +2884,24 @@ class CmigMainWindow(QMainWindow):
                 status.setText(f"No result shown for {run_dir.name}: {reason}")
         page.show_banner(banner_text(run_dir.name, record, problem, notes))  # type: ignore[attr-defined]
         self._show_run_in_inspector(run_dir)
+
+    def _open_check_growth_run(self, run_dir: Path, record: dict[str, Any] | None) -> bool:
+        """Show a Check Growth run in its model's browser header; False when that model file
+        is no longer in the project (the run then opens like a run of no page)."""
+        project = self.session.project
+        values = {} if record is None else record["values"]
+        model_id, sha = values.get("model"), values.get("sha256")
+        entry = (None if project is None or not self._in_project_runs(run_dir)
+                 else next((m for m in project.models if m.id == model_id), None))
+        if entry is None or entry.sha256 != sha:
+            return False
+        self.sidebar.select("models", entry.id)  # shows the model, as a click on its row does
+        if (self.model_browser.model_id() != entry.id
+                or self.pages.currentWidget() is not self.model_browser):
+            self._show_model(entry)
+        self.model_browser.set_growth(self._growth_text(run_dir, entry.id, None))
+        self._show_run_in_inspector(run_dir)
+        return True
 
     def _run_status_label(self, key: str) -> QLabel:
         """The status line under `key`'s results (Sweep's frame has no results area)."""
@@ -5108,6 +5374,7 @@ class CmigMainWindow(QMainWindow):
     def _poll_completed_jobs(self) -> None:
         settled = self._settle_run_jobs()
         self._finish_index_job()
+        self._finish_check_growth_jobs()
         for jid in list(self._import_jobs):
             job = self.runner.poll(jid)
             if job.status in (JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED):
