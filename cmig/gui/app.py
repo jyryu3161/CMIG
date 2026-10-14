@@ -1887,7 +1887,7 @@ class CmigMainWindow(QMainWindow):
     #: what each model picker is called in status messages
     _PICKER_LABELS = {
         "search": "Search", "community": "Community", "host_model": "Host model",
-        "host": "Host microbes", "dfba": "Dynamics", "sweep": "Sweep",
+        "host": "Host microbes", "dfba": "dFBA", "sweep": "Sweep",
         "medium": "Medium growth check", "medium_single": "Minimal medium",
     }
 

@@ -94,7 +94,8 @@ def test_selecting_analysis_switches_page_and_inspector(window, tmp_path: Path) 
     window.sidebar.select("analyses", "strain_growth")
     assert window.pages.currentWidget() is window.search_view
     # Run follows the Strain Growth button of the page on show
-    assert window.run_action.isEnabled() == window.search_view.run_growth_btn.isEnabled()
+    assert window.search_view.run_growth_btn.isEnabled()
+    assert window.run_action.isEnabled()
 
 
 def test_selecting_model_updates_inspector(window, tmp_path: Path) -> None:

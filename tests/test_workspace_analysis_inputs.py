@@ -327,7 +327,7 @@ def test_remembered_model_that_stops_running_is_reported(setup, tmp_path: Path) 
     assert w.search_view.model_picker.selected_ids() == ["a"]
     assert w.dynamics_view.model_picker.selected_ids() == []
     message = w.statusBar().currentMessage()
-    assert "b (Search)" in message and "b (Dynamics)" in message
+    assert "b (Search)" in message and "b (dFBA)" in message
     w.statusBar().clearMessage()
     w.refresh_workspace()  # reported once, not on every refresh
     assert w.statusBar().currentMessage() == ""
