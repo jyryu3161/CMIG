@@ -1176,7 +1176,6 @@ class CmigMainWindow(QMainWindow):
         editor = self.medium_editor
         self.medium_page.register("models", editor.model_picker)
         self.medium_page.register("model", editor.single_model_picker)
-        self.medium_page.register_custom("rows", self._medium_rows, self._restore_medium_rows)
         for name, widget in (("exact", editor.exact_medium_check),
                              ("allow_unknown", editor.allow_unknown_check),
                              ("assume_bigg", editor.assume_bigg_check),
@@ -1184,6 +1183,8 @@ class CmigMainWindow(QMainWindow):
                              ("min_growth", editor.min_growth_spin),
                              ("oxygen_mode", editor.oxygen_mode_combo)):
             self.medium_page.register(name, widget)
+        # After "exact": the nutrients-only view it restores is judged against the exact mode.
+        self.medium_page.register_custom("rows", self._medium_rows, self._restore_medium_rows)
         sweep = self.sweep_view
         self.sweep_page.register("models", sweep.model_picker)
         for name in ("mediums", "abundance_variants", "member_sets", "bounds_variants",
@@ -1276,24 +1277,41 @@ class CmigMainWindow(QMainWindow):
         for table in self.findChildren(QTableWidget):
             hide_row_numbers(table)
 
-    def _medium_rows(self) -> list[list[str]]:
-        table = self.medium_editor.table
+    def _medium_rows(self) -> dict[str, Any]:
+        """The medium table as typed (each cell's text) and its Nutrients-only view."""
+        editor = self.medium_editor
+        table = editor.table
         rows = []
         for r in range(table.rowCount()):
             cells = [table.item(r, c) for c in range(3)]
             rows.append(["" if cell is None else cell.text() for cell in cells])
-        return rows
+        return {"rows": rows, "nutrients_only": editor.nutrients_only_check.isChecked()}
 
-    def _restore_medium_rows(self, rows: object) -> str | None:
+    def _restore_medium_rows(self, value: Any) -> str | None:
         editor = self.medium_editor
         try:
-            parsed = [(str(e), float(v), str(role)) for e, v, role in rows]  # type: ignore[attr-defined]
-        except (TypeError, ValueError):
+            parsed = [(str(e), str(limit), str(role)) for e, limit, role in value["rows"]]
+            nutrients_only = value["nutrients_only"]
+        except (TypeError, ValueError, KeyError):
+            return "medium rows could not be restored"
+        if not isinstance(nutrients_only, bool):
             return "medium rows could not be restored"
         editor.clear_rows()
-        for exchange, limit, role in parsed:
-            editor.add_row(exchange, limit, role, notify=False)
+        table = editor.table
+        blocked = table.blockSignals(True)
+        try:
+            for exchange, limit, role in parsed:
+                editor.add_row(exchange, 0.0, role, notify=False)
+                limit_item = table.item(table.rowCount() - 1, 1)
+                if limit_item is not None:  # add_row always sets it
+                    limit_item.setText(limit)  # verbatim: "10" stays "10", blank stays blank
+        finally:
+            table.blockSignals(blocked)
         editor._update_role_presentation()  # add_row(notify=False) leaves the role column as is
+        check_blocked = editor.nutrients_only_check.blockSignals(True)
+        editor.nutrients_only_check.setChecked(nutrients_only)
+        editor.nutrients_only_check.blockSignals(check_blocked)
+        editor._apply_role_view(nutrients_only, notify=False)
         editor.medium_changed.emit()
         return None
 
@@ -1598,6 +1616,20 @@ class CmigMainWindow(QMainWindow):
         page.results.show_results()  # type: ignore[attr-defined]
         self.community_result_page.setCurrentWidget(self.profile_view)
         return page
+
+    def _blank_base_for_overlay(self) -> None:
+        """A Compare or Sandbox overlay is not about the loaded run: drop that run's table,
+        targets, graph and badge so neither the page nor "Clear comparison overlay" shows them."""
+        self._clear_community_result()
+        if self._medium_delta_active:  # the overlay on show is no longer the medium's
+            self._medium_delta_active = False
+            self.medium_editor.profile_delta_label.clear()
+
+    def _compare_failed(self) -> None:
+        """A failed Compare leaves no earlier comparison on show (its status says why)."""
+        self._empty_community_result_on("compare")
+        self.scenario_compare.delta_view.setRowCount(0)
+        self.scenario_compare.growth_label.clear()
 
     def _empty_community_result_on(self, host_key: str) -> None:
         """A failed run on `host_key` must not leave that page's previous result on show."""
@@ -1922,6 +1954,16 @@ class CmigMainWindow(QMainWindow):
             # A growth check of the previous project is no baseline for this one's medium delta.
             self._last_medium_growth_check = None
             self._medium_delta_active = False
+            # Tool results belong to the previous project too.
+            self.scenario_compare.delta_view.setRowCount(0)
+            self.scenario_compare.growth_label.clear()
+            self.sandbox_view.delta_view.setRowCount(0)
+            self.sweep_view.table.setRowCount(0)
+            editor = self.medium_editor
+            for label in (editor.growth_label, editor.dropped_ids_label,
+                          editor.profile_delta_label, editor.minimal_status):
+                label.clear()
+            editor.minimal_table.setRowCount(0)
             self.host_view.clear_result()
             self.host_view.status.clear()
             for ranked in (self.search_view, self.gene_ko_page, self.strain_growth_page,
@@ -4665,12 +4707,12 @@ class CmigMainWindow(QMainWindow):
         dir_a = self.scenario_compare.run_a_input.text().strip()
         dir_b = self.scenario_compare.run_b_input.text().strip()
         if not dir_a or not dir_b:
-            self._empty_community_result_on("compare")
+            self._compare_failed()
             self.scenario_compare.status.setText("Select both Run A and Run B directories.")
             return
         path_a, path_b = Path(dir_a), Path(dir_b)
         if not (path_a / "profile.parquet").exists() or not (path_b / "profile.parquet").exists():
-            self._empty_community_result_on("compare")
+            self._compare_failed()
             self.scenario_compare.status.setText(
                 "Both directories must be completed CMIG runs (profile.parquet missing)."
             )
@@ -4682,10 +4724,11 @@ class CmigMainWindow(QMainWindow):
             # status/objective/external_exchange/members, all present on the namespace.
             delta = compute_delta(result_a, result_b)  # type: ignore[arg-type]
         except Exception as e:
-            self._empty_community_result_on("compare")
+            self._compare_failed()
             self.scenario_compare.status.setText(f"Scenario compare failed: {e}")
             return
         self.scenario_compare.load_comparison(delta)
+        self._blank_base_for_overlay()
         self.profile_view.show_delta_overlay(
             delta,
             baseline_label=self._message("profile_scenario_baseline", name=path_a.name),
@@ -4768,11 +4811,13 @@ class CmigMainWindow(QMainWindow):
             self.sandbox_view.commit_btn.setEnabled(True)
             if job.status is not JobStatus.DONE:
                 self._empty_community_result_on("sandbox")
+                self.sandbox_view.delta_view.setRowCount(0)
                 self.sandbox_view.status.setText(f"Sandbox {job.status.value}: {job.error or jid}")
                 continue
             result = job.result
             if result is None or getattr(result, "delta", None) is None:
                 self._empty_community_result_on("sandbox")
+                self.sandbox_view.delta_view.setRowCount(0)
                 self.sandbox_view.status.setText(
                     f"Sandbox finished with no result to display: {jid}"
                 )
@@ -4784,6 +4829,7 @@ class CmigMainWindow(QMainWindow):
             else:
                 self.sandbox_view.show_preview(result.delta, constraint)
                 variant_label = self.tr_map["profile_sandbox_preview"]
+            self._blank_base_for_overlay()
             self.profile_view.show_delta_overlay(
                 result.delta,
                 baseline_label=self.tr_map["profile_sandbox_baseline"],
@@ -5048,8 +5094,9 @@ class CmigMainWindow(QMainWindow):
                 self._sweep_jobs.pop(jid, None)
                 self.sweep_view.run_btn.setEnabled(True)
                 rows = _load_sweep_rows(out_dir / "sweep.parquet")
+                # Rows it wrote before failing are shown; none leaves no earlier sweep on show.
+                self.sweep_view.load_results(rows)
                 if rows:
-                    self.sweep_view.load_results(rows)
                     self._register_run_output(out_dir)
                 artifact_note = (
                     self._message("sweep_failed_artifacts", count=len(rows)) if rows else ""
