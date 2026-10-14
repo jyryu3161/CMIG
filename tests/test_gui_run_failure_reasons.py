@@ -377,3 +377,15 @@ def test_ranked_pages_carry_the_pool_record_through_their_adapter():
     payload = {"top_ranked": [], "warnings": [], "medium_not_applicable_to_pool": ["EX_x_m"]}
     shown = _with_search_conditions(_host_search_summary_for_search_view(payload), payload)
     assert shown["medium_not_applicable_to_pool"] == ["EX_x_m"]
+
+
+def test_search_status_names_the_pool_not_applicable_ids(w):
+    summary = {
+        "status": "ok", "strategy": "exhaustive", "top_ranked": [], "warnings": [],
+        "medium_not_applicable_to_pool": ["EX_notreal_m", "EX_x_m"],
+        "medium_matched": {"matched": 8, "requested": 10, "fraction": 0.8},
+    }
+    w.search_view.load_summary(summary, workflow_kind="search")
+    status = w.search_view.status.text()
+    assert "2 medium ids not applicable to this pool" in status, status
+    assert "medium_matched: {'matched': 8" in w.search_view.details.toPlainText()

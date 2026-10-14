@@ -13,10 +13,10 @@ import csv
 import hashlib
 import json
 import math
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -425,12 +425,30 @@ MEDIUM_ZERO_MATCH_HINT = (
 
 def medium_ids_with_counterpart(model: object, spec: MediumSpec) -> frozenset[str]:
     """The requested ids ``model`` has an exchange for, keyed exactly as the translation keys."""
+    return _ids_with_counterpart(model, [str(source) for source in spec.uptake])
+
+
+def _ids_with_counterpart(model: object, ids: Any) -> frozenset[str]:
     candidates, by_id = _exchange_candidates(model)
     return frozenset(
-        str(source)
-        for source in spec.uptake
+        str(source) for source in ids
         if by_id.get(str(source), exchange_metabolite(str(source))) in candidates
     )
+
+
+MEDIUM_NEAR_MISS = (
+    "medium exchange ids written in another notation of exchanges the selected models have "
+    "(VMH `glc_D`/`(e)` vs BiGG `glc__D`/`_e`): {pairs}"
+)
+MEDIUM_NEAR_MISS_HINT = (
+    "rename them in the medium file; or allow unknown medium ids (--allow-unknown-medium) to "
+    "drop them (they are then listed as not applied)"
+)
+MEDIUM_CANDIDATE_ZERO_MATCH = (
+    "none of the medium's {n} exchange ids reaches this candidate ({members}) (matched on "
+    "metabolite; other models of the pool do match), so it would grow on its models' own default "
+    "bounds, not on the medium — its models are probably in another namespace than the medium"
+)
 
 
 @dataclass(frozen=True)
@@ -439,9 +457,14 @@ class PoolMediumCoverage:
 
     by_model: dict[str, frozenset[str]]
     requested: tuple[str, ...]
-    #: Pool members whose model file could not be read. They are left out of the coverage and
-    #: keep their own failure where they are used (a load_failed row, a failed candidate).
+    #: Pool members whose model could not be read, or whose exchanges could not be resolved.
+    #: They are left out of the coverage and keep their own failure where they are used (a
+    #: load_failed row, a failed candidate); `unusable_reasons` says why, for the refusal text.
     unreadable: tuple[str, ...] = ()
+    unusable_reasons: dict[str, str] = field(default_factory=dict)
+    #: Pool-unknown ids that WOULD match a pool model in BiGG notation (id -> likely id). Not
+    #: "not applicable to the pool": a near miss is a namespace error, refused in strict mode.
+    near_misses: dict[str, str] = field(default_factory=dict)
 
     @property
     def known(self) -> frozenset[str]:
@@ -460,21 +483,44 @@ class PoolMediumCoverage:
 
     @property
     def pool_not_applicable(self) -> tuple[str, ...]:
-        """Ids no pool model can take up while others match: dropped, LP unchanged."""
-        return () if self.matches_nothing else self.unknown
+        """Ids no pool model can take up while others match: dropped, LP unchanged.
 
-    def require_some_match(self) -> None:
-        """Refuse a medium none of whose ids matches any pool model (strict mode only)."""
+        Near misses are excluded: they are the same nutrient in another notation.
+        """
         if self.matches_nothing:
-            unread = (
-                f" (pool models that could not be read and were not consulted: "
-                f"{', '.join(self.unreadable)})" if self.unreadable else ""
-            )
+            return ()
+        return tuple(source for source in self.unknown if source not in self.near_misses)
+
+    @property
+    def not_applied(self) -> tuple[str, ...]:
+        """Ids that can only be dropped as "not applied" (`--allow-unknown-medium`)."""
+        return self.unknown if self.matches_nothing else tuple(sorted(self.near_misses))
+
+    def matched_fraction(self) -> dict[str, Any]:
+        """{matched, requested, fraction} of the medium's ids over the readable pool."""
+        n = len(self.requested)
+        matched = len(self.known)
+        return {"matched": matched, "requested": n,
+                "fraction": round(matched / n, 4) if n else None}
+
+    def check_namespace(self) -> None:
+        """Strict mode: refuse a medium that matches no pool model, or that has near misses."""
+        if self.matches_nothing:
+            unread = ""
+            if self.unreadable:
+                why = "; ".join(
+                    f"{member}: {self.unusable_reasons[member]}" if member in self.unusable_reasons
+                    else member for member in self.unreadable
+                )
+                unread = f" (pool models that could not be read and were not consulted: {why})"
             shown = list(self.requested[:10]) + (["…"] if len(self.requested) > 10 else [])
             raise ValueError(
                 MEDIUM_ZERO_MATCH.format(n=len(self.requested))
                 + f": {shown}{unread}. {MEDIUM_ZERO_MATCH_HINT}"
             )
+        if self.near_misses:
+            pairs = ", ".join(f"{k} -> {v}" for k, v in sorted(self.near_misses.items()))
+            raise ValueError(f"{MEDIUM_NEAR_MISS.format(pairs=pairs)}. {MEDIUM_NEAR_MISS_HINT}")
 
     def split(
         self, unmatched: Any, members: Any
@@ -482,8 +528,10 @@ class PoolMediumCoverage:
         """Split one candidate's unmatched ids: (not applicable to this community, not
         applicable to this pool, unknown).
 
-        "Unknown" is only non-empty when the medium matches no pool model at all (strict mode
-        refuses that before any candidate runs; `--allow-unknown-medium` drops them as before).
+        "Unknown" is non-empty only for near misses or when the medium matches no pool model at
+        all (strict mode refuses both before any candidate runs; `--allow-unknown-medium` drops
+        them as not applied). A candidate that none of the medium's ids reaches while the pool
+        does match is refused: it would grow on its models' defaults, not on the medium.
         Refuses an id that one of the candidate's own members can take up: that would mean the
         community dropped an exchange its member has, and calling it "not applicable" would hide
         a medium that silently did not apply.
@@ -493,10 +541,15 @@ class PoolMediumCoverage:
         for member in sorted(str(m) for m in members):
             for source in self.by_model.get(member, frozenset()):
                 own.setdefault(source, member)
+        unmatched = sorted(str(s) for s in unmatched)
+        if self.requested and not self.matches_nothing and set(self.requested) <= set(unmatched):
+            raise ValueError(MEDIUM_CANDIDATE_ZERO_MATCH.format(
+                n=len(self.requested), members="+".join(sorted(str(m) for m in members))
+            ))
         community: list[str] = []
         pool: list[str] = []
         unknown: list[str] = []
-        for source in sorted(str(s) for s in unmatched):
+        for source in unmatched:
             if source in own:
                 raise ValueError(
                     f"medium exchange {source} has a counterpart in candidate member "
@@ -505,7 +558,7 @@ class PoolMediumCoverage:
                 )
             if source in known:
                 community.append(source)
-            elif self.matches_nothing:
+            elif self.matches_nothing or source in self.near_misses:
                 unknown.append(source)
             else:
                 pool.append(source)
@@ -518,31 +571,55 @@ def pool_medium_coverage(
     *,
     sources: dict[str, str] | None = None,
     unreadable: tuple[str, ...] = (),
+    unusable_reasons: dict[str, str] | None = None,
+    notation: Callable[[str], str] | None = None,
 ) -> PoolMediumCoverage:
     """Coverage of ``spec`` over a pool given as ``{member id: cobra model}``.
 
-    An exchange whose identity cannot be resolved is refused naming the pool member (and its
-    file, from ``sources``) — the refusal happens before any candidate runs, so without the name
-    a user could not tell which of the selected models to fix.
+    A model whose exchanges cannot be resolved is left out and listed like an unreadable one
+    (its reason names the member and its file, from ``sources``); its candidates fail where it
+    is used. ``notation`` (e.g. :func:`cmig.io.agora2.bigg_exchange_notation`, passed in so core
+    does not depend on the AGORA2 module) rewrites an id into the models' notation; a pool-unknown
+    id whose rewrite matches a pool model is recorded in ``near_misses``.
     """
     spec.validate()
+    requested = tuple(sorted(str(source) for source in spec.uptake))
+    reasons = dict(unusable_reasons or {})
+    left_out = list(unreadable)
     by_model: dict[str, frozenset[str]] = {}
+    usable: dict[str, Any] = {}
     for member, model in sorted(models.items()):
         try:
             by_model[str(member)] = medium_ids_with_counterpart(model, spec)
         except ValueError as error:
-            where = str(member) + (
-                f" ({sources[str(member)]})" if sources and str(member) in sources else ""
-            )
-            raise ValueError(f"pool model {where}: {error}") from error
+            where = f" ({sources[str(member)]})" if sources and str(member) in sources else ""
+            reasons[str(member)] = f"{error}{where}"
+            left_out.append(str(member))
+            continue
+        usable[str(member)] = model
+    known = frozenset().union(*by_model.values()) if by_model else frozenset()
+    near: dict[str, str] = {}
+    if notation is not None and known:
+        rewrites = {
+            source: notation(source) for source in requested
+            if source not in known and notation(source) != source
+        }
+        reachable: set[str] = set()
+        for model in usable.values():
+            reachable |= _ids_with_counterpart(model, rewrites.values())
+        near = {source: likely for source, likely in rewrites.items() if likely in reachable}
     return PoolMediumCoverage(
         by_model=by_model,
-        requested=tuple(sorted(str(source) for source in spec.uptake)),
-        unreadable=tuple(sorted(unreadable)),
+        requested=requested,
+        unreadable=tuple(sorted(left_out)),
+        unusable_reasons=reasons,
+        near_misses=near,
     )
 
 
-def pool_medium_coverage_from_taxonomy(taxonomy: Any, spec: MediumSpec) -> PoolMediumCoverage:
+def pool_medium_coverage_from_taxonomy(
+    taxonomy: Any, spec: MediumSpec, *, notation: Callable[[str], str] | None = None
+) -> PoolMediumCoverage:
     """Coverage of ``spec`` over the models a taxonomy (``id``, ``file``) names.
 
     A model file that cannot be read is left out (and listed in ``unreadable``): the workflow
@@ -551,24 +628,27 @@ def pool_medium_coverage_from_taxonomy(taxonomy: Any, spec: MediumSpec) -> PoolM
     from cmig.io.model_import import ModelImportError, load_cobra_model
 
     loaded: dict[str, Any] = {}
-    failed: set[str] = set()
+    failed: dict[str, str] = {}
     models: dict[str, Any] = {}
     sources: dict[str, str] = {}
     unreadable: list[str] = []
+    reasons: dict[str, str] = {}
     for record in taxonomy.to_dict("records"):
         member, path = str(record["id"]), str(record["file"])
         if path not in loaded and path not in failed:
             try:
                 loaded[path] = load_cobra_model(path)
-            except (ModelImportError, OSError, ValueError):
-                failed.add(path)
+            except (ModelImportError, OSError, ValueError) as error:
+                failed[path] = str(error).splitlines()[0] if str(error) else type(error).__name__
         if path in failed:
             unreadable.append(member)
+            reasons[member] = f"{failed[path]} ({path})"
             continue
         models[member] = loaded[path]
         sources[member] = path
     return pool_medium_coverage(
-        models, spec, sources=sources, unreadable=tuple(unreadable)
+        models, spec, sources=sources, unreadable=tuple(unreadable),
+        unusable_reasons=reasons, notation=notation,
     )
 
 

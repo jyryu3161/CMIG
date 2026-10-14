@@ -102,7 +102,7 @@ def test_a_candidate_missing_ids_splits_them_into_community_and_pool_not_applica
     assert pool == ("EX_notreal_m",)                   # no pool model has it; others match
     assert unknown == ()
     assert coverage.pool_not_applicable == ("EX_notreal_m",)
-    assert coverage.require_some_match() is None
+    assert coverage.check_namespace() is None
 
 
 def test_a_medium_that_matches_no_pool_model_at_all_is_refused():
@@ -116,7 +116,7 @@ def test_a_medium_that_matches_no_pool_model_at_all_is_refused():
         (), (), ("EX_glc_D(e)", "EX_notreal_m"),
     )
     with pytest.raises(ValueError, match="none of the medium's 2 exchange ids matches"):
-        coverage.require_some_match()
+        coverage.check_namespace()
 
 
 def test_an_id_a_member_has_but_the_community_lacks_is_refused_not_hidden():
@@ -210,10 +210,10 @@ def test_only_a_medium_that_matches_nothing_is_refused_from_the_model_files(tmp_
         cobra.io.save_json_model(model, str(paths[member]))
     taxonomy = _TAXONOMY.assign(file=[str(paths[m]) for m in _TAXONOMY["id"]])
     spec = MediumSpec(uptake={**_POOL_MEDIUM.uptake, "EX_notreal_m": 1.0})
-    assert pool_medium_coverage_from_taxonomy(taxonomy, spec).require_some_match() is None
+    assert pool_medium_coverage_from_taxonomy(taxonomy, spec).check_namespace() is None
     nonsense = MediumSpec(uptake={"EX_notreal_m": 1.0})
     with pytest.raises(ValueError, match="none of the medium's 1 exchange ids matches"):
-        pool_medium_coverage_from_taxonomy(taxonomy, nonsense).require_some_match()
+        pool_medium_coverage_from_taxonomy(taxonomy, nonsense).check_namespace()
 
 
 # ── the claim the rule rests on: dropping an id the community lacks leaves the LP identical ────
@@ -672,7 +672,7 @@ def test_coverage_leaves_an_unreadable_model_out_and_names_it():
     assert coverage.unreadable == ("broken",)
     # Zero matches among readable models: refused, naming the models that were not consulted.
     with pytest.raises(ValueError, match="could not be read and were not consulted: broken"):
-        coverage.require_some_match()
+        coverage.check_namespace()
 
 
 def test_medium_gap_survey_keeps_its_load_failed_row_for_an_unreadable_model(tmp_path):
@@ -746,7 +746,8 @@ def test_gene_ko_coverage_reads_only_the_consortium_models(tmp_path, capsys):
     assert summary["medium_not_applicable_to_pool"] == ["EX_but_m"]
 
 
-def test_an_unresolvable_exchange_names_the_pool_model_and_its_file(tmp_path):
+def test_an_unresolvable_pool_model_is_left_out_like_an_unreadable_one(tmp_path):
+    """Review round 3: one odd model must not refuse the whole run (its candidates fail)."""
     from cmig.core.medium_spec import pool_medium_coverage_from_taxonomy
 
     bad = cobra.Model("bad")
@@ -755,8 +756,135 @@ def test_an_unresolvable_exchange_names_the_pool_model_and_its_file(tmp_path):
     bad.add_reactions([reaction])
     path = tmp_path / "bad.json"
     cobra.io.save_json_model(bad, str(path))
-    taxonomy = pd.DataFrame({"id": ["oddball"], "file": [str(path)]})
+    good = tmp_path / "a.json"
+    cobra.io.save_json_model(_pool_models()["a"], str(good))
+    taxonomy = pd.DataFrame({"id": ["oddball", "a"], "file": [str(path), str(good)]})
+    coverage = pool_medium_coverage_from_taxonomy(taxonomy, _POOL_MEDIUM)
+    assert coverage.unreadable == ("oddball",)
+    assert "a" in coverage.by_model and "oddball" not in coverage.by_model
+    coverage.check_namespace()                         # 'a' matches: no refusal
+    alone = pool_medium_coverage_from_taxonomy(taxonomy.iloc[:1], _POOL_MEDIUM)
+    with pytest.raises(ValueError) as error:          # zero matches: refused, naming it
+        alone.check_namespace()
+    message = str(error.value)
+    assert "oddball" in message and str(path) in message
+    assert "unresolved exchange metabolite identity" in message
+
+
+# ── review round 3: per-candidate zero match, near-miss notation, matched fraction ─────────────
+
+
+def _ms_consumer():
+    """The synthetic consumer with its nutrient exchange in another namespace (`ms_ac`).
+
+    Its acetate uptake is open in the SBML (-10), so on a merge medium it grows on its own
+    defaults; its butyrate exchange keeps the BiGG id so the target exists.
+    """
+    from cmig.synthetic_pair import build_pair_models
+
+    _producer, consumer = build_pair_models()
+    consumer.metabolites.get_by_id("ac_e").id = "ms_ac_e"
+    consumer.reactions.get_by_id("EX_ac_e").id = "EX_ms_ac_e"
+    consumer.repair()
+    return consumer
+
+
+def _pool_with_ms_consumer(tmp_path):
+    from cmig.synthetic_pair import build_pair_models
+
+    producer, _consumer = build_pair_models()
+    files = {"producer": tmp_path / "producer.json", "consumer_ms": tmp_path / "consumer_ms.json"}
+    cobra.io.save_json_model(producer, str(files["producer"]))
+    cobra.io.save_json_model(_ms_consumer(), str(files["consumer_ms"]))
+    tax_path = tmp_path / "taxonomy.csv"
+    pd.DataFrame({"id": list(files), "file": [str(f) for f in files.values()],
+                  "abundance": [0.5, 0.5]}).to_csv(tax_path, index=False)
+    return tax_path
+
+
+def test_a_candidate_no_medium_id_reaches_is_split_as_a_namespace_failure():
+    from cmig.core.medium_spec import pool_medium_coverage
+
+    coverage = pool_medium_coverage(_pool_models(), _POOL_MEDIUM)
+    with pytest.raises(ValueError, match="none of the medium's 4 exchange ids reaches"):
+        coverage.split(sorted(_POOL_MEDIUM.uptake), members=("z",))
+
+
+def test_cli_search_fails_a_candidate_that_no_medium_id_reaches(tmp_path):
+    """Reviewer's scenario: a member in another namespace grew on its SBML defaults, ranked ok."""
+    pytest.importorskip("micom")
+    pytest.importorskip("gurobipy")
+    from cmig.cli.main import main
+
+    tax_path = _pool_with_ms_consumer(tmp_path)
+    medium = tmp_path / "medium.csv"
+    medium.write_text("exchange_id,uptake_limit\nEX_glc__D_m,10\nEX_ac_m,5\n")
+    out = tmp_path / "search"
+    main([
+        "search", "--taxonomy", str(tax_path), "--target", "but",
+        "--min-size", "1", "--max-size", "1", "--medium", str(medium), "--out", str(out),
+    ])
+    summary = json.loads((out / "search_summary.json").read_text())
+    ranked = [tuple(r["members"]) for r in summary["top_ranked"]]
+    assert ("consumer_ms",) not in ranked
+    row = next(r for r in summary["unevaluated"] if r["members"] == ["consumer_ms"])
+    assert row["status"] == "failed"
+    assert "none of the medium's 2 exchange ids reaches" in row["diagnostic"]
+
+
+def test_a_near_miss_notation_is_named_with_its_likely_counterpart():
+    from cmig.core.medium_spec import pool_medium_coverage
+    from cmig.io.agora2 import bigg_exchange_notation
+
+    spec = MediumSpec(uptake={"EX_glc_D_m": 10.0, "EX_ac_m": 1.0, "EX_notreal_m": 1.0})
+    coverage = pool_medium_coverage(_pool_models(), spec, notation=bigg_exchange_notation)
+    assert coverage.near_misses == {"EX_glc_D_m": "EX_glc__D_m"}
+    assert coverage.pool_not_applicable == ("EX_notreal_m",)   # a genuine one stays n/a
     with pytest.raises(ValueError) as error:
-        pool_medium_coverage_from_taxonomy(taxonomy, _POOL_MEDIUM)
-    assert "oddball" in str(error.value) and str(path) in str(error.value)
-    assert "unresolved exchange metabolite identity" in str(error.value)
+        coverage.check_namespace()
+    assert "EX_glc_D_m" in str(error.value) and "EX_glc__D_m" in str(error.value)
+    # with --allow-unknown-medium a near miss is dropped as not applied, not "not applicable"
+    assert coverage.split(["EX_glc_D_m", "EX_notreal_m"], members=("a",)) == (
+        (), ("EX_notreal_m",), ("EX_glc_D_m",),
+    )
+
+
+def test_bigg_exchange_notation_reuses_the_agora2_rules():
+    from cmig.io.agora2 import bigg_exchange_notation
+
+    assert bigg_exchange_notation("EX_glc_D_m") == "EX_glc__D_m"
+    assert bigg_exchange_notation("EX_glc_D(e)") == "EX_glc__D_e"
+    assert bigg_exchange_notation("EX_but(e)") == "EX_but_e"
+    assert bigg_exchange_notation("EX_glc__D_m") == "EX_glc__D_m"
+    assert bigg_exchange_notation("EX_ac_m") == "EX_ac_m"
+
+
+def test_cli_search_refuses_a_near_miss_and_reports_the_matched_fraction(tmp_path, capsys):
+    pytest.importorskip("micom")
+    pytest.importorskip("gurobipy")
+    from cmig.cli.main import main
+
+    tax_path, medium = _pair_files(tmp_path, "EX_glc_D_m,10\nEX_ac_m,5\nEX_notreal_m,1\n")
+    rc = main([
+        "search", "--taxonomy", str(tax_path), "--target", "ac", "--min-size", "1",
+        "--max-size", "1", "--medium", str(medium), "--out", str(tmp_path / "strict"),
+    ])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "EX_glc_D_m" in err and "EX_glc__D_m" in err
+    out = tmp_path / "relaxed"
+    rc = main([
+        "search", "--taxonomy", str(tax_path), "--target", "ac", "--min-size", "1",
+        "--max-size", "1", "--medium", str(medium), "--allow-unknown-medium", "--out", str(out),
+    ])
+    assert rc in (0, 3)
+    printed = capsys.readouterr().out
+    assert "not applicable to this pool" in printed and "EX_notreal_m" in printed
+    summary = json.loads((out / "search_summary.json").read_text())
+    assert summary["medium_not_applicable_to_pool"] == ["EX_notreal_m"]
+    assert summary["medium_matched"] == {"matched": 1, "requested": 3, "fraction": 0.3333}
+    rows = {tuple(r["members"]): r for r in summary["top_ranked"] + summary["unevaluated"]}
+    assert rows[("producer",)]["medium_matched"] == {"matched": 1, "requested": 3}
+    assert any("EX_glc_D_m" in w for w in summary["warnings"])   # dropped as not applied
+
+

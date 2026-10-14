@@ -550,7 +550,7 @@ def test_the_gui_host_tab_can_relax_the_medium_too():
 # ── 10. the sibling host commands degrade the same way, end to end ─────────────────────────────
 
 
-def test_host_search_bigg_cli_degrades_and_names_the_dropped_exchange(tmp_path):
+def test_host_search_bigg_cli_records_a_pool_unknown_id_without_degrading(tmp_path):
     pytest.importorskip("micom")
     from cmig.cli.main import main
 

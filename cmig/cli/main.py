@@ -2252,10 +2252,13 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
             # an input error before any candidate runs; one only some pool models have is "not
             # applicable" to the candidates that lack it.
             from cmig.core.medium_spec import pool_medium_coverage_from_taxonomy
+            from cmig.io.agora2 import bigg_exchange_notation
 
-            medium_pool = pool_medium_coverage_from_taxonomy(taxonomy, microbe_medium)
+            medium_pool = pool_medium_coverage_from_taxonomy(
+                taxonomy, microbe_medium, notation=bigg_exchange_notation
+            )
             if not args.allow_unknown_medium:
-                medium_pool.require_some_match()
+                medium_pool.check_namespace()
         interface_map = _load_host_interface_map(
             args.interface_map, accept_unreviewed=args.accept_unreviewed_map
         )
@@ -2366,6 +2369,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                     ),
                     "diagnostic": diagnostic,
                     "medium_not_applicable": list(result.medium_not_applicable),
+                    "medium_matched": result.medium_matched,
                 })
             except Exception as e:
                 rows.append({
@@ -2386,6 +2390,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                     "warnings": [],
                     "diagnostic": str(e),
                     "medium_not_applicable": [],
+                    "medium_matched": None,
                 })
         # B1 (silent half): 평가 실패 후보는 score=0 으로 랭킹에 섞이면 "host objective 0" 이라는
         # 실재하는 생물학적 결과와 구별되지 않는다. 랭킹에서 분리해 별도 블록으로 보고한다.
@@ -2441,6 +2446,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
             medium_not_applicable_to_pool=(
                 medium_pool.pool_not_applicable if medium_pool is not None else ()
             ),
+            medium_matched=medium_pool.matched_fraction() if medium_pool is not None else None,
             ranking_parameters={
                 "host_weight": args.host_weight,
                 "target_weight": args.target_weight,
@@ -2471,6 +2477,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         )
     for warning in search_warnings:
         print(f"  warning: {warning}")
+    _print_pool_not_applicable(medium_pool.pool_not_applicable if medium_pool is not None else ())
     _emit_workflow_manifest(
         out,
         "host_search_bigg",
@@ -2512,6 +2519,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
             "medium_not_applicable_to_pool": list(
                 medium_pool.pool_not_applicable if medium_pool is not None else ()
             ),
+            "medium_matched": medium_pool.matched_fraction() if medium_pool is not None else None,
         },
     )
     return _exit_code_for_status(
@@ -3206,10 +3214,13 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         medium_pool = None
         if medium_spec is not None:
             from cmig.core.medium_spec import pool_medium_coverage_from_taxonomy
+            from cmig.io.agora2 import bigg_exchange_notation
 
-            medium_pool = pool_medium_coverage_from_taxonomy(sub, medium_spec)
+            medium_pool = pool_medium_coverage_from_taxonomy(
+                sub, medium_spec, notation=bigg_exchange_notation
+            )
             if strict_medium:
-                medium_pool.require_some_match()
+                medium_pool.check_namespace()
         baseline_result = search_model_pool(
             MicomEngine(), sub, config,
             medium_spec=medium_spec, strict_medium=strict_medium, medium_pool=medium_pool,
@@ -3316,6 +3327,7 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             medium_not_applicable_to_pool=(
                 medium_pool.pool_not_applicable if medium_pool is not None else ()
             ),
+            medium_matched=medium_pool.matched_fraction() if medium_pool is not None else None,
         )
     except ValueError as e:
         print(str(e), file=sys.stderr)
@@ -3330,6 +3342,7 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
     )
     for warning in warnings:
         print(f"  warning: {warning}")
+    _print_pool_not_applicable(medium_pool.pool_not_applicable if medium_pool is not None else ())
     # V4: only announce a rank 1 that was actually evaluated. A screen in which every knockout
     # failed used to print "rank 1 (largest effect)" for a gene that was never knocked out.
     ranked = [row for row in rows if row.get("evaluation_status") == "ok"]
@@ -3391,6 +3404,10 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             "baseline_score": _finite_or_none(float(baseline.score)),
             "n_evaluated": len(rows),
             "n_total": sum(member_totals.values()),
+            "medium_not_applicable_to_pool": list(
+                medium_pool.pool_not_applicable if medium_pool is not None else ()
+            ),
+            "medium_matched": medium_pool.matched_fraction() if medium_pool is not None else None,
         },
     )
     return _exit_code_for_status(run_status, args)
@@ -4630,6 +4647,7 @@ def _write_gene_ko_search_outputs(
     direction: str,
     warnings: list[str],
     medium_not_applicable_to_pool: tuple[str, ...] = (),
+    medium_matched: dict[str, Any] | None = None,
 ) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "gene_ko_rankings.csv", "w", newline="") as f:
@@ -4733,6 +4751,7 @@ def _write_gene_ko_search_outputs(
         # can: dropped for every arm alike, the LP unchanged (pool-scoped medium rule).
         "medium_not_applicable": list(getattr(baseline, "medium_not_applicable", ())),
         "medium_not_applicable_to_pool": list(medium_not_applicable_to_pool),
+        "medium_matched": medium_matched,
         "artifacts": (artifacts := [
             "gene_ko_rankings.csv",
             "gene_ko_summary.json",
@@ -5044,6 +5063,14 @@ def _write_abundance_impact_outputs(
     return list(artifacts)
 
 
+def _host_row_matched(
+    row: dict[str, Any], medium_matched: dict[str, Any] | None
+) -> dict[str, int] | None:
+    if row.get("medium_matched") is None or not medium_matched:
+        return None
+    return {"matched": int(row["medium_matched"]), "requested": int(medium_matched["requested"])}
+
+
 def _write_host_search_bigg_outputs(
     rows: list[dict[str, Any]],
     out: Path,
@@ -5058,6 +5085,7 @@ def _write_host_search_bigg_outputs(
     unevaluated: list[dict[str, Any]] | None = None,
     warnings: list[str] | None = None,
     medium_not_applicable_to_pool: tuple[str, ...] = (),
+    medium_matched: dict[str, Any] | None = None,
 ) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     unevaluated = list(unevaluated or [])
@@ -5154,6 +5182,7 @@ def _write_host_search_bigg_outputs(
                 "target_transfer_range": row.get("target_transfer_range"),
                 "target_identifiability": row.get("target_identifiability", "unavailable"),
                 "medium_not_applicable": list(row.get("medium_not_applicable", [])),
+                "medium_matched": _host_row_matched(row, medium_matched),
             }
             for row in unevaluated
         ],
@@ -5161,6 +5190,7 @@ def _write_host_search_bigg_outputs(
         # Microbial medium ids no model of the selected pool can take up (others match):
         # dropped for every candidate, LP unchanged.
         "medium_not_applicable_to_pool": list(medium_not_applicable_to_pool),
+        "medium_matched": medium_matched,
         "biomass_basis": biomass_basis,
         "top_ranked": [
             {
@@ -5180,6 +5210,7 @@ def _write_host_search_bigg_outputs(
                 "evaluation_status": row["evaluation_status"],
                 "diagnostic": row["diagnostic"],
                 "medium_not_applicable": list(row.get("medium_not_applicable", [])),
+                "medium_matched": _host_row_matched(row, medium_matched),
             }
             for rank, row in enumerate(rows, start=1)
         ],
@@ -6189,6 +6220,7 @@ def _cmd_search_impl(args: argparse.Namespace) -> int:
     # B4: 전부-0 / 동점 랭킹에서 rank 1 을 "최고"로 읽지 않도록 경고를 stdout 에도 낸다.
     for warning in result.warnings:
         print(f"  warning: {warning}")
+    _print_pool_not_applicable(result.medium_not_applicable_to_pool)
     _emit_workflow_manifest(
         out,
         "model_pool_search",
@@ -6395,6 +6427,7 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
             print(f"  note: no exchange for {','.join(best.missing_targets)} (counted as 0)")
     for warning in result.warnings:
         print(f"  warning: {warning}")
+    _print_pool_not_applicable(result.medium_not_applicable_to_pool)
     _emit_workflow_manifest(
         out,
         "multi_target_model_pool_search",
@@ -6567,6 +6600,7 @@ def _write_multi_target_outputs(
                 "diagnostic": r.diagnostic,
                 "sampling_status": r.sampling_status,
                 "medium_not_applicable": list(getattr(r, "medium_not_applicable", ())),
+                "medium_matched": _candidate_medium_matched(result, r),
             }
             for r in result.unevaluated
         ],
@@ -6574,6 +6608,7 @@ def _write_multi_target_outputs(
         "medium_not_applicable_to_pool": list(
             getattr(result, "medium_not_applicable_to_pool", ())
         ),
+        "medium_matched": dict(getattr(result, "medium_matched", {}) or {}),
         "top_ranked": [
             {
                 "rank": r.rank,
@@ -6594,6 +6629,7 @@ def _write_multi_target_outputs(
                 "diagnostic": r.diagnostic,
                 "sampling_status": r.sampling_status,
                 "medium_not_applicable": list(getattr(r, "medium_not_applicable", ())),
+                "medium_matched": _candidate_medium_matched(result, r),
             }
             for r in result.ranks
         ],
@@ -7262,6 +7298,25 @@ def _medium_not_applicable_summary(result: Any) -> dict[str, Any]:
     }
 
 
+def _candidate_medium_matched(result: Any, row: Any) -> dict[str, int] | None:
+    """{matched, requested} of the medium's ids reaching this candidate (None: not measured)."""
+    matched = getattr(row, "medium_matched", None)
+    requested = (getattr(result, "medium_matched", None) or {}).get("requested")
+    if matched is None or requested is None:
+        return None
+    return {"matched": int(matched), "requested": int(requested)}
+
+
+def _print_pool_not_applicable(ids: Any) -> None:
+    """Console line for medium ids no selected model can take up (the run is not degraded)."""
+    ids = list(ids or ())
+    if ids:
+        print(
+            f"  warning: {len(ids)} medium ids are not applicable to this pool (no selected model "
+            f"can take them up; dropped, LP unchanged, run status unaffected): {ids}"
+        )
+
+
 def _write_search_outputs(
     result: Any, taxonomy: Any, diagnostics: list[Any], out: Path
 ) -> list[str]:
@@ -7383,6 +7438,7 @@ def _write_search_outputs(
                 "diagnostic": row.diagnostic,
                 "effective_members": list(getattr(row, "effective_members", ())),
                 "medium_not_applicable": list(getattr(row, "medium_not_applicable", ())),
+                "medium_matched": _candidate_medium_matched(result, row),
             }
             for row in result.unevaluated
         ],
@@ -7390,6 +7446,7 @@ def _write_search_outputs(
         "medium_not_applicable_to_pool": list(
             getattr(result, "medium_not_applicable_to_pool", ())
         ),
+        "medium_matched": dict(getattr(result, "medium_matched", {}) or {}),
         "pool_diagnostics": {
             "n_readable": n_readable,
             "n_with_target_exchange": n_with_target,
@@ -7422,6 +7479,7 @@ def _write_search_outputs(
                 "n_active_members": sum(value > 1e-6 for value in
                                         getattr(row, "member_growth", {}).values()),
                 "medium_not_applicable": list(getattr(row, "medium_not_applicable", ())),
+                "medium_matched": _candidate_medium_matched(result, row),
             }
             for row in result.ranks
         ],
@@ -9124,10 +9182,13 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
         medium_pool = None
         if medium_spec is not None and not args.model:
             from cmig.core.medium_spec import pool_medium_coverage_from_taxonomy
+            from cmig.io.agora2 import bigg_exchange_notation
 
-            medium_pool = pool_medium_coverage_from_taxonomy(taxonomy, medium_spec)
+            medium_pool = pool_medium_coverage_from_taxonomy(
+                taxonomy, medium_spec, notation=bigg_exchange_notation
+            )
             if not args.allow_unknown_medium:
-                medium_pool.require_some_match()
+                medium_pool.check_namespace()
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -9142,6 +9203,22 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
             rows.append({"id": member_id, "status": "load_failed", "diagnostic": str(e)})
             print(f"  {member_id}: model could not be loaded: {e}", file=sys.stderr)
             continue
+        if medium_pool is not None:
+            # A model left out of the pool check (its exchanges could not be resolved), or one
+            # no medium id reaches while other models match, has no survey on this medium.
+            reason = medium_pool.unusable_reasons.get(member_id)
+            if reason is None:
+                own = medium_pool.by_model.get(member_id, frozenset())
+                try:
+                    medium_pool.split(
+                        [x for x in medium_pool.requested if x not in own], (member_id,)
+                    )
+                except ValueError as error:
+                    reason = str(error)
+            if reason is not None:
+                rows.append({"id": member_id, "status": "failed", "diagnostic": reason})
+                print(f"  {member_id}: not surveyed: {reason}", file=sys.stderr)
+                continue
         try:
             result = medium_gap(
                 model,
@@ -9173,6 +9250,10 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
         rows.append({
             "id": member_id,
             "medium_not_applicable": ";".join(not_applicable),
+            "medium_matched": (
+                len(medium_pool.by_model.get(member_id, frozenset()))
+                if medium_pool is not None else None
+            ),
             "status": status,
             "base_growth": _finite_or_none(result.base_growth),
             "achieved_growth": _finite_or_none(result.achieved_growth),
@@ -9197,7 +9278,7 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
     fieldnames = [
         "id", "status", "base_growth", "achieved_growth", "n_supplement", "supplement",
         "essential_supplement", "pseudo_supply_open", "n_unmatched_medium",
-        "medium_not_applicable", "diagnostic",
+        "medium_not_applicable", "medium_matched", "diagnostic",
     ]
     _write_csv_records(
         out / "medium_gap.csv",
@@ -9224,6 +9305,7 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
         "medium_not_applicable_to_pool": list(
             medium_pool.pool_not_applicable if medium_pool is not None else ()
         ),
+        "medium_matched": medium_pool.matched_fraction() if medium_pool is not None else None,
         "models": rows,
     }
     atomic_write_text(
@@ -9234,6 +9316,7 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
     if supplement_union and args.medium:
         artifacts.append(_write_supplemented_medium(out, Path(args.medium), supplement_union))
     print(f"\nmedium-gap complete -> {out}")
+    _print_pool_not_applicable(medium_pool.pool_not_applicable if medium_pool is not None else ())
     for artifact in artifacts:
         print(f"  {artifact}")
     if unfixable:
@@ -9880,9 +9963,10 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
                 return None
             if medium_path not in pool_coverage:
                 from cmig.core.medium_spec import load_medium, pool_medium_coverage_from_taxonomy
+                from cmig.io.agora2 import bigg_exchange_notation
 
                 pool_coverage[medium_path] = pool_medium_coverage_from_taxonomy(
-                    taxonomy, load_medium(medium_path)
+                    taxonomy, load_medium(medium_path), notation=bigg_exchange_notation
                 )
             return pool_coverage[medium_path]
 

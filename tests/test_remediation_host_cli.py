@@ -50,6 +50,7 @@ def coupling(model: cobra.Model, available: dict[str, float]):
         warnings=[],
         unapplied_medium_exchanges=(),
         medium_not_applicable=(),
+        medium_matched=None,
     )
 
 

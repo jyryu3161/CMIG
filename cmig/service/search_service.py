@@ -120,7 +120,7 @@ class SearchService:
             # candidate is evaluated (unless --allow-unknown-medium); candidate level: ids
             # other pool models have are "not applicable" to a candidate, not a refusal.
             if request.strict_medium:
-                coverage.require_some_match()
+                coverage.check_namespace()
             request = replace(request, medium_pool=coverage)
         selected: Any = (
             search_model_pool_multi
@@ -175,6 +175,9 @@ class SearchService:
             medium_not_applicable_to_pool=(
                 request.medium_pool.pool_not_applicable if request.medium_pool else ()
             ),
+            medium_matched=(
+                request.medium_pool.matched_fraction() if request.medium_pool else {}
+            ),
             profile={
                 "completed_evaluation_totals": totals,
                 "workers": control.workers if control else 1,
@@ -188,8 +191,11 @@ class SearchService:
         if request.medium is None:
             return None
         from cmig.core.medium_spec import pool_medium_coverage_from_taxonomy
+        from cmig.io.agora2 import bigg_exchange_notation
 
-        return pool_medium_coverage_from_taxonomy(request.taxonomy, request.medium)
+        return pool_medium_coverage_from_taxonomy(
+            request.taxonomy, request.medium, notation=bigg_exchange_notation
+        )
 
     @staticmethod
     def preflight(
@@ -231,11 +237,14 @@ class SearchService:
         if request.medium is None:
             return None
         from cmig.core.medium_spec import pool_medium_coverage
+        from cmig.io.agora2 import bigg_exchange_notation
 
+        records = request.taxonomy.to_dict("records")
         return pool_medium_coverage(
-            {str(row["id"]): loaded[str(row["file"])]
-             for row in request.taxonomy.to_dict("records")},
+            {str(row["id"]): loaded[str(row["file"])] for row in records},
             request.medium,
+            sources={str(row["id"]): str(row["file"]) for row in records},
+            notation=bigg_exchange_notation,
         )
 
 

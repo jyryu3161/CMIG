@@ -534,6 +534,8 @@ class BiggHostMicrobeResult:
     #: Microbial medium ids another model of the selected pool can take up but no member of this
     #: community can (pool-scoped medium rule): dropped with the LP unchanged, not a degradation.
     medium_not_applicable: tuple[str, ...] = ()
+    #: How many microbial medium ids reach this community (None without a microbial medium).
+    medium_matched: int | None = None
 
 
 def _met_from_host_exchange(exchange_id: str) -> str:

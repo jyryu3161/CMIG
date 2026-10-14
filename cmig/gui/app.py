@@ -994,7 +994,7 @@ _SEARCH_CONDITION_KEYS = (
     "normalization_ranges", "ga_metadata", "effective_request", "effective_conditions",
     "growth_fraction", "min_member_growth", "min_community_growth", "seed",
     "target_scales", "ga_max_evaluations",
-    "medium_not_applicable", "medium_not_applicable_to_pool",
+    "medium_not_applicable", "medium_not_applicable_to_pool", "medium_matched",
 )
 
 

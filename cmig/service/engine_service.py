@@ -163,9 +163,9 @@ class EngineService:
                 if spec is not None and medium_pool is not None:
                     from cmig.core.medium_spec import translate_medium_for_model
 
+                    unmatched_ids = translate_medium_for_model(community, spec).unmatched
                     not_applicable, _pool, unknown = medium_pool.split(
-                        translate_medium_for_model(community, spec).unmatched,
-                        [str(member) for member in taxonomy["id"]],
+                        unmatched_ids, [str(member) for member in taxonomy["id"]],
                     )
                     if strict_medium and unknown:
                         raise ValueError(
@@ -178,6 +178,10 @@ class EngineService:
                         **translation.as_provenance(),
                         "medium_not_applicable": list(not_applicable),
                         "medium_not_applicable_to_pool": list(medium_pool.pool_not_applicable),
+                        "medium_matched": {
+                            "matched": len(spec.uptake) - len(unmatched_ids),
+                            "requested": len(spec.uptake),
+                        },
                     }
                 elif spec is not None:
                     # Round 6 (track B, instance 1): the same single application path, but the

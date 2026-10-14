@@ -63,6 +63,8 @@ class PoolRank:
     #: Medium ids some model of the selected pool can take up but no member of this candidate
     #: can: dropped for this candidate with the LP unchanged. Not a degradation.
     medium_not_applicable: tuple[str, ...] = ()
+    #: How many of the medium's ids reach this candidate's community (None: not determined).
+    medium_matched: int | None = None
 
     @property
     def robustness_width(self) -> float | None:
@@ -92,6 +94,8 @@ class PoolSearchResult:
     #: Medium ids no model of the selected pool can take up (others match): dropped for every
     #: candidate, LP unchanged. Filled by `SearchService` from the pool's coverage.
     medium_not_applicable_to_pool: tuple[str, ...] = ()
+    #: {matched, requested, fraction} of the medium's ids over the readable pool.
+    medium_matched: dict[str, Any] = field(default_factory=dict)
 
     @property
     def n_candidates_ranked(self) -> int:
@@ -364,8 +368,9 @@ def _apply_candidate_medium(
     notes: set[str] | None = None,
     medium_pool: Any | None = None,
     members: tuple[str, ...] = (),
-) -> tuple[str | None, tuple[str, ...]]:
-    """Apply the requested medium to one candidate: ``(diagnostic, not_applicable_ids)``.
+) -> tuple[str | None, tuple[str, ...], int | None]:
+    """Apply the requested medium to one candidate: ``(diagnostic, not_applicable_ids,
+    n_matched)`` — ``n_matched`` is how many of the medium's ids reach this community.
 
     With ``medium_pool`` (a :class:`cmig.core.medium_spec.PoolMediumCoverage` of the selected
     pool), an id this community has no exchange for but some pool model has is *not applicable*
@@ -375,7 +380,7 @@ def _apply_candidate_medium(
     Without ``medium_pool`` every unmatched id is treated as unknown, as before.
     """
     if medium_spec is None:
-        return None, ()
+        return None, (), None
     from cmig.core.medium_spec import (
         MEDIUM_APPLICATION_MERGE,
         medium_application_report,
@@ -383,6 +388,7 @@ def _apply_candidate_medium(
     )
 
     unmatched = translate_medium_for_model(community, medium_spec).unmatched
+    matched = len(medium_spec.uptake) - len(unmatched)
     if medium_pool is not None:
         not_applicable, _pool, unknown = medium_pool.split(unmatched, members)
     else:
@@ -406,11 +412,11 @@ def _apply_candidate_medium(
             f"{list(translation.undeclared_suppliers[:6])}"
         )
     if not parts:
-        return None, not_applicable
+        return None, not_applicable, matched
     note = "; ".join(parts)
     if notes is not None:
         notes.add(note)
-    return note, not_applicable
+    return note, not_applicable, matched
 
 
 def _with_medium_note(diagnostic: str | None, note: str | None) -> str | None:
@@ -438,12 +444,13 @@ def _evaluate_members(
     sub = taxonomy[taxonomy["id"].astype(str).isin(members)].copy()
     medium_note: str | None = None
     not_applicable: tuple[str, ...] = ()
+    matched: int | None = None
     effective: tuple[str, ...] = ()
     try:
         community = engine.build_community(sub, cmig_solver=solver)
         effective = tuple(sorted(str(x) for x in getattr(community, "taxa", members)))
         actual_members(community, members)
-        medium_note, not_applicable = _apply_candidate_medium(
+        medium_note, not_applicable, matched = _apply_candidate_medium(
             community, medium_spec, strict_medium=strict_medium, notes=medium_notes,
             medium_pool=medium_pool, members=members,
         )
@@ -492,6 +499,7 @@ def _evaluate_members(
             abundances=getattr(result, "abundances", {}),
             medium_note=medium_note,
             medium_not_applicable=not_applicable,
+            medium_matched=matched,
         )
     except Exception as error:  # noqa: BLE001 - isolate one failed consortium
         return PoolRank(
@@ -505,6 +513,7 @@ def _evaluate_members(
             effective_members=effective,
             medium_note=medium_note,
             medium_not_applicable=not_applicable,
+            medium_matched=matched,
         )
 
 
@@ -957,6 +966,7 @@ class MultiTargetRank:
     timings: dict[str, float] = field(default_factory=dict, compare=False)
     sampling_status: str = "complete"
     medium_not_applicable: tuple[str, ...] = ()
+    medium_matched: int | None = None
 
 
 @dataclass(frozen=True)
@@ -986,6 +996,7 @@ class MultiTargetSearchResult:
     pareto_attempts: list[dict[str, Any]] = field(default_factory=list)
     candidate_sampling_status: dict[str, str] = field(default_factory=dict)
     medium_not_applicable_to_pool: tuple[str, ...] = ()
+    medium_matched: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1008,6 +1019,7 @@ class _ComboEval:
     #: Medium ids some pool model can take up but no member of this candidate can (see
     #: :attr:`PoolRank.medium_not_applicable`).
     medium_not_applicable: tuple[str, ...] = ()
+    medium_matched: int | None = None
 
 
 def _append_pareto_attempt(
@@ -1187,6 +1199,7 @@ def rank_multi_target(
             timings=e.timings,
             sampling_status=e.sampling_status,
             medium_not_applicable=e.medium_not_applicable,
+            medium_matched=e.medium_matched,
         )
         for row, e in zip(rows, evals, strict=True)
     ]
@@ -1235,12 +1248,13 @@ def _evaluate_members_multi(
     effective: tuple[str, ...] = ()
     medium_note: str | None = None
     not_applicable: tuple[str, ...] = ()
+    matched: int | None = None
     attempts: list[dict[str, Any]] = []
     try:
         community = engine.build_community(sub, cmig_solver=solver)
         effective = tuple(sorted(str(x) for x in getattr(community, "taxa", members)))
         actual_members(community, members)
-        medium_note, not_applicable = _apply_candidate_medium(
+        medium_note, not_applicable, matched = _apply_candidate_medium(
             community, medium_spec, strict_medium=strict_medium, notes=medium_notes,
             medium_pool=medium_pool, members=members,
         )
@@ -1340,6 +1354,7 @@ def _evaluate_members_multi(
             effective_members=effective,
             medium_note=medium_note,
             medium_not_applicable=not_applicable,
+            medium_matched=matched,
             pareto_attempts=attempts,
             sampling_status="failed" if status != "optimal" else "complete",
         )
@@ -1358,6 +1373,7 @@ def _evaluate_members_multi(
             effective_members=effective,
             medium_note=medium_note,
             medium_not_applicable=not_applicable,
+            medium_matched=matched,
             pareto_attempts=attempts,
             sampling_status="failed",
         )
@@ -1416,11 +1432,12 @@ def _evaluate_members_multi_joint(
     effective: tuple[str, ...] = ()
     medium_note: str | None = None
     not_applicable: tuple[str, ...] = ()
+    matched: int | None = None
     try:
         community = engine.build_community(sub, cmig_solver=solver)
         effective = tuple(sorted(str(x) for x in getattr(community, "taxa", members)))
         actual_members(community, members)
-        medium_note, not_applicable = _apply_candidate_medium(
+        medium_note, not_applicable, matched = _apply_candidate_medium(
             community, medium_spec, strict_medium=strict_medium, notes=medium_notes,
             medium_pool=medium_pool, members=members,
         )
@@ -1450,6 +1467,7 @@ def _evaluate_members_multi_joint(
             getattr(result, "abundances", {}),
             medium_note=medium_note,
             medium_not_applicable=not_applicable,
+            medium_matched=matched,
         )
     except Exception as e:  # noqa: BLE001 - per-combo isolation
         return _ComboEval(
@@ -1464,6 +1482,7 @@ def _evaluate_members_multi_joint(
             effective_members=effective,
             medium_note=medium_note,
             medium_not_applicable=not_applicable,
+            medium_matched=matched,
         )
 
 
@@ -1500,6 +1519,7 @@ def _pareto_points_for_members(
     seen_vectors: set[tuple[float, ...]] = set()
     medium_note: str | None = None
     not_applicable: tuple[str, ...] = ()
+    matched: int | None = None
 
     def record(
         phase: str,
@@ -1525,7 +1545,7 @@ def _pareto_points_for_members(
     try:
         community = engine.build_community(sub_taxonomy, cmig_solver=solver)
         actual_members(community, members)
-        medium_note, not_applicable = _apply_candidate_medium(
+        medium_note, not_applicable, matched = _apply_candidate_medium(
             community, medium_spec, strict_medium=strict_medium, notes=medium_notes,
             medium_pool=medium_pool, members=members,
         )
@@ -1730,6 +1750,7 @@ def _pareto_points_for_members(
                     getattr(result, "abundances", {}),
                     medium_note=medium_note,
                     medium_not_applicable=not_applicable,
+                    medium_matched=matched,
                 )
             )
     except SearchCancelled:
@@ -1760,6 +1781,7 @@ def _pareto_points_for_members(
                     FLUX_BASIS_NONE,
                     medium_note=medium_note,
                     medium_not_applicable=not_applicable,
+                    medium_matched=matched,
                 ),
                 pareto_attempts=attempts,
                 sampling_status="failed",
@@ -2037,6 +2059,7 @@ def _pareto_search(
                 point.flux_basis,
                 sampling_status=point.sampling_status,
                 medium_not_applicable=point.medium_not_applicable,
+                medium_matched=point.medium_matched,
             )
         )
     # Deduplicate identical achieved vectors from different epsilon levels of the same consortium.
@@ -2115,6 +2138,7 @@ def unevaluated_ranks(evals: list[_ComboEval], metabolites: list[str]) -> list[M
             e.missing_targets,
             e.flux_basis,
             medium_not_applicable=e.medium_not_applicable,
+            medium_matched=e.medium_matched,
         )
         for e in evals
     ]

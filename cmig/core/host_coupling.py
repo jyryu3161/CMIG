@@ -542,6 +542,7 @@ def run_bigg_host_microbe(
     community = community_engine.build_community(taxonomy, cmig_solver=solver)
     unapplied_medium: tuple[str, ...] = ()
     not_applicable: tuple[str, ...] = ()
+    n_medium_matched: int | None = None
     if microbe_medium is not None:
         from cmig.core.medium_spec import medium_application_report, translate_medium_for_model
 
@@ -551,6 +552,7 @@ def run_bigg_host_microbe(
         # the target model" — true, but a host run has two media and the message named neither
         # the medium nor the way forward.
         preview = translate_medium_for_model(community, microbe_medium)
+        n_medium_matched = len(microbe_medium.uptake) - len(preview.unmatched)
         unknown: tuple[str, ...] = tuple(preview.unmatched)
         if medium_pool is not None:
             not_applicable, _pool, unknown = medium_pool.split(
@@ -604,6 +606,7 @@ def run_bigg_host_microbe(
             objective_reactions=host_objective_reactions,
             unapplied_medium_exchanges=unapplied_medium,
             medium_not_applicable=not_applicable,
+            medium_matched=n_medium_matched,
         )
     community_secretion = {
         metabolite: flux
@@ -787,4 +790,5 @@ def run_bigg_host_microbe(
         objective_reactions=host_objective_reactions,
         unapplied_medium_exchanges=unapplied_medium,
         medium_not_applicable=not_applicable,
+        medium_matched=n_medium_matched,
     )
