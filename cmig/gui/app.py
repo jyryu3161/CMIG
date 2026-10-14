@@ -1852,9 +1852,11 @@ class CmigMainWindow(QMainWindow):
             self._reported_unrunnable = {}
             self._clear_community_result()  # the shown run belongs to the previous project
             self.host_view.clear_result()
-            self.host_search_page.results_panel.invalidate_results()
-            for page in (self.host_view, self.host_search_page):
-                page.status.clear()
+            self.host_view.status.clear()
+            for ranked in (self.search_view, self.gene_ko_page, self.strain_growth_page,
+                           self.ratio_impact_page, self.host_search_page):
+                self._clear_ranked(ranked)
+                ranked.status.clear()
         # Rebuilding a group drops its rows' selection; put it back unless the project changed.
         current = None if switched else self._sidebar_current()
         selected_models = [] if switched else self.sidebar.selected_keys("models")
@@ -5145,6 +5147,10 @@ class CmigMainWindow(QMainWindow):
                 jobs.pop(jid, None)
                 page.run_btn.setEnabled(True)  # type: ignore[attr-defined]
                 if self._inspect_gui_run(out_dir) is None:
+                    self._clear_ranked(page)
+                    page.status.setText(  # type: ignore[attr-defined]
+                        _UNREADABLE_RESULT.format(kind=failure_label, out_dir=out_dir)
+                    )
                     continue
                 self.current_search_dir = out_dir
                 self._show_ranked(key, job.result, out_dir, requested)
@@ -5155,9 +5161,17 @@ class CmigMainWindow(QMainWindow):
             elif job.status in (JobStatus.FAILED, JobStatus.CANCELLED):
                 jobs.pop(jid, None)
                 page.run_btn.setEnabled(True)  # type: ignore[attr-defined]
+                # A failed rerun must not leave the previous ranking drawn under its message.
+                self._clear_ranked(page)
                 page.status.setText(  # type: ignore[attr-defined]
                     f"{failure_label} {job.status.value}: {job.error or jid}"
                 )
+
+    @staticmethod
+    def _clear_ranked(page: Any) -> None:
+        """Drop a ranked page's shown result and empty its results area."""
+        page.results_panel.invalidate_results()
+        page.results.show_empty()
 
 
 def _host_search_summary_for_search_view(payload: dict[str, Any]) -> dict[str, Any]:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +16,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from cmig.gui.app import build_main_window  # noqa: E402
 from cmig.gui.project_session import RecentProjects  # noqa: E402
+from cmig.service import JobStatus  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
 
@@ -136,3 +139,69 @@ def test_remembered_choice_per_page(window) -> None:
     w.strain_growth_page.model_picker.set_selected(["b"])
     assert w.session.settings("strain_growth")["models"] == ["b"]
     assert w.session.settings("gene_ko").get("models") != ["b"]
+
+
+_KO_PAYLOAD = {"target": "but", "ko_level": "gene", "warnings": [],
+               "top_ranked": [{"member": "a", "gene": "g1", "score": 1.0, "target_flux": 2.0,
+                               "community_growth": 0.3, "evaluation_status": "optimal"}]}
+
+
+def test_failed_gene_ko_rerun_clears_the_shown_ranking(window, tmp_path: Path) -> None:
+    w, calls = window
+    page = w.gene_ko_page
+    page.model_picker.set_selected(["a", "b"])
+    page.members_picker.set_selected(["a"])
+    w._show_ranked("gene_ko", _KO_PAYLOAD, tmp_path, page.request_fields("gene_ko"))
+    assert page.results.has_results()
+    assert w.run_gene_ko_search()
+    deadline = time.time() + 10
+    while not page.run_btn.isEnabled() and time.time() < deadline:
+        APP.processEvents()
+        w._poll_completed_jobs()
+        time.sleep(0.02)
+    assert calls, "the rerun reached the CLI (which fails with rc=2)"
+    assert "gene KO search failed" in page.status.text()
+    assert not page.results.has_results()
+    assert page.results_panel.table.rowCount() == 0
+
+
+def test_unreadable_ranked_result_clears_the_shown_ranking(window, tmp_path, monkeypatch) -> None:
+    w, _calls = window
+    page = w.gene_ko_page
+    w._show_ranked("gene_ko", _KO_PAYLOAD, tmp_path, page.request_fields("gene_ko"))
+    page.status.setText("gene-ko started: j1")
+    monkeypatch.setattr(w.runner, "poll", lambda _jid: SimpleNamespace(
+        status=JobStatus.DONE, result=dict(_KO_PAYLOAD), error=None))
+    monkeypatch.setattr(w, "_inspect_gui_run", lambda _run_dir: None)
+    out_dir = tmp_path / "unreadable"
+    jobs = {"j1": (out_dir, page.request_fields("gene_ko"))}
+    w._finish_ranked_jobs("gene_ko", jobs, "gene KO search")
+    assert jobs == {}
+    assert not page.results.has_results()
+    assert page.results_panel.table.rowCount() == 0
+    assert page.status.text() == (
+        f"gene KO search finished, but its result could not be read back — see the inspector "
+        f"({out_dir})"
+    )
+
+
+def test_project_switch_clears_every_ranked_page(window, tmp_path: Path) -> None:
+    from cmig.gui.app import _host_search_summary_for_search_view
+
+    w, _calls = window
+    search_payload = {"target": "ac", "metric": "target_transfer", "status": "ok",
+                      "warnings": [], "top_ranked": [{"members": ["a"], "score": 1.0}]}
+    w.search_view.load_summary(_host_search_summary_for_search_view(search_payload),
+                               run_dir=tmp_path)
+    w.search_view.status.setText("Search run: old project")
+    w._show_ranked("gene_ko", _KO_PAYLOAD, tmp_path, w.gene_ko_page.request_fields("gene_ko"))
+    w._show_ranked("host_search", search_payload, tmp_path,
+                   w.host_search_page.request_fields("host_search"))
+    pages = (w.search_view, w.gene_ko_page, w.host_search_page)
+    assert all(page.results.has_results() for page in pages)
+    make_project(tmp_path / "p2", ["x"])
+    assert w.open_project(tmp_path / "p2")
+    for page in (*pages, w.strain_growth_page, w.ratio_impact_page):
+        assert not page.results.has_results()
+        assert page.results_panel.table.rowCount() == 0
+        assert page.status.text() == ""

@@ -128,3 +128,26 @@ def test_project_switch_clears_both_host_pages(window, tmp_path: Path) -> None:
         assert view.status.text() == ""
     assert w.host_view.cross_table.rowCount() == 0
     assert page.results_panel.table.rowCount() == 0
+
+
+def test_host_search_refuses_the_host_as_a_microbe(window, monkeypatch) -> None:
+    w = window
+    calls: list[list[str]] = []
+    monkeypatch.setattr("cmig.cli.main.main", lambda argv: (calls.append(list(argv)), 2)[1])
+    page = w.host_search_page
+    page.host_picker.set_selected(["host"])
+    page.model_picker.set_selected(["a", "host"])  # re-ticked on purpose
+    assert w.run_host_search_bigg() == ""
+    assert "also selected as a microbe" in page.status.text()
+    assert calls == []
+
+
+def test_host_search_default_microbes_leave_out_the_host(window, tmp_path: Path) -> None:
+    w = window
+    w.host_search_page.host_picker.set_selected(["host"])
+    w.session.store_settings("host_search", {})  # no remembered microbes: the default applies
+    w.close_project()
+    assert w.open_project(tmp_path / "p")
+    page = w.host_search_page
+    assert page.host_picker.selected_ids() == ["host"]
+    assert page.model_picker.selected_ids() == ["a", "b"]
