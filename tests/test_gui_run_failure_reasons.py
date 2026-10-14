@@ -87,7 +87,7 @@ def test_an_input_refusal_is_not_a_solver_error():
     runner = JobRunner(max_workers=1)
 
     def job(_ctx):
-        raise JobInputError("dFBA failed (rc=2): dfba input error: bad --initial")
+        raise JobInputError("dfba input error: bad --initial (rc=2)")
 
     jid = runner.submit("dfba", job)
     deadline = time.time() + 5
@@ -96,7 +96,7 @@ def test_an_input_refusal_is_not_a_solver_error():
         time.sleep(0.01)
     diagnostic = parse_diagnostic(runner.poll(jid).error)
     assert diagnostic["code"] == "input_error"
-    assert diagnostic["message"] == "dFBA failed (rc=2): dfba input error: bad --initial"
+    assert diagnostic["message"] == "dfba input error: bad --initial (rc=2)"
     runner.shutdown()
 
 
@@ -135,7 +135,7 @@ def test_dfba_page_shows_the_cli_reason_for_an_input_refusal(w, monkeypatch):
     _settle(w, jid)
     assert parse_diagnostic(w.runner.poll(jid).error)["code"] == "input_error"
     shown = w.dynamics_view.status.text()
-    assert reason in shown, shown
+    assert shown == f"dFBA failed: {reason} (rc=2)", shown
     assert "solver_error" not in shown and '{"code"' not in shown
 
 

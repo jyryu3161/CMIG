@@ -346,7 +346,6 @@ I18N: dict[str, dict[str, str]] = {
         "sweep_filter_abundance": "Abundance 파일 (*.csv *.json);;모든 파일 (*)",
         "sweep_filter_bounds": "Bounds 파일 (*.json);;모든 파일 (*)",
         "sweep_filter_json": "JSON (*.json);;모든 파일 (*)",
-        "sweep_cli_failed": "sweep 명령 실패(rc={rc})",
         "profile_net_chart_title": "외부 순 플럭스(+ 분비 / − 흡수)",
         "profile_delta_overlay_title": "기준 / 변형 오버레이",
         "profile_no_fluxes": "측정된 프로필 플럭스 없음",
@@ -599,7 +598,6 @@ I18N: dict[str, dict[str, str]] = {
         "sweep_filter_abundance": "Abundance files (*.csv *.json);;All files (*)",
         "sweep_filter_bounds": "Bounds files (*.json);;All files (*)",
         "sweep_filter_json": "JSON (*.json);;All files (*)",
-        "sweep_cli_failed": "sweep command failed with rc={rc}",
         "profile_net_chart_title": "Net exchange flux (+ secretion / − uptake)",
         "profile_delta_overlay_title": "baseline / variant overlay",
         "profile_no_fluxes": "No measured profile fluxes",
@@ -910,7 +908,7 @@ def _ranked_cli_failure(
             payload = {**loaded, "status": "failed", "cli_exit_code": rc,
                        "output_dir": str(out_dir)}
             return ArtifactJobFailure(
-                f"{label} failed (rc={rc})" + (f": {reason}" if reason else ""), payload
+                f"{reason} (rc={rc})" if reason else f"{label} exited with rc={rc}", payload
             )
     return cli_failure(label, rc, error_text)
 
@@ -4881,7 +4879,7 @@ class CmigMainWindow(QMainWindow):
             ctx.raise_if_cancelled()
             rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise cli_failure("host-microbe run", rc, cli_error)
+                raise cli_failure("host-microbe", rc, cli_error)
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "host_microbe_bigg_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -5163,7 +5161,7 @@ class CmigMainWindow(QMainWindow):
             rc, cli_error = _run_cli(main, argv)
             if rc != 0:
                 raise _ranked_cli_failure(
-                    "abundance impact", rc, cli_error, out_dir, "abundance_impact_summary.json"
+                    "ratio impact", rc, cli_error, out_dir, "abundance_impact_summary.json"
                 )
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "abundance_impact_summary.json").read_text())

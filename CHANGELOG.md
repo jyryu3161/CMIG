@@ -36,7 +36,7 @@ semantic versioning for public releases.
 ### Fixed — GUI failure reasons
 
 - A failed analysis page now shows the CLI's own reason (e.g. `dfba input error: --initial
-  exchange ids not found in model: […]`) as `"<kind> failed (rc=N): <reason>"`, not a
+  exchange ids not found in model: […]`) as `"<kind> failed: <reason> (rc=N)"`, not a
   Diagnostic JSON blob. A CLI exit 2 is recorded as the new job error code `input_error`, never
   `solver_error`. Applies to Search, Gene Knockout, Strain Growth, Ratio Impact, Community
   Solve, Host–Microbe, Host Combination Search, dFBA, Spatial Preview, Sweep and the Medium

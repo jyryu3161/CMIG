@@ -43,11 +43,12 @@ def cli_failure(label: str, rc: int, error_text: str) -> Exception:
     """The exception a GUI job raises for a non-zero CLI exit.
 
     Exit 2 is an input refusal (`JobInputError`, recorded as `input_error`), never a solver
-    error. The message keeps `rc=N` so the run list and the tooltips still show the exit code.
+    error. The message is the CLI's own reason followed by `(rc=N)` — pages prefix their own
+    "<kind> failed:" — so the run list and the tooltips still show the exit code.
     """
     from cmig.service.jobrunner import JobInputError
 
-    message = f"{label} failed (rc={rc})" + (f": {error_text}" if error_text else "")
+    message = f"{error_text} (rc={rc})" if error_text else f"{label} exited with rc={rc}"
     if rc == 2:
         return JobInputError(message)
     return RuntimeError(message)
