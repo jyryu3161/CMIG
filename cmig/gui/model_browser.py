@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from cmig.gui.analysis_page import hide_row_numbers
 from cmig.gui.builder import make_read_only, read_only_item
+from cmig.gui.growth import MISMATCHED_MEDIUM_OPTION, MISMATCHED_MEDIUM_TOOLTIP
 from cmig.gui.pickers import MediumPicker
 from cmig.io import project as proj
 from cmig.io.project import ModelEntry
@@ -164,7 +165,10 @@ class ModelBrowser(QWidget):
         self.title_label.setWordWrap(True)
         self.title_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.medium_picker = MediumPicker()
-        self.skip_unknown_check = QCheckBox("Skip medium metabolites this model lacks")
+        # Round 11: ids the model lacks are always skipped and listed; the option only lets a
+        # refused (zero-match / near-miss) medium run without those rows, degraded.
+        self.skip_unknown_check = QCheckBox(MISMATCHED_MEDIUM_OPTION)
+        self.skip_unknown_check.setToolTip(MISMATCHED_MEDIUM_TOOLTIP)
         self.check_growth_btn = QPushButton("Check Growth")
         self.namespace_label = QLabel("")
         self.namespace_label.setWordWrap(True)

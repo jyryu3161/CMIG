@@ -29,12 +29,42 @@ def solver_text(name: object) -> str:
     )
 
 
+#: The `--allow-unknown-medium` option, in GUI words (medium_policy v3). Medium ids the model has
+#: no exchange for are always skipped and listed; the option only lets a REFUSED medium run.
+MISMATCHED_MEDIUM_OPTION = "Run a mismatched medium anyway (drops its unmatched rows; degraded)"
+MISMATCHED_MEDIUM_TOOLTIP = (
+    "Medium ids the models have no exchange for are always skipped and listed — that needs no "
+    "option. This option only matters when the medium is refused: when none of its ids matches "
+    "the models (another namespace), or when ids are written in another notation of an exchange "
+    "the models have (e.g. EX_glc_D_m for EX_glc__D_m). It then drops those rows and the run is "
+    "marked degraded. Renaming the rows in the medium file is the fix."
+)
+
+_NEAR_MISS_PAIR = re.compile(r"(EX_\S+?) -> (EX_[^\s,.;]+)")
+
+
 def medium_text(ref: str, *, skip_unknown: bool = False) -> str:
-    """How a run's medium is named; a run that skipped model-lacking metabolites says so."""
+    """How a run's medium is named; a run that allowed a mismatched medium says so."""
     if not ref:
         return "model default"
-    mode = "exact, model-lacking metabolites skipped" if skip_unknown else "exact"
+    mode = "exact, mismatched medium allowed" if skip_unknown else "exact"
     return f"{ref.partition(':')[2] or ref} ({mode})"
+
+
+def medium_refusal_hint(reason: str) -> str:
+    """What to do about a refused medium, from the CLI's refusal text ("" if not a medium one).
+
+    A near miss is the same nutrient misspelled: rename it (dropping it would run without it).
+    """
+    pairs = _NEAR_MISS_PAIR.findall(reason) if "another notation" in reason else []
+    option = f"ticking “{MISMATCHED_MEDIUM_OPTION}” would drop them instead"
+    if pairs:
+        renames = ", ".join(f"{old} to {new}" for old, new in pairs)
+        return f" — rename {renames} in the medium file ({option})"
+    if "none of the medium's" in reason or "no counterpart" in reason:
+        return (" — the medium matches none of this model's exchanges: write the medium in this "
+                f"model's namespace ({option})")
+    return ""
 
 
 def failed_summary(run_dir: Path) -> bool:

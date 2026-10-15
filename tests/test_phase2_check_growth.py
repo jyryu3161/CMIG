@@ -119,7 +119,10 @@ def test_refusal_for_unknown_medium_suggests_the_option(window, monkeypatch, rea
     _wait_text(w, "Failed")
     text = w.model_browser.growth_label.text()
     assert text.startswith("✗ Failed")
-    assert "Skip medium metabolites this model lacks" in text
+    # Round 5: the hint says what to fix; the option no longer claims to skip what the model
+    # lacks (that is always skipped and recorded).
+    assert "lacks" not in text
+    assert "medium file" in text or "namespace" in text, text
 
 
 def test_changed_file_voids_pretick_and_check_growth(window) -> None:
@@ -271,7 +274,7 @@ def test_skipped_metabolites_are_named_and_the_record_names_the_model(window) ->
     w.model_browser.skip_unknown_check.setChecked(True)
     assert w.run_check_growth("a")
     _wait_text(w, "Growth 0.5")
-    assert ("western_diet (exact, model-lacking metabolites skipped)"
+    assert ("western_diet (exact, mismatched medium allowed)"
             in w.model_browser.growth_label.text())
     run_dir = next(e.path for e in w.session.runs() if e.label.startswith("Check Growth · a"))
     record, _problem = proj.read_run_request(run_dir)

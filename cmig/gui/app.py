@@ -178,7 +178,9 @@ I18N: dict[str, dict[str, str]] = {
         "medium_namespace_placeholder": "또는 검토된 namespace-decisions JSON 파일",
         "medium_namespace_button": "판정 파일…",
         "medium_exact_mode": "엄밀한 배지(해제 시 기본 배지에 병합)",
-        "medium_allow_unknown": "알 수 없는 ID를 허용하고 누락된 ID를 모두 보고",
+        "medium_allow_unknown": (
+            "Run a mismatched medium anyway (drops its unmatched rows; degraded)"
+        ),
         "medium_check_growth": "성장 확인",
         "medium_min_growth": "최소 성장률",
         "medium_oxygen_aerobic": "호기성",
@@ -277,6 +279,9 @@ I18N: dict[str, dict[str, str]] = {
             "`cmig inspect-run --run-dir` 로 확인하세요"
         ),
         "status_loaded_run": "실행 불러옴: {run_dir}{suffix}",
+        "status_loaded_failed_run": (
+            "Loaded a failed run (status={status}; not a result): {run_dir}{suffix}"
+        ),
         "status_summary_missing": "{kind} 요약 파일 없음: {path}",
         "status_load_failed": "{kind} 불러오기 실패: {error}",
         "status_host_block_missing": (
@@ -312,7 +317,9 @@ I18N: dict[str, dict[str, str]] = {
         "sweep_fva": "FVA",
         "sweep_fva_metabolites_placeholder": "선택: 쉼표로 구분한 FVA 대사체",
         "sweep_exact_medium": "엄밀한 배지",
-        "sweep_allow_unknown_medium": "알 수 없는 배지 ID 허용",
+        "sweep_allow_unknown_medium": (
+            "Run a mismatched medium anyway (drops its unmatched rows; degraded)"
+        ),
         "sweep_fixture_smoke": "내장 fixture 스모크 스윕 사용",
         "sweep_run": "스윕 실행",
         "sweep_col_condition": "조건",
@@ -426,7 +433,9 @@ I18N: dict[str, dict[str, str]] = {
         "medium_namespace_placeholder": "Or a reviewed namespace-decisions JSON file",
         "medium_namespace_button": "Decisions…",
         "medium_exact_mode": "Exact medium (unchecked = merge overlay)",
-        "medium_allow_unknown": "Allow unknown IDs and report every dropped ID",
+        "medium_allow_unknown": (
+            "Run a mismatched medium anyway (drops its unmatched rows; degraded)"
+        ),
         "medium_check_growth": "Check Growth",
         "medium_min_growth": "Minimum growth",
         "medium_oxygen_aerobic": "Aerobic",
@@ -527,6 +536,9 @@ I18N: dict[str, dict[str, str]] = {
             "inspect it with `cmig inspect-run --run-dir`"
         ),
         "status_loaded_run": "Loaded run: {run_dir}{suffix}",
+        "status_loaded_failed_run": (
+            "Loaded a failed run (status={status}; not a result): {run_dir}{suffix}"
+        ),
         "status_summary_missing": "{kind} summary not found: {path}",
         "status_load_failed": "{kind} load failed: {error}",
         "status_host_block_missing": (
@@ -564,7 +576,9 @@ I18N: dict[str, dict[str, str]] = {
         "sweep_fva": "FVA",
         "sweep_fva_metabolites_placeholder": "Optional comma-separated FVA metabolites",
         "sweep_exact_medium": "Exact medium",
-        "sweep_allow_unknown_medium": "Allow unknown medium IDs",
+        "sweep_allow_unknown_medium": (
+            "Run a mismatched medium anyway (drops its unmatched rows; degraded)"
+        ),
         "sweep_fixture_smoke": "Use built-in fixture smoke sweep",
         "sweep_run": "Run Sweep",
         "sweep_col_condition": "Condition",
@@ -3185,12 +3199,11 @@ class CmigMainWindow(QMainWindow):
             lines = job_error_text(job.error).splitlines()
             reason = lines[-1] if lines else "the run failed"
             # Ids the model lacks are not applicable and never refused (round 11); what is
-            # refused is a medium that matches nothing, or ids in another notation.
-            refused_medium = any(phrase in reason for phrase in (
-                "no counterpart", "none of the medium's", "another notation",
-            ))
-            hint = (" — tick “Skip medium metabolites this model lacks” to run without them"
-                    if refused_medium else "")
+            # refused is a medium that matches nothing, or ids in another notation — the hint
+            # says how to fix the file (a near miss is renamed, not dropped).
+            from cmig.gui.growth import medium_refusal_hint
+
+            hint = medium_refusal_hint(reason)
             return f"✗ Failed: {reason}{hint}"
         if state is not None:
             return {"cancelled": "⊘ Cancelled"}.get(state, f"✗ Failed ({state}) — see the run")
@@ -4293,6 +4306,32 @@ class CmigMainWindow(QMainWindow):
         self.toggle_activity_action.setText("Hide Activity")
         return jid
 
+    def _medium_run_notes(
+        self, dropped: list[str], diagnostic: Any, record: dict[str, Any]
+    ) -> str:
+        """The Medium page's line under the growth: dropped ids (or the diagnostic), then the ids
+        no selected model can take up and the matched fraction (round 11; never silent)."""
+        text = (
+            self.tr_map["medium_dropped_none"] if not dropped
+            else self._message("medium_dropped_ids", count=len(dropped), ids=", ".join(dropped))
+        )
+        if diagnostic and not dropped:
+            text = self._message("medium_diagnostic", diagnostic=diagnostic)
+        notes = [text]
+        not_applicable = [str(x) for x in record.get("not_applicable") or []]
+        if not_applicable:
+            notes.append(self._message(
+                "medium_not_applicable_ids", count=len(not_applicable),
+                ids=", ".join(not_applicable),
+            ))
+        matched = record.get("medium_matched")
+        if isinstance(matched, dict) and matched.get("requested"):
+            notes.append(self._message(
+                "medium_matched_note", matched=matched.get("matched"),
+                requested=matched.get("requested"),
+            ))
+        return " · ".join(notes)
+
     def load_run_dir(self, path: str | Path, host_key: str = "community") -> bool:
         """Show a run in its viewer; a tidy community run goes to Profile and Graph.
 
@@ -4369,7 +4408,24 @@ class CmigMainWindow(QMainWindow):
         self._show_profile(host_key)
         run_hash = None if self.current_manifest is None else self.current_manifest.get("run_hash")
         suffix = "" if run_hash is None else f" (run_hash {str(run_hash)[:12]})"
-        self._show_status("status_loaded_run", run_dir=run_dir, suffix=suffix)
+        record = _medium_scope_record(manifest if isinstance(manifest, dict) else {})
+        if record["not_applicable"]:
+            suffix += f" · {len(record['not_applicable'])} medium ids not applicable"
+        matched = record["medium_matched"]
+        if isinstance(matched, dict) and matched.get("requested"):
+            suffix += f" · {matched.get('matched')}/{matched.get('requested')} medium ids matched"
+        if host_key == "medium" and isinstance(manifest, dict):
+            self.medium_editor.dropped_ids_label.setText(self._medium_run_notes(
+                _medium_dropped_ids(manifest), manifest.get("diagnostic"), record,
+            ))
+        # A published failed solve (exit 3) has a tidy bundle too; it is shown, never as a result.
+        solved = _solve_result_like_from_run_dir(run_dir)
+        if solved.status != "optimal":
+            self._show_status(
+                "status_loaded_failed_run", status=solved.status, run_dir=run_dir, suffix=suffix,
+            )
+        else:
+            self._show_status("status_loaded_run", run_dir=run_dir, suffix=suffix)
         return True
 
     def load_search_dir(self, path: str | Path) -> bool:
@@ -5774,12 +5830,25 @@ class CmigMainWindow(QMainWindow):
         try:
             result_a = _solve_result_like_from_run_dir(path_a)
             result_b = _solve_result_like_from_run_dir(path_b)
-            # Duck-typed run-dir reconstruction: compute_delta reads only
-            # status/objective/external_exchange/members, all present on the namespace.
-            delta = compute_delta(result_a, result_b)  # type: ignore[arg-type]
+            delta = compute_delta(result_a, result_b)
         except Exception as e:
             self._compare_failed()
             self.scenario_compare.status.setText(f"Scenario compare failed: {e}")
+            return
+        # A side whose solve did not succeed has no profile to compare: its "deltas" would be
+        # the other run's whole profile, presented as significant changes.
+        unsolved = [
+            f"{path.name} (status={result.status})"
+            for path, result in ((path_a, result_a), (path_b, result_b))
+            if result.status != "optimal"
+        ]
+        if unsolved or delta.status != "ok":
+            self._compare_failed()
+            self.scenario_compare.status.setText(
+                "Scenario compare refused: the run "
+                + " and ".join(unsolved or ["input"])
+                + " did not solve, so there is nothing to compare."
+            )
             return
         self.scenario_compare.load_comparison(delta)
         self._blank_base_for_overlay()
@@ -6277,40 +6346,11 @@ class CmigMainWindow(QMainWindow):
                         mode=self.tr_map[mode_key],
                     )
                 )
-                dropped = [str(item) for item in job.result.get("dropped_ids", [])]
-                self.medium_editor.dropped_ids_label.setText(
-                    self.tr_map["medium_dropped_none"]
-                    if not dropped
-                    else self._message(
-                        "medium_dropped_ids",
-                        count=len(dropped),
-                        ids=", ".join(dropped),
-                    )
-                )
-                diagnostic = job.result.get("diagnostic")
-                if diagnostic and not dropped:
-                    self.medium_editor.dropped_ids_label.setText(
-                        self._message("medium_diagnostic", diagnostic=diagnostic)
-                    )
-                # Round 11: ids no selected model can take up were dropped with the LP unchanged
-                # (not a degradation) — shown beside the dropped ids, never silent.
-                scope_notes = []
-                not_applicable = [str(x) for x in job.result.get("not_applicable", [])]
-                if not_applicable:
-                    scope_notes.append(self._message(
-                        "medium_not_applicable_ids", count=len(not_applicable),
-                        ids=", ".join(not_applicable),
-                    ))
-                matched = job.result.get("medium_matched")
-                if isinstance(matched, dict) and matched.get("requested"):
-                    scope_notes.append(self._message(
-                        "medium_matched_note", matched=matched.get("matched"),
-                        requested=matched.get("requested"),
-                    ))
-                if scope_notes:
-                    self.medium_editor.dropped_ids_label.setText(
-                        " · ".join([self.medium_editor.dropped_ids_label.text(), *scope_notes])
-                    )
+                self.medium_editor.dropped_ids_label.setText(self._medium_run_notes(
+                    [str(item) for item in job.result.get("dropped_ids", [])],
+                    job.result.get("diagnostic"),
+                    job.result,
+                ))
 
                 previous = self._last_medium_growth_check
                 if not self.load_run_dir(out_dir, host_key="medium"):
@@ -6333,7 +6373,7 @@ class CmigMainWindow(QMainWindow):
 
                         baseline = _solve_result_like_from_run_dir(previous_dir)
                         variant = _solve_result_like_from_run_dir(out_dir)
-                        delta = compute_delta(baseline, variant)  # type: ignore[arg-type]
+                        delta = compute_delta(baseline, variant)
                         self.profile_view.show_delta_overlay(
                             delta,
                             baseline_label=self.tr_map["medium_profile_baseline"],
@@ -6729,40 +6769,17 @@ def _load_sweep_rows(parquet_path: Path) -> list[Any]:
     return rows
 
 
-def _solve_result_like_from_run_dir(run_dir: Path) -> SimpleNamespace:
-    """Reconstruct the fields compute_delta() actually reads from a completed run directory.
+def _solve_result_like_from_run_dir(run_dir: Path) -> Any:
+    """The solve fields compute_delta() reads, rebuilt from a completed run directory.
 
-    manifest.json only stores run_hash *inputs* (11 hash components), not the solved growth
-    objective, so `objective` is reconstructed as the abundance-weighted sum of per-member
-    growth from nodes.parquet — this matches how MICOM's cooperative-tradeoff community
-    objective is itself built (a convex combination of member biomass reactions weighted by
-    abundance), so it is a faithful reconstruction rather than an approximation of a different
-    quantity. `status` is "optimal" unless a member is missing growth/abundance (infeasible).
+    One reconstruction for the whole product: :func:`cmig.core.delta.load_solve_result_from_run`
+    (community growth = abundance-weighted member growth from nodes.parquet). A run with no
+    member nodes — what a failed solve publishes — is ``solver_failed`` and a missing/non-finite
+    member measurement is ``infeasible``; neither is ever read back as an optimal growth of 0.
     """
-    from cmig.core.tidy import TidyBundle
+    from cmig.core.delta import load_solve_result_from_run
 
-    bundle = TidyBundle.read(run_dir)
-    external_exchange = {
-        str(row["metabolite"]): float(row["net_flux"]) for row in bundle.profile.to_pylist()
-    }
-    members: list[str] = []
-    objective = 0.0
-    status = "optimal"
-    for row in bundle.nodes.to_pylist():
-        if row.get("node_type") != "member":
-            continue
-        members.append(str(row["node_id"]))
-        growth, abundance = row.get("growth"), row.get("abundance")
-        if growth is None or abundance is None:
-            status = "infeasible"
-            continue
-        objective += float(growth) * float(abundance)
-    return SimpleNamespace(
-        external_exchange=external_exchange,
-        members=members,
-        status=status,
-        objective=objective,
-    )
+    return load_solve_result_from_run(run_dir)
 
 
 def _medium_scope_record(manifest: dict[str, Any]) -> dict[str, Any]:

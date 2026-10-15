@@ -39,6 +39,7 @@ from cmig.gui.analysis_page import (
     paint_computed,
 )
 from cmig.gui.builder import make_read_only, read_only_item
+from cmig.gui.growth import MISMATCHED_MEDIUM_TOOLTIP
 from cmig.gui.pickers import ModelPicker
 from cmig.service import JobRunner, make_sweep_job
 
@@ -862,8 +863,12 @@ class SweepView(QWidget):
             _view_text(self.strings, "sweep_exact_medium", "Exact medium")
         )
         self.allow_unknown_medium_check = QCheckBox(
-            _view_text(self.strings, "sweep_allow_unknown_medium", "Allow unknown medium IDs")
+            _view_text(
+                self.strings, "sweep_allow_unknown_medium",
+                "Run a mismatched medium anyway (drops its unmatched rows; degraded)",
+            )
         )
+        self.allow_unknown_medium_check.setToolTip(MISMATCHED_MEDIUM_TOOLTIP)
         self.fixture_check = QCheckBox(
             _view_text(
                 self.strings,

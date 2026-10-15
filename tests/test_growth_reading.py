@@ -120,5 +120,5 @@ def test_infeasible_run_as_the_cli_writes_it(tmp_path: Path) -> None:
 
 def test_medium_text_names_skipped_metabolites() -> None:
     assert (medium_text("preset:western_diet", skip_unknown=True)
-            == "western_diet (exact, model-lacking metabolites skipped)")
+            == "western_diet (exact, mismatched medium allowed)")
     assert medium_text("", skip_unknown=True) == "model default"

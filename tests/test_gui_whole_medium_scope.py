@@ -204,3 +204,111 @@ def test_medium_page_check_growth_never_reads_a_failed_solve_as_optimal(w, monke
     assert "failed" in shown, shown
     # the medium record is still shown for the failed run
     assert "Not applicable to the selected models (2)" in editor.dropped_ids_label.text()
+
+
+# ── review round 5 ─────────────────────────────────────────────────────────────────────────────
+
+
+def _tidy_run(path: Path, *, failed: bool) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    if failed:
+        result = SolveResult(
+            objective=0.0, member_growth={}, abundances={}, external_exchange={},
+            member_exchange={}, status="solver_failed", flux_report_status="none",
+            growth_solver="gurobi", flux_solver="gurobi", members=[],
+        )
+    else:
+        result = SolveResult(
+            objective=0.5, member_growth={"a": 0.5}, abundances={"a": 1.0},
+            external_exchange={"ac": 1.0}, member_exchange={"a": {"ac": 1.0}},
+            status="optimal", flux_report_status="full", growth_solver="gurobi",
+            flux_solver="gurobi", members=["a"],
+        )
+    build_tidy(result).write(path)
+    (path / "manifest.json").write_text(json.dumps({
+        "run_hash": "r-failed" if failed else "r-ok",
+        "diagnostic": json.dumps({"code": "solver_error", "message": "no growth"})
+        if failed else None,
+        "provenance": {"medium_not_applicable_to_pool": POOL_NA, "medium_matched": MATCHED},
+    }))
+    return path
+
+
+def test_a_failed_solve_run_is_never_read_back_as_optimal(tmp_path):
+    from cmig.gui.app import _solve_result_like_from_run_dir
+
+    failed = _solve_result_like_from_run_dir(_tidy_run(tmp_path / "f", failed=True))
+    assert failed.status != "optimal"
+
+
+def test_scenario_compare_refuses_a_failed_side(w, monkeypatch, tmp_path):
+    _stub_graph(monkeypatch)
+    good = _tidy_run(tmp_path / "good", failed=False)
+    bad = _tidy_run(tmp_path / "bad", failed=True)
+    w.scenario_compare.run_a_input.setText(str(bad))
+    w.scenario_compare.run_b_input.setText(str(good))
+    w.run_scenario_compare()
+    status = w.scenario_compare.status.text()
+    assert "compare complete" not in status, status
+    assert "did not solve" in status and "bad" in status, status
+    assert w.profile_view.net_chart.delta_active is False
+
+
+def test_reopening_a_failed_medium_run_says_failed_and_shows_the_medium_notes(w, monkeypatch,
+                                                                             tmp_path):
+    _stub_graph(monkeypatch)
+    run = _tidy_run(tmp_path / "medium-growth-x", failed=True)
+    w.load_run_dir(run, host_key="medium")
+    bar = w.statusBar().currentMessage()
+    assert "failed" in bar.lower() and "Loaded run:" not in bar, bar
+    notes = w.medium_editor.dropped_ids_label.text()
+    assert "Not applicable to the selected models (2)" in notes and "8/10" in notes, notes
+
+
+def test_reopening_an_ok_medium_run_shows_the_medium_notes(w, monkeypatch, tmp_path):
+    _stub_graph(monkeypatch)
+    run = _tidy_run(tmp_path / "medium-growth-y", failed=False)
+    w.load_run_dir(run, host_key="medium")
+    assert "Loaded run:" in w.statusBar().currentMessage()
+    assert "medium ids matched: 8/10" in w.medium_editor.dropped_ids_label.text()
+
+
+def test_allow_unknown_controls_describe_what_they_still_do(w):
+    from cmig.gui.growth import MISMATCHED_MEDIUM_OPTION, medium_text
+
+    for text in (
+        w.model_browser.skip_unknown_check.text(),
+        w.medium_editor.allow_unknown_check.text(),
+        w.sweep_view.allow_unknown_medium_check.text(),
+    ):
+        assert "lacks" not in text and "report every dropped" not in text, text
+        assert "mismatched medium" in text.lower(), text
+    assert w.model_browser.skip_unknown_check.text() == MISMATCHED_MEDIUM_OPTION
+    assert "skipped" not in medium_text("preset:western_diet", skip_unknown=True)
+    assert "always" in w.model_browser.skip_unknown_check.toolTip()
+
+
+def test_korean_catalogue_carries_the_same_english_wording():
+    window = build_main_window(runner=JobRunner(max_workers=1), lang="ko")
+    try:
+        assert "mismatched medium" in window.medium_editor.allow_unknown_check.text().lower()
+        assert "mismatched medium" in window.sweep_view.allow_unknown_medium_check.text().lower()
+    finally:
+        window.runner.shutdown()
+
+
+@pytest.mark.parametrize(("reason", "expected"), [
+    ("medium exchange ids written in another notation of exchanges the selected models have "
+     "(VMH `glc_D`/`(e)` vs BiGG `glc__D`/`_e`): EX_glc_D_m -> EX_glc__D_m, EX_ala_L_m -> "
+     "EX_ala__L_m. rename them",
+     "rename EX_glc_D_m to EX_glc__D_m, EX_ala_L_m to EX_ala__L_m in the medium file"),
+    ("none of the medium's 2 exchange ids matches an exchange of the model (matched on "
+     "metabolite)", "write the medium in this model's namespace"),
+])
+def test_refusal_hint_says_what_to_fix(reason, expected):
+    from cmig.gui.growth import medium_refusal_hint
+
+    hint = medium_refusal_hint(reason)
+    assert expected in hint, hint
+    assert "lacks" not in hint
+    assert medium_refusal_hint("some solver error") == ""
