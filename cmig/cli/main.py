@@ -7534,8 +7534,9 @@ def _print_pool_not_applicable(
             f"  warning: {prefix}{len(ids)} medium ids are not applicable to this {scope} ({why}; "
             f"dropped, LP unchanged, run status unaffected): {ids}"
         )
-    if isinstance(matched, dict) and matched.get("requested"):
-        n_matched, requested = int(matched.get("matched") or 0), int(matched["requested"])
+    if (isinstance(matched, dict) and matched.get("requested")
+            and isinstance(matched.get("matched"), int)):
+        n_matched, requested = int(matched["matched"]), int(matched["requested"])
         print(f"  {prefix}medium ids matched: {n_matched}/{requested} "
               f"({100 * n_matched / requested:.0f}%)")
         if n_matched / requested < LOW_MEDIUM_MATCH_FRACTION:
