@@ -5,7 +5,41 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
-### Changed — medium rule for pool workflows (`medium_policy` v3)
+### Changed — medium rule for every medium command (`medium_policy` v3)
+
+- **Whole-community and single-model commands** (user decision 2026-10-15): the rule below now
+  applies wherever a medium is given. Where the selected models are solved as one community —
+  `solve` (and the GUI Medium page's Check Growth), the community leg of `strain-growth`,
+  `abundance-impact`, `host-microbe-bigg` and `host-ko-impact` (microbial medium), `pair`, a
+  `sweep` without `--member-sets` — that community is the pool; where a command takes one
+  model — `single` (and the model browser's Check Growth), `minimal-medium`, `medium-gap
+  --model` — that model is. A medium id it has no exchange for is dropped with the answer
+  unchanged and recorded as `medium_not_applicable_to_pool`, with `medium_matched: {matched,
+  requested, fraction}` (solve: manifest `provenance`; the others: their summary JSON — per
+  condition in `pair_summary.json` — and the manifest `summary`), printed as a console warning
+  and shown in the GUI; the run is not degraded. Still refused (exit 2, strict): a medium none
+  of whose ids matches ("none of the medium's N exchange ids matches an exchange of any of the
+  selected models / the model …") and near misses in another notation. Measured: `cmig solve`
+  on {iAF987, iHN637, iYO844} with `gut_overlay_agora_high_fiber` exited 2 ("medium exchange
+  has no counterpart in the target model", 19 ids); it now records those 19 ids (114/133
+  matched) and solves — and fails with exit 3 (`solver_failed`) because iAF987's SBML forces
+  Fe3+ uptake ≥ 49.21 while the overlay caps `EX_fe3_m` at 0.1 (lifting only that cap, the same
+  three models solve). {iHN637, iYO844} on the same overlay (32 ids not applicable) solves with
+  growth and every exchange flux identical to the overlay pre-filtered to the pair's exchanges,
+  in merge and exact mode.
+- `--allow-unknown-medium` on these commands now drops only a zero-match medium or near misses,
+  names them (`medium_unapplied` diagnostic or a warning) and reports the run `degraded`.
+  `strain-growth`, `abundance-impact`, `pair`, `single` and `minimal-medium` used to drop
+  unmatched ids under the flag without any record; they now name them. `medium-gap --model`
+  no longer ends in a traceback when its medium is refused.
+- The host medium (`--host-medium`) keeps its own check: an entry the host has no exchange for
+  is refused unless `--allow-unknown-medium` (it is the host model's blood-side supply, resolved
+  through the reviewed interface map, not a community medium).
+- No hash moves: identical inputs give the identical solve `run_hash` and workflow hashes as
+  before (measured on solve merge/exact, single, pair, strain-growth, abundance-impact,
+  minimal-medium, sweep and host-microbe-bigg), and `cmig golden verify` / `verify-envelope`
+  pass. `medium_policy` keeps the value `exchange_reactions_by_metabolite_pool_scoped_v3`: v3
+  was never released, so it is redefined to cover every medium command.
 
 - Workflows that evaluate sub-communities or single members of the selected pool —
   `search` (single and multi-target, including `--validate-top` and robustness FVA),
@@ -42,7 +76,8 @@ semantic versioning for public releases.
 - `--allow-unknown-medium` in these workflows: genuine pool-unknown ids are "not applicable to
   this pool" with or without it; near-miss ids are dropped and listed as not applied with it;
   when no id matches it keeps today's behaviour (the run proceeds without the medium's rows,
-  listed as not applied). Other workflows keep the flag's existing meaning.
+  listed as not applied). (The whole-community and single-model commands follow the same
+  rule since the entry above.)
 - Reporting: the matched fraction of the medium (`medium_matched: {matched, requested,
   fraction}`) per run and per candidate (`{matched, requested}`) in the summaries, and the
   pool-level not-applicable ids as a console warning and in the GUI status line and details.

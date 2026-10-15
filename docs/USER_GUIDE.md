@@ -52,7 +52,7 @@ is diagnosable. That makes `$?` — not the presence of output files — the ver
 | Code | Meaning |
 | ---- | ------- |
 | `0` | ran, and the scientific solve succeeded (or `--allow-failed-run` was passed) |
-| `2` | **input** error — bad medium spec, aliased medium namespaces, a medium id with no exchange counterpart |
+| `2` | **input** error — bad medium spec, aliased medium namespaces, a medium none of whose ids matches the selected models, or ids in another notation of their exchanges (near misses) |
 | `3` | artifacts written but **the scientific solve did not succeed**; also `inspect-run` when `artifact_integrity` is `mismatch` |
 
 `--allow-failed-run` forces `0`, without making the run a result. It is **not**
@@ -461,11 +461,13 @@ this way can have a different `run_hash` from an earlier GUI run of the same mod
   | Optimal FBA, but the objective is not a growth rate | `⚠ Objective value 12.3 — <objective warning> · …` |
   | Optimal FBA below the growth threshold | `✗ No growth (below 1e-06) · …` |
   | FBA not optimal (also when `cmig single` records a failed solve) | `✗ Infeasible · …` (the FBA status, with the solver's diagnostic) |
-  | The CLI refused or failed | `✗ Failed: <last line of the error>`; a medium metabolite without a counterpart adds a hint to tick the Skip box |
+  | The CLI refused or failed | `✗ Failed: <last line of the error>`; a refused medium (no id matches the model, or ids in another notation) adds a hint to tick the Skip box |
   | Unreadable result / result changed since the run | `✗ Failed: the result could not be read back — see the inspector` / `✗ Result changed since the run — see the inspector` |
   | Cancelled | `⊘ Cancelled` |
 
-  A degraded summary is marked ⚠ and its warnings follow the line. The solver comes from
+  A degraded summary is marked ⚠ and its warnings follow the line. Medium ids the model has
+  no exchange for are dropped (not a degradation) and listed after the line: `· 2 medium ids
+  not applicable to this model (EX_but_m, EX_x_m); 8/10 matched`. The solver comes from
   the run's summary: Gurobi (full-flux) or OSQP (QP-only approximate). A skipped-metabolite
   run names its medium `<name> (exact, model-lacking metabolites skipped)`. Opening a Check
   Growth run from RUNS shows its model's browser with that run's line; if the model (that
@@ -1558,9 +1560,9 @@ per metabolite, so an exchange that is currently closed **does get opened**.
 >
 > A trustworthy run records `exchange_reactions_by_metabolite_pool_scoped_v3` (or
 > the earlier `exchange_reactions_by_metabolite_v2`). Absent, or
-> `open_uptakes_exact_key_v1`, means re-run. v3 changed only pool workflows (see
-> below): candidates and selections v2 refused for medium rows they cannot take up
-> now have answers; every number v2 produced is unchanged.
+> `open_uptakes_exact_key_v1`, means re-run. v3 changed which media are refused (see
+> below): candidates, selections and single models that v2 refused for medium rows they
+> cannot take up now have answers; every number v2 produced is unchanged.
 
 Two further rules:
 
@@ -1568,12 +1570,28 @@ Two further rules:
   `EX_glc__D_m` and `EX_glc__D_e` is rejected as an input error (exit `2`) in both
   `solve` and `search`. It previously picked a silent winner, and reordering
   identical CSV rows changed community growth under an identical checksum.
-- **`--allow-unknown-medium` drops nutrients.** Without it, a medium id with no
-  counterpart in the community is a hard input error (exit `2`). With it, those
-  ids are dropped and the run continues — measured: exit `0`, `status: degraded`,
-  a `medium_unapplied` diagnostic naming the dropped ids, and a `medium_checksum`
-  still computed over the **full requested** medium. Use it to diagnose a medium
-  file, not to produce a reported result.
+- **`--allow-unknown-medium` drops nutrients that should have matched.** Since v3 a
+  medium id that none of the selected models can take up is never an error (next two
+  bullets). What is still refused (exit `2`) is a namespace mismatch: a medium of which no
+  id matches, or an id written in another notation of an exchange the models have. With
+  the flag, those ids are dropped and the run continues — exit `0`, `status: degraded`, a
+  `medium_unapplied` diagnostic (or warning) naming the dropped ids, and a
+  `medium_checksum` still computed over the **full requested** medium. Use it to diagnose
+  a medium file, not to produce a reported result.
+- **Every medium command drops medium rows that cannot apply, and records them.** Where
+  the selected models are solved as one community — `solve` (and the GUI's Medium-page
+  Check Growth), `strain-growth`'s community leg, `abundance-impact`, `host-microbe-bigg`,
+  `host-ko-impact` (the microbial medium), `pair`, a `sweep` without `--member-sets` — that
+  community is the pool; where a command takes one model — `single` (and the model
+  browser's Check Growth), `minimal-medium`, `medium-gap --model` — that model is. An id it
+  has no exchange for cannot bound anything in its LP, so it is dropped with the answer
+  unchanged and recorded as `medium_not_applicable_to_pool`, with `medium_matched`
+  `{matched, requested, fraction}` (solve: the manifest's `provenance`; the others: the
+  summary JSON and the manifest's `summary`), printed as a console warning and shown in the
+  GUI. The run is not degraded. A medium that matches nothing, or a near miss, is refused
+  as described below. (`strain-growth`'s alone legs already ran on the community's
+  effective medium projected onto each member.) The host medium of the host commands keeps
+  its own check: an entry with no host exchange is refused unless `--allow-unknown-medium`.
 - **Pool workflows drop medium rows that cannot apply, and record them.**
   `search` (single and multi-target), `host-search-bigg`, `gene-ko-search` (its
   `--members` consortium is the pool), `sweep --member-sets` (without

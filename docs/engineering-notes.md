@@ -48,7 +48,7 @@
 
 **hash가 같은데 숫자가 다름**
 - 원인: 결과 의미를 바꾼 정책 수정(배지 적용 v2, 경계 격리 v2, 숙주 격리 등)은 입력을 바꾸지 않아 `run_hash`가 그대로다.
-- 대응: `cmig inspect-run --format json`의 `provenance`에서 정책 표식을 비교한다. `medium_policy`가 없거나 `open_uptakes_exact_key_v1`인 run은 재실행한다. `exchange_reactions_by_metabolite_v2` → `_pool_scoped_v3`는 pool workflow에서 v2가 거부하던 후보에 답이 생긴 변화이며, v2가 낸 수치는 바뀌지 않았다.
+- 대응: `cmig inspect-run --format json`의 `provenance`에서 정책 표식을 비교한다. `medium_policy`가 없거나 `open_uptakes_exact_key_v1`인 run은 재실행한다. `exchange_reactions_by_metabolite_v2` → `_pool_scoped_v3`는 v2가 배지 행 일부를 받을 수 없다는 이유로 거부하던 후보·선택·단일 모델에 답이 생긴 변화이며(pool workflow와, 2026-10-15부터 전체 커뮤니티·단일 모델 workflow), v2가 낸 수치는 바뀌지 않았다.
 
 **GUI 취소가 즉시 멈추지 않음**
 - 원인: 취소는 `threading.Event`를 세우는 협조적 취소다. MICOM solve는 GIL을 잡은 C 호출이라 진행 중인 1건은 끝까지 돈다.

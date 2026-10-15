@@ -297,7 +297,7 @@ that exists but is corrupt is an **error**, not `unknown`.
 
    | marker | trustworthy value | if absent / older |
    | ------ | ----------------- | ----------------- |
-   | `medium_policy` | `exchange_reactions_by_metabolite_v2` | `open_uptakes_exact_key_v1` or absent ⇒ the `--medium` file never took effect; **re-do the run** |
+   | `medium_policy` | `exchange_reactions_by_metabolite_pool_scoped_v3` (or `_v2`; v3 only answers runs v2 refused for medium rows the models lack) | `open_uptakes_exact_key_v1` or absent ⇒ the `--medium` file never took effect; **re-do the run** |
    | `boundary_isolation_policy` | `boundary_reactions_v1` | absent ⇒ closure enumerated `model.exchanges`/`model.medium`, so sinks and demands stayed open. Only matters on a model that *has* them: the bundled microbial GEMs have none, the human GEMs have 95 |
    | `host_isolation_policy` | `all_boundary_uptake_v2` | `model_exchanges_only_v1` or absent ⇒ a host coupling run's `host_objective` may have been fed by the host's own sinks rather than by the community. Measured on Recon3D: `368.010247546` before, `0.0` after, **same `run_hash`** |
 
