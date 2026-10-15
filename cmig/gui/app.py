@@ -245,6 +245,8 @@ I18N: dict[str, dict[str, str]] = {
         "medium_dropped_none": "누락된 배지 ID: 없음",
         "medium_dropped_ids": "누락된 배지 ID({count}개): {ids}",
         "medium_diagnostic": "진단: {diagnostic}",
+        "medium_not_applicable_ids": "Not applicable to the selected models ({count}): {ids}",
+        "medium_matched_note": "medium ids matched: {matched}/{requested}",
         "medium_profile_delta_active": (
             "이전 배지 검사와 현재 검사의 외부 프로필 차이를 외부 프로필 탭에 표시했습니다."
         ),
@@ -490,6 +492,8 @@ I18N: dict[str, dict[str, str]] = {
         "medium_dropped_none": "Dropped medium IDs: none",
         "medium_dropped_ids": "Dropped medium IDs ({count}): {ids}",
         "medium_diagnostic": "Diagnostic: {diagnostic}",
+        "medium_not_applicable_ids": "Not applicable to the selected models ({count}): {ids}",
+        "medium_matched_note": "medium ids matched: {matched}/{requested}",
         "medium_profile_delta_active": (
             "External-profile delta versus the previous medium check is active in Profile."
         ),
@@ -3180,8 +3184,13 @@ class CmigMainWindow(QMainWindow):
         if job is not None and job.status is JobStatus.FAILED:
             lines = job_error_text(job.error).splitlines()
             reason = lines[-1] if lines else "the run failed"
+            # Ids the model lacks are not applicable and never refused (round 11); what is
+            # refused is a medium that matches nothing, or ids in another notation.
+            refused_medium = any(phrase in reason for phrase in (
+                "no counterpart", "none of the medium's", "another notation",
+            ))
             hint = (" — tick “Skip medium metabolites this model lacks” to run without them"
-                    if "no counterpart" in reason else "")
+                    if refused_medium else "")
             return f"✗ Failed: {reason}{hint}"
         if state is not None:
             return {"cancelled": "⊘ Cancelled"}.get(state, f"✗ Failed ({state}) — see the run")
@@ -5636,6 +5645,7 @@ class CmigMainWindow(QMainWindow):
                 "growth": result.objective if result.status == "optimal" else None,
                 "status": result.status,
                 "dropped_ids": _medium_dropped_ids(manifest),
+                **_medium_scope_record(manifest),
                 "diagnostic": manifest.get("diagnostic"),
                 "cli_rc": rc,
             }
@@ -6279,6 +6289,25 @@ class CmigMainWindow(QMainWindow):
                     self.medium_editor.dropped_ids_label.setText(
                         self._message("medium_diagnostic", diagnostic=diagnostic)
                     )
+                # Round 11: ids no selected model can take up were dropped with the LP unchanged
+                # (not a degradation) — shown beside the dropped ids, never silent.
+                scope_notes = []
+                not_applicable = [str(x) for x in job.result.get("not_applicable", [])]
+                if not_applicable:
+                    scope_notes.append(self._message(
+                        "medium_not_applicable_ids", count=len(not_applicable),
+                        ids=", ".join(not_applicable),
+                    ))
+                matched = job.result.get("medium_matched")
+                if isinstance(matched, dict) and matched.get("requested"):
+                    scope_notes.append(self._message(
+                        "medium_matched_note", matched=matched.get("matched"),
+                        requested=matched.get("requested"),
+                    ))
+                if scope_notes:
+                    self.medium_editor.dropped_ids_label.setText(
+                        " · ".join([self.medium_editor.dropped_ids_label.text(), *scope_notes])
+                    )
 
                 previous = self._last_medium_growth_check
                 if not self.load_run_dir(out_dir, host_key="medium"):
@@ -6731,6 +6760,20 @@ def _solve_result_like_from_run_dir(run_dir: Path) -> SimpleNamespace:
         status=status,
         objective=objective,
     )
+
+
+def _medium_scope_record(manifest: dict[str, Any]) -> dict[str, Any]:
+    """The solve manifest's medium-scope record: ids no selected model can take up, and the
+    matched fraction (non-hashed provenance, round 11)."""
+    provenance = manifest.get("provenance")
+    if not isinstance(provenance, dict):
+        return {"not_applicable": [], "medium_matched": None}
+    ids = provenance.get("medium_not_applicable_to_pool")
+    matched = provenance.get("medium_matched")
+    return {
+        "not_applicable": [str(x) for x in ids] if isinstance(ids, list) else [],
+        "medium_matched": matched if isinstance(matched, dict) else None,
+    }
 
 
 def _medium_dropped_ids(manifest: dict[str, Any]) -> list[str]:

@@ -95,14 +95,21 @@ def test_last_result_comes_back_after_reselect(window) -> None:
     assert "Growth 0.5" in w.model_browser.growth_label.text()
 
 
-def test_refusal_for_unknown_medium_suggests_the_option(window, monkeypatch) -> None:
+@pytest.mark.parametrize("reason", [
+    "medium exchange has no counterpart in the target model (matched on metabolite): ['EX_x_e']",
+    # Round 11: what `cmig single` refuses now — a medium that matches nothing, or a near miss.
+    "none of the medium's 1 exchange ids matches an exchange of the model (matched on "
+    "metabolite), so the medium and the models are probably in different namespaces",
+    "medium exchange ids written in another notation of exchanges the selected models have "
+    "(VMH `glc_D`/`(e)` vs BiGG `glc__D`/`_e`): EX_glc_D_m -> EX_glc__D_m",
+])
+def test_refusal_for_unknown_medium_suggests_the_option(window, monkeypatch, reason) -> None:
     w, _calls = window
 
     def refuse(argv: list[str]) -> int:
         import sys
 
-        print("medium exchange has no counterpart in the target model (matched on "
-              "metabolite): ['EX_x_e']", file=sys.stderr)
+        print(reason, file=sys.stderr)
         return 2
 
     monkeypatch.setattr("cmig.cli.main.main", refuse)

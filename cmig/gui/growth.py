@@ -78,6 +78,7 @@ def read_growth(run_dir: Path, *, objective_warning: str | None, medium: str,
         return GrowthReading("✗", f"No objective value recorded · {tail}")
     warnings = [str(w) for w in summary.get("warnings") or []]
     note = f" · {'; '.join(warnings)}" if run_status == "degraded" and warnings else ""
+    note += _not_applicable_note(summary)
     if objective_warning is not None:
         return GrowthReading(
             "⚠", f"Objective value {float(value):.4g} — {objective_warning} · {tail}{note}"
@@ -88,6 +89,20 @@ def read_growth(run_dir: Path, *, objective_warning: str | None, medium: str,
         return GrowthReading("✗", f"No growth{below} · {tail}")
     symbol = "⚠" if run_status == "degraded" else "✓"
     return GrowthReading(symbol, f"Growth {float(value):.4g} h⁻¹ · {tail}{note}")
+
+
+def _not_applicable_note(summary: dict[str, object]) -> str:
+    """Medium ids this model has no exchange for: dropped, LP unchanged, not a degradation."""
+    ids = summary.get("medium_not_applicable_to_pool")
+    if not isinstance(ids, list) or not ids:
+        return ""
+    matched = summary.get("medium_matched")
+    fraction = (
+        f"; {matched.get('matched')}/{matched.get('requested')} matched"
+        if isinstance(matched, dict) and matched.get("requested") else ""
+    )
+    return (f" · {len(ids)} medium ids not applicable to this model "
+            f"({', '.join(str(x) for x in ids)}){fraction}")
 
 
 def latest_check_growth(root: Path, model_id: str, sha256: str) -> Path | None:

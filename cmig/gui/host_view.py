@@ -103,9 +103,12 @@ class HostInputs:
         # over — round 5's whole GUI/CLI-parity finding.
         self.allow_unknown_medium_check = QCheckBox("Allow unknown medium")
         self.allow_unknown_medium_check.setToolTip(
-            "Apply the medium minus the exchanges these models have no counterpart for, instead "
-            "of refusing. The dropped ids are named in the run warnings and the run is reported "
-            "as degraded."
+            "Microbial medium ids no selected model can take up are always dropped and listed. "
+            "This option only lets a medium that matches none of the models, or ids written in "
+            "another notation (e.g. EX_glc_D_m), run without those rows instead of being "
+            "refused; they are named in the run warnings and the run is reported as degraded. "
+            "The host medium is still refused when an entry has no host exchange, unless this is "
+            "ticked."
         )
 
     def attach(self, page: AnalysisPage) -> None:
@@ -398,6 +401,7 @@ class HostImpactView(AnalysisPage, HostInputWidgets):
             "Loaded host-microbe result"
             + ("" if self.current_run_dir is None else f": {self.current_run_dir}")
             + _warning_suffix(payload)
+            + _medium_scope_suffix(payload)
             + (f" · target identifiability: {payload['target_identifiability']}"
                if "target_identifiability" in payload else "")
             + ("\n" + "\n".join(str(w) for w in payload.get("warnings", []))
@@ -543,3 +547,19 @@ def _warning_suffix(payload: dict[str, Any]) -> str:
     if not isinstance(warnings, list) or not warnings:
         return ""
     return f" · warnings: {len(warnings)}"
+
+
+def _medium_scope_suffix(payload: dict[str, Any]) -> str:
+    """Microbial medium ids no selected model can take up (dropped, LP unchanged; round 11)."""
+    ids = payload.get("medium_not_applicable_to_pool")
+    if not isinstance(ids, list) or not ids:
+        return ""
+    matched = payload.get("medium_matched")
+    fraction = (
+        f"; {matched.get('matched')}/{matched.get('requested')} matched"
+        if isinstance(matched, dict) and matched.get("requested") else ""
+    )
+    return (
+        f" · {len(ids)} microbial medium ids not applicable to the selected models "
+        f"({', '.join(str(x) for x in ids)}{fraction})"
+    )

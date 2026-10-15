@@ -786,7 +786,9 @@ class SearchView(AnalysisPage):
         box.addLayout(medium_row)
         self.medium_mode_note = note("")
         self.allow_unknown_note = note(
-            "Unknown medium metabolites are dropped and named in warnings; the run is "
+            "Medium ids no selected model can take up are always dropped and listed (not a "
+            "degradation). This option only lets a medium that matches none of the models, or "
+            "ids in another notation (e.g. EX_glc_D_m), run without those rows; the run is then "
             "reported as degraded."
         )
         box.addWidget(self.medium_mode_note)
