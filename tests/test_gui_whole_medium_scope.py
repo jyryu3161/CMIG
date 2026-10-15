@@ -167,3 +167,40 @@ def test_model_browser_growth_reading_names_the_not_applicable_ids(tmp_path):
     assert reading.text.startswith("Growth 0.8739 h⁻¹")
     assert "2 medium ids not applicable to this model (EX_notreal_m, EX_x_m)" in reading.text
     assert "8/10 matched" in reading.text
+
+
+def test_medium_page_check_growth_never_reads_a_failed_solve_as_optimal(w, monkeypatch):
+    """Reachable since round 11: {iAF987, iHN637, iYO844} on the gut overlay is no longer refused
+    (exit 2) but solved, and fails (exit 3, solver_failed). The artifacts exist, so the page used
+    to reconstruct "growth: 0 · status: optimal" from them."""
+    _stub_graph(monkeypatch)
+
+    def fake_main(argv):
+        out = Path(argv[argv.index("--out") + 1])
+        result = SolveResult(
+            objective=0.0, member_growth={"a": 0.0}, abundances={"a": 1.0},
+            external_exchange={}, member_exchange={"a": {}},
+            status="solver_failed", flux_report_status="none", growth_solver="gurobi",
+            flux_solver="gurobi", members=["a"],
+        )
+        build_tidy(result).write(out)
+        (out / "manifest.json").write_text(json.dumps({
+            "run_hash": "run-f", "diagnostic": json.dumps({
+                "code": "solver_error", "message": "could not get community growth rate."}),
+            "provenance": {"medium_not_applicable_to_pool": POOL_NA, "medium_matched": MATCHED},
+        }))
+        return 3
+
+    monkeypatch.setattr("cmig.cli.main.main", fake_main)
+    editor = w.medium_editor
+    editor.model_picker.set_selected(["a"])
+    editor.assume_bigg_check.setChecked(True)
+    editor.exact_medium_check.setChecked(True)
+    editor.add_row("EX_glc__D_m", 3.0)
+    jid = w.run_medium_growth_check()
+    _settle(w, jid)
+    shown = editor.growth_label.text()
+    assert "optimal" not in shown and "growth: 0" not in shown, shown
+    assert "failed" in shown, shown
+    # the medium record is still shown for the failed run
+    assert "Not applicable to the selected models (2)" in editor.dropped_ids_label.text()

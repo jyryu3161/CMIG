@@ -5640,10 +5640,13 @@ class CmigMainWindow(QMainWindow):
             if not isinstance(manifest, dict):
                 raise RuntimeError("growth check manifest is not a JSON object")
             result = _solve_result_like_from_run_dir(out_dir)
+            # The CLI's exit code is the verdict: exit 3 publishes artifacts of a solve that did
+            # not succeed, and the nodes reconstructed from them look "optimal" with growth 0.
+            status = result.status if rc == 0 else "failed"
             return {
                 "manifest": manifest,
-                "growth": result.objective if result.status == "optimal" else None,
-                "status": result.status,
+                "growth": result.objective if status == "optimal" else None,
+                "status": status,
                 "dropped_ids": _medium_dropped_ids(manifest),
                 **_medium_scope_record(manifest),
                 "diagnostic": manifest.get("diagnostic"),
