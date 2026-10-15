@@ -534,8 +534,11 @@ def test_host_coupling_treats_a_pool_row_the_candidate_lacks_as_not_applicable()
         microbe_medium=medium, engine=_Engine(),
     )
     taxonomy = pd.DataFrame({"id": ["a"], "file": ["a.xml"], "abundance": [1.0]})
-    with pytest.raises(ValueError, match="no counterpart"):
-        run_bigg_host_microbe(taxonomy, host.copy(), **common)        # old rule, no pool
+    # Without a pool the community is the whole selection and is itself the pool (round 11):
+    # EX_but_m is not applicable to it — recorded at the selection level, never refused.
+    whole = run_bigg_host_microbe(taxonomy, host.copy(), **common)
+    assert whole.medium_not_applicable_to_pool == ("EX_but_m",)
+    assert whole.medium_not_applicable == () and whole.unapplied_medium_exchanges == ()
     result = run_bigg_host_microbe(taxonomy, host.copy(), medium_pool=coverage, **common)
     assert result.medium_not_applicable == ("EX_but_m",)
     assert result.unapplied_medium_exchanges == ()

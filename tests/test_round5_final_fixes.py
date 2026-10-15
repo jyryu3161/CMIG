@@ -195,7 +195,11 @@ def sweep_fixture(tmp_path):
     good = tmp_path / "medium_good.csv"
     good.write_text("exchange_id,uptake_limit\nEX_glc__D_m,20.0\n")
     bogus = tmp_path / "medium_bogus.csv"
-    bogus.write_text("exchange_id,uptake_limit\nEX_totallybogus_m,10.0\nEX_glc__D_m,20.0\n")
+    # Round 11: an id no selected model has is now "not applicable" (dropped, LP unchanged), so
+    # a failing condition needs a medium that matches nothing — the namespace-mismatch refusal.
+    bogus.write_text(
+        "exchange_id,uptake_limit\nEX_totallybogus_m,10.0\nEX_alsobogus_m,20.0\n"
+    )
     return SimpleNamespace(tax_csv=tax_csv, good=good, bogus=bogus, root=tmp_path)
 
 

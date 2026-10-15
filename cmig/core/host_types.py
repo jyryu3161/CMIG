@@ -536,6 +536,10 @@ class BiggHostMicrobeResult:
     medium_not_applicable: tuple[str, ...] = ()
     #: How many microbial medium ids reach this community (None without a microbial medium).
     medium_matched: int | None = None
+    #: Microbial medium ids no member of this (whole, not candidate) community can take up while
+    #: other ids match: dropped, LP unchanged, not a degradation (round 11, selected models = the
+    #: pool). Empty for a candidate of a pool search, whose pool record is kept at run level.
+    medium_not_applicable_to_pool: tuple[str, ...] = ()
 
 
 def _met_from_host_exchange(exchange_id: str) -> str:

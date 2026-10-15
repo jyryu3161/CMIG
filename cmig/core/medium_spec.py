@@ -35,8 +35,11 @@ _DECIMALS = 6
 # `medium_not_applicable` (another pool model has them) or `medium_not_applicable_to_pool` (no
 # pool model has them); only a medium none of whose ids matches the pool is refused (see the
 # pool-scoped section below). Candidates the v2 rule refused now have answers under an unchanged
-# `run_hash`; numbers v2 did produce are unchanged. (v3 was redefined once before any release:
-# the intermediate branch-only meaning refused any pool-unknown id.)
+# `run_hash`; numbers v2 did produce are unchanged. (v3 was redefined before any release: the
+# intermediate branch-only meaning refused any pool-unknown id; and on 2026-10-15 it was widened
+# to every medium-taking workflow — where the selected models are solved as one community, or a
+# command takes one model, that community or model is the pool (`apply_medium_scoped`). The value
+# is kept: v3 has never been released, so no run outside this branch carries a narrower v3.)
 MEDIUM_POLICY = "exchange_reactions_by_metabolite_pool_scoped_v3"
 # was: exchange_reactions_by_metabolite_v2 (round 5), open_uptakes_exact_key_v1 (before)
 
@@ -412,9 +415,9 @@ def translate_medium_for_model(model: object, spec: MediumSpec) -> MediumTransla
 # What is kept of the strict rule is its namespace-safety purpose: a medium of which NOT ONE id
 # matches any pool model is almost certainly in another namespace, and is refused.
 MEDIUM_ZERO_MATCH = (
-    "none of the medium's {n} exchange ids matches an exchange of any model of the selected "
-    "pool (matched on metabolite), so the medium and the models are probably in different "
-    "namespaces (e.g. AGORA `EX_x(e)` vs BiGG `EX_x_e`/`EX_x_m`)"
+    "none of the medium's {n} exchange ids matches an exchange of {scope} (matched on "
+    "metabolite), so the medium and the models are probably in different namespaces (e.g. "
+    "AGORA `EX_x(e)` vs BiGG `EX_x_e`/`EX_x_m`)"
 )
 MEDIUM_ZERO_MATCH_HINT = (
     "translate the medium to the models' namespace; or allow unknown medium ids "
@@ -503,8 +506,12 @@ class PoolMediumCoverage:
         return {"matched": matched, "requested": n,
                 "fraction": round(matched / n, 4) if n else None}
 
-    def check_namespace(self) -> None:
-        """Strict mode: refuse a medium that matches no pool model, or that has near misses."""
+    def check_namespace(self, *, scope: str = "any model of the selected pool") -> None:
+        """Strict mode: refuse a medium that matches no pool model, or that has near misses.
+
+        ``scope`` names what the medium was matched against in the zero-match message (the
+        selected pool, the selected models solved as one community, or one model).
+        """
         if self.matches_nothing:
             unread = ""
             if self.unreadable:
@@ -515,7 +522,7 @@ class PoolMediumCoverage:
                 unread = f" (pool models that could not be read and were not consulted: {why})"
             shown = list(self.requested[:10]) + (["…"] if len(self.requested) > 10 else [])
             raise ValueError(
-                MEDIUM_ZERO_MATCH.format(n=len(self.requested))
+                MEDIUM_ZERO_MATCH.format(n=len(self.requested), scope=scope)
                 + f": {shown}{unread}. {MEDIUM_ZERO_MATCH_HINT}"
             )
         if self.near_misses:
@@ -650,6 +657,90 @@ def pool_medium_coverage_from_taxonomy(
         models, spec, sources=sources, unreadable=tuple(unreadable),
         unusable_reasons=reasons, notation=notation,
     )
+
+
+# ── The same rule where the selected models are solved as ONE community (round 11, 2026-10-15) ──
+# User decision: "일부만 없으면 빼고 진행" applies to every medium-taking workflow. Where the
+# selected models are solved as one community (Community Solve, strain growth, ratio impact,
+# host-microbe, host KO impact, pair, a sweep without member sets) — or where a command takes
+# one model (single, minimal medium, a single-model medium-gap) — that community or model IS
+# the pool: its own exchanges decide what matches. Built on the model the medium is applied to,
+# so a namespace mapping applied to the model files is honoured and nothing is read twice.
+SCOPE_SELECTED_MODELS = "any of the selected models"
+SCOPE_ONE_MODEL = "the model"
+
+
+@dataclass(frozen=True)
+class ScopedMedium:
+    """How a medium met the model it was applied to as a whole."""
+
+    requested: int
+    #: No selected model can take these up while other ids match: dropped, LP unchanged.
+    not_applicable: tuple[str, ...] = ()
+    #: Dropped under ``--allow-unknown-medium`` (a medium that matches nothing, or near misses):
+    #: the run did not get rows it asked for, so it is reported as not applied / degraded.
+    not_applied: tuple[str, ...] = ()
+
+    def matched(self) -> dict[str, Any]:
+        """{matched, requested, fraction} — the form the pool workflows report."""
+        matched = self.requested - len(self.not_applicable) - len(self.not_applied)
+        return {"matched": matched, "requested": self.requested,
+                "fraction": round(matched / self.requested, 4) if self.requested else None}
+
+    def as_record(self) -> dict[str, Any]:
+        """Non-hashed summary/provenance record (same keys as the pool workflows' run level)."""
+        return {
+            "medium_not_applicable_to_pool": list(self.not_applicable),
+            "medium_matched": self.matched(),
+        }
+
+
+def scope_medium(
+    model: object,
+    spec: MediumSpec,
+    *,
+    strict: bool = True,
+    notation: Callable[[str], str] | None = None,
+    scope: str = SCOPE_SELECTED_MODELS,
+) -> ScopedMedium:
+    """Decide, before applying, which of ``spec``'s ids ``model`` cannot take up and why.
+
+    ``model`` is the community of the selected models (or the one model) the medium is about to
+    be applied to. An id it has no exchange for cannot bound anything in its LP, so dropping it
+    changes nothing: it is not applicable. Strict mode keeps only the namespace refusals of the
+    pool rule — a medium of which no id matches, and near misses in another notation (``notation``
+    is :func:`cmig.io.agora2.bigg_exchange_notation`, passed in by the caller).
+    """
+    spec.validate()
+    unmatched = translate_medium_for_model(model, spec).unmatched
+    if not unmatched:
+        return ScopedMedium(requested=len(spec.uptake))
+    coverage = pool_medium_coverage({"selected": model}, spec, notation=notation)
+    if strict:
+        coverage.check_namespace(scope=scope)
+    return ScopedMedium(
+        requested=len(spec.uptake),
+        not_applicable=coverage.pool_not_applicable,
+        not_applied=coverage.not_applied,
+    )
+
+
+def apply_medium_scoped(
+    model: object,
+    spec: MediumSpec,
+    *,
+    strict: bool = True,
+    exact: bool = False,
+    notation: Callable[[str], str] | None = None,
+    scope: str = SCOPE_SELECTED_MODELS,
+) -> tuple[MediumTranslation, ScopedMedium]:
+    """:func:`scope_medium`, then apply ``spec`` minus what ``model`` cannot take up.
+
+    The application is the single :func:`apply_medium_translated` path with ``strict=False``:
+    every id it drops is accounted for in the returned :class:`ScopedMedium`.
+    """
+    scoped = scope_medium(model, spec, strict=strict, notation=notation, scope=scope)
+    return apply_medium_translated(model, spec, strict=False, exact=exact), scoped
 
 
 def effective_medium_by_metabolite(model: object) -> dict[str, float]:
