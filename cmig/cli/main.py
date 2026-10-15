@@ -3916,6 +3916,11 @@ UNAPPLIED_MEDIUM_NOTE = (
     "requested medium exchanges were NOT applied (--allow-unknown-medium): the medium matches "
     "none of the models' exchanges, or these ids are another notation of exchanges they have"
 )
+#: The same note for a command that takes one model (single, minimal-medium).
+UNAPPLIED_MEDIUM_NOTE_ONE_MODEL = (
+    "requested medium exchanges were NOT applied (--allow-unknown-medium): the medium matches "
+    "none of this model's exchanges, or these ids are another notation of exchanges it has"
+)
 
 
 def _single_model_medium_scope(
@@ -4072,7 +4077,7 @@ def _cmd_single(args: argparse.Namespace) -> int:
             for method, solve in solves.items() if solve.status != "optimal"
         ]
         if medium_unapplied:
-            warnings.append(f"{UNAPPLIED_MEDIUM_NOTE}: {medium_unapplied}")
+            warnings.append(f"{UNAPPLIED_MEDIUM_NOTE_ONE_MODEL}: {medium_unapplied}")
             status = _worst_status(status, "degraded")
         summary = {
             **medium_record,
@@ -4142,6 +4147,8 @@ def _cmd_single(args: argparse.Namespace) -> int:
         print(str(error), file=sys.stderr)
         return 2
     print(f"single complete ({', '.join(methods)}) -> {out}")
+    if medium_unapplied:
+        print(f"  warning: {UNAPPLIED_MEDIUM_NOTE_ONE_MODEL}: {medium_unapplied} (run degraded)")
     _print_pool_not_applicable(
         medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched"),
         scope="model",
@@ -4247,7 +4254,7 @@ def _cmd_minimal_medium(args: argparse.Namespace) -> int:
             )
         if medium_unapplied:
             status = "degraded"
-            warnings.append(f"{UNAPPLIED_MEDIUM_NOTE}: {medium_unapplied}")
+            warnings.append(f"{UNAPPLIED_MEDIUM_NOTE_ONE_MODEL}: {medium_unapplied}")
         artifacts = ["minimal_medium_summary.json", "minimal_medium.csv"]
         summary = {
             **medium_record,
@@ -4292,6 +4299,8 @@ def _cmd_minimal_medium(args: argparse.Namespace) -> int:
         print(str(error), file=sys.stderr)
         return 2
     print(f"minimal-medium complete ({result.n_components} components) -> {out}")
+    if medium_unapplied:
+        print(f"  warning: {UNAPPLIED_MEDIUM_NOTE_ONE_MODEL}: {medium_unapplied} (run degraded)")
     _print_pool_not_applicable(
         medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched"),
         scope="model",
@@ -10379,12 +10388,14 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     # over every condition, and the matched fraction per medium file. Not a warning tier.
     medium_scope: dict[str, Any] = {}
     if medium_records:
+        # Per medium, keyed by the path exactly as each condition's `medium_variant` records it
+        # (two media may share a file name).
         medium_scope = {
-            "medium_not_applicable_to_pool": sorted(
-                {source for entry in medium_records.values() for source in entry["ids"]}
-            ),
+            "medium_not_applicable_to_pool": {
+                path: sorted(entry["ids"]) for path, entry in sorted(medium_records.items())
+            },
             "medium_matched": {
-                Path(path).name: entry["matched"] for path, entry in sorted(medium_records.items())
+                path: entry["matched"] for path, entry in sorted(medium_records.items())
             },
         }
     _write_json_or_print(
@@ -10416,7 +10427,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     for path, entry in sorted(medium_records.items()):
         _print_pool_not_applicable(
             sorted(entry["ids"]), entry["matched"],
-            label=Path(path).name if len(medium_records) > 1 else "",
+            label=path if len(medium_records) > 1 else "",
         )
     _emit_workflow_manifest(
         out,

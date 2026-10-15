@@ -312,7 +312,28 @@ def test_single_allow_unknown_names_a_dropped_near_miss_and_degrades(tmp_path):
     summary = json.loads((tmp_path / "out" / "single_summary.json").read_text())
     assert summary["status"] == "degraded"
     assert summary["medium_unapplied"] == ["EX_glc_D_m"]
-    assert any("EX_glc_D_m" in w for w in summary["warnings"])
+    warning = next(w for w in summary["warnings"] if "EX_glc_D_m" in w)
+    assert "this model's exchanges" in warning and "models'" not in warning, warning
+
+
+def test_single_and_minimal_medium_print_the_ids_dropped_under_the_option(tmp_path, capsys):
+    pytest.importorskip("gurobipy")
+    from cmig.cli.main import main
+
+    _tax, medium, producer = _pair(tmp_path, "EX_glc_D_m,10\nEX_ac_m,5\nEX_glc__D_m,10\n")
+    assert _single(tmp_path, producer, medium, "out", "--allow-unknown-medium") == 0
+    out = capsys.readouterr().out
+    assert "NOT applied" in out and "EX_glc_D_m" in out and "this model's exchanges" in out, out
+    assert main([
+        "minimal-medium", "--model", str(producer), "--min-growth", "0.01",
+        "--medium", str(medium), "--assume-bigg-namespace", "--allow-unknown-medium",
+        "--out", str(tmp_path / "mm"),
+    ]) == 0
+    out = capsys.readouterr().out
+    assert "NOT applied" in out and "EX_glc_D_m" in out and "this model's exchanges" in out, out
+    summary = json.loads((tmp_path / "mm" / "minimal_medium_summary.json").read_text())
+    assert summary["medium_unapplied"] == ["EX_glc_D_m"]
+    assert any("this model's exchanges" in w for w in summary["warnings"])
 
 
 def test_minimal_medium_records_an_id_the_model_lacks(tmp_path):
@@ -622,12 +643,45 @@ def test_sweep_summary_and_console_carry_the_not_applicable_ids(tmp_path, capsys
         "--out", str(out),
     ]) == 0
     summary = json.loads((out / "sweep_summary.json").read_text())
-    assert summary["medium_not_applicable_to_pool"] == ["EX_notreal_m"]
+    # Keyed by the medium path exactly as the condition's `medium_variant` records it.
+    assert summary["medium_not_applicable_to_pool"] == {str(medium): ["EX_notreal_m"]}
     assert summary["medium_matched"] == {
-        "medium.csv": {"matched": 2, "requested": 3, "fraction": 0.6667}
+        str(medium): {"matched": 2, "requested": 3, "fraction": 0.6667}
     }
     printed = capsys.readouterr().out
     assert "not applicable" in printed and "EX_notreal_m" in printed
+
+
+def test_sweep_keeps_two_media_with_the_same_file_name_apart(tmp_path, capsys):
+    pytest.importorskip("micom")
+    pytest.importorskip("gurobipy")
+    from cmig.cli.main import main
+
+    tax_path, _medium, _producer = _pair(tmp_path, _WITH_UNKNOWN)
+    media = []
+    for folder, rows in (("mA", "EX_glc__D_m,10\nEX_ac_m,5\nEX_notreal_m,1\n"),
+                         ("mB", "EX_glc__D_m,10\nEX_alsonot_m,2\n")):
+        (tmp_path / folder).mkdir()
+        path = tmp_path / folder / "medium.csv"
+        path.write_text("exchange_id,uptake_limit\n" + rows)
+        media.append(str(path))
+    out = tmp_path / "sweep"
+    assert main([
+        "sweep", "--taxonomy", str(tax_path), "--tradeoff-fs", "0.5", "--solvers", "gurobi",
+        "--mediums", ",".join(media), "--assume-bigg-namespace", "--metric", "growth",
+        "--out", str(out),
+    ]) == 0
+    summary = json.loads((out / "sweep_summary.json").read_text())
+    assert summary["medium_not_applicable_to_pool"] == {
+        media[0]: ["EX_notreal_m"], media[1]: ["EX_alsonot_m"],
+    }
+    assert summary["medium_matched"][media[0]]["requested"] == 3
+    assert summary["medium_matched"][media[1]]["requested"] == 2
+    variants = set(pd.read_parquet(out / "sweep.parquet")["axis_medium_variant"])
+    assert variants == set(media)
+    printed = capsys.readouterr().out
+    assert f"{media[0]}: 1 medium ids are not applicable" in printed, printed
+    assert f"{media[1]}: 1 medium ids are not applicable" in printed, printed
 
 
 def test_sweep_member_sets_with_namespace_decisions_use_the_pool_labels(tmp_path):
@@ -658,4 +712,4 @@ def test_sweep_member_sets_with_namespace_decisions_use_the_pool_labels(tmp_path
     ]
     assert {tuple(p["medium_not_applicable_to_pool"]) for p in provenance} == {("EX_notreal_m",)}
     summary = json.loads((out / "sweep_summary.json").read_text())
-    assert summary["medium_not_applicable_to_pool"] == ["EX_notreal_m"]
+    assert summary["medium_not_applicable_to_pool"] == {str(medium): ["EX_notreal_m"]}
