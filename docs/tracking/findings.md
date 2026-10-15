@@ -14,6 +14,13 @@
 - 지금 못 푸는 이유: Recon3D 재다운로드, 라이선스 솔버 장시간 실행, 연구별 biomass 기준·interface map 검토, 서명 키가 필요하다.
 - 방향: 다음 릴리스 절차에서 수행하고 산출물을 보관.
 
+## 멤버 수준의 강제 흡수가 커뮤니티 solve에서 이름 없이 실패함
+
+- 증상: `cmig solve`로 {iAF987, iHN637, iYO844}에 `gut_overlay_agora_high_fiber`를 주면(2026-10-15, 배지 v3 이후 거부되지 않고 풀림) 종료 3, `solver_failed`, 진단은 "pFBA flux stage failed: OptimizationError: could not get community growth rate."뿐이다. 원인은 iAF987 SBML이 Fe3+ 흡수를 49.21 이상으로 강제하고(`EX_fe3_e` 하한 −67.37…−49.21) 배지가 `EX_fe3_m`을 0.1로 막는 것이다. `EX_fe3_m`만 100으로 올리면 같은 세 모델이 성장 0.0468로 풀린다. 조합 탐색의 iAF987 쌍(iML1515·iSFV_1184·iYO844와의 쌍)도 같은 이유로 `baseline_failed` "community maximum-growth solve returned no solution"이다. `boundary.set_supply_limit`의 이름 있는 거부("iAF987 requires uptake of fe3 ≥ 49.21 … but the medium allows at most 0.1")는 공유 `EX_fe3_m` 자체가 강제된 경우(iAF987+iHN637)에만 나온다.
+- 영향: 사용자는 배지 상한과 모델 강제 흡수의 충돌이 아니라 솔버 문제로 읽는다. 결과 수치는 틀리지 않는다(실패는 실패로 남고 순위·결과가 되지 않는다).
+- 지금 못 푸는 이유: 강제는 커뮤니티 경계가 아니라 멤버 내부 exchange(`EX_fe3_e__iAF987`의 하한)에 있고, 커뮤니티 LP가 infeasible해지는 이유를 특정하려면 멤버별 강제 흡수와 공유 배지 상한을 비교하는 진단(또는 IIS 계산)이 필요하다. 멤버 반응 식별은 MICOM 비공개 구조(아래 항목)에 의존하고, 진단만 바꿔도 경계 정책(`boundary.py`)과 MICOM 결합을 함께 건드리는 별도 변경이다.
+- 방향: 커뮤니티 solve가 infeasible/solver_failed일 때 멤버별 `forced_supply`(boundary.py)를 공유 배지 상한과 비교해 원인을 이름으로 적는 진단 추가. 배지·경계 수치는 바꾸지 않는다.
+
 ## MICOM pool/member 식별자 해석이 비공개 구조에 의존
 
 - 증상: 커뮤니티 dFBA와 exchange 물리량 변환이 MICOM 0.39의 pool/member 반응 식별자와 abundance 가중 계수 구조를 직접 해석한다. 버전 확인은 있으나 문서화된 공개 API가 아니다.

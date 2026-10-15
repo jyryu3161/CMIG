@@ -32,6 +32,20 @@ semantic versioning for public releases.
   `strain-growth`, `abundance-impact`, `pair`, `single` and `minimal-medium` used to drop
   unmatched ids under the flag without any record; they now name them. `medium-gap --model`
   no longer ends in a traceback when its medium is refused.
+- Console: every medium command prints the ids not applicable ("to this pool" for the selected
+  models, "to this model" for `single`/`minimal-medium`/`medium-gap --model`), the matched
+  fraction (`medium ids matched: m/n (p%)`) and a warning when fewer than half of the medium's
+  ids match (status unaffected); `cmig solve` also prints them when the solve fails and names
+  the ids dropped under `--allow-unknown-medium` (recorded as `provenance.medium_unapplied`).
+  `sweep_summary.json` and the sweep manifest's `summary` carry `medium_not_applicable_to_pool`
+  (over all conditions) and `medium_matched` per medium file. `sweep --member-sets
+  --namespace-decisions` now reads the pool from the mapped model files, so an id another
+  member set has is `medium_not_applicable` for that condition, as without decisions.
+- GUI: the allow-unknown options read "Run a mismatched medium anyway (drops its unmatched rows;
+  degraded)" (model browser, Medium page, Sweep; English in both catalogues) with a tooltip; a
+  refused Check Growth names the rename for a near miss; Compare Runs refuses a run whose solve
+  failed (it was rebuilt as "optimal, growth 0" and compared); reopening a failed solve run says
+  "Loaded a failed run (…; not a result)", and a reopened Medium-page run shows its medium notes.
 - The host medium (`--host-medium`) keeps its own check: an entry the host has no exchange for
   is refused unless `--allow-unknown-medium` (it is the host model's blood-side supply, resolved
   through the reviewed interface map, not a community medium).

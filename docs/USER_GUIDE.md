@@ -356,6 +356,11 @@ options** section, and **Results**.
 - Community Solve: the member picker is the member table. Picking or dropping a model adds
   or removes its row; only the abundance is edited (a re-added model starts again at 1).
 - When the window is small, a page scrolls down; it never scrolls sideways.
+- Compare Runs refuses a run whose solve did not succeed (a failed `cmig solve` still
+  publishes its folder): "Scenario compare refused: the run <name> (status=solver_failed) did
+  not solve". Opening such a folder says "Loaded a failed run (status=…; not a result)".
+  A reopened Medium-page run shows its dropped ids, the ids not applicable to the selected
+  models and the matched fraction under the growth line.
 - Compare Runs and Constraint Sandbox overlays show only the comparison: the run that was
   on show (its profile table, targets, graph and badge) is cleared, and "Clear comparison
   overlay" does not bring it back.
@@ -395,7 +400,9 @@ options** section, and **Results**.
   mode and `--allow-unknown-medium` under Advanced options. Gene Knockout, Strain Growth and
   Ratio Impact have the same picker and always apply the medium as exact. Host–Microbe and
   Host Combination Search have host and microbe medium pickers and an allow-unknown option.
-  Sweep and the Medium Editor have their own exact-medium and allow-unknown checkboxes.
+  Sweep and the Medium Editor have their own exact-medium checkbox and "Run a mismatched
+  medium anyway (drops its unmatched rows; degraded)". Medium ids no selected model can take
+  up never need these options; they are always dropped and listed.
   Community Solve and dFBA have no medium control. Check Growth is described below.
 
 **Hash caveat.** Earlier GUI versions passed a model folder (`--model-dir`); the GUI now
@@ -445,7 +452,8 @@ this way can have a different `run_hash` from an earlier GUI run of the same mod
   that page's model choice changes. The box passes the same `--assume-bigg-namespace` as
   before.
 - **Check Growth** (browser header). Pick a medium ("Model default (no medium file)" by
-  default) and optionally tick "Skip medium metabolites this model lacks", then press
+  default) and optionally tick "Run a mismatched medium anyway (drops its unmatched rows;
+  degraded)", then press
   **Check Growth**. It runs `cmig single --model <copy> --fba --out
   runs/check-growth-YYYYMMDD-HHMMSS [--medium <file> --exact-medium]
   [--allow-unknown-medium] --assume-bigg-namespace` in the background, with no `--solver`
@@ -461,15 +469,16 @@ this way can have a different `run_hash` from an earlier GUI run of the same mod
   | Optimal FBA, but the objective is not a growth rate | `⚠ Objective value 12.3 — <objective warning> · …` |
   | Optimal FBA below the growth threshold | `✗ No growth (below 1e-06) · …` |
   | FBA not optimal (also when `cmig single` records a failed solve) | `✗ Infeasible · …` (the FBA status, with the solver's diagnostic) |
-  | The CLI refused or failed | `✗ Failed: <last line of the error>`; a refused medium (no id matches the model, or ids in another notation) adds a hint to tick the Skip box |
+  | The CLI refused or failed | `✗ Failed: <last line of the error>`; a refused medium adds what to fix: a near miss names the rename (`— rename EX_glc_D_m to EX_glc__D_m in the medium file`), a medium that matches nothing says to write it in the model's namespace |
   | Unreadable result / result changed since the run | `✗ Failed: the result could not be read back — see the inspector` / `✗ Result changed since the run — see the inspector` |
   | Cancelled | `⊘ Cancelled` |
 
   A degraded summary is marked ⚠ and its warnings follow the line. Medium ids the model has
   no exchange for are dropped (not a degradation) and listed after the line: `· 2 medium ids
   not applicable to this model (EX_but_m, EX_x_m); 8/10 matched`. The solver comes from
-  the run's summary: Gurobi (full-flux) or OSQP (QP-only approximate). A skipped-metabolite
-  run names its medium `<name> (exact, model-lacking metabolites skipped)`. Opening a Check
+  the run's summary: Gurobi (full-flux) or OSQP (QP-only approximate). A run with the option
+  ticked names its medium `<name> (exact, mismatched medium allowed)`. Medium ids the model
+  has no exchange for never need the option: they are always skipped and listed. Opening a Check
   Growth run from RUNS shows its model's browser with that run's line; if the model (that
   file) is no longer in the project, the run opens in the inspector only.
 
