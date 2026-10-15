@@ -36,16 +36,20 @@ semantic versioning for public releases.
   models, "to this model" for `single`/`minimal-medium`/`medium-gap --model`), the matched
   fraction (`medium ids matched: m/n (p%)`) and a warning when fewer than half of the medium's
   ids match (status unaffected); `cmig solve` also prints them when the solve fails and names
-  the ids dropped under `--allow-unknown-medium` (recorded as `provenance.medium_unapplied`).
+  the ids dropped under `--allow-unknown-medium` (recorded as `provenance.medium_unapplied`);
+  `single` and `minimal-medium` print theirs too ("…none of this model's exchanges…").
   `sweep_summary.json` and the sweep manifest's `summary` carry `medium_not_applicable_to_pool`
-  (over all conditions) and `medium_matched` per medium file. `sweep --member-sets
+  and `medium_matched` as maps keyed by the medium path exactly as `medium_variant` records it
+  (two media with the same file name stay apart), each list over all conditions of that
+  medium. `sweep --member-sets
   --namespace-decisions` now reads the pool from the mapped model files, so an id another
   member set has is `medium_not_applicable` for that condition, as without decisions.
 - GUI: the allow-unknown options read "Run a mismatched medium anyway (drops its unmatched rows;
   degraded)" (model browser, Medium page, Sweep; English in both catalogues) with a tooltip; a
   refused Check Growth names the rename for a near miss; Compare Runs refuses a run whose solve
-  failed (it was rebuilt as "optimal, growth 0" and compared); reopening a failed solve run says
-  "Loaded a failed run (…; not a result)", and a reopened Medium-page run shows its medium notes.
+  failed (it was rebuilt as "optimal, growth 0" and compared); reopening a failed solve run
+  draws no profile or graph and says "Loaded a failed run (…; not a result)" on the page's own
+  status line and in the status bar, and a reopened Medium-page run shows its medium notes.
 - The host medium (`--host-medium`) keeps its own check: an entry the host has no exchange for
   is refused unless `--allow-unknown-medium` (it is the host model's blood-side supply, resolved
   through the reviewed interface map, not a community medium).
@@ -58,7 +62,8 @@ semantic versioning for public releases.
 - Workflows that evaluate sub-communities or single members of the selected pool —
   `search` (single and multi-target, including `--validate-top` and robustness FVA),
   `host-search-bigg`, `gene-ko-search` (scope: its `--members` consortium), `sweep
-  --member-sets` (without `--namespace-decisions`) and `medium-gap` over a
+  --member-sets` (with `--namespace-decisions`, the pool is read from the mapped model files)
+  and `medium-gap` over a
   `--taxonomy`/`--model-dir` — no longer refuse a medium because some of its ids are missing
   ("일부만 없으면 빼고 진행"). Every id that cannot reach the LP is dropped and recorded, and the
   LP is identical without it — MICOM's own `grow`/`tradeoff` workflows filter the medium to

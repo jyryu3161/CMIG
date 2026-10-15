@@ -358,7 +358,8 @@ options** section, and **Results**.
 - When the window is small, a page scrolls down; it never scrolls sideways.
 - Compare Runs refuses a run whose solve did not succeed (a failed `cmig solve` still
   publishes its folder): "Scenario compare refused: the run <name> (status=solver_failed) did
-  not solve". Opening such a folder says "Loaded a failed run (status=…; not a result)".
+  not solve". Opening such a folder draws no profile or graph and says "Loaded a failed run
+  (status=…; not a result)" on the page and in the status bar.
   A reopened Medium-page run shows its dropped ids, the ids not applicable to the selected
   models and the matched fraction under the growth line.
 - Compare Runs and Constraint Sandbox overlays show only the comparison: the run that was
@@ -1603,8 +1604,8 @@ Two further rules:
   its own check: an entry with no host exchange is refused unless `--allow-unknown-medium`.
 - **Pool workflows drop medium rows that cannot apply, and record them.**
   `search` (single and multi-target), `host-search-bigg`, `gene-ko-search` (its
-  `--members` consortium is the pool), `sweep --member-sets` (without
-  `--namespace-decisions`) and `medium-gap` over a `--taxonomy`/`--model-dir` evaluate
+  `--members` consortium is the pool), `sweep --member-sets` (with
+  `--namespace-decisions`, the pool is read from the mapped model files) and `medium-gap` over a `--taxonomy`/`--model-dir` evaluate
   sub-communities or single members of the models you selected. A medium written for a
   larger pool — the `gut_overlay_*` presets are written for all five bundled models —
   names nutrients that some candidates, or the whole selection, cannot take up. An id with
