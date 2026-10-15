@@ -348,6 +348,8 @@ def test_cli_search_records_an_id_no_pool_model_has_as_not_applicable_to_the_poo
     assert not any("EX_notreal_m" in w for w in summary["warnings"])
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["summary"]["medium_not_applicable_to_pool"] == ["EX_notreal_m"]
+    # inspect-run shows the manifest's free-form summary: the matched fraction belongs there too
+    assert manifest["summary"]["medium_matched"] == {"matched": 1, "requested": 2, "fraction": 0.5}
 
 
 @pytest.mark.parametrize("rows", [

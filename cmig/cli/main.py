@@ -6252,6 +6252,7 @@ def _cmd_search_impl(args: argparse.Namespace) -> int:
                 _finite_or_none(result.ranks[0].target_flux) if result.ranks else None
             ),
             "medium_not_applicable_to_pool": list(result.medium_not_applicable_to_pool),
+            "medium_matched": dict(result.medium_matched) or None,
         },
     )
     return _exit_code_for_status(
@@ -6482,6 +6483,7 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
                 a["outcome"] in {"timeout", "error"} for a in result.pareto_attempts
             ),
             "medium_not_applicable_to_pool": list(result.medium_not_applicable_to_pool),
+            "medium_matched": dict(result.medium_matched) or None,
         },
     )
     return _exit_code_for_status(
