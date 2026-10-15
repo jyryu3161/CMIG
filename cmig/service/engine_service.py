@@ -176,6 +176,7 @@ class EngineService:
                     unknown_medium = list(unknown)
                     medium_application = {
                         **translation.as_provenance(),
+                        "medium_unapplied": list(unknown),
                         "medium_not_applicable": list(not_applicable),
                         "medium_not_applicable_to_pool": list(medium_pool.pool_not_applicable),
                         "medium_matched": {
@@ -202,7 +203,10 @@ class EngineService:
                         community, spec, strict=strict_medium, notation=bigg_exchange_notation,
                     )
                     unknown_medium = list(scoped.not_applied)
-                    medium_application = {**translation.as_provenance(), **scoped.as_record()}
+                    medium_application = {
+                        **translation.as_provenance(), **scoped.as_record(),
+                        "medium_unapplied": list(scoped.not_applied),
+                    }
                 if bounds:
                     from cmig.core.sandbox import BoundConstraint, apply_bounds
 

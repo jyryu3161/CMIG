@@ -564,3 +564,98 @@ def test_sweep_without_member_sets_records_an_id_no_member_has(tmp_path):
     for path in manifests:
         provenance = json.loads(path.read_text())["provenance"]
         assert provenance["medium_not_applicable_to_pool"] == ["EX_notreal_m"]
+
+
+# ── review round 5: console and sweep summary ──────────────────────────────────────────────────
+
+
+def test_solve_prints_the_ids_it_dropped_under_the_flag_and_the_match(tmp_path, capsys):
+    pytest.importorskip("micom")
+    pytest.importorskip("gurobipy")
+    tax_path, medium, _producer = _pair(tmp_path, "EX_glc_D_m,10\nEX_ac_m,5\nEX_notreal_m,1\n")
+    assert _solve(tmp_path, tax_path, medium, "solve", "--allow-unknown-medium") == 0
+    out = capsys.readouterr().out
+    assert "NOT applied" in out and "EX_glc_D_m" in out, out
+    assert "medium ids matched: 1/3" in out, out
+    assert "only 1 of 3 medium ids match" in out, out     # < 50 %: warned, status unaffected
+    manifest = json.loads((tmp_path / "solve" / "manifest.json").read_text())
+    assert manifest["provenance"]["medium_unapplied"] == ["EX_glc_D_m"]
+
+
+def test_solve_prints_the_not_applicable_ids_when_the_solve_fails(tmp_path, capsys, monkeypatch):
+    pytest.importorskip("micom")
+    pytest.importorskip("gurobipy")
+    tax_path, medium, _producer = _pair(tmp_path, _WITH_UNKNOWN)
+    import cmig.cli.main as cli
+
+    monkeypatch.setattr(cli, "_solve_artifact_consistency", lambda _bundle: {
+        "consistent": False, "n_failing": 1, "n_keys": 1, "max_residual": 9.0,
+        "worst": [{"metabolite": "ac", "edge_sum": 1.0, "net_flux": 2.0}],
+    })
+    rc = _solve(tmp_path, tax_path, medium, "solve")
+    captured = capsys.readouterr()
+    assert rc == 3
+    assert "EX_notreal_m" in captured.out + captured.err
+    assert "medium ids matched: 2/3" in captured.out + captured.err
+
+
+def test_single_model_console_says_not_applicable_to_this_model(tmp_path, capsys):
+    pytest.importorskip("gurobipy")
+    _tax, medium, producer = _pair(tmp_path, "EX_glc__D_m,10\nEX_but_m,3\nEX_notreal_m,7\n")
+    assert _single(tmp_path, producer, medium, "out") == 0
+    out = capsys.readouterr().out
+    assert "2 medium ids are not applicable to this model" in out, out
+    assert "this pool" not in out
+    assert "medium ids matched: 1/3" in out
+
+
+def test_sweep_summary_and_console_carry_the_not_applicable_ids(tmp_path, capsys):
+    pytest.importorskip("micom")
+    pytest.importorskip("gurobipy")
+    from cmig.cli.main import main
+
+    tax_path, medium, _producer = _pair(tmp_path, _WITH_UNKNOWN)
+    out = tmp_path / "sweep"
+    assert main([
+        "sweep", "--taxonomy", str(tax_path), "--tradeoff-fs", "0.5,0.6", "--solvers", "gurobi",
+        "--mediums", str(medium), "--assume-bigg-namespace", "--metric", "growth",
+        "--out", str(out),
+    ]) == 0
+    summary = json.loads((out / "sweep_summary.json").read_text())
+    assert summary["medium_not_applicable_to_pool"] == ["EX_notreal_m"]
+    assert summary["medium_matched"] == {
+        "medium.csv": {"matched": 2, "requested": 3, "fraction": 0.6667}
+    }
+    printed = capsys.readouterr().out
+    assert "not applicable" in printed and "EX_notreal_m" in printed
+
+
+def test_sweep_member_sets_with_namespace_decisions_use_the_pool_labels(tmp_path):
+    """An id another member set has is not applicable to THIS community, not to the pool."""
+    pytest.importorskip("micom")
+    pytest.importorskip("gurobipy")
+    from cmig.cli.main import main
+
+    tax_path, medium, _producer = _pair(
+        tmp_path, "EX_glc__D_m,10\nEX_ac_m,5\nEX_but_m,0\nEX_notreal_m,1\n"
+    )
+    decisions = tmp_path / "namespace.json"
+    decisions.write_text(json.dumps([{
+        "metabolite": "ac", "source_id": "source:ac", "target_id": "bigg:ac",
+        "confidence": "high", "status": "resolved", "rationale": "manual",
+    }]))
+    out = tmp_path / "sweep"
+    assert main([
+        "sweep", "--taxonomy", str(tax_path), "--tradeoff-fs", "0.5", "--solvers", "gurobi",
+        "--mediums", str(medium), "--member-sets", "producer;consumer",
+        "--namespace-decisions", str(decisions), "--exact-medium", "--metric", "growth",
+        "--out", str(out),
+    ]) == 0
+    manifests = sorted((out / "runs").glob("*/manifest.json"))
+    provenance = [json.loads(path.read_text())["provenance"] for path in manifests]
+    assert sorted(tuple(p["medium_not_applicable"]) for p in provenance) == [
+        ("EX_but_m",), ("EX_glc__D_m",),
+    ]
+    assert {tuple(p["medium_not_applicable_to_pool"]) for p in provenance} == {("EX_notreal_m",)}
+    summary = json.loads((out / "sweep_summary.json").read_text())
+    assert summary["medium_not_applicable_to_pool"] == ["EX_notreal_m"]

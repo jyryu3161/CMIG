@@ -1400,6 +1400,20 @@ def _cmd_solve(args: argparse.Namespace) -> int:
         print(f"solve 실패: {outcome.diagnostic}", file=sys.stderr)
         return 1
     medium_label = "custom" if args.medium else "default"
+    manifest_path = outcome.manifest_path
+
+    def _print_medium_notes() -> None:
+        """Round 11: the medium record reaches the console on success AND on failure."""
+        provenance = (_load_json_object(manifest_path) or {}).get("provenance")
+        if not isinstance(provenance, dict):
+            return
+        unapplied = list(provenance.get("medium_unapplied") or [])
+        if unapplied:
+            print(f"  warning: {UNAPPLIED_MEDIUM_NOTE}: {unapplied} (run degraded)")
+        _print_pool_not_applicable(
+            provenance.get("medium_not_applicable_to_pool"), provenance.get("medium_matched")
+        )
+
     # F5/F2 (round 5): the facade can succeed at *writing artifacts* while the scientific solve
     # failed — `solver_failed_result` sets objective=0.0, which is indistinguishable from the real
     # finding "this community cannot grow". Every other analysis command already refuses to print
@@ -1415,6 +1429,7 @@ def _cmd_solve(args: argparse.Namespace) -> int:
             print(f"  warning: {warning}", file=sys.stderr)
         if outcome.result.diagnostic:
             print(f"  diagnostic: {outcome.result.diagnostic}", file=sys.stderr)
+        _print_medium_notes()
         return _exit_code_for_status("failed", args)
     # Round-9 V6 defect 1: an OSQP community state can report `optimal` while its
     # artifacts violate the edge↔profile mass identity by orders of magnitude
@@ -1437,6 +1452,7 @@ def _cmd_solve(args: argparse.Namespace) -> int:
             f"is NOT a result{approx_note}",
             file=sys.stderr,
         )
+        _print_medium_notes()
         return _exit_code_for_status("failed", args)
     print(f"solve 완료 (solver={args.solver}, medium={medium_label}) "
           f"→ {outcome.manifest_path.parent}")
@@ -1445,9 +1461,7 @@ def _cmd_solve(args: argparse.Namespace) -> int:
     # flux vector means, so it has to reach the operator, not only the manifest.
     for warning in outcome.result.warnings:
         print(f"  warning: {warning}")
-    provenance = (_load_json_object(outcome.manifest_path) or {}).get("provenance")
-    if isinstance(provenance, dict):
-        _print_pool_not_applicable(provenance.get("medium_not_applicable_to_pool"))
+    _print_medium_notes()
     return 0
 
 
@@ -1739,7 +1753,9 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
         f"host_objective={result.host_result.biomass:.4g} "
         f"host_status={result.host_result.status}"
     )
-    _print_pool_not_applicable(medium_record.get("medium_not_applicable_to_pool"))
+    _print_pool_not_applicable(
+        medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched")
+    )
     host_run_status = _worst_status(
         _run_status_from_solve(str(result.community_status)),
         _run_status_from_solve(str(result.host_result.status)),
@@ -2487,7 +2503,10 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         )
     for warning in search_warnings:
         print(f"  warning: {warning}")
-    _print_pool_not_applicable(medium_pool.pool_not_applicable if medium_pool is not None else ())
+    _print_pool_not_applicable(
+        medium_pool.pool_not_applicable if medium_pool is not None else (),
+        medium_pool.matched_fraction() if medium_pool is not None else None,
+    )
     _emit_workflow_manifest(
         out,
         "host_search_bigg",
@@ -2758,7 +2777,9 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
             print(f"  {delta.label}: no delta (host_status={delta.host_status})")
     for warning in result.warnings:
         print(f"  warning: {warning}")
-    _print_pool_not_applicable(medium_record.get("medium_not_applicable_to_pool"))
+    _print_pool_not_applicable(
+        medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched")
+    )
     _emit_workflow_manifest(
         out,
         "host_ko_impact",
@@ -3362,7 +3383,10 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
     )
     for warning in warnings:
         print(f"  warning: {warning}")
-    _print_pool_not_applicable(medium_pool.pool_not_applicable if medium_pool is not None else ())
+    _print_pool_not_applicable(
+        medium_pool.pool_not_applicable if medium_pool is not None else (),
+        medium_pool.matched_fraction() if medium_pool is not None else None,
+    )
     # V4: only announce a rank 1 that was actually evaluated. A screen in which every knockout
     # failed used to print "rank 1 (largest effect)" for a gene that was never knocked out.
     ranked = [row for row in rows if row.get("evaluation_status") == "ok"]
@@ -3759,7 +3783,11 @@ def _cmd_pair(args: argparse.Namespace) -> int:
         print(str(error), file=sys.stderr)
         return 2
     print(f"pair complete ({n_ok}/{len(results)} conditions) -> {out}")
-    _print_pool_not_applicable(pool_not_applicable)
+    for medium_id, _path, _spec, result in results:
+        _print_pool_not_applicable(
+            result.medium_not_applicable_to_pool, result.medium_matched,
+            label=medium_id if len(results) > 1 else "",
+        )
     return _exit_code_for_status(status, args)
 
 
@@ -3886,7 +3914,7 @@ def _cmd_delta(args: argparse.Namespace) -> int:
 #: One phrase for "a single-model command applied the medium minus these rows" (round 11).
 UNAPPLIED_MEDIUM_NOTE = (
     "requested medium exchanges were NOT applied (--allow-unknown-medium): the medium matches "
-    "none of this model's exchanges, or these ids are another notation of exchanges it has"
+    "none of the models' exchanges, or these ids are another notation of exchanges they have"
 )
 
 
@@ -4114,7 +4142,10 @@ def _cmd_single(args: argparse.Namespace) -> int:
         print(str(error), file=sys.stderr)
         return 2
     print(f"single complete ({', '.join(methods)}) -> {out}")
-    _print_pool_not_applicable(medium_record.get("medium_not_applicable_to_pool"))
+    _print_pool_not_applicable(
+        medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched"),
+        scope="model",
+    )
     return _exit_code_for_status(status, args)
 
 
@@ -4261,7 +4292,10 @@ def _cmd_minimal_medium(args: argparse.Namespace) -> int:
         print(str(error), file=sys.stderr)
         return 2
     print(f"minimal-medium complete ({result.n_components} components) -> {out}")
-    _print_pool_not_applicable(medium_record.get("medium_not_applicable_to_pool"))
+    _print_pool_not_applicable(
+        medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched"),
+        scope="model",
+    )
     return 0
 
 
@@ -4487,7 +4521,9 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
     print(f"strain-growth complete ({len(rows)} members) -> {out}")
     for warning in warnings:
         print(f"  warning: {warning}")
-    _print_pool_not_applicable(medium_record.get("medium_not_applicable_to_pool"))
+    _print_pool_not_applicable(
+        medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched")
+    )
     run_status = _worst_status(
         _run_status_from_solve(str(community_result.status)),
         "ok" if not failed_single else (
@@ -4688,7 +4724,9 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
         print(f"failed to write abundance-impact outputs: {e}", file=sys.stderr)
         return 2
     print(f"abundance-impact complete ({args.member}, target={args.target}) -> {out}")
-    _print_pool_not_applicable(medium_record.get("medium_not_applicable_to_pool"))
+    _print_pool_not_applicable(
+        medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched")
+    )
     sweep_status = _worst_status(*[
         _run_status_from_solve(str(row.get("status"))) for row in rows
     ] or ["failed"], "degraded" if medium_unapplied else "ok")
@@ -6379,7 +6417,9 @@ def _cmd_search_impl(args: argparse.Namespace) -> int:
     # B4: 전부-0 / 동점 랭킹에서 rank 1 을 "최고"로 읽지 않도록 경고를 stdout 에도 낸다.
     for warning in result.warnings:
         print(f"  warning: {warning}")
-    _print_pool_not_applicable(result.medium_not_applicable_to_pool)
+    _print_pool_not_applicable(
+        result.medium_not_applicable_to_pool, getattr(result, "medium_matched", None)
+    )
     _emit_workflow_manifest(
         out,
         "model_pool_search",
@@ -6587,7 +6627,9 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
             print(f"  note: no exchange for {','.join(best.missing_targets)} (counted as 0)")
     for warning in result.warnings:
         print(f"  warning: {warning}")
-    _print_pool_not_applicable(result.medium_not_applicable_to_pool)
+    _print_pool_not_applicable(
+        result.medium_not_applicable_to_pool, getattr(result, "medium_matched", None)
+    )
     _emit_workflow_manifest(
         out,
         "multi_target_model_pool_search",
@@ -7468,14 +7510,40 @@ def _candidate_medium_matched(result: Any, row: Any) -> dict[str, int] | None:
     return {"matched": int(matched), "requested": int(requested)}
 
 
-def _print_pool_not_applicable(ids: Any) -> None:
-    """Console line for medium ids no selected model can take up (the run is not degraded)."""
+#: Below this matched fraction the console warns that the medium may not be written for these
+#: models (status unaffected: the ids that do not match cannot change the LP).
+LOW_MEDIUM_MATCH_FRACTION = 0.5
+
+
+def _print_pool_not_applicable(
+    ids: Any, matched: Any = None, *, scope: str = "pool", label: str = ""
+) -> None:
+    """Console lines for medium ids no selected model can take up (the run is not degraded),
+    the matched fraction, and a warning when that fraction is low.
+
+    ``scope``: "pool" (the selected models) or "model" (a single-model command).
+    """
     ids = list(ids or ())
+    prefix = f"{label}: " if label else ""
     if ids:
-        print(
-            f"  warning: {len(ids)} medium ids are not applicable to this pool (no selected model "
-            f"can take them up; dropped, LP unchanged, run status unaffected): {ids}"
+        why = (
+            "it has no exchange for them" if scope == "model"
+            else "no selected model can take them up"
         )
+        print(
+            f"  warning: {prefix}{len(ids)} medium ids are not applicable to this {scope} ({why}; "
+            f"dropped, LP unchanged, run status unaffected): {ids}"
+        )
+    if isinstance(matched, dict) and matched.get("requested"):
+        n_matched, requested = int(matched.get("matched") or 0), int(matched["requested"])
+        print(f"  {prefix}medium ids matched: {n_matched}/{requested} "
+              f"({100 * n_matched / requested:.0f}%)")
+        if n_matched / requested < LOW_MEDIUM_MATCH_FRACTION:
+            target = "this model" if scope == "model" else "the selected models"
+            print(
+                f"  warning: {prefix}only {n_matched} of {requested} medium ids match {target}; "
+                "check that the medium is written for them (run status unaffected)"
+            )
 
 
 def _write_search_outputs(
@@ -9499,7 +9567,11 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
     if supplement_union and args.medium:
         artifacts.append(_write_supplemented_medium(out, Path(args.medium), supplement_union))
     print(f"\nmedium-gap complete -> {out}")
-    _print_pool_not_applicable(medium_pool.pool_not_applicable if medium_pool is not None else ())
+    _print_pool_not_applicable(
+        medium_pool.pool_not_applicable if medium_pool is not None else (),
+        medium_pool.matched_fraction() if medium_pool is not None else None,
+        scope="model" if args.model else "pool",
+    )
     for artifact in artifacts:
         print(f"  {artifact}")
     if unfixable:
@@ -10135,23 +10207,38 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         fva_metabolites = _parse_optional_csv_strings(args.fva_metabolites)
         # Round 11 (pool-scoped medium): a --member-sets condition is a sub-community of the
         # taxonomy pool, so a medium id only non-members can take up is not applicable to it
-        # (LP unchanged) rather than a failed condition. Ids no pool model has keep failing the
-        # condition, as before. Skipped with --namespace-decisions: the pool's coverage is read
-        # from the unmapped model files, which a mapping may rename.
-        pool_scope = bool(args.member_sets) and namespace_decisions is None
+        # (LP unchanged) rather than a failed condition. With --namespace-decisions the pool's
+        # coverage is read from the MAPPED model files (the same mapping each condition's solve
+        # applies), so an id another member set has keeps the per-community label. Without
+        # member sets every condition is the whole selection, which is its own pool.
+        pool_scope = bool(args.member_sets)
         pool_coverage: dict[str, Any] = {}
+        medium_records: dict[str, dict[str, Any]] = {}
 
         def _sweep_medium_pool(medium_path: str | None) -> Any:
             if not pool_scope or medium_path is None:
                 return None
             if medium_path not in pool_coverage:
                 from cmig.core.medium_spec import load_medium, pool_medium_coverage_from_taxonomy
+                from cmig.core.namespace import mapped_taxonomy
                 from cmig.io.agora2 import bigg_exchange_notation
 
-                pool_coverage[medium_path] = pool_medium_coverage_from_taxonomy(
-                    taxonomy, load_medium(medium_path), notation=bigg_exchange_notation
-                )
+                with mapped_taxonomy(taxonomy, namespace_decisions or []) as (mapped, _applied):
+                    pool_coverage[medium_path] = pool_medium_coverage_from_taxonomy(
+                        mapped, load_medium(medium_path), notation=bigg_exchange_notation
+                    )
             return pool_coverage[medium_path]
+
+        def _record_medium(medium_path: str | None, record: dict[str, Any] | None) -> None:
+            """Collect a condition's medium record for the sweep summary and the console."""
+            if medium_path is None or not record:
+                return
+            entry = medium_records.setdefault(medium_path, {"ids": set(), "matched": None})
+            entry["ids"].update(record.get("medium_not_applicable_to_pool") or [])
+            if medium_path in pool_coverage:
+                entry["matched"] = pool_coverage[medium_path].matched_fraction()
+            elif entry["matched"] is None:
+                entry["matched"] = record.get("medium_matched")
 
         for cond in enumerate_conditions(axes):
             # Per-condition failure isolation (sweep.py contract: a failed run is recorded with a
@@ -10188,6 +10275,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
                 )
                 cached = cache.get(content_key)
                 if cached is not None:                       # replay — 재계산 회피 (SC-4)
+                    _record_medium(medium_path, cached.get("medium_record"))
                     rows.append(SweepRow(
                         condition_id=cond.condition_id,
                         axis_values=cond.axis_values,
@@ -10223,6 +10311,16 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
                 status = "ok" if outcome.status == "ok" else "failed"
                 value = None if outcome.result is None else float(outcome.result.objective)
                 run_hash = outcome.run_hash or ""
+                medium_record = None
+                if outcome.manifest_path is not None:
+                    recorded = (_load_json_object(outcome.manifest_path) or {}).get("provenance")
+                    if isinstance(recorded, dict):
+                        medium_record = {
+                            key: recorded[key] for key in (
+                                "medium_not_applicable_to_pool", "medium_matched",
+                            ) if key in recorded
+                        }
+                _record_medium(medium_path, medium_record)
                 profile_pylist = (
                     outcome.bundle.profile.to_pylist() if outcome.bundle is not None else []
                 )
@@ -10243,6 +10341,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
                 cache[content_key] = {
                     "value": value, "run_hash": run_hash, "status": status,
                     "diagnostic": outcome.diagnostic, "profile": profile_pylist,
+                    "medium_record": medium_record,
                 }
             except (GateBlockedError, OSError):
                 raise  # cross-condition / fatal -> abort the whole sweep
@@ -10275,8 +10374,21 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     sweep_status = _sweep_run_status(rows)
     sweep_warnings = _sweep_warnings(rows)
     n_failed = sum(1 for row in rows if str(row.status) != "ok")
+    # Round 11: medium ids no selected model (or no model of the member-set pool) can take up,
+    # over every condition, and the matched fraction per medium file. Not a warning tier.
+    medium_scope: dict[str, Any] = {}
+    if medium_records:
+        medium_scope = {
+            "medium_not_applicable_to_pool": sorted(
+                {source for entry in medium_records.values() for source in entry["ids"]}
+            ),
+            "medium_matched": {
+                Path(path).name: entry["matched"] for path, entry in sorted(medium_records.items())
+            },
+        }
     _write_json_or_print(
         {
+            **medium_scope,
             # R5 final P0-2: this was the literal "ok", never reassigned, so a grid in which every
             # condition failed was certified ok by the summary, the manifest, `inspect-run` AND the
             # exit code. `sweep.parquet` carried `status: failed` for every row all along.
@@ -10300,6 +10412,11 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     )
     for warning in sweep_warnings:
         print(f"  warning: {warning}")
+    for path, entry in sorted(medium_records.items()):
+        _print_pool_not_applicable(
+            sorted(entry["ids"]), entry["matched"],
+            label=Path(path).name if len(medium_records) > 1 else "",
+        )
     _emit_workflow_manifest(
         out,
         "sweep",
@@ -10338,6 +10455,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
             "n_ok": len(rows) - n_failed,
             "n_failed": n_failed,
             "metric": args.metric,
+            **medium_scope,
         },
     )
     return _exit_code_for_status(sweep_status, args)
