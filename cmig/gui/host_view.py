@@ -101,7 +101,7 @@ class HostInputs:
         # Round 7: the GUI already offered both media, so it inherited the CLI's over-constraint
         # exactly. A capability wired into the CLI and not the GUI is the same defect one surface
         # over — round 5's whole GUI/CLI-parity finding.
-        self.allow_unknown_medium_check = QCheckBox("Allow unknown medium")
+        self.allow_unknown_medium_check = QCheckBox("Run a mismatched medium anyway (degraded)")
         self.allow_unknown_medium_check.setToolTip(
             "Microbial medium ids no selected model can take up are always dropped and listed. "
             "This option only lets a medium that matches none of the models, or ids written in "

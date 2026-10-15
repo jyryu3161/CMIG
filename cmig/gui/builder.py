@@ -777,7 +777,7 @@ class SearchView(AnalysisPage):
         self.medium_mode_combo = QComboBox()
         self.medium_mode_combo.addItem("exact", "exact")
         self.medium_mode_combo.addItem("merge", "merge")
-        self.allow_unknown_medium_check = QCheckBox("Allow unknown medium metabolites")
+        self.allow_unknown_medium_check = QCheckBox("Run a mismatched medium anyway (drops its unmatched rows; degraded)")
         medium_row = QHBoxLayout()
         medium_row.addWidget(QLabel("Medium mode"))
         medium_row.addWidget(self.medium_mode_combo)
