@@ -110,6 +110,12 @@ from cmig.gui.project_session import (
     inspect_run,
     merge_run_status,
 )
+from cmig.gui.run_failure import (
+    cli_error_text,
+    cli_failure,
+    job_error_text,
+    ranked_failure_reason,
+)
 from cmig.gui.sidebar import (
     ANALYSES,
     ANALYSIS_GROUPS,
@@ -172,7 +178,9 @@ I18N: dict[str, dict[str, str]] = {
         "medium_namespace_placeholder": "또는 검토된 namespace-decisions JSON 파일",
         "medium_namespace_button": "판정 파일…",
         "medium_exact_mode": "엄밀한 배지(해제 시 기본 배지에 병합)",
-        "medium_allow_unknown": "알 수 없는 ID를 허용하고 누락된 ID를 모두 보고",
+        "medium_allow_unknown": (
+            "Run a mismatched medium anyway (drops its unmatched rows; degraded)"
+        ),
         "medium_check_growth": "성장 확인",
         "medium_min_growth": "최소 성장률",
         "medium_oxygen_aerobic": "호기성",
@@ -239,6 +247,8 @@ I18N: dict[str, dict[str, str]] = {
         "medium_dropped_none": "누락된 배지 ID: 없음",
         "medium_dropped_ids": "누락된 배지 ID({count}개): {ids}",
         "medium_diagnostic": "진단: {diagnostic}",
+        "medium_not_applicable_ids": "Not applicable to the selected models ({count}): {ids}",
+        "medium_matched_note": "medium ids matched: {matched}/{requested}",
         "medium_profile_delta_active": (
             "이전 배지 검사와 현재 검사의 외부 프로필 차이를 외부 프로필 탭에 표시했습니다."
         ),
@@ -269,6 +279,9 @@ I18N: dict[str, dict[str, str]] = {
             "`cmig inspect-run --run-dir` 로 확인하세요"
         ),
         "status_loaded_run": "실행 불러옴: {run_dir}{suffix}",
+        "status_loaded_failed_run": (
+            "Loaded a failed run (status={status}; not a result): {run_dir}{suffix}"
+        ),
         "status_summary_missing": "{kind} 요약 파일 없음: {path}",
         "status_load_failed": "{kind} 불러오기 실패: {error}",
         "status_host_block_missing": (
@@ -304,7 +317,9 @@ I18N: dict[str, dict[str, str]] = {
         "sweep_fva": "FVA",
         "sweep_fva_metabolites_placeholder": "선택: 쉼표로 구분한 FVA 대사체",
         "sweep_exact_medium": "엄밀한 배지",
-        "sweep_allow_unknown_medium": "알 수 없는 배지 ID 허용",
+        "sweep_allow_unknown_medium": (
+            "Run a mismatched medium anyway (drops its unmatched rows; degraded)"
+        ),
         "sweep_fixture_smoke": "내장 fixture 스모크 스윕 사용",
         "sweep_run": "스윕 실행",
         "sweep_col_condition": "조건",
@@ -340,7 +355,6 @@ I18N: dict[str, dict[str, str]] = {
         "sweep_filter_abundance": "Abundance 파일 (*.csv *.json);;모든 파일 (*)",
         "sweep_filter_bounds": "Bounds 파일 (*.json);;모든 파일 (*)",
         "sweep_filter_json": "JSON (*.json);;모든 파일 (*)",
-        "sweep_cli_failed": "sweep 명령 실패(rc={rc})",
         "profile_net_chart_title": "외부 순 플럭스(+ 분비 / − 흡수)",
         "profile_delta_overlay_title": "기준 / 변형 오버레이",
         "profile_no_fluxes": "측정된 프로필 플럭스 없음",
@@ -419,7 +433,9 @@ I18N: dict[str, dict[str, str]] = {
         "medium_namespace_placeholder": "Or a reviewed namespace-decisions JSON file",
         "medium_namespace_button": "Decisions…",
         "medium_exact_mode": "Exact medium (unchecked = merge overlay)",
-        "medium_allow_unknown": "Allow unknown IDs and report every dropped ID",
+        "medium_allow_unknown": (
+            "Run a mismatched medium anyway (drops its unmatched rows; degraded)"
+        ),
         "medium_check_growth": "Check Growth",
         "medium_min_growth": "Minimum growth",
         "medium_oxygen_aerobic": "Aerobic",
@@ -485,6 +501,8 @@ I18N: dict[str, dict[str, str]] = {
         "medium_dropped_none": "Dropped medium IDs: none",
         "medium_dropped_ids": "Dropped medium IDs ({count}): {ids}",
         "medium_diagnostic": "Diagnostic: {diagnostic}",
+        "medium_not_applicable_ids": "Not applicable to the selected models ({count}): {ids}",
+        "medium_matched_note": "medium ids matched: {matched}/{requested}",
         "medium_profile_delta_active": (
             "External-profile delta versus the previous medium check is active in Profile."
         ),
@@ -518,6 +536,9 @@ I18N: dict[str, dict[str, str]] = {
             "inspect it with `cmig inspect-run --run-dir`"
         ),
         "status_loaded_run": "Loaded run: {run_dir}{suffix}",
+        "status_loaded_failed_run": (
+            "Loaded a failed run (status={status}; not a result): {run_dir}{suffix}"
+        ),
         "status_summary_missing": "{kind} summary not found: {path}",
         "status_load_failed": "{kind} load failed: {error}",
         "status_host_block_missing": (
@@ -555,7 +576,9 @@ I18N: dict[str, dict[str, str]] = {
         "sweep_fva": "FVA",
         "sweep_fva_metabolites_placeholder": "Optional comma-separated FVA metabolites",
         "sweep_exact_medium": "Exact medium",
-        "sweep_allow_unknown_medium": "Allow unknown medium IDs",
+        "sweep_allow_unknown_medium": (
+            "Run a mismatched medium anyway (drops its unmatched rows; degraded)"
+        ),
         "sweep_fixture_smoke": "Use built-in fixture smoke sweep",
         "sweep_run": "Run Sweep",
         "sweep_col_condition": "Condition",
@@ -593,7 +616,6 @@ I18N: dict[str, dict[str, str]] = {
         "sweep_filter_abundance": "Abundance files (*.csv *.json);;All files (*)",
         "sweep_filter_bounds": "Bounds files (*.json);;All files (*)",
         "sweep_filter_json": "JSON (*.json);;All files (*)",
-        "sweep_cli_failed": "sweep command failed with rc={rc}",
         "profile_net_chart_title": "Net exchange flux (+ secretion / − uptake)",
         "profile_delta_overlay_title": "baseline / variant overlay",
         "profile_no_fluxes": "No measured profile fluxes",
@@ -820,7 +842,7 @@ class _ThreadStderrRouter:
 
 def _install_stderr_router() -> None:
     """Install the pass-through router (GUI thread only; idempotent)."""
-    if not isinstance(sys.stderr, _ThreadStderrRouter):
+    if sys.stderr is not None and not isinstance(sys.stderr, _ThreadStderrRouter):
         sys.stderr = cast(TextIO, _ThreadStderrRouter(sys.stderr))
 
 
@@ -872,6 +894,86 @@ def _finish_after_artifacts(ctx: Any) -> None:
     ctx.report_progress(1, 1)
 
 
+def _run_cli(main: Callable[[list[str]], int], argv: list[str]) -> tuple[int, str]:
+    """Run the CLI on this job thread: (exit code, the CLI's own stderr reason).
+
+    The reason is what the CLI said (e.g. "dfba input error: …"), without CLI-only hints; the
+    caller's GUI-thread `_install_stderr_router()` makes this thread's stderr collectable.
+    """
+    with _captured_job_stderr() as chunks:
+        rc = main(argv)
+    return rc, cli_error_text(chunks)
+
+
+def _ranked_cli_failure(
+    label: str, rc: int, error_text: str, out_dir: Path, summary_name: str
+) -> Exception:
+    """A ranked page's failure: an input refusal, or a failed run with its published summary.
+
+    A run that failed scientifically (exit 3) still publishes its summary with the per-candidate
+    reasons; carrying it with the failure lets the page say why and list the unevaluated
+    candidates. A nonzero exit can never make it a success: its status is forced to failed.
+    """
+    if rc != 2:
+        try:
+            loaded = json.loads((out_dir / summary_name).read_text())
+        except (OSError, ValueError):
+            loaded = None
+        if isinstance(loaded, dict):
+            from cmig.service.jobrunner import ArtifactJobFailure
+
+            reason = ranked_failure_reason(loaded) or error_text
+            payload = {**loaded, "status": "failed", "cli_exit_code": rc,
+                       "output_dir": str(out_dir)}
+            if error_text:
+                payload["cli_error"] = error_text
+            return ArtifactJobFailure(
+                f"{reason} (rc={rc})" if reason else f"{label} exited with rc={rc}", payload
+            )
+    return cli_failure(label, rc, error_text)
+
+
+def _failed_ranked_status(label: str, summary: dict[str, Any]) -> str:
+    """The status line of a ranked page whose run failed, from its published summary.
+
+    Names why — "N of M candidates could not be evaluated: <most common cause>" — or the CLI's
+    own reason; never the CLI's "--allow-failed-run" hint (stripped before it gets here).
+    """
+    rc = summary.get("cli_exit_code", "?")
+    reason = ranked_failure_reason(summary)
+    if reason:
+        return (f"{label} failed (rc={rc}): {reason}. The unevaluated candidates and their "
+                "diagnostics are listed in the details.")
+    warnings = summary.get("warnings")
+    cause = (
+        summary.get("cli_error") or summary.get("input_diagnostic")
+        or summary.get("diagnostic")
+        # A kind without per-candidate records (strain growth, ratio impact): its own first
+        # warning is the run's account of what went wrong.
+        or (str(warnings[0]) if isinstance(warnings, list) and warnings else "")
+    )
+    return (f"{label} failed (rc={rc})" + (f": {cause}" if cause else "")
+            + "; diagnostics and artifact path are in details")
+
+
+def _unranked(summary: dict[str, Any]) -> dict[str, Any]:
+    """A failed run's summary with no ranking: its rows move to `not_ranked` (details only).
+
+    A nonzero exit can never be shown as a ranking result (rule 3); the rows it recorded are
+    still listed, labelled as not ranked.
+    """
+    shown = dict(summary)
+    rows = shown.get("top_ranked")
+    if isinstance(rows, list):
+        shown["not_ranked"] = rows
+        shown["top_ranked"] = []
+    elif isinstance(rows, dict):
+        shown["not_ranked"] = [row for items in rows.values() if isinstance(items, list)
+                               for row in items]
+        shown["top_ranked"] = {}
+    return shown
+
+
 def _failed_search_artifacts(out_dir: Path, rc: int) -> dict[str, Any]:
     """Keep a CLI failure's scientific ledger and directory with the failed job."""
     summary_path = out_dir / "search_summary.json"
@@ -910,7 +1012,33 @@ _SEARCH_CONDITION_KEYS = (
     "normalization_ranges", "ga_metadata", "effective_request", "effective_conditions",
     "growth_fraction", "min_member_growth", "min_community_growth", "seed",
     "target_scales", "ga_max_evaluations",
+    "medium_not_applicable", "medium_not_applicable_to_pool", "medium_matched",
 )
+
+
+def _with_run_outcome(summary: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    """Carry the run's status and unevaluated candidates through a ranked-page adapter.
+
+    The adapters reshape `top_ranked` for the table; the run's verdict and the candidates it
+    could not evaluate (with their reasons) must reach the page too, or a failed run reads as
+    an empty ranking with "status: unknown".
+    """
+    adapted = dict(summary)
+    adapted.setdefault("status", source.get("status", "unknown"))
+    rows = source.get("unevaluated")
+    if "unevaluated" not in adapted and isinstance(rows, list):
+        adapted["unevaluated"] = [
+            {
+                "members": (
+                    row["members"] if isinstance(row.get("members"), list)
+                    else [f"{row.get('member', '')}:{row.get('gene', '')}"]
+                ),
+                "status": row.get("status") or row.get("evaluation_status"),
+                "diagnostic": row.get("diagnostic"),
+            }
+            for row in rows if isinstance(row, dict)
+        ]
+    return adapted
 
 
 def _with_search_conditions(summary: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
@@ -3014,11 +3142,9 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            with _captured_job_stderr() as stderr_chunks:
-                rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                lines = "".join(stderr_chunks).strip().splitlines()
-                raise RuntimeError(lines[-1] if lines else f"cmig single exited {rc}")
+                raise cli_failure("cmig single", rc, cli_error)
             _finish_after_artifacts(ctx)
             return {"rc": rc}
 
@@ -3070,11 +3196,14 @@ class CmigMainWindow(QMainWindow):
         if failed and failed_summary(out_dir):
             return reading_text()  # a solve that failed (e.g. infeasible), told by its summary
         if job is not None and job.status is JobStatus.FAILED:
-            message = str((parse_diagnostic(job.error) or {}).get("message") or "")
-            lines = message.removeprefix("RuntimeError: ").strip().splitlines()
+            lines = job_error_text(job.error).splitlines()
             reason = lines[-1] if lines else "the run failed"
-            hint = (" — tick “Skip medium metabolites this model lacks” to run without them"
-                    if "no counterpart" in reason else "")
+            # Ids the model lacks are not applicable and never refused (round 11); what is
+            # refused is a medium that matches nothing, or ids in another notation — the hint
+            # says how to fix the file (a near miss is renamed, not dropped).
+            from cmig.gui.growth import medium_refusal_hint
+
+            hint = medium_refusal_hint(reason)
             return f"✗ Failed: {reason}{hint}"
         if state is not None:
             return {"cancelled": "⊘ Cancelled"}.get(state, f"✗ Failed ({state}) — see the run")
@@ -4168,11 +4297,40 @@ class CmigMainWindow(QMainWindow):
 
     def submit_job(self, kind: str, fn: Any) -> str:
         """facade 작업을 JobRunner 로 제출 + bridge 추적(실 소비). Opens the Activity pane."""
+        # A job that runs the CLI collects its own stderr reason (`_run_cli`); the router that
+        # makes that possible is installed here, on the GUI thread, once.
+        _install_stderr_router()
         jid = self.runner.submit(kind, fn)
         self.bridge.track(jid)
         self.activity.expand()
         self.toggle_activity_action.setText("Hide Activity")
         return jid
+
+    def _medium_run_notes(
+        self, dropped: list[str], diagnostic: Any, record: dict[str, Any]
+    ) -> str:
+        """The Medium page's line under the growth: dropped ids (or the diagnostic), then the ids
+        no selected model can take up and the matched fraction (round 11; never silent)."""
+        text = (
+            self.tr_map["medium_dropped_none"] if not dropped
+            else self._message("medium_dropped_ids", count=len(dropped), ids=", ".join(dropped))
+        )
+        if diagnostic and not dropped:
+            text = self._message("medium_diagnostic", diagnostic=diagnostic)
+        notes = [text]
+        not_applicable = [str(x) for x in record.get("not_applicable") or []]
+        if not_applicable:
+            notes.append(self._message(
+                "medium_not_applicable_ids", count=len(not_applicable),
+                ids=", ".join(not_applicable),
+            ))
+        matched = record.get("medium_matched")
+        if isinstance(matched, dict) and matched.get("requested"):
+            notes.append(self._message(
+                "medium_matched_note", matched=matched.get("matched"),
+                requested=matched.get("requested"),
+            ))
+        return " · ".join(notes)
 
     def load_run_dir(self, path: str | Path, host_key: str = "community") -> bool:
         """Show a run in its viewer; a tidy community run goes to Profile and Graph.
@@ -4226,12 +4384,38 @@ class CmigMainWindow(QMainWindow):
             bundle = TidyBundle.read(run_dir)
             manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else None
             payload = graph_payload(bundle)
+            solved = _solve_result_like_from_run_dir(run_dir)
         except Exception as e:
             self._reject_gui_summary(run_dir, e)
             # A failed load must not leave the *previous* run's provenance on screen: the
             # run_hash in the status bar and the profile table would still describe run A.
             self._clear_community_result()
             self._show_status("status_run_load_failed", error=e)
+            return False
+        run_hash = manifest.get("run_hash") if isinstance(manifest, dict) else None
+        suffix = "" if run_hash is None else f" (run_hash {str(run_hash)[:12]})"
+        record = _medium_scope_record(manifest if isinstance(manifest, dict) else {})
+        if record["not_applicable"]:
+            suffix += f" · {len(record['not_applicable'])} medium ids not applicable"
+        matched = record["medium_matched"]
+        if isinstance(matched, dict) and matched.get("requested"):
+            suffix += f" · {matched.get('matched')}/{matched.get('requested')} medium ids matched"
+        if host_key == "medium" and isinstance(manifest, dict):
+            self.medium_editor.dropped_ids_label.setText(self._medium_run_notes(
+                _medium_dropped_ids(manifest), manifest.get("diagnostic"), record,
+            ))
+        if solved.status != "optimal":
+            # A failed `cmig solve` still publishes a tidy bundle (exit 3). Its profile and graph
+            # are not a result, so nothing is drawn (and no earlier run stays on show); the page
+            # and the status bar say why.
+            self._clear_community_result()
+            message = self._message(
+                "status_loaded_failed_run", status=solved.status, run_dir=run_dir, suffix=suffix,
+            )
+            if host_key in self.analysis_pages:
+                self._run_status_label(host_key).setText(message)
+            self._register_run_output(run_dir)
+            self.statusBar().showMessage(message)
             return False
         self.current_manifest = manifest
         self.current_graph_payload = payload
@@ -4248,8 +4432,6 @@ class CmigMainWindow(QMainWindow):
         self.profile_view.load_targets(_read_target_summary(run_dir))
         self._register_run_output(run_dir)
         self._show_profile(host_key)
-        run_hash = None if self.current_manifest is None else self.current_manifest.get("run_hash")
-        suffix = "" if run_hash is None else f" (run_hash {str(run_hash)[:12]})"
         self._show_status("status_loaded_run", run_dir=run_dir, suffix=suffix)
         return True
 
@@ -4669,10 +4851,10 @@ class CmigMainWindow(QMainWindow):
             if rc == 130:
                 ctx.raise_if_cancelled()
             if rc != 0:
-                from cmig.service.jobrunner import ArtifactJobFailure
+                from cmig.service.jobrunner import ArtifactJobFailure, JobInputError
 
                 artifacts = _failed_search_artifacts(out_dir, rc)
-                cli_error = "".join(stderr_chunks).strip()
+                cli_error = cli_error_text(stderr_chunks)
                 if cli_error:
                     artifacts["cli_error"] = cli_error
                     artifacts.setdefault("warnings", []).insert(0, f"CLI error: {cli_error}")
@@ -4681,12 +4863,13 @@ class CmigMainWindow(QMainWindow):
                     artifacts.setdefault("warnings", []).append(cause)
                     artifacts["input_diagnostic"] = cause
                 reason = "; ".join(
-                    part for part in (cli_error, cause) if part
+                    part for part in (ranked_failure_reason(artifacts), cli_error, cause)
+                    if part
                 ) or "see diagnostics"
-                raise ArtifactJobFailure(
-                    f"search failed with rc={rc}; {reason}; outputs: {out_dir}",
-                    artifacts,
-                )
+                message = f"search failed with rc={rc}; {reason}; outputs: {out_dir}"
+                if rc == 2:
+                    raise JobInputError(message, artifacts)
+                raise ArtifactJobFailure(message, artifacts)
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / output_name).read_text())
             if not isinstance(payload, dict):
@@ -4791,9 +4974,9 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"host-microbe run failed with rc={rc}")
+                raise cli_failure("host-microbe", rc, cli_error)
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "host_microbe_bigg_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -4866,9 +5049,11 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"host-search run failed with rc={rc}")
+                raise _ranked_cli_failure(
+                    "host-search", rc, cli_error, out_dir, "host_search_summary.json"
+                )
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "host_search_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -4961,9 +5146,11 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"gene KO search failed with rc={rc}")
+                raise _ranked_cli_failure(
+                    "gene KO search", rc, cli_error, out_dir, "gene_ko_summary.json"
+                )
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "gene_ko_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -5006,9 +5193,11 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"strain growth failed with rc={rc}")
+                raise _ranked_cli_failure(
+                    "strain growth", rc, cli_error, out_dir, "strain_growth_summary.json"
+                )
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "strain_growth_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -5066,9 +5255,11 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"abundance impact failed with rc={rc}")
+                raise _ranked_cli_failure(
+                    "ratio impact", rc, cli_error, out_dir, "abundance_impact_summary.json"
+                )
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "abundance_impact_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -5086,6 +5277,38 @@ class CmigMainWindow(QMainWindow):
         self._show_status("status_started", kind=self.tr_map["kind_ratio_impact"], job_id=jid)
         return jid
 
+    def _missing_exchange_ids(self, model_ids: list[str], initial: str) -> str:
+        """Why a dFBA run would be refused for ids its model(s) lack ("" when none are known).
+
+        Reads each model's browse index off the GUI thread (a cached one is used as is). A
+        model without a usable index is not checked: the run goes ahead and the CLI decides.
+        """
+        from cmig.gui.precheck import initial_exchange_ids, missing_from_index
+        from cmig.io import model_index
+
+        ids = initial_exchange_ids(initial)
+        project = self.session.project
+        if not ids or project is None:
+            return ""
+        lines: list[str] = []
+        for model_id in model_ids:
+            try:
+                entry = project.model(model_id)
+            except ProjectError:
+                continue
+            index = self._index_cache.get(entry.sha256)
+            if index is None:
+                index = self._run_off_thread(model_index.load_index, project.root, entry.sha256)
+            missing = missing_from_index(ids, index)
+            if missing:
+                lines.append(f"Not in {model_id}: {', '.join(missing)}.")
+        if not lines:
+            return ""
+        return " ".join(lines) + (
+            " Change Initial concentrations to exchange ids this model has — the model "
+            "browser's Exchanges tab lists them — or remove these ones."
+        )
+
     def run_dfba(self) -> str:
         """Run user-model dFBA from the Dynamics tab."""
         from cmig.cli.main import main
@@ -5094,6 +5317,10 @@ class CmigMainWindow(QMainWindow):
         request = self.dynamics_view.dfba_request()
         if not request["model"]:
             self.dynamics_view.status.setText("Choose a model.")
+            return ""
+        refusal = self._missing_exchange_ids([str(request["model"])], str(request["initial"]))
+        if refusal:
+            self.dynamics_view.status.setText(refusal)
             return ""
         try:
             model = str(self._model_file(str(request["model"])))
@@ -5122,9 +5349,9 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"dFBA failed with rc={rc}")
+                raise cli_failure("dFBA", rc, cli_error)
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "dfba_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -5175,9 +5402,9 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"spatial preview failed with rc={rc}")
+                raise cli_failure("spatial preview", rc, cli_error)
             _finish_after_artifacts(ctx)
             payload = json.loads((out_dir / "spatial_summary.json").read_text())
             if not isinstance(payload, dict):
@@ -5250,9 +5477,9 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"community solve failed with rc={rc}")
+                raise cli_failure("community solve", rc, cli_error)
             _finish_after_artifacts(ctx)
             manifest_path = out_dir / "manifest.json"
             manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
@@ -5331,12 +5558,12 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
                 # A scientific failure deliberately exits 3 after writing diagnostic-bearing
                 # sweep artifacts. The Job remains failed, while the poller still loads those
                 # rows so the GUI is not quieter than the CLI.
-                raise RuntimeError(self._message("sweep_cli_failed", rc=rc))
+                raise cli_failure("sweep", rc, cli_error)
             _finish_after_artifacts(ctx)
             summary_path = out_dir / "sweep_summary.json"
             summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
@@ -5377,9 +5604,9 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             if rc != 0:
-                raise RuntimeError(f"sweep-fixture failed with rc={rc}")
+                raise cli_failure("sweep-fixture", rc, cli_error)
             _finish_after_artifacts(ctx)
             return {"out_dir": str(out_dir)}
 
@@ -5467,20 +5694,24 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             manifest_path = out_dir / "manifest.json"
             if not manifest_path.exists() or not (out_dir / "profile.parquet").exists():
-                raise RuntimeError(f"growth check failed with rc={rc}")
+                raise cli_failure("growth check", rc, cli_error)
             _finish_after_artifacts(ctx)
             manifest = json.loads(manifest_path.read_text())
             if not isinstance(manifest, dict):
                 raise RuntimeError("growth check manifest is not a JSON object")
             result = _solve_result_like_from_run_dir(out_dir)
+            # The CLI's exit code is the verdict: exit 3 publishes artifacts of a solve that did
+            # not succeed, and the nodes reconstructed from them look "optimal" with growth 0.
+            status = result.status if rc == 0 else "failed"
             return {
                 "manifest": manifest,
-                "growth": result.objective if result.status == "optimal" else None,
-                "status": result.status,
+                "growth": result.objective if status == "optimal" else None,
+                "status": status,
                 "dropped_ids": _medium_dropped_ids(manifest),
+                **_medium_scope_record(manifest),
                 "diagnostic": manifest.get("diagnostic"),
                 "cli_rc": rc,
             }
@@ -5559,10 +5790,10 @@ class CmigMainWindow(QMainWindow):
         def _job(ctx: JobContext) -> dict[str, Any]:
             ctx.report_progress(0, 1)
             ctx.raise_if_cancelled()
-            rc = main(argv)
+            rc, cli_error = _run_cli(main, argv)
             summary_path = out_dir / "minimal_medium_summary.json"
             if not summary_path.exists():
-                raise RuntimeError(f"minimal-medium failed with rc={rc}")
+                raise cli_failure("minimal-medium", rc, cli_error)
             _finish_after_artifacts(ctx)
             payload = json.loads(summary_path.read_text())
             if not isinstance(payload, dict):
@@ -5606,12 +5837,25 @@ class CmigMainWindow(QMainWindow):
         try:
             result_a = _solve_result_like_from_run_dir(path_a)
             result_b = _solve_result_like_from_run_dir(path_b)
-            # Duck-typed run-dir reconstruction: compute_delta reads only
-            # status/objective/external_exchange/members, all present on the namespace.
-            delta = compute_delta(result_a, result_b)  # type: ignore[arg-type]
+            delta = compute_delta(result_a, result_b)
         except Exception as e:
             self._compare_failed()
             self.scenario_compare.status.setText(f"Scenario compare failed: {e}")
+            return
+        # A side whose solve did not succeed has no profile to compare: its "deltas" would be
+        # the other run's whole profile, presented as significant changes.
+        unsolved = [
+            f"{path.name} (status={result.status})"
+            for path, result in ((path_a, result_a), (path_b, result_b))
+            if result.status != "optimal"
+        ]
+        if unsolved or delta.status != "ok":
+            self._compare_failed()
+            self.scenario_compare.status.setText(
+                "Scenario compare refused: the run "
+                + " and ".join(unsolved or ["input"])
+                + " did not solve, so there is nothing to compare."
+            )
             return
         self.scenario_compare.load_comparison(delta)
         self._blank_base_for_overlay()
@@ -5903,7 +6147,7 @@ class CmigMainWindow(QMainWindow):
                     try:
                         validate_search_summary(job.result)
                         self.search_view.load_summary(
-                            job.result,
+                            _unranked(job.result),
                             run_dir=out_dir,
                             request_note=self.search_view.superseded_note(requested, "search"),
                             workflow_kind="search",
@@ -5917,13 +6161,8 @@ class CmigMainWindow(QMainWindow):
                         self._show_status("status_run_load_failed", error=exc)
                         continue
                     self.current_search_dir = out_dir
-                    cause = job.result.get("cli_error") or job.result.get(
-                        "input_diagnostic"
-                    )
                     self.search_view.status.setText(
-                        f"search failed (rc={job.result.get('cli_exit_code', '?')})"
-                        + (f": {cause}" if cause else "")
-                        + "; diagnostics and artifact path are in details"
+                        _failed_ranked_status("search", job.result)
                     )
                     self._show_page(self.search_view)
                     self._register_run_output(out_dir)
@@ -5931,12 +6170,12 @@ class CmigMainWindow(QMainWindow):
                     # No replacement summary was published. Keep every part of the
                     # displayed run (including its badge and export pointer) together.
                     self.statusBar().showMessage(
-                        f"search {job.status.value}: {job.error or jid}"
+                        f"search {job.status.value}: {job_error_text(job.error) or jid}"
                     )
                     if was_cancel_pending:
                         # The pending notice must not outlive the job it describes.
                         self.search_view.status.setText(
-                            f"search {job.status.value}: {job.error or jid}"
+                            f"search {job.status.value}: {job_error_text(job.error) or jid}"
                         )
         for jid, out_dir in list(self._host_microbe_jobs.items()):
             job = self.runner.poll(jid)
@@ -5961,7 +6200,7 @@ class CmigMainWindow(QMainWindow):
                 self.host_view.run_btn.setEnabled(True)
                 self.host_view.clear_result()
                 self.host_view.run_status.setText(
-                    f"host-microbe {job.status.value}: {job.error or jid}"
+                    f"host-microbe {job.status.value}: {job_error_text(job.error) or jid}"
                 )
         self._finish_ranked_jobs("host_search", self._host_search_jobs, "host-search")
         self._finish_ranked_jobs("gene_ko", self._gene_ko_jobs, "gene KO search")
@@ -5985,7 +6224,7 @@ class CmigMainWindow(QMainWindow):
                 self.dynamics_view.run_dfba_btn.setEnabled(True)
                 # A failed rerun must not leave the previous timecourse drawn under its message.
                 self.dynamics_view._clear_dynamics(
-                    f"dFBA {job.status.value}: {job.error or jid}"
+                    f"dFBA {job.status.value}: {job_error_text(job.error) or jid}"
                 )
         for jid, out_dir in list(self._spatial_jobs.items()):
             job = self.runner.poll(jid)
@@ -6006,7 +6245,7 @@ class CmigMainWindow(QMainWindow):
                 self._spatial_jobs.pop(jid, None)
                 self.spatial_page.run_btn.setEnabled(True)
                 self.spatial_page._clear_dynamics(
-                    f"spatial preview {job.status.value}: {job.error or jid}"
+                    f"spatial preview {job.status.value}: {job_error_text(job.error) or jid}"
                 )
         for jid, out_dir in list(self._community_jobs.items()):
             job = self.runner.poll(jid)
@@ -6037,7 +6276,7 @@ class CmigMainWindow(QMainWindow):
                 # A failed rerun must not leave the previous run drawn under its message.
                 self.community_builder.results.show_empty()
                 self.community_builder.status.setText(
-                    f"community solve {job.status.value}: {job.error or jid}"
+                    f"community solve {job.status.value}: {job_error_text(job.error) or jid}"
                 )
         for jid, (out_dir, mode) in list(self._sweep_jobs.items()):
             job = self.runner.poll(jid)
@@ -6087,7 +6326,7 @@ class CmigMainWindow(QMainWindow):
                         "sweep_failed_detail",
                         mode=self.tr_map[f"sweep_mode_{mode}"],
                         status=job.status.value,
-                        error=job.error or jid,
+                        error=job_error_text(job.error) or jid,
                         artifact_note=artifact_note,
                     )
                 )
@@ -6114,23 +6353,22 @@ class CmigMainWindow(QMainWindow):
                         mode=self.tr_map[mode_key],
                     )
                 )
-                dropped = [str(item) for item in job.result.get("dropped_ids", [])]
-                self.medium_editor.dropped_ids_label.setText(
-                    self.tr_map["medium_dropped_none"]
-                    if not dropped
-                    else self._message(
-                        "medium_dropped_ids",
-                        count=len(dropped),
-                        ids=", ".join(dropped),
-                    )
-                )
-                diagnostic = job.result.get("diagnostic")
-                if diagnostic and not dropped:
-                    self.medium_editor.dropped_ids_label.setText(
-                        self._message("medium_diagnostic", diagnostic=diagnostic)
-                    )
+                self.medium_editor.dropped_ids_label.setText(self._medium_run_notes(
+                    [str(item) for item in job.result.get("dropped_ids", [])],
+                    job.result.get("diagnostic"),
+                    job.result,
+                ))
 
                 previous = self._last_medium_growth_check
+                if status != "optimal":
+                    # The CLI said the solve failed (exit 3): its published profile is not a
+                    # result, so it is not drawn; the growth and notes lines above say so.
+                    self._empty_community_result_on("medium")
+                    self._show_status(
+                        "medium_growth_failed", status=status,
+                        error=f"CLI rc={job.result.get('cli_rc')}; artifacts retained",
+                    )
+                    continue
                 if not self.load_run_dir(out_dir, host_key="medium"):
                     # The growth figure came from files the GUI could not read back: do not
                     # present it, and keep the failure in the status bar and the inspector.
@@ -6151,7 +6389,7 @@ class CmigMainWindow(QMainWindow):
 
                         baseline = _solve_result_like_from_run_dir(previous_dir)
                         variant = _solve_result_like_from_run_dir(out_dir)
-                        delta = compute_delta(baseline, variant)  # type: ignore[arg-type]
+                        delta = compute_delta(baseline, variant)
                         self.profile_view.show_delta_overlay(
                             delta,
                             baseline_label=self.tr_map["medium_profile_baseline"],
@@ -6184,7 +6422,7 @@ class CmigMainWindow(QMainWindow):
                     self._message(
                         "medium_growth_failed",
                         status=job.status.value,
-                        error=job.error or jid,
+                        error=job_error_text(job.error) or jid,
                     )
                 )
         for jid, out_dir in list(self._minimal_medium_jobs.items()):
@@ -6214,7 +6452,7 @@ class CmigMainWindow(QMainWindow):
                     self._message(
                         "medium_minimal_failed",
                         status=job.status.value,
-                        error=job.error or jid,
+                        error=job_error_text(job.error) or jid,
                     )
                 )
         self._show_search_cancel_pending()
@@ -6254,16 +6492,21 @@ class CmigMainWindow(QMainWindow):
 
     def _show_ranked(
         self, key: str, payload: dict[str, Any], out_dir: Path,
-        requested: dict[str, str] | None,
+        requested: dict[str, str] | None, *, failed: bool = False,
     ) -> None:
         """Show a ranked result; `requested` None = the run's inputs are not known, so nothing
-        is labelled as executed (the screen's inputs may belong to another run)."""
+        is labelled as executed (the screen's inputs may belong to another run).
+
+        `failed`: the run failed, so none of its rows is a ranking — they are listed in the
+        details as not ranked and the table stays empty.
+        """
         _file, adapter, kind, _label = self._ranked_spec(key)
         page = self._ranked_page(key)
         panel = page.results_panel
         panel.figure_mode_combo.setCurrentText("Ranking")
+        adapted = _with_run_outcome(_with_search_conditions(adapter(payload), payload), payload)
         panel.load_summary(
-            _with_search_conditions(adapter(payload), payload),
+            _unranked(adapted) if failed else adapted,
             run_dir=out_dir,
             request_note="" if requested is None else (
                 panel.effective_note(requested, kind) + panel.superseded_note(requested, kind)
@@ -6303,9 +6546,37 @@ class CmigMainWindow(QMainWindow):
                 page.run_btn.setEnabled(True)
                 # A failed rerun must not leave the previous ranking drawn under its message.
                 self._clear_ranked(page)
+                if (
+                    job.status is JobStatus.FAILED
+                    and isinstance(job.result, dict)
+                    and self._show_failed_ranked(key, job.result, out_dir, requested)
+                ):
+                    page.status.setText(_failed_ranked_status(failure_label, job.result))
+                    continue
                 page.status.setText(
-                    f"{failure_label} {job.status.value}: {job.error or jid}"
+                    f"{failure_label} {job.status.value}: {job_error_text(job.error) or jid}"
                 )
+
+    def _show_failed_ranked(
+        self, key: str, payload: dict[str, Any], out_dir: Path,
+        requested: dict[str, str] | None,
+    ) -> bool:
+        """Show a failed run's published summary (its unevaluated candidates and reasons).
+
+        The summary's status is `failed` (forced by the job), so nothing reads as a ranking
+        result; False when the run cannot be read back, leaving the page empty.
+        """
+        if self._inspect_gui_run(out_dir) is None:
+            return False
+        try:
+            self._show_ranked(key, payload, out_dir, requested, failed=True)
+        except (TypeError, ValueError, KeyError) as exc:
+            self._reject_gui_summary(out_dir, exc)
+            self._clear_ranked(self._ranked_page(key))
+            return False
+        self.current_search_dir = out_dir
+        self._register_run_output(out_dir)
+        return True
 
     @staticmethod
     def _clear_ranked(page: RankedPage) -> None:
@@ -6514,40 +6785,31 @@ def _load_sweep_rows(parquet_path: Path) -> list[Any]:
     return rows
 
 
-def _solve_result_like_from_run_dir(run_dir: Path) -> SimpleNamespace:
-    """Reconstruct the fields compute_delta() actually reads from a completed run directory.
+def _solve_result_like_from_run_dir(run_dir: Path) -> Any:
+    """The solve fields compute_delta() reads, rebuilt from a completed run directory.
 
-    manifest.json only stores run_hash *inputs* (11 hash components), not the solved growth
-    objective, so `objective` is reconstructed as the abundance-weighted sum of per-member
-    growth from nodes.parquet — this matches how MICOM's cooperative-tradeoff community
-    objective is itself built (a convex combination of member biomass reactions weighted by
-    abundance), so it is a faithful reconstruction rather than an approximation of a different
-    quantity. `status` is "optimal" unless a member is missing growth/abundance (infeasible).
+    One reconstruction for the whole product: :func:`cmig.core.delta.load_solve_result_from_run`
+    (community growth = abundance-weighted member growth from nodes.parquet). A run with no
+    member nodes — what a failed solve publishes — is ``solver_failed`` and a missing/non-finite
+    member measurement is ``infeasible``; neither is ever read back as an optimal growth of 0.
     """
-    from cmig.core.tidy import TidyBundle
+    from cmig.core.delta import load_solve_result_from_run
 
-    bundle = TidyBundle.read(run_dir)
-    external_exchange = {
-        str(row["metabolite"]): float(row["net_flux"]) for row in bundle.profile.to_pylist()
+    return load_solve_result_from_run(run_dir)
+
+
+def _medium_scope_record(manifest: dict[str, Any]) -> dict[str, Any]:
+    """The solve manifest's medium-scope record: ids no selected model can take up, and the
+    matched fraction (non-hashed provenance, round 11)."""
+    provenance = manifest.get("provenance")
+    if not isinstance(provenance, dict):
+        return {"not_applicable": [], "medium_matched": None}
+    ids = provenance.get("medium_not_applicable_to_pool")
+    matched = provenance.get("medium_matched")
+    return {
+        "not_applicable": [str(x) for x in ids] if isinstance(ids, list) else [],
+        "medium_matched": matched if isinstance(matched, dict) else None,
     }
-    members: list[str] = []
-    objective = 0.0
-    status = "optimal"
-    for row in bundle.nodes.to_pylist():
-        if row.get("node_type") != "member":
-            continue
-        members.append(str(row["node_id"]))
-        growth, abundance = row.get("growth"), row.get("abundance")
-        if growth is None or abundance is None:
-            status = "infeasible"
-            continue
-        objective += float(growth) * float(abundance)
-    return SimpleNamespace(
-        external_exchange=external_exchange,
-        members=members,
-        status=status,
-        objective=objective,
-    )
 
 
 def _medium_dropped_ids(manifest: dict[str, Any]) -> list[str]:

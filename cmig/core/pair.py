@@ -40,20 +40,32 @@ class PairResult:
     unavailable_per_member: dict[str, list[str]] = field(default_factory=dict)
     flux_normalization_method: str = "pfba"
     warnings: list[str] = field(default_factory=list)
+    #: Non-hashed medium record (round 11): ids neither member can take up (dropped, LP
+    #: unchanged), ids dropped as not applied under ``--allow-unknown-medium``, and the match.
+    medium_not_applicable_to_pool: tuple[str, ...] = ()
+    medium_unapplied: tuple[str, ...] = ()
+    medium_matched: dict[str, Any] | None = None
 
 
 def analyze_pair(
     taxonomy: Any, *, solver: str = "gurobi", tradeoff_f: float = 0.5, engine: Any = None,
     medium: Any = None, strict_medium: bool = True, exact_medium: bool = False,
+    medium_notation: Any = None,
 ) -> PairResult:
     """2-member taxonomy → mono-vs-co + 상호작용 typing.
 
     co: micom community cooperative_tradeoff → member_growth.
     mono: 각 멤버 GEM 단독 FBA(single_model). 상호작용=metrics.interaction_type.
+
+    The medium is applied to the co-culture with the selected-models rule
+    (:func:`cmig.core.medium_spec.apply_medium_scoped`): an id neither member can take up is not
+    applicable; ``medium_notation`` (the AGORA2 notation function, passed by the caller) lets a
+    near miss be refused.
     """
     from cmig.core.engine import MicomEngine
     from cmig.core.medium_spec import (
         MediumSpec,
+        apply_medium_scoped,
         apply_medium_translated,
         compare_effective_media,
         effective_medium_by_metabolite,
@@ -71,10 +83,17 @@ def analyze_pair(
     # co-culture
     community = eng.build_community(taxonomy, cmig_solver=solver)
     community_translation = None
+    medium_record: dict[str, Any] = {}
     if medium is not None:
-        community_translation = apply_medium_translated(
-            community, medium, strict=strict_medium, exact=exact_medium
+        community_translation, scoped = apply_medium_scoped(
+            community, medium, strict=strict_medium, exact=exact_medium,
+            notation=medium_notation,
         )
+        medium_record = {
+            "medium_not_applicable_to_pool": scoped.not_applicable,
+            "medium_unapplied": scoped.not_applied,
+            "medium_matched": scoped.matched(),
+        }
     co = eng.cooperative_tradeoff(community, tradeoff_f, cmig_solver=solver)
     co_growth = {
         m: (float(raw) if (raw := co.member_growth.get(m)) is not None else float("nan"))
@@ -90,6 +109,7 @@ def analyze_pair(
             ),
             flux_normalization_method=co.flux_normalization_method,
             warnings=list(co.warnings),
+            **medium_record,
         )
 
     # Monocultures must see the community's *effective* offer, not their unrelated native SBML
@@ -132,6 +152,7 @@ def analyze_pair(
                 unavailable_per_member=unavailable_per_member,
                 flux_normalization_method=co.flux_normalization_method,
                 warnings=list(co.warnings),
+                **medium_record,
             )
         mono = solve_single_model(model, method="FBA", solver=solver)
         mono_growth[m] = mono.objective
@@ -147,6 +168,7 @@ def analyze_pair(
                 unavailable_per_member=unavailable_per_member,
                 flux_normalization_method=co.flux_normalization_method,
                 warnings=list(co.warnings),
+                **medium_record,
             )
 
     itype = interaction_type(mono_growth[a], mono_growth[b], co_growth[a], co_growth[b])
@@ -167,6 +189,7 @@ def analyze_pair(
         unavailable_per_member=unavailable_per_member,
         flux_normalization_method=co.flux_normalization_method,
         warnings=list(co.warnings),
+        **medium_record,
     )
 
 

@@ -108,8 +108,17 @@ class EngineService:
         out_dir: str | Path,
         bounds: dict[str, list[float]] | None = None,
         env_lock: str | None = None,
+        medium_pool: Any | None = None,
     ) -> SolveOutcome:
         """임의 taxonomy(+medium) community solve → parquet+manifest.
+
+        ``medium_pool`` (round 11): when this community is a member set drawn from a larger
+        pool (``cmig sweep --member-sets``), the pool's
+        :class:`cmig.core.medium_spec.PoolMediumCoverage`. A medium id another pool model can
+        take up but no member here can is then *not applicable* — dropped with the LP unchanged
+        and recorded in the non-hashed provenance as ``medium_not_applicable``, not refused and
+        not ``medium_unapplied``. The solve ``run_hash`` is unchanged (the medium checksum is the
+        requested medium's).
 
         Plan SC: SC-S1·SC-S3. components = build_run_components(user 경로).
         `model_checksum` 은 호출자(CLI)가 file_checksum(tax_path)로 산출해 주입 — 파일 I/O 는 edge.
@@ -148,20 +157,56 @@ class EngineService:
             community = self._engine.build_community(effective_taxonomy, cmig_solver=solver)
             original_bounds = None
             unknown_medium: list[str] = []
+            not_applicable: tuple[str, ...] = ()
             medium_application: dict[str, Any] = {}
             try:
-                if spec is not None:
+                if spec is not None and medium_pool is not None:
+                    from cmig.core.medium_spec import translate_medium_for_model
+
+                    unmatched_ids = translate_medium_for_model(community, spec).unmatched
+                    not_applicable, _pool, unknown = medium_pool.split(
+                        unmatched_ids, [str(member) for member in taxonomy["id"]],
+                    )
+                    if strict_medium and unknown:
+                        raise ValueError(
+                            "medium exchange has no counterpart in the target model "
+                            f"(matched on metabolite): {list(unknown)}"
+                        )
+                    translation = medium_application_report(community, spec, strict=False)
+                    unknown_medium = list(unknown)
+                    medium_application = {
+                        **translation.as_provenance(),
+                        "medium_unapplied": list(unknown),
+                        "medium_not_applicable": list(not_applicable),
+                        "medium_not_applicable_to_pool": list(medium_pool.pool_not_applicable),
+                        "medium_matched": {
+                            "matched": len(spec.uptake) - len(unmatched_ids),
+                            "requested": len(spec.uptake),
+                        },
+                    }
+                elif spec is not None:
                     # Round 6 (track B, instance 1): the same single application path, but the
                     # record of HOW it was applied is now kept. A merge leaves undeclared
                     # boundary reactions open — measured on the shipped `western_diet.csv`,
                     # `EX_o2_m` stayed at 999999 and community growth came out 1.2677557 against
                     # 0.6990206751 with oxygen closed. The count travels into the manifest's
                     # non-hashed provenance so a reader can see it without re-running anything.
-                    translation = medium_application_report(
-                        community, spec, strict=strict_medium
+                    #
+                    # Round 11 (2026-10-15): the selected models are the pool. An id this
+                    # community has no exchange for is not applicable (LP unchanged, recorded);
+                    # only a medium that matches nothing, or a near miss in another notation, is
+                    # refused (strict) or dropped as not applied (`--allow-unknown-medium`).
+                    from cmig.core.medium_spec import apply_medium_scoped
+                    from cmig.io.agora2 import bigg_exchange_notation
+
+                    translation, scoped = apply_medium_scoped(
+                        community, spec, strict=strict_medium, notation=bigg_exchange_notation,
                     )
-                    unknown_medium = list(translation.unmatched)
-                    medium_application = translation.as_provenance()
+                    unknown_medium = list(scoped.not_applied)
+                    medium_application = {
+                        **translation.as_provenance(), **scoped.as_record(),
+                        "medium_unapplied": list(scoped.not_applied),
+                    }
                 if bounds:
                     from cmig.core.sandbox import BoundConstraint, apply_bounds
 

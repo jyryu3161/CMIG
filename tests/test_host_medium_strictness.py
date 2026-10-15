@@ -101,7 +101,11 @@ class _Engine:
 
 
 #: One row the community can honour, one it cannot — the shape of the shipped VMH overlay.
+#: Round 11 (user decision 2026-10-15, "일부만 없으면 빼고 진행"): the selected models are the
+#: pool, so `EX_n2_m` is now *not applicable* (dropped, LP unchanged, not degraded) — the
+#: refusal and the relaxation below are pinned on a medium that matches NOTHING instead.
 INAPPLICABLE = MediumSpec(uptake={"EX_glc__D_m": 10.0, "EX_n2_m": 0.0})
+MATCHES_NOTHING = MediumSpec(uptake={"EX_n2_m": 0.0, "EX_notreal_m": 1.0})
 
 
 def _run(**kwargs):
@@ -129,13 +133,25 @@ def test_the_host_path_refuses_an_inapplicable_medium_and_names_both_id_and_reme
     the flag that makes the run possible — a message that names neither is why this survived.
     """
     with pytest.raises(ValueError) as excinfo:
-        _run(microbe_medium=INAPPLICABLE, engine=_Engine())
+        _run(microbe_medium=MATCHES_NOTHING, engine=_Engine())
 
     message = str(excinfo.value)
     assert "EX_n2_m" in message, message
     assert "--allow-unknown-medium" in message, message
     # It must be clear *which* of the two media a host run carries is at fault.
     assert "microbial medium" in message, message
+
+
+def test_a_row_no_member_can_take_up_is_not_applicable_not_refused():
+    """Round 11: the whole selection is the pool; `EX_n2_m` cannot bound anything in its LP."""
+    engine = _Engine()
+    result = _run(microbe_medium=INAPPLICABLE, engine=engine)
+
+    assert result.medium_not_applicable_to_pool == ("EX_n2_m",)
+    assert result.unapplied_medium_exchanges == ()
+    assert not any("EX_n2_m" in warning for warning in result.warnings), result.warnings
+    assert engine.community is not None
+    assert engine.community.reactions.get_by_id("EX_glc__D_m").lower_bound == -10.0
 
 
 def test_an_applicable_medium_is_still_applied_strictly_by_default():
@@ -153,28 +169,44 @@ def test_an_applicable_medium_is_still_applied_strictly_by_default():
 
 def test_the_host_path_can_be_told_to_drop_what_the_community_cannot_offer():
     engine = _Engine()
-    result = _run(microbe_medium=INAPPLICABLE, strict_medium=False, engine=engine)
+    result = _run(microbe_medium=MATCHES_NOTHING, strict_medium=False, engine=engine)
 
-    assert result.unapplied_medium_exchanges == ("EX_n2_m",)
+    assert result.unapplied_medium_exchanges == ("EX_n2_m", "EX_notreal_m")
     assert any(
         "EX_n2_m" in warning and "NOT applied" in warning for warning in result.warnings
     ), result.warnings
-    # The rest of the medium really was applied — a relaxed run is not a no-medium run.
+    # A near miss with the flag: dropped as not applied; the rest of the medium really was
+    # applied — a relaxed run is not a no-medium run.
+    from cmig.io.agora2 import bigg_exchange_notation
+
+    near = MediumSpec(uptake={"EX_glc_D_m": 10.0, "EX_ac_m": 2.0})
+    engine = _Engine()
+    result = _run(
+        microbe_medium=near, strict_medium=False, engine=engine,
+        medium_notation=bigg_exchange_notation,
+    )
+    assert result.unapplied_medium_exchanges == ("EX_glc_D_m",)
     assert engine.community is not None
-    assert engine.community.reactions.get_by_id("EX_glc__D_m").lower_bound == -10.0
+    assert engine.community.reactions.get_by_id("EX_ac_m").lower_bound == -2.0
 
 
 def test_dropped_medium_ids_are_named_even_when_the_community_solve_fails():
     """This is the branch the round-6 scenario hit, and it disclosed nothing about the medium."""
     result = _run(
-        microbe_medium=INAPPLICABLE,
+        microbe_medium=MATCHES_NOTHING,
         strict_medium=False,
         engine=_Engine(status="solver_failed", diagnostic='{"code": "solver_error"}'),
     )
 
     assert result.community_status == "solver_failed"
-    assert result.unapplied_medium_exchanges == ("EX_n2_m",)
+    assert result.unapplied_medium_exchanges == ("EX_n2_m", "EX_notreal_m")
     assert any("EX_n2_m" in warning for warning in result.warnings), result.warnings
+    # The not-applicable record travels on the failure branch too.
+    failed = _run(
+        microbe_medium=INAPPLICABLE,
+        engine=_Engine(status="solver_failed", diagnostic='{"code": "solver_error"}'),
+    )
+    assert failed.medium_not_applicable_to_pool == ("EX_n2_m",)
 
 
 # ── 3. a failed community solve names its cause, not only its status ───────────────────────────
@@ -358,6 +390,13 @@ def _write_cli_fixture(tmp_path):
     return host_path, taxonomy, host_medium, microbe_medium
 
 
+def _near_miss_medium(tmp_path):
+    """Round 11: what a host command still refuses — glucose written the VMH way."""
+    medium = tmp_path / "near_miss_medium.csv"
+    medium.write_text("exchange_id,uptake_limit\nEX_glc_D_m,10.0\nEX_ac_m,0.0\n")
+    return medium
+
+
 def _host_argv(host_path, taxonomy, host_medium, microbe_medium, out):
     return [
         "host-microbe-bigg",
@@ -378,29 +417,48 @@ def test_host_microbe_bigg_cli_refuses_the_medium_by_default_and_says_why(tmp_pa
     pytest.importorskip("micom")
     from cmig.cli.main import main
 
-    fixture = _write_cli_fixture(tmp_path)
-    rc = main(_host_argv(*fixture, tmp_path / "strict"))
+    host_path, taxonomy, host_medium, _microbe_medium = _write_cli_fixture(tmp_path)
+    near = _near_miss_medium(tmp_path)
+    rc = main(_host_argv(host_path, taxonomy, host_medium, near, tmp_path / "strict"))
     assert rc == 2
     stderr = capsys.readouterr().err
-    assert "EX_n2_m" in stderr, stderr
+    assert "EX_glc_D_m -> EX_glc__D_m" in stderr, stderr
     assert "--allow-unknown-medium" in stderr, stderr
+    assert "microbial medium" in stderr, stderr
+
+
+def test_host_microbe_bigg_cli_records_a_row_no_member_has_without_degrading(tmp_path):
+    """Round 11: `EX_n2_m` is not applicable to the selected models — the run is `ok`."""
+    pytest.importorskip("micom")
+    from cmig.cli.main import main
+
+    fixture = _write_cli_fixture(tmp_path)
+    out = tmp_path / "strict"
+    assert main(_host_argv(*fixture, out)) == 0
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["status"] == "ok", manifest["status"]
+    assert not any("EX_n2_m" in warning for warning in manifest["warnings"])
+    assert manifest["summary"]["medium_not_applicable_to_pool"] == ["EX_n2_m"]
 
 
 def test_host_microbe_bigg_cli_degrades_and_names_the_dropped_exchange(tmp_path, capsys):
     pytest.importorskip("micom")
     from cmig.cli.main import main
 
-    fixture = _write_cli_fixture(tmp_path)
+    host_path, taxonomy, host_medium, _microbe_medium = _write_cli_fixture(tmp_path)
+    near = _near_miss_medium(tmp_path)
     out = tmp_path / "relaxed"
-    rc = main(_host_argv(*fixture, out) + ["--allow-unknown-medium"])
+    rc = main(
+        _host_argv(host_path, taxonomy, host_medium, near, out) + ["--allow-unknown-medium"]
+    )
     assert rc == 0
 
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["status"] == "degraded", manifest["status"]
-    assert any("EX_n2_m" in warning for warning in manifest["warnings"]), manifest["warnings"]
+    assert any("EX_glc_D_m" in warning for warning in manifest["warnings"]), manifest["warnings"]
     assert _component(manifest, "medium")["allow_unknown_medium"] is True
     summary = json.loads((out / "host_microbe_bigg_summary.json").read_text())
-    assert any("EX_n2_m" in warning for warning in summary["warnings"])
+    assert any("EX_glc_D_m" in warning for warning in summary["warnings"])
 
 
 def test_the_two_host_runs_do_not_share_a_run_hash(tmp_path):
@@ -476,10 +534,11 @@ def test_gene_ko_search_applies_the_requested_medium_to_every_arm(tmp_path, monk
     seen: list[dict[str, object]] = []
     original = search_product.search_model_pool
 
-    def _spy(engine, taxonomy, config, *, medium_spec=None, strict_medium=True):
+    def _spy(engine, taxonomy, config, *, medium_spec=None, strict_medium=True, medium_pool=None):
         seen.append({"medium_spec": medium_spec, "strict_medium": strict_medium})
         return original(
-            engine, taxonomy, config, medium_spec=medium_spec, strict_medium=strict_medium
+            engine, taxonomy, config, medium_spec=medium_spec, strict_medium=strict_medium,
+            medium_pool=medium_pool,
         )
 
     monkeypatch.setattr(search_product, "search_model_pool", _spy)
@@ -549,7 +608,7 @@ def test_the_gui_host_tab_can_relax_the_medium_too():
 # ── 10. the sibling host commands degrade the same way, end to end ─────────────────────────────
 
 
-def test_host_search_bigg_cli_degrades_and_names_the_dropped_exchange(tmp_path):
+def test_host_search_bigg_cli_records_a_pool_unknown_id_without_degrading(tmp_path):
     pytest.importorskip("micom")
     from cmig.cli.main import main
 
@@ -573,12 +632,15 @@ def test_host_search_bigg_cli_degrades_and_names_the_dropped_exchange(tmp_path):
     ])
     assert rc == 0
     manifest = json.loads((out / "manifest.json").read_text())
-    assert manifest["status"] == "degraded", manifest["status"]
-    assert any("EX_n2_m" in warning for warning in manifest["warnings"]), manifest["warnings"]
+    # Round 11 (pool-scoped medium v3, "일부만 없으면 빼고 진행"): `EX_n2_m` matches no model of
+    # the pool while `EX_glc__D_m` does, so it is "not applicable to this pool" — recorded, the
+    # LP unchanged, the run not degraded; `--allow-unknown-medium` has nothing left to drop.
+    assert manifest["status"] == "ok", manifest["status"]
+    assert not any("EX_n2_m" in warning for warning in manifest["warnings"]), manifest["warnings"]
+    assert manifest["summary"]["medium_not_applicable_to_pool"] == ["EX_n2_m"]
     assert _component(manifest, "medium")["allow_unknown_medium"] is True
-    # The candidate itself was evaluated — a partly applied medium degrades the run, it does not
-    # disqualify the rows, which would silently shrink the ranking.
     summary = json.loads((out / "host_search_summary.json").read_text())
+    assert summary["medium_not_applicable_to_pool"] == ["EX_n2_m"]
     assert summary["n_candidates_evaluated"] == 1
     assert summary["n_candidates_failed"] == 0
 
@@ -587,7 +649,9 @@ def test_host_ko_impact_cli_degrades_and_names_the_dropped_exchange(tmp_path):
     pytest.importorskip("micom")
     from cmig.cli.main import main
 
-    host_path, taxonomy, host_medium, microbe_medium = _write_cli_fixture(tmp_path)
+    host_path, taxonomy, host_medium, _microbe_medium = _write_cli_fixture(tmp_path)
+    # Round 11: only a near miss (or a medium that matches nothing) is dropped as not applied.
+    microbe_medium = _near_miss_medium(tmp_path)
     out = tmp_path / "host_ko"
     rc = main([
         "host-ko-impact",
@@ -610,5 +674,5 @@ def test_host_ko_impact_cli_degrades_and_names_the_dropped_exchange(tmp_path):
     assert rc == 0
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["status"] == "degraded", manifest["status"]
-    assert any("EX_n2_m" in warning for warning in manifest["warnings"]), manifest["warnings"]
+    assert any("EX_glc_D_m" in warning for warning in manifest["warnings"]), manifest["warnings"]
     assert _component(manifest, "medium")["allow_unknown_medium"] is True

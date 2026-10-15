@@ -79,6 +79,7 @@ def _decode(raw: dict[str, Any]) -> _ComboEval:
             "members": tuple(raw["members"]),
             "missing_targets": tuple(raw.get("missing_targets", ())),
             "effective_members": tuple(raw.get("effective_members", ())),
+            "medium_not_applicable": tuple(raw.get("medium_not_applicable", ())),
         }
     )
 
@@ -92,12 +93,15 @@ def run_multi_search(
     strict_medium: bool,
     control: SearchControl | None,
     _batch_evaluate: Any = None,
+    medium_pool: Any | None = None,
 ) -> MultiTargetSearchResult:
     from cmig.core.search_ga import GAConfig
     from cmig.service.search_service import ConfiguredEngine, SearchRequest, search_workers
 
     if control is not None and control.workers > 1 and _batch_evaluate is None:
-        request = SearchRequest(taxonomy, config, medium_spec, strict_medium)
+        request = SearchRequest(
+            taxonomy, config, medium_spec, strict_medium, medium_pool=medium_pool
+        )
         with search_workers(request, control) as batch:
             return run_multi_search(
                 engine,
@@ -107,6 +111,7 @@ def run_multi_search(
                 strict_medium=strict_medium,
                 control=control,
                 _batch_evaluate=batch,
+                medium_pool=medium_pool,
             )
 
     if (
@@ -167,6 +172,7 @@ def run_multi_search(
         strict_medium=strict_medium,
         medium_notes=notes,
         growth_policy=config.growth_policy,
+        medium_pool=medium_pool,
     )
     cache: dict[Genome, list[_ComboEval]] = {}
     capabilities: dict[Genome, _ComboEval] = {}

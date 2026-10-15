@@ -539,6 +539,13 @@ class SearchResultsPanel(QWidget):
         status_text = f"status: {summary.get('status', 'unknown')} · strategy: {strategy}"
         if warning_list:
             status_text += f" · {len(warning_list)} warning(s); see details"
+        pool_na = summary.get("medium_not_applicable_to_pool")
+        if isinstance(pool_na, list) and pool_na:
+            # Not a degradation (the run's status is unaffected), but never silent: these medium
+            # rows reached no model of the selection and were dropped.
+            status_text += (
+                f" · {len(pool_na)} medium ids not applicable to this pool; see details"
+            )
         details = [f"Run: {self.current_run_dir or 'unknown'}", f"Strategy: {strategy}"]
         for key in (
             "status", "score_unit", "normalizer", "solution_semantics", "metric",
@@ -550,10 +557,12 @@ class SearchResultsPanel(QWidget):
             "n_pareto_points", "n_pareto_attempts", "n_pareto_resolved_attempts",
             "n_pareto_failed_attempts", "pareto_attempts", "candidate_sampling_status",
             "cli_exit_code", "cli_error", "input_diagnostic", "output_dir",
+            "medium_not_applicable", "medium_not_applicable_to_pool", "medium_matched",
         ):
             if key in summary:
                 details.append(f"{key}: {summary[key]}")
-        details.extend(f"Warning {i}: {warning}" for i, warning in enumerate(warning_list, 1))
+        # The candidates the run could not evaluate, and why, come before the run warnings: in
+        # a failed run they are the answer to "what went wrong".
         unevaluated = summary.get("unevaluated")
         if isinstance(unevaluated, list):
             for i, candidate in enumerate(unevaluated, 1):
@@ -563,6 +572,15 @@ class SearchResultsPanel(QWidget):
                         f"{candidate.get('status')} · "
                         f"{_diagnostic_text(candidate.get('diagnostic'))}"
                     )
+        not_ranked = summary.get("not_ranked")
+        if isinstance(not_ranked, list):
+            for i, row in enumerate(not_ranked, 1):
+                if isinstance(row, dict):
+                    details.append(
+                        f"Not ranked {i} (the run failed): {row.get('members')} · "
+                        f"{row.get('status')} · {_diagnostic_text(row.get('diagnostic'))}"
+                    )
+        details.extend(f"Warning {i}: {warning}" for i, warning in enumerate(warning_list, 1))
         if request_note:
             details.append(request_note)
         if executed_request:

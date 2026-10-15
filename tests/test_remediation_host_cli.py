@@ -49,6 +49,8 @@ def coupling(model: cobra.Model, available: dict[str, float]):
         unmatched_metabolites=[],
         warnings=[],
         unapplied_medium_exchanges=(),
+        medium_not_applicable=(),
+        medium_matched=None,
     )
 
 

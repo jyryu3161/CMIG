@@ -501,6 +501,8 @@ def run_bigg_host_microbe(
     close_unlisted_host_uptake: bool = True,
     strict_medium: bool = True,
     engine: Any = None,
+    medium_pool: Any | None = None,
+    medium_notation: Any = None,
 ) -> BiggHostMicrobeResult:
     """MICOM community secretion to reviewed-map/BiGG host coupling.
 
@@ -509,6 +511,19 @@ def run_bigg_host_microbe(
     sets. Default ``True`` — a medium the model cannot honour is refused, exactly as it was
     before round 7; what changed is that the refusal is now overridable, says which of the two
     media failed, and names the ids and the flag.
+
+    ``medium_pool`` (round 11) is the selected microbial pool's
+    :class:`cmig.core.medium_spec.PoolMediumCoverage` when this community is one candidate of a
+    pool (Host Combination Search). A microbial medium id another pool model can take up but no
+    member here can is then *not applicable* to this candidate — recorded in
+    ``medium_not_applicable``, never refused and never reported as dropped.
+
+    Without ``medium_pool`` the community is the whole selection and is itself the pool (round
+    11, 2026-10-15): an id no member can take up is recorded in
+    ``medium_not_applicable_to_pool`` (LP unchanged, not degraded); only a microbial medium that
+    matches nothing, or a near miss in another notation (``medium_notation`` is the AGORA2
+    notation function, passed by the caller), is refused — or, with ``strict_medium=False``,
+    dropped as not applied. The host medium keeps its own strict check (see ``solve_bigg_host``).
     """
     from cmig.core.engine import MicomEngine
     from cmig.core.host_impact import host_impact
@@ -534,7 +549,23 @@ def run_bigg_host_microbe(
     )
     community = community_engine.build_community(taxonomy, cmig_solver=solver)
     unapplied_medium: tuple[str, ...] = ()
-    if microbe_medium is not None:
+    not_applicable: tuple[str, ...] = ()
+    not_applicable_to_pool: tuple[str, ...] = ()
+    n_medium_matched: int | None = None
+    if microbe_medium is not None and medium_pool is None:
+        from cmig.core.medium_spec import apply_medium_scoped
+
+        try:
+            _translation, scoped = apply_medium_scoped(
+                community, microbe_medium, strict=strict_medium, notation=medium_notation,
+            )
+        except ValueError as error:
+            # A host run carries two media; say which one is refused.
+            raise ValueError(f"microbial medium: {error}") from error
+        n_medium_matched = int(scoped.matched()["matched"])
+        not_applicable_to_pool = scoped.not_applicable
+        unapplied_medium = scoped.not_applied
+    elif microbe_medium is not None and medium_pool is not None:
         from cmig.core.medium_spec import medium_application_report, translate_medium_for_model
 
         # The strictness decision is made here, on the same translation the application uses, so
@@ -543,12 +574,16 @@ def run_bigg_host_microbe(
         # the target model" — true, but a host run has two media and the message named neither
         # the medium nor the way forward.
         preview = translate_medium_for_model(community, microbe_medium)
-        if strict_medium and preview.unmatched:
+        n_medium_matched = len(microbe_medium.uptake) - len(preview.unmatched)
+        not_applicable, _pool, unknown = medium_pool.split(
+            preview.unmatched, [str(member) for member in taxonomy["id"]]
+        )
+        if strict_medium and unknown:
             raise ValueError(
-                f"{MEDIUM_NOT_APPLICABLE}: {list(preview.unmatched)}. {MEDIUM_RELAXATION_HINT}"
+                f"{MEDIUM_NOT_APPLICABLE}: {list(unknown)}. {MEDIUM_RELAXATION_HINT}"
             )
-        translation = medium_application_report(community, microbe_medium, strict=False)
-        unapplied_medium = tuple(translation.unmatched)
+        medium_application_report(community, microbe_medium, strict=False)
+        unapplied_medium = unknown
     medium_warnings = (
         [f"{MEDIUM_DROPPED_PREFIX}: {list(unapplied_medium)}"] if unapplied_medium else []
     )
@@ -590,6 +625,9 @@ def run_bigg_host_microbe(
             objective_warning=objective_warning,
             objective_reactions=host_objective_reactions,
             unapplied_medium_exchanges=unapplied_medium,
+            medium_not_applicable=not_applicable,
+            medium_matched=n_medium_matched,
+            medium_not_applicable_to_pool=not_applicable_to_pool,
         )
     community_secretion = {
         metabolite: flux
@@ -772,4 +810,7 @@ def run_bigg_host_microbe(
         objective_warning=objective_warning,
         objective_reactions=host_objective_reactions,
         unapplied_medium_exchanges=unapplied_medium,
+        medium_not_applicable=not_applicable,
+        medium_matched=n_medium_matched,
+        medium_not_applicable_to_pool=not_applicable_to_pool,
     )

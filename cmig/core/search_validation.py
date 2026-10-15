@@ -77,6 +77,7 @@ def validate_top_candidates(request: Any, result: Any, engine: Any, control: Any
             medium_spec=medium,
             strict_medium=request.strict_medium,
             growth_policy=config.growth_policy,
+            medium_pool=request.medium_pool,
         )
         if multi:
             point = _evaluate_members_multi_joint(

@@ -13,10 +13,10 @@ import csv
 import hashlib
 import json
 import math
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +29,19 @@ _DECIMALS = 6
 # bumping a hash component (`cmig_core_version` is frozen), so it is stamped into the manifest's
 # **non-hashed** `provenance` block instead: enough to tell the two eras apart mechanically,
 # without touching the frozen contract. See the CHANGELOG entry.
-MEDIUM_POLICY = "exchange_reactions_by_metabolite_v2"   # was: open_uptakes_exact_key_v1
+#
+# Round 11 (v3): in workflows that evaluate sub-communities of a selected pool, medium ids a
+# candidate cannot take up are dropped and recorded instead of refusing it —
+# `medium_not_applicable` (another pool model has them) or `medium_not_applicable_to_pool` (no
+# pool model has them); only a medium none of whose ids matches the pool is refused (see the
+# pool-scoped section below). Candidates the v2 rule refused now have answers under an unchanged
+# `run_hash`; numbers v2 did produce are unchanged. (v3 was redefined before any release: the
+# intermediate branch-only meaning refused any pool-unknown id; and on 2026-10-15 it was widened
+# to every medium-taking workflow — where the selected models are solved as one community, or a
+# command takes one model, that community or model is the pool (`apply_medium_scoped`). The value
+# is kept: v3 has never been released, so no run outside this branch carries a narrower v3.)
+MEDIUM_POLICY = "exchange_reactions_by_metabolite_pool_scoped_v3"
+# was: exchange_reactions_by_metabolite_v2 (round 5), open_uptakes_exact_key_v1 (before)
 
 # Round 6 (track B, instances 1 and 3): a medium is applied in exactly one of two modes, and they
 # give **different answers on identical input**, so which one ran has to travel with the result.
@@ -306,6 +318,24 @@ class MediumTranslation:
         return record
 
 
+def _exchange_candidates(model: object) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """metabolite → this model's exchange ids, and exchange id → metabolite.
+
+    The single keying both :func:`translate_medium_for_model` and
+    :func:`medium_ids_with_counterpart` use, so "has a counterpart" means the same thing at the
+    pool level and at the community level.
+    """
+    from cmig.core.exchange import exchange_identity
+
+    candidates: dict[str, list[str]] = {}
+    by_id: dict[str, str] = {}
+    for reaction in getattr(model, "exchanges", []):
+        identity = exchange_identity(reaction)
+        candidates.setdefault(identity.metabolite, []).append(identity.reaction_id)
+        by_id[identity.reaction_id] = identity.metabolite
+    return candidates, by_id
+
+
 def translate_medium_for_model(model: object, spec: MediumSpec) -> MediumTranslation:
     """Re-key ``spec`` onto the exchange ids ``model`` actually exposes, matching on metabolite.
 
@@ -325,14 +355,7 @@ def translate_medium_for_model(model: object, spec: MediumSpec) -> MediumTransla
     limits are a contradictory input and are refused — never silently resolved in favour of one.
     """
     spec.validate()
-    from cmig.core.exchange import exchange_identity
-
-    candidates: dict[str, list[str]] = {}
-    by_id: dict[str, str] = {}
-    for reaction in getattr(model, "exchanges", []):
-        identity = exchange_identity(reaction)
-        candidates.setdefault(identity.metabolite, []).append(identity.reaction_id)
-        by_id[identity.reaction_id] = identity.metabolite
+    candidates, by_id = _exchange_candidates(model)
     mapping: dict[str, str] = {}
     requested: dict[str, dict[str, float]] = {}
     unmatched: list[str] = []
@@ -378,6 +401,346 @@ def translate_medium_for_model(model: object, spec: MediumSpec) -> MediumTransla
         mapping=mapping,
         unmatched=tuple(sorted(unmatched)),
     )
+
+
+# ── Pool-scoped medium (round 11) ──────────────────────────────────────────────────────────────
+# Workflows that evaluate sub-communities of a selected pool (Combination Search, Host
+# Combination Search, …) used to apply the strict "every medium id must have a counterpart"
+# rule per candidate. The shipped gut overlays are written for the whole bundled pool, so every
+# sub-community lacked some ids and every candidate failed. MICOM's own workflows filter the
+# medium to the community's exchanges before applying it (micom 0.39 `workflows/grow.py` and
+# `workflows/tradeoff.py`): an id with no exchange in the community cannot enter any member, so
+# dropping it leaves the LP identical. That holds for an id no pool model has, too ("일부만 없으면
+# 빼고 진행" — the user's decision): it is "not applicable to this pool", recorded once per run.
+# What is kept of the strict rule is its namespace-safety purpose: a medium of which NOT ONE id
+# matches any pool model is almost certainly in another namespace, and is refused.
+MEDIUM_ZERO_MATCH = (
+    "none of the medium's {n} exchange ids matches an exchange of {scope} (matched on "
+    "metabolite), so the medium and the models are probably in different namespaces (e.g. "
+    "AGORA `EX_x(e)` vs BiGG `EX_x_e`/`EX_x_m`)"
+)
+MEDIUM_ZERO_MATCH_HINT = (
+    "translate the medium to the models' namespace; or allow unknown medium ids "
+    "(--allow-unknown-medium) to run without any of its rows (they are then listed as not "
+    "applied)"
+)
+
+
+def medium_ids_with_counterpart(model: object, spec: MediumSpec) -> frozenset[str]:
+    """The requested ids ``model`` has an exchange for, keyed exactly as the translation keys."""
+    return _ids_with_counterpart(model, [str(source) for source in spec.uptake])
+
+
+def _ids_with_counterpart(model: object, ids: Any) -> frozenset[str]:
+    candidates, by_id = _exchange_candidates(model)
+    return frozenset(
+        str(source) for source in ids
+        if by_id.get(str(source), exchange_metabolite(str(source))) in candidates
+    )
+
+
+MEDIUM_NEAR_MISS = (
+    "medium exchange ids written in another notation of exchanges the selected models have "
+    "(VMH `glc_D`/`(e)` vs BiGG `glc__D`/`_e`): {pairs}"
+)
+MEDIUM_NEAR_MISS_HINT = (
+    "rename them in the medium file; or allow unknown medium ids (--allow-unknown-medium) to "
+    "drop them (they are then listed as not applied)"
+)
+MEDIUM_CANDIDATE_ZERO_MATCH = (
+    "none of the medium's {n} exchange ids reaches this candidate ({members}) (matched on "
+    "metabolite; other models of the pool do match), so it would grow on its models' own default "
+    "bounds, not on the medium — its models are probably in another namespace than the medium"
+)
+
+
+@dataclass(frozen=True)
+class PoolMediumCoverage:
+    """Which requested medium ids each model of a selected pool can take up."""
+
+    by_model: dict[str, frozenset[str]]
+    requested: tuple[str, ...]
+    #: Pool members whose model could not be read, or whose exchanges could not be resolved.
+    #: They are left out of the coverage and keep their own failure where they are used (a
+    #: load_failed row, a failed candidate); `unusable_reasons` says why, for the refusal text.
+    unreadable: tuple[str, ...] = ()
+    unusable_reasons: dict[str, str] = field(default_factory=dict)
+    #: Pool-unknown ids that WOULD match a pool model in BiGG notation (id -> likely id). Not
+    #: "not applicable to the pool": a near miss is a namespace error, refused in strict mode.
+    near_misses: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def known(self) -> frozenset[str]:
+        return frozenset().union(*self.by_model.values()) if self.by_model else frozenset()
+
+    @property
+    def unknown(self) -> tuple[str, ...]:
+        """Requested ids no (readable) pool model has an exchange for."""
+        known = self.known
+        return tuple(sorted(source for source in self.requested if source not in known))
+
+    @property
+    def matches_nothing(self) -> bool:
+        """Not one requested id reaches any pool model — the namespace-mismatch signature."""
+        return bool(self.requested) and not self.known
+
+    @property
+    def pool_not_applicable(self) -> tuple[str, ...]:
+        """Ids no pool model can take up while others match: dropped, LP unchanged.
+
+        Near misses are excluded: they are the same nutrient in another notation.
+        """
+        if self.matches_nothing:
+            return ()
+        return tuple(source for source in self.unknown if source not in self.near_misses)
+
+    @property
+    def not_applied(self) -> tuple[str, ...]:
+        """Ids that can only be dropped as "not applied" (`--allow-unknown-medium`)."""
+        return self.unknown if self.matches_nothing else tuple(sorted(self.near_misses))
+
+    def matched_fraction(self) -> dict[str, Any]:
+        """{matched, requested, fraction} of the medium's ids over the readable pool."""
+        n = len(self.requested)
+        matched = len(self.known)
+        return {"matched": matched, "requested": n,
+                "fraction": round(matched / n, 4) if n else None}
+
+    def check_namespace(self, *, scope: str = "any model of the selected pool") -> None:
+        """Strict mode: refuse a medium that matches no pool model, or that has near misses.
+
+        ``scope`` names what the medium was matched against in the zero-match message (the
+        selected pool, the selected models solved as one community, or one model).
+        """
+        if self.matches_nothing:
+            unread = ""
+            if self.unreadable:
+                why = "; ".join(
+                    f"{member}: {self.unusable_reasons[member]}" if member in self.unusable_reasons
+                    else member for member in self.unreadable
+                )
+                unread = f" (pool models that could not be read and were not consulted: {why})"
+            shown = list(self.requested[:10]) + (["…"] if len(self.requested) > 10 else [])
+            raise ValueError(
+                MEDIUM_ZERO_MATCH.format(n=len(self.requested), scope=scope)
+                + f": {shown}{unread}. {MEDIUM_ZERO_MATCH_HINT}"
+            )
+        if self.near_misses:
+            pairs = ", ".join(f"{k} -> {v}" for k, v in sorted(self.near_misses.items()))
+            raise ValueError(f"{MEDIUM_NEAR_MISS.format(pairs=pairs)}. {MEDIUM_NEAR_MISS_HINT}")
+
+    def split(
+        self, unmatched: Any, members: Any
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        """Split one candidate's unmatched ids: (not applicable to this community, not
+        applicable to this pool, unknown).
+
+        "Unknown" is non-empty only for near misses or when the medium matches no pool model at
+        all (strict mode refuses both before any candidate runs; `--allow-unknown-medium` drops
+        them as not applied). A candidate that none of the medium's ids reaches while the pool
+        does match is refused: it would grow on its models' defaults, not on the medium.
+        Refuses an id that one of the candidate's own members can take up: that would mean the
+        community dropped an exchange its member has, and calling it "not applicable" would hide
+        a medium that silently did not apply.
+        """
+        known = self.known
+        own: dict[str, str] = {}
+        for member in sorted(str(m) for m in members):
+            for source in self.by_model.get(member, frozenset()):
+                own.setdefault(source, member)
+        unmatched = sorted(str(s) for s in unmatched)
+        if self.requested and not self.matches_nothing and set(self.requested) <= set(unmatched):
+            raise ValueError(MEDIUM_CANDIDATE_ZERO_MATCH.format(
+                n=len(self.requested), members="+".join(sorted(str(m) for m in members))
+            ))
+        community: list[str] = []
+        pool: list[str] = []
+        unknown: list[str] = []
+        for source in unmatched:
+            if source in own:
+                raise ValueError(
+                    f"medium exchange {source} has a counterpart in candidate member "
+                    f"{own[source]} but not in the community built from it; refusing to treat "
+                    "it as not applicable"
+                )
+            if source in known:
+                community.append(source)
+            elif self.matches_nothing or source in self.near_misses:
+                unknown.append(source)
+            else:
+                pool.append(source)
+        return tuple(community), tuple(pool), tuple(unknown)
+
+
+def pool_medium_coverage(
+    models: dict[str, Any],
+    spec: MediumSpec,
+    *,
+    sources: dict[str, str] | None = None,
+    unreadable: tuple[str, ...] = (),
+    unusable_reasons: dict[str, str] | None = None,
+    notation: Callable[[str], str] | None = None,
+) -> PoolMediumCoverage:
+    """Coverage of ``spec`` over a pool given as ``{member id: cobra model}``.
+
+    A model whose exchanges cannot be resolved is left out and listed like an unreadable one
+    (its reason names the member and its file, from ``sources``); its candidates fail where it
+    is used. ``notation`` (e.g. :func:`cmig.io.agora2.bigg_exchange_notation`, passed in so core
+    does not depend on the AGORA2 module) rewrites an id into the models' notation; a pool-unknown
+    id whose rewrite matches a pool model is recorded in ``near_misses``.
+    """
+    spec.validate()
+    requested = tuple(sorted(str(source) for source in spec.uptake))
+    reasons = dict(unusable_reasons or {})
+    left_out = list(unreadable)
+    by_model: dict[str, frozenset[str]] = {}
+    usable: dict[str, Any] = {}
+    for member, model in sorted(models.items()):
+        try:
+            by_model[str(member)] = medium_ids_with_counterpart(model, spec)
+        except ValueError as error:
+            where = f" ({sources[str(member)]})" if sources and str(member) in sources else ""
+            reasons[str(member)] = f"{error}{where}"
+            left_out.append(str(member))
+            continue
+        usable[str(member)] = model
+    known = frozenset().union(*by_model.values()) if by_model else frozenset()
+    near: dict[str, str] = {}
+    if notation is not None and known:
+        rewrites = {
+            source: notation(source) for source in requested
+            if source not in known and notation(source) != source
+        }
+        reachable: set[str] = set()
+        for model in usable.values():
+            reachable |= _ids_with_counterpart(model, rewrites.values())
+        near = {source: likely for source, likely in rewrites.items() if likely in reachable}
+    return PoolMediumCoverage(
+        by_model=by_model,
+        requested=requested,
+        unreadable=tuple(sorted(left_out)),
+        unusable_reasons=reasons,
+        near_misses=near,
+    )
+
+
+def pool_medium_coverage_from_taxonomy(
+    taxonomy: Any, spec: MediumSpec, *, notation: Callable[[str], str] | None = None
+) -> PoolMediumCoverage:
+    """Coverage of ``spec`` over the models a taxonomy (``id``, ``file``) names.
+
+    A model file that cannot be read is left out (and listed in ``unreadable``): the workflow
+    reports that model's failure where it uses it, exactly as it did before the pool check.
+    """
+    from cmig.io.model_import import ModelImportError, load_cobra_model
+
+    loaded: dict[str, Any] = {}
+    failed: dict[str, str] = {}
+    models: dict[str, Any] = {}
+    sources: dict[str, str] = {}
+    unreadable: list[str] = []
+    reasons: dict[str, str] = {}
+    for record in taxonomy.to_dict("records"):
+        member, path = str(record["id"]), str(record["file"])
+        if path not in loaded and path not in failed:
+            try:
+                loaded[path] = load_cobra_model(path)
+            except (ModelImportError, OSError, ValueError) as error:
+                failed[path] = str(error).splitlines()[0] if str(error) else type(error).__name__
+        if path in failed:
+            unreadable.append(member)
+            reasons[member] = f"{failed[path]} ({path})"
+            continue
+        models[member] = loaded[path]
+        sources[member] = path
+    return pool_medium_coverage(
+        models, spec, sources=sources, unreadable=tuple(unreadable),
+        unusable_reasons=reasons, notation=notation,
+    )
+
+
+# ── The same rule where the selected models are solved as ONE community (round 11, 2026-10-15) ──
+# User decision: "일부만 없으면 빼고 진행" applies to every medium-taking workflow. Where the
+# selected models are solved as one community (Community Solve, strain growth, ratio impact,
+# host-microbe, host KO impact, pair, a sweep without member sets) — or where a command takes
+# one model (single, minimal medium, a single-model medium-gap) — that community or model IS
+# the pool: its own exchanges decide what matches. Built on the model the medium is applied to,
+# so a namespace mapping applied to the model files is honoured and nothing is read twice.
+SCOPE_SELECTED_MODELS = "any of the selected models"
+SCOPE_ONE_MODEL = "the model"
+
+
+@dataclass(frozen=True)
+class ScopedMedium:
+    """How a medium met the model it was applied to as a whole."""
+
+    requested: int
+    #: No selected model can take these up while other ids match: dropped, LP unchanged.
+    not_applicable: tuple[str, ...] = ()
+    #: Dropped under ``--allow-unknown-medium`` (a medium that matches nothing, or near misses):
+    #: the run did not get rows it asked for, so it is reported as not applied / degraded.
+    not_applied: tuple[str, ...] = ()
+
+    def matched(self) -> dict[str, Any]:
+        """{matched, requested, fraction} — the form the pool workflows report."""
+        matched = self.requested - len(self.not_applicable) - len(self.not_applied)
+        return {"matched": matched, "requested": self.requested,
+                "fraction": round(matched / self.requested, 4) if self.requested else None}
+
+    def as_record(self) -> dict[str, Any]:
+        """Non-hashed summary/provenance record (same keys as the pool workflows' run level)."""
+        return {
+            "medium_not_applicable_to_pool": list(self.not_applicable),
+            "medium_matched": self.matched(),
+        }
+
+
+def scope_medium(
+    model: object,
+    spec: MediumSpec,
+    *,
+    strict: bool = True,
+    notation: Callable[[str], str] | None = None,
+    scope: str = SCOPE_SELECTED_MODELS,
+) -> ScopedMedium:
+    """Decide, before applying, which of ``spec``'s ids ``model`` cannot take up and why.
+
+    ``model`` is the community of the selected models (or the one model) the medium is about to
+    be applied to. An id it has no exchange for cannot bound anything in its LP, so dropping it
+    changes nothing: it is not applicable. Strict mode keeps only the namespace refusals of the
+    pool rule — a medium of which no id matches, and near misses in another notation (``notation``
+    is :func:`cmig.io.agora2.bigg_exchange_notation`, passed in by the caller).
+    """
+    spec.validate()
+    unmatched = translate_medium_for_model(model, spec).unmatched
+    if not unmatched:
+        return ScopedMedium(requested=len(spec.uptake))
+    coverage = pool_medium_coverage({"selected": model}, spec, notation=notation)
+    if strict:
+        coverage.check_namespace(scope=scope)
+    return ScopedMedium(
+        requested=len(spec.uptake),
+        not_applicable=coverage.pool_not_applicable,
+        not_applied=coverage.not_applied,
+    )
+
+
+def apply_medium_scoped(
+    model: object,
+    spec: MediumSpec,
+    *,
+    strict: bool = True,
+    exact: bool = False,
+    notation: Callable[[str], str] | None = None,
+    scope: str = SCOPE_SELECTED_MODELS,
+) -> tuple[MediumTranslation, ScopedMedium]:
+    """:func:`scope_medium`, then apply ``spec`` minus what ``model`` cannot take up.
+
+    The application is the single :func:`apply_medium_translated` path with ``strict=False``:
+    every id it drops is accounted for in the returned :class:`ScopedMedium`.
+    """
+    scoped = scope_medium(model, spec, strict=strict, notation=notation, scope=scope)
+    return apply_medium_translated(model, spec, strict=False, exact=exact), scoped
 
 
 def effective_medium_by_metabolite(model: object) -> dict[str, float]:

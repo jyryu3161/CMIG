@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 
 from cmig.core.medium_spec import MediumSpec, load_medium
 from cmig.gui.builder import make_read_only, read_only_item
+from cmig.gui.growth import MISMATCHED_MEDIUM_TOOLTIP
 from cmig.gui.pickers import ModelPicker
 from cmig.io.model_import import ModelSummary
 from cmig.io.project import ModelEntry, check_reasons
@@ -190,9 +191,10 @@ class MediumEditor(QWidget):
             _editor_text(
                 self.strings,
                 "medium_allow_unknown",
-                "Allow unknown IDs and report every dropped ID",
+                "Run a mismatched medium anyway (drops its unmatched rows; degraded)",
             )
         )
+        self.allow_unknown_check.setToolTip(MISMATCHED_MEDIUM_TOOLTIP)
         self.check_growth_btn = QPushButton(
             _editor_text(self.strings, "medium_check_growth", "Check Growth")
         )

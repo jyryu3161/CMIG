@@ -1400,6 +1400,20 @@ def _cmd_solve(args: argparse.Namespace) -> int:
         print(f"solve 실패: {outcome.diagnostic}", file=sys.stderr)
         return 1
     medium_label = "custom" if args.medium else "default"
+    manifest_path = outcome.manifest_path
+
+    def _print_medium_notes() -> None:
+        """Round 11: the medium record reaches the console on success AND on failure."""
+        provenance = (_load_json_object(manifest_path) or {}).get("provenance")
+        if not isinstance(provenance, dict):
+            return
+        unapplied = list(provenance.get("medium_unapplied") or [])
+        if unapplied:
+            print(f"  warning: {UNAPPLIED_MEDIUM_NOTE}: {unapplied} (run degraded)")
+        _print_pool_not_applicable(
+            provenance.get("medium_not_applicable_to_pool"), provenance.get("medium_matched")
+        )
+
     # F5/F2 (round 5): the facade can succeed at *writing artifacts* while the scientific solve
     # failed — `solver_failed_result` sets objective=0.0, which is indistinguishable from the real
     # finding "this community cannot grow". Every other analysis command already refuses to print
@@ -1415,6 +1429,7 @@ def _cmd_solve(args: argparse.Namespace) -> int:
             print(f"  warning: {warning}", file=sys.stderr)
         if outcome.result.diagnostic:
             print(f"  diagnostic: {outcome.result.diagnostic}", file=sys.stderr)
+        _print_medium_notes()
         return _exit_code_for_status("failed", args)
     # Round-9 V6 defect 1: an OSQP community state can report `optimal` while its
     # artifacts violate the edge↔profile mass identity by orders of magnitude
@@ -1437,6 +1452,7 @@ def _cmd_solve(args: argparse.Namespace) -> int:
             f"is NOT a result{approx_note}",
             file=sys.stderr,
         )
+        _print_medium_notes()
         return _exit_code_for_status("failed", args)
     print(f"solve 완료 (solver={args.solver}, medium={medium_label}) "
           f"→ {outcome.manifest_path.parent}")
@@ -1445,6 +1461,7 @@ def _cmd_solve(args: argparse.Namespace) -> int:
     # flux vector means, so it has to reach the operator, not only the manifest.
     for warning in outcome.result.warnings:
         print(f"  warning: {warning}")
+    _print_medium_notes()
     return 0
 
 
@@ -1663,6 +1680,7 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
         from cmig.core.host_coupling import run_bigg_host_microbe
         from cmig.core.medium_spec import load_medium
         from cmig.core.model_pool import taxonomy_from_model_dir
+        from cmig.io.agora2 import bigg_exchange_notation
     except ImportError:
         print(
             "host-microbe-bigg requires the engine stack: uv sync --extra engine",
@@ -1716,9 +1734,13 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
             exclude_metabolites=exclude,
             close_unlisted_host_uptake=not args.keep_host_uptake,
             strict_medium=not args.allow_unknown_medium,
+            medium_notation=bigg_exchange_notation,
         )
         out = Path(args.out)
-        run_artifacts = _write_host_microbe_bigg_outputs(result, taxonomy, out)
+        medium_record = _host_medium_record(result, microbe_medium)
+        run_artifacts = _write_host_microbe_bigg_outputs(
+            result, taxonomy, out, medium_record=medium_record
+        )
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -1730,6 +1752,9 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
         f"  community_growth={result.community_growth:.4g} "
         f"host_objective={result.host_result.biomass:.4g} "
         f"host_status={result.host_result.status}"
+    )
+    _print_pool_not_applicable(
+        medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched")
     )
     host_run_status = _worst_status(
         _run_status_from_solve(str(result.community_status)),
@@ -1787,6 +1812,7 @@ def _cmd_host_microbe_bigg(args: argparse.Namespace) -> int:
                 (result.host_result.boundary_isolation or {}).get("isolated")
             ),
             "host_objective_warning": result.objective_warning,
+            **medium_record,
         },
     )
     return _exit_code_for_status(host_run_status, args)
@@ -2246,6 +2272,19 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         _apply_host_objective(host_model, args.host_objective)
         microbe_medium = load_medium(args.microbe_medium) if args.microbe_medium else None
         host_medium = load_medium(args.host_medium).uptake if args.host_medium else None
+        medium_pool = None
+        if microbe_medium is not None:
+            # Round 11 (pool-scoped medium): an id no model of the selected pool can take up is
+            # an input error before any candidate runs; one only some pool models have is "not
+            # applicable" to the candidates that lack it.
+            from cmig.core.medium_spec import pool_medium_coverage_from_taxonomy
+            from cmig.io.agora2 import bigg_exchange_notation
+
+            medium_pool = pool_medium_coverage_from_taxonomy(
+                taxonomy, microbe_medium, notation=bigg_exchange_notation
+            )
+            if not args.allow_unknown_medium:
+                medium_pool.check_namespace()
         interface_map = _load_host_interface_map(
             args.interface_map, accept_unreviewed=args.accept_unreviewed_map
         )
@@ -2275,6 +2314,7 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                     exclude_metabolites=exclude,
                     close_unlisted_host_uptake=not args.keep_host_uptake,
                     strict_medium=not args.allow_unknown_medium,
+                    medium_pool=medium_pool,
                 )
                 # R5 final P0-3: `evaluation_status` used to be the literal "ok" here, but
                 # `core/host_coupling.solve_bigg_host` RETURNS `HostSolveResult(False, status,
@@ -2354,6 +2394,8 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                         else []
                     ),
                     "diagnostic": diagnostic,
+                    "medium_not_applicable": list(result.medium_not_applicable),
+                    "medium_matched": result.medium_matched,
                 })
             except Exception as e:
                 rows.append({
@@ -2373,6 +2415,8 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
                     "community_status": "failed",
                     "warnings": [],
                     "diagnostic": str(e),
+                    "medium_not_applicable": [],
+                    "medium_matched": None,
                 })
         # B1 (silent half): 평가 실패 후보는 score=0 으로 랭킹에 섞이면 "host objective 0" 이라는
         # 실재하는 생물학적 결과와 구별되지 않는다. 랭킹에서 분리해 별도 블록으로 보고한다.
@@ -2425,6 +2469,10 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
             n_candidates_failed=len(unevaluated_rows),
             unevaluated=unevaluated_rows,
             warnings=search_warnings,
+            medium_not_applicable_to_pool=(
+                medium_pool.pool_not_applicable if medium_pool is not None else ()
+            ),
+            medium_matched=medium_pool.matched_fraction() if medium_pool is not None else None,
             ranking_parameters={
                 "host_weight": args.host_weight,
                 "target_weight": args.target_weight,
@@ -2455,6 +2503,10 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
         )
     for warning in search_warnings:
         print(f"  warning: {warning}")
+    _print_pool_not_applicable(
+        medium_pool.pool_not_applicable if medium_pool is not None else (),
+        medium_pool.matched_fraction() if medium_pool is not None else None,
+    )
     _emit_workflow_manifest(
         out,
         "host_search_bigg",
@@ -2493,6 +2545,10 @@ def _cmd_host_search_bigg(args: argparse.Namespace) -> int:
             "n_candidates_total": len(candidates),
             "n_candidates_ranked": len(ranked_rows),
             "n_candidates_failed": len(unevaluated_rows),
+            "medium_not_applicable_to_pool": list(
+                medium_pool.pool_not_applicable if medium_pool is not None else ()
+            ),
+            "medium_matched": medium_pool.matched_fraction() if medium_pool is not None else None,
         },
     )
     return _exit_code_for_status(
@@ -2522,6 +2578,7 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
         from cmig.core.host_ko_impact import arm_from_coupling, assemble_result
         from cmig.core.medium_spec import load_medium, medium_checksum
         from cmig.core.model_pool import taxonomy_from_model_dir
+        from cmig.io.agora2 import bigg_exchange_notation
     except ImportError:
         print(
             "host-ko-impact requires the engine stack: uv sync --extra engine",
@@ -2588,6 +2645,7 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
             # Comparability first: the strictness is part of the shared setup, so baseline and
             # every knockout arm apply the identical medium (whole, or whole-minus-the-same-rows).
             "strict_medium": not args.allow_unknown_medium,
+            "medium_notation": bigg_exchange_notation,
         }
 
         def _fresh_host() -> Any:
@@ -2682,7 +2740,9 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
             },
         )
         out = Path(args.out)
-        run_artifacts = _write_host_ko_impact_outputs(result, out)
+        # The microbial medium is part of the shared setup: the baseline's record is every arm's.
+        medium_record = _host_medium_record(baseline_coupling, microbe_medium)
+        run_artifacts = _write_host_ko_impact_outputs(result, out, medium_record=medium_record)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -2717,6 +2777,9 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
             print(f"  {delta.label}: no delta (host_status={delta.host_status})")
     for warning in result.warnings:
         print(f"  warning: {warning}")
+    _print_pool_not_applicable(
+        medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched")
+    )
     _emit_workflow_manifest(
         out,
         "host_ko_impact",
@@ -2747,6 +2810,7 @@ def _cmd_host_ko_impact(args: argparse.Namespace) -> int:
             "baseline_host_objective": _finite_or_none(result.baseline.host_objective),
             "n_knockouts": len(result.deltas),
             "n_comparable": sum(1 for d in result.deltas if d.comparable),
+            **medium_record,
         },
     )
     return _exit_code_for_status(result.status, args)
@@ -2758,7 +2822,9 @@ def _fmt_number(value: float | None) -> str:
     return "n/a" if not math.isfinite(value) else f"{value:.6g}"
 
 
-def _write_host_ko_impact_outputs(result: Any, out: Path) -> list[str]:
+def _write_host_ko_impact_outputs(
+    result: Any, out: Path, *, medium_record: dict[str, Any] | None = None
+) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "host_ko_impact.csv", "w", newline="") as f:
         writer = csv.DictWriter(
@@ -2865,6 +2931,8 @@ def _write_host_ko_impact_outputs(result: Any, out: Path) -> list[str]:
             for d in result.deltas
         ],
         "warnings": result.warnings,
+        # Non-hashed (round 11): microbial medium ids no member can take up, and the match.
+        **(medium_record or {}),
         "artifacts": ["host_ko_impact.csv", "host_ko_impact_summary.json"],
     }
     atomic_write_text(
@@ -2941,6 +3009,7 @@ def _evaluate_ko_target(
     engine_factory: Callable[[], Any],
     medium_spec: Any = None,
     strict_medium: bool = True,
+    medium_pool: Any = None,
 ) -> dict[str, Any]:
     """Knock out one gene/reaction in one member, re-rank the fixed consortium, return a row.
 
@@ -2961,7 +3030,7 @@ def _evaluate_ko_target(
         ko_taxonomy.loc[ko_taxonomy["id"].astype(str) == member_id, "file"] = str(ko_file)
         ko_result = search_model_pool(
             engine_factory(), ko_taxonomy, config,
-            medium_spec=medium_spec, strict_medium=strict_medium,
+            medium_spec=medium_spec, strict_medium=strict_medium, medium_pool=medium_pool,
         )
         # P0-B: 평가 불가 후보는 이제 `ranks` 에 들어가지 않는다. KO 가 consortium 을 풀 수 없게
         # 만든 경우가 바로 그것이며, 그것은 0 이 아니라 "평가 불가" 로 보고해야 한다.
@@ -3180,9 +3249,22 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
         # round 5 and this command passed none.
         medium_spec = load_medium(args.medium) if args.medium else None
         strict_medium = not args.allow_unknown_medium
+        # Round 11 (pool-scoped medium), review round 1: the scope is the models this screen
+        # actually uses — the --members consortium — not the rest of the taxonomy (which it
+        # never loads). An id no consortium model can take up is an input error, named up front.
+        medium_pool = None
+        if medium_spec is not None:
+            from cmig.core.medium_spec import pool_medium_coverage_from_taxonomy
+            from cmig.io.agora2 import bigg_exchange_notation
+
+            medium_pool = pool_medium_coverage_from_taxonomy(
+                sub, medium_spec, notation=bigg_exchange_notation
+            )
+            if strict_medium:
+                medium_pool.check_namespace()
         baseline_result = search_model_pool(
             MicomEngine(), sub, config,
-            medium_spec=medium_spec, strict_medium=strict_medium,
+            medium_spec=medium_spec, strict_medium=strict_medium, medium_pool=medium_pool,
         )
         if not baseline_result.ranks:
             # P0-B: 기준선이 평가 불가면 어떤 KO delta 도 의미가 없다 — 0 을 만들어내지 않는다.
@@ -3236,6 +3318,7 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
                     engine_factory=MicomEngine,
                     medium_spec=medium_spec,
                     strict_medium=strict_medium,
+                    medium_pool=medium_pool,
                 )
 
             rows = _map_ko_evaluations(items, _evaluate, jobs=args.jobs)
@@ -3282,6 +3365,10 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             seed=args.seed,
             direction=args.direction,
             warnings=warnings,
+            medium_not_applicable_to_pool=(
+                medium_pool.pool_not_applicable if medium_pool is not None else ()
+            ),
+            medium_matched=medium_pool.matched_fraction() if medium_pool is not None else None,
         )
     except ValueError as e:
         print(str(e), file=sys.stderr)
@@ -3296,6 +3383,10 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
     )
     for warning in warnings:
         print(f"  warning: {warning}")
+    _print_pool_not_applicable(
+        medium_pool.pool_not_applicable if medium_pool is not None else (),
+        medium_pool.matched_fraction() if medium_pool is not None else None,
+    )
     # V4: only announce a rank 1 that was actually evaluated. A screen in which every knockout
     # failed used to print "rank 1 (largest effect)" for a gene that was never knocked out.
     ranked = [row for row in rows if row.get("evaluation_status") == "ok"]
@@ -3357,6 +3448,10 @@ def _cmd_gene_ko_search(args: argparse.Namespace) -> int:
             "baseline_score": _finite_or_none(float(baseline.score)),
             "n_evaluated": len(rows),
             "n_total": sum(member_totals.values()),
+            "medium_not_applicable_to_pool": list(
+                medium_pool.pool_not_applicable if medium_pool is not None else ()
+            ),
+            "medium_matched": medium_pool.matched_fraction() if medium_pool is not None else None,
         },
     )
     return _exit_code_for_status(run_status, args)
@@ -3483,6 +3578,8 @@ def _cmd_pair(args: argparse.Namespace) -> int:
                 load_medium(medium_path) if medium_path is not None else None,
             ))
 
+        from cmig.io.agora2 import bigg_exchange_notation
+
         results: list[tuple[str, str | None, Any, Any]] = []
         with mapped_taxonomy(taxonomy, decisions) as (mapped, _applied):
             for medium_id, medium_path, medium_spec in conditions:
@@ -3493,6 +3590,7 @@ def _cmd_pair(args: argparse.Namespace) -> int:
                     medium=medium_spec,
                     strict_medium=not args.allow_unknown_medium,
                     exact_medium=args.exact_medium,
+                    medium_notation=bigg_exchange_notation,
                 )
                 results.append((medium_id, medium_path, medium_spec, result))
 
@@ -3519,7 +3617,16 @@ def _cmd_pair(args: argparse.Namespace) -> int:
                 "monoculture_medium_basis": "community_effective_medium_projected_exactly",
                 "unavailable_per_member": result.unavailable_per_member,
                 "flux_normalization_method": result.flux_normalization_method,
+                # Non-hashed (round 11): ids neither member can take up — dropped, LP unchanged.
+                "medium_not_applicable_to_pool": list(result.medium_not_applicable_to_pool),
+                "medium_unapplied": list(result.medium_unapplied),
+                "medium_matched": result.medium_matched,
             }
+            if result.medium_unapplied:
+                warnings.append(
+                    f"condition {medium_id}: {_medium_dropped_prefix()}: "
+                    f"{list(result.medium_unapplied)}"
+                )
             if result.status == "ok":
                 condition_payload["growth"] = {
                     member: {
@@ -3563,6 +3670,12 @@ def _cmd_pair(args: argparse.Namespace) -> int:
 
         n_ok = sum(1 for *_unused, result in results if result.status == "ok")
         status = "ok" if n_ok == len(results) else ("degraded" if n_ok else "failed")
+        if any(result.medium_unapplied for *_unused, result in results):
+            status = _worst_status(status, "degraded")
+        pool_not_applicable = sorted({
+            source for *_unused, result in results
+            for source in result.medium_not_applicable_to_pool
+        })
         artifacts = ["pair_summary.json", "pair_metrics.csv", "cross_feeding.csv", "matrix.parquet"]
         summary = {
             "status": status,
@@ -3576,6 +3689,7 @@ def _cmd_pair(args: argparse.Namespace) -> int:
                 "is not directly identifiable"
             ),
             "conditions": condition_payloads,
+            "medium_not_applicable_to_pool": pool_not_applicable,
             "warnings": warnings,
             "artifacts": artifacts,
         }
@@ -3659,6 +3773,7 @@ def _cmd_pair(args: argparse.Namespace) -> int:
                 "interactions": {
                     medium_id: result.interaction for medium_id, *_rest, result in results
                 },
+                "medium_not_applicable_to_pool": pool_not_applicable,
             },
         )
     except ImportError:
@@ -3668,6 +3783,11 @@ def _cmd_pair(args: argparse.Namespace) -> int:
         print(str(error), file=sys.stderr)
         return 2
     print(f"pair complete ({n_ok}/{len(results)} conditions) -> {out}")
+    for medium_id, _path, _spec, result in results:
+        _print_pool_not_applicable(
+            result.medium_not_applicable_to_pool, result.medium_matched,
+            label=medium_id if len(results) > 1 else "",
+        )
     return _exit_code_for_status(status, args)
 
 
@@ -3791,6 +3911,42 @@ def _cmd_delta(args: argparse.Namespace) -> int:
     return _exit_code_for_status(result.status, args)
 
 
+#: One phrase for "a single-model command applied the medium minus these rows" (round 11).
+UNAPPLIED_MEDIUM_NOTE = (
+    "requested medium exchanges were NOT applied (--allow-unknown-medium): the medium matches "
+    "none of the models' exchanges, or these ids are another notation of exchanges they have"
+)
+#: The same note for a command that takes one model (single, minimal-medium).
+UNAPPLIED_MEDIUM_NOTE_ONE_MODEL = (
+    "requested medium exchanges were NOT applied (--allow-unknown-medium): the medium matches "
+    "none of this model's exchanges, or these ids are another notation of exchanges it has"
+)
+
+
+def _single_model_medium_scope(
+    model: Any, medium_spec: Any, args: argparse.Namespace
+) -> tuple[dict[str, Any], list[str]]:
+    """The selected-models medium rule for a command that takes one model (round 11).
+
+    Returns the non-hashed record (``medium_not_applicable_to_pool``, ``medium_matched``,
+    ``medium_unapplied``) and the ids dropped as not applied. Raises ``ValueError`` (exit 2) in
+    strict mode for a medium that matches nothing, or for a near miss.
+    """
+    if medium_spec is None:
+        return {}, []
+    from cmig.core.medium_spec import SCOPE_ONE_MODEL, scope_medium
+    from cmig.io.agora2 import bigg_exchange_notation
+
+    scoped = scope_medium(
+        model, medium_spec, strict=not args.allow_unknown_medium,
+        notation=bigg_exchange_notation, scope=SCOPE_ONE_MODEL,
+    )
+    return (
+        {**scoped.as_record(), "medium_unapplied": list(scoped.not_applied)},
+        list(scoped.not_applied),
+    )
+
+
 def _cmd_single(args: argparse.Namespace) -> int:
     """AN-SINGLE: FBA/pFBA/FVA, reaction KOs, and exchange summary."""
     try:
@@ -3813,6 +3969,10 @@ def _cmd_single(args: argparse.Namespace) -> int:
         model = load_cobra_model(model_path)
         apply_namespace_decisions_to_model(model, decisions)
         medium_spec = load_medium(args.medium) if args.medium else None
+        # Round 11: the model is the pool. Ids it has no exchange for are not applicable (LP
+        # unchanged, recorded); only a zero-match medium or a near miss is refused here, so the
+        # solves below apply the medium minus exactly what this decision accounts for.
+        medium_record, medium_unapplied = _single_model_medium_scope(model, medium_spec, args)
         normalized_method = {"fba": "FBA", "pfba": "pFBA"}.get(
             str(args.method).lower(), str(args.method)
         )
@@ -3829,7 +3989,7 @@ def _cmd_single(args: argparse.Namespace) -> int:
         common = {
             "solver": args.solver,
             "medium": medium_spec,
-            "strict_medium": not args.allow_unknown_medium,
+            "strict_medium": False,     # decided above, against this model
             "exact_medium": args.exact_medium,
         }
         solves = {
@@ -3916,7 +4076,11 @@ def _cmd_single(args: argparse.Namespace) -> int:
             f"{method} status={solve.status}: {solve.diagnostic or 'no diagnostic'}"
             for method, solve in solves.items() if solve.status != "optimal"
         ]
+        if medium_unapplied:
+            warnings.append(f"{UNAPPLIED_MEDIUM_NOTE_ONE_MODEL}: {medium_unapplied}")
+            status = _worst_status(status, "degraded")
         summary = {
+            **medium_record,
             "status": status,
             "model": str(model_path),
             "model_id": str(model.id),
@@ -3973,6 +4137,7 @@ def _cmd_single(args: argparse.Namespace) -> int:
                 "objectives": {
                     method: _finite_or_none(solve.objective) for method, solve in solves.items()
                 },
+                **medium_record,
             },
         )
     except ImportError:
@@ -3982,6 +4147,12 @@ def _cmd_single(args: argparse.Namespace) -> int:
         print(str(error), file=sys.stderr)
         return 2
     print(f"single complete ({', '.join(methods)}) -> {out}")
+    if medium_unapplied:
+        print(f"  warning: {UNAPPLIED_MEDIUM_NOTE_ONE_MODEL}: {medium_unapplied} (run degraded)")
+    _print_pool_not_applicable(
+        medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched"),
+        scope="model",
+    )
     return _exit_code_for_status(status, args)
 
 
@@ -4005,6 +4176,8 @@ def _cmd_minimal_medium(args: argparse.Namespace) -> int:
         model = load_cobra_model(model_path)
         apply_namespace_decisions_to_model(model, decisions)
         medium_spec = load_medium(args.medium) if args.medium else None
+        # Round 11: the model is the pool (see `_single_model_medium_scope`).
+        medium_record, medium_unapplied = _single_model_medium_scope(model, medium_spec, args)
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
 
@@ -4030,12 +4203,13 @@ def _cmd_minimal_medium(args: argparse.Namespace) -> int:
                 solver=args.solver,
                 oxygen_mode=args.oxygen_mode,
                 medium=medium_spec,
-                strict_medium=not args.allow_unknown_medium,
+                strict_medium=False,     # decided above, against this model
                 exact_medium=args.exact_medium,
             )
         except MILPInfeasibleError as error:
             artifacts = ["minimal_medium_summary.json"]
             summary = {
+                **medium_record,
                 "status": "failed",
                 "diagnostic": str(error),
                 "model": str(model_path),
@@ -4078,8 +4252,12 @@ def _cmd_minimal_medium(args: argparse.Namespace) -> int:
                 "forced boundary supplies remained open; the reported support is not the model's "
                 "only nutrient source"
             )
+        if medium_unapplied:
+            status = "degraded"
+            warnings.append(f"{UNAPPLIED_MEDIUM_NOTE_ONE_MODEL}: {medium_unapplied}")
         artifacts = ["minimal_medium_summary.json", "minimal_medium.csv"]
         summary = {
+            **medium_record,
             "status": status,
             "model": str(model_path),
             "model_id": str(model.id),
@@ -4111,6 +4289,7 @@ def _cmd_minimal_medium(args: argparse.Namespace) -> int:
                 "n_components": result.n_components,
                 "achieved_growth": result.achieved_growth,
                 "n_limiting_nutrients": len(limiting),
+                **medium_record,
             },
         )
     except ImportError:
@@ -4120,6 +4299,12 @@ def _cmd_minimal_medium(args: argparse.Namespace) -> int:
         print(str(error), file=sys.stderr)
         return 2
     print(f"minimal-medium complete ({result.n_components} components) -> {out}")
+    if medium_unapplied:
+        print(f"  warning: {UNAPPLIED_MEDIUM_NOTE_ONE_MODEL}: {medium_unapplied} (run degraded)")
+    _print_pool_not_applicable(
+        medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched"),
+        scope="model",
+    )
     return 0
 
 
@@ -4131,6 +4316,7 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
         from cmig.core.engine import MicomEngine
         from cmig.core.medium_spec import (
             MediumSpec,
+            apply_medium_scoped,
             apply_medium_translated,
             compare_effective_media,
             effective_medium_by_metabolite,
@@ -4155,12 +4341,22 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
         medium_spec = load_medium(args.medium) if args.medium else None
         engine = MicomEngine()
         community = engine.build_community(taxonomy, cmig_solver=args.solver)
+        medium_record: dict[str, Any] = {}
+        medium_unapplied: list[str] = []
         if medium_spec is not None:
             # P0-A: preset 은 EX_*_m 로 쓰여 있을 수도, EX_*_e 로 쓰여 있을 수도 있다. 대사체로
             # 매칭해 community 의 namespace 로 번역한 뒤 적용한다.
-            apply_medium_translated(
-                community, medium_spec, strict=not args.allow_unknown_medium
+            # Round 11: the selected models are the pool — an id no member can take up is not
+            # applicable (recorded, LP unchanged); only a zero-match medium or a near miss is
+            # refused (strict) or dropped as not applied (--allow-unknown-medium).
+            from cmig.io.agora2 import bigg_exchange_notation
+
+            _translation, scoped = apply_medium_scoped(
+                community, medium_spec, strict=not args.allow_unknown_medium,
+                notation=bigg_exchange_notation,
             )
+            medium_record = scoped.as_record()
+            medium_unapplied = list(scoped.not_applied)
         community_result = engine.cooperative_tradeoff(
             community, args.tradeoff_f, cmig_solver=args.solver
         )
@@ -4269,6 +4465,8 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
                 "diagnostic": single_diag,
             })
         warnings = list(community_result.warnings)
+        if medium_unapplied:
+            warnings.append(f"{_medium_dropped_prefix()}: {medium_unapplied}")
         if not media_matched:
             mismatched = [r["member"] for r in rows if not r["single_medium_equals_community"]]
             warnings.append(
@@ -4319,6 +4517,9 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
                 "comparison_is_controlled": bool(media_matched and not failed_single),
             },
             warnings=warnings,
+            medium_record={
+                **medium_record, **({"medium_unapplied": medium_unapplied} if medium_spec else {})
+            },
         )
     except ValueError as e:
         print(str(e), file=sys.stderr)
@@ -4329,6 +4530,9 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
     print(f"strain-growth complete ({len(rows)} members) -> {out}")
     for warning in warnings:
         print(f"  warning: {warning}")
+    _print_pool_not_applicable(
+        medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched")
+    )
     run_status = _worst_status(
         _run_status_from_solve(str(community_result.status)),
         "ok" if not failed_single else (
@@ -4336,6 +4540,7 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
         ),
         "ok" if (media_matched and not failed_single) else "degraded",
         "ok" if not objective_suspect else "degraded",
+        "ok" if not medium_unapplied else "degraded",
     )
     _emit_workflow_manifest(
         out,
@@ -4350,6 +4555,7 @@ def _cmd_strain_growth(args: argparse.Namespace) -> int:
             "n_members": len(rows),
             "community_growth": _finite_or_none(float(community_result.objective)),
             "single_medium_equals_community_medium": media_matched,
+            **medium_record,
         },
     )
     # The parser declares --allow-failed-run ("default: exit 3") for this command; a failed
@@ -4363,7 +4569,7 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
         import pandas as pd
 
         from cmig.core.engine import MicomEngine
-        from cmig.core.medium_spec import apply_medium_checked, load_medium
+        from cmig.core.medium_spec import apply_medium_scoped, load_medium
         from cmig.core.metrics import (
             community_contributions,
             target_secretion_share,
@@ -4391,11 +4597,23 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
         engine = MicomEngine()
         rows: list[dict[str, Any]] = []
         member_growth_rows: list[dict[str, Any]] = []
+        medium_record: dict[str, Any] = {}
+        medium_unapplied: list[str] = []
+        from cmig.io.agora2 import bigg_exchange_notation
+
         for fraction in fractions:
             variant = _taxonomy_with_member_fraction(taxonomy, args.member, fraction)
             community = engine.build_community(variant, cmig_solver=args.solver)
             if medium_spec is not None:
-                apply_medium_checked(community, medium_spec, strict=not args.allow_unknown_medium)
+                # Round 11: the selected models are the pool (same members at every point, so
+                # the same record). Ids dropped under --allow-unknown-medium used to be dropped
+                # here without any record at all; they are now named and degrade the run.
+                _translation, scoped = apply_medium_scoped(
+                    community, medium_spec, strict=not args.allow_unknown_medium,
+                    notation=bigg_exchange_notation,
+                )
+                medium_record = scoped.as_record()
+                medium_unapplied = list(scoped.not_applied)
             try:
                 result = engine.cooperative_tradeoff(
                     community, args.tradeoff_f, cmig_solver=args.solver
@@ -4501,7 +4719,12 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
                 "producer-only share. Both use flux x abundance, because member_exchange is a "
                 "per-taxon flux",
                 "the reported exchange flux is one LP vertex and is not necessarily unique",
-            ],
+            ] + (
+                [f"{_medium_dropped_prefix()}: {medium_unapplied}"] if medium_unapplied else []
+            ),
+            medium_record={
+                **medium_record, **({"medium_unapplied": medium_unapplied} if medium_spec else {})
+            },
         )
     except ValueError as e:
         print(str(e), file=sys.stderr)
@@ -4510,9 +4733,12 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
         print(f"failed to write abundance-impact outputs: {e}", file=sys.stderr)
         return 2
     print(f"abundance-impact complete ({args.member}, target={args.target}) -> {out}")
+    _print_pool_not_applicable(
+        medium_record.get("medium_not_applicable_to_pool"), medium_record.get("medium_matched")
+    )
     sweep_status = _worst_status(*[
         _run_status_from_solve(str(row.get("status"))) for row in rows
-    ] or ["failed"])
+    ] or ["failed"], "degraded" if medium_unapplied else "ok")
     _emit_workflow_manifest(
         out,
         "abundance_impact",
@@ -4523,6 +4749,7 @@ def _cmd_abundance_impact(args: argparse.Namespace) -> int:
             "n_points": len(rows),
             "target_member": args.member,
             "target": args.target,
+            **medium_record,
         },
     )
     # Round-9 V2 handoff: a sweep in which EVERY point failed used to exit 0, so shell
@@ -4595,6 +4822,8 @@ def _write_gene_ko_search_outputs(
     seed: int,
     direction: str,
     warnings: list[str],
+    medium_not_applicable_to_pool: tuple[str, ...] = (),
+    medium_matched: dict[str, Any] | None = None,
 ) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "gene_ko_rankings.csv", "w", newline="") as f:
@@ -4694,6 +4923,11 @@ def _write_gene_ko_search_outputs(
             for row in rows
             if row["evaluation_status"] != "ok"
         ],
+        # Medium ids another model of the taxonomy can take up but no member of this consortium
+        # can: dropped for every arm alike, the LP unchanged (pool-scoped medium rule).
+        "medium_not_applicable": list(getattr(baseline, "medium_not_applicable", ())),
+        "medium_not_applicable_to_pool": list(medium_not_applicable_to_pool),
+        "medium_matched": medium_matched,
         "artifacts": (artifacts := [
             "gene_ko_rankings.csv",
             "gene_ko_summary.json",
@@ -4749,6 +4983,7 @@ def _write_strain_growth_outputs(
     community_diagnostic: str | None,
     medium_basis: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
+    medium_record: dict[str, Any] | None = None,
 ) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "strain_growth.csv", "w", newline="") as f:
@@ -4810,10 +5045,13 @@ def _write_strain_growth_outputs(
         single_tier = "ok"
     controlled = bool((medium_basis or {}).get("comparison_is_controlled", False))
     payload = {
+        # Non-hashed (round 11): ids no member can take up, ids dropped as not applied, match.
+        **(medium_record or {}),
         "status": _worst_status(
             _run_status_from_solve(str(community_status)),
             single_tier,
             "ok" if controlled else "degraded",
+            "degraded" if (medium_record or {}).get("medium_unapplied") else "ok",
         ),
         "community_status": community_status,
         "diagnostic": community_diagnostic,
@@ -4872,6 +5110,7 @@ def _write_abundance_impact_outputs(
     solver: str,
     tradeoff_f: float,
     warnings: list[str] | None = None,
+    medium_record: dict[str, Any] | None = None,
 ) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "abundance_impact.csv", "w", newline="") as f:
@@ -4965,7 +5204,11 @@ def _write_abundance_impact_outputs(
             "flux-selection rules and the points are not like-for-like"
         )
         sweep_tier = _worst_status(sweep_tier, "degraded")
+    if (medium_record or {}).get("medium_unapplied"):
+        sweep_tier = _worst_status(sweep_tier, "degraded")
     payload = {
+        # Non-hashed (round 11): ids no member can take up, ids dropped as not applied, match.
+        **(medium_record or {}),
         "status": sweep_tier,
         "warnings": sweep_warnings,
         "target_member": target_member,
@@ -5005,6 +5248,14 @@ def _write_abundance_impact_outputs(
     return list(artifacts)
 
 
+def _host_row_matched(
+    row: dict[str, Any], medium_matched: dict[str, Any] | None
+) -> dict[str, int] | None:
+    if row.get("medium_matched") is None or not medium_matched:
+        return None
+    return {"matched": int(row["medium_matched"]), "requested": int(medium_matched["requested"])}
+
+
 def _write_host_search_bigg_outputs(
     rows: list[dict[str, Any]],
     out: Path,
@@ -5018,6 +5269,8 @@ def _write_host_search_bigg_outputs(
     n_candidates_failed: int = 0,
     unevaluated: list[dict[str, Any]] | None = None,
     warnings: list[str] | None = None,
+    medium_not_applicable_to_pool: tuple[str, ...] = (),
+    medium_matched: dict[str, Any] | None = None,
 ) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     unevaluated = list(unevaluated or [])
@@ -5113,10 +5366,16 @@ def _write_host_search_bigg_outputs(
                 "target_transfer": _finite_or_none(row["target_transfer"]),
                 "target_transfer_range": row.get("target_transfer_range"),
                 "target_identifiability": row.get("target_identifiability", "unavailable"),
+                "medium_not_applicable": list(row.get("medium_not_applicable", [])),
+                "medium_matched": _host_row_matched(row, medium_matched),
             }
             for row in unevaluated
         ],
         "ranking_parameters": ranking_parameters,
+        # Microbial medium ids no model of the selected pool can take up (others match):
+        # dropped for every candidate, LP unchanged.
+        "medium_not_applicable_to_pool": list(medium_not_applicable_to_pool),
+        "medium_matched": medium_matched,
         "biomass_basis": biomass_basis,
         "top_ranked": [
             {
@@ -5135,6 +5394,8 @@ def _write_host_search_bigg_outputs(
                 "warnings": row["warnings"],
                 "evaluation_status": row["evaluation_status"],
                 "diagnostic": row["diagnostic"],
+                "medium_not_applicable": list(row.get("medium_not_applicable", [])),
+                "medium_matched": _host_row_matched(row, medium_matched),
             }
             for rank, row in enumerate(rows, start=1)
         ],
@@ -5157,7 +5418,26 @@ def _write_host_search_bigg_outputs(
     return list(artifacts)
 
 
-def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> list[str]:
+def _host_medium_record(result: Any, microbe_medium: Any) -> dict[str, Any]:
+    """Non-hashed record of the microbial medium on a whole-community host run (round 11)."""
+    if microbe_medium is None:
+        return {}
+    requested = len(microbe_medium.uptake)
+    matched = getattr(result, "medium_matched", None)
+    return {
+        "medium_not_applicable_to_pool": list(
+            getattr(result, "medium_not_applicable_to_pool", ()) or ()
+        ),
+        "medium_matched": None if matched is None else {
+            "matched": int(matched), "requested": requested,
+            "fraction": round(int(matched) / requested, 4) if requested else None,
+        },
+    }
+
+
+def _write_host_microbe_bigg_outputs(
+    result: Any, taxonomy: Any, out: Path, *, medium_record: dict[str, Any] | None = None
+) -> list[str]:
     from cmig.core.host_impact import identified_transfer_point
     from cmig.core.interaction_figures import (
         contribution_rows,
@@ -5325,6 +5605,8 @@ def _write_host_microbe_bigg_outputs(result: Any, taxonomy: Any, out: Path) -> l
         "ambiguous_metabolites": result.impact.ambiguous_metabolites,
         "unused_secretion": result.impact.unused_secretion,
         "warnings": result.warnings,
+        # Non-hashed (round 11): microbial medium ids no member can take up, and the match.
+        **(medium_record or {}),
         "artifacts": [
             "microbe_taxonomy.csv",
             "microbial_secretion.csv",
@@ -6144,6 +6426,9 @@ def _cmd_search_impl(args: argparse.Namespace) -> int:
     # B4: 전부-0 / 동점 랭킹에서 rank 1 을 "최고"로 읽지 않도록 경고를 stdout 에도 낸다.
     for warning in result.warnings:
         print(f"  warning: {warning}")
+    _print_pool_not_applicable(
+        result.medium_not_applicable_to_pool, getattr(result, "medium_matched", None)
+    )
     _emit_workflow_manifest(
         out,
         "model_pool_search",
@@ -6174,6 +6459,8 @@ def _cmd_search_impl(args: argparse.Namespace) -> int:
             "best_target_flux": (
                 _finite_or_none(result.ranks[0].target_flux) if result.ranks else None
             ),
+            "medium_not_applicable_to_pool": list(result.medium_not_applicable_to_pool),
+            "medium_matched": dict(result.medium_matched) or None,
         },
     )
     return _exit_code_for_status(
@@ -6349,6 +6636,9 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
             print(f"  note: no exchange for {','.join(best.missing_targets)} (counted as 0)")
     for warning in result.warnings:
         print(f"  warning: {warning}")
+    _print_pool_not_applicable(
+        result.medium_not_applicable_to_pool, getattr(result, "medium_matched", None)
+    )
     _emit_workflow_manifest(
         out,
         "multi_target_model_pool_search",
@@ -6402,6 +6692,8 @@ def _run_multi_target_search(args: argparse.Namespace, taxonomy: Any, medium_spe
             "n_pareto_failed_attempts": sum(
                 a["outcome"] in {"timeout", "error"} for a in result.pareto_attempts
             ),
+            "medium_not_applicable_to_pool": list(result.medium_not_applicable_to_pool),
+            "medium_matched": dict(result.medium_matched) or None,
         },
     )
     return _exit_code_for_status(
@@ -6519,9 +6811,16 @@ def _write_multi_target_outputs(
                 "flux_basis": r.flux_basis,
                 "diagnostic": r.diagnostic,
                 "sampling_status": r.sampling_status,
+                "medium_not_applicable": list(getattr(r, "medium_not_applicable", ())),
+                "medium_matched": _candidate_medium_matched(result, r),
             }
             for r in result.unevaluated
         ],
+        "medium_not_applicable": _medium_not_applicable_summary(result),
+        "medium_not_applicable_to_pool": list(
+            getattr(result, "medium_not_applicable_to_pool", ())
+        ),
+        "medium_matched": dict(getattr(result, "medium_matched", {}) or {}),
         "top_ranked": [
             {
                 "rank": r.rank,
@@ -6541,6 +6840,8 @@ def _write_multi_target_outputs(
                 "flux_basis": r.flux_basis,
                 "diagnostic": r.diagnostic,
                 "sampling_status": r.sampling_status,
+                "medium_not_applicable": list(getattr(r, "medium_not_applicable", ())),
+                "medium_matched": _candidate_medium_matched(result, r),
             }
             for r in result.ranks
         ],
@@ -7188,6 +7489,73 @@ def _write_search_evaluation_outputs(result: Any, out: Path) -> list[str]:
     return artifacts
 
 
+def _medium_not_applicable_summary(result: Any) -> dict[str, Any]:
+    """Run-level view of the per-candidate ``medium_not_applicable`` records.
+
+    Informational, not a warning: an id no member of a candidate can take up cannot enter that
+    candidate's LP, so dropping it changes nothing (MICOM's workflows do the same). Counted over
+    every evaluated candidate, not only the reported top-k.
+    """
+    rows = list(getattr(result, "evaluations", None) or [])
+    if not rows:
+        rows = list(result.ranks) + list(result.unevaluated)
+    seen: dict[tuple[str, ...], tuple[str, ...]] = {}
+    for row in rows:
+        ids = tuple(getattr(row, "medium_not_applicable", ()) or ())
+        if ids:
+            seen.setdefault(tuple(row.members), ids)
+    return {
+        "ids": sorted({source for ids in seen.values() for source in ids}),
+        "n_candidates": len(seen),
+    }
+
+
+def _candidate_medium_matched(result: Any, row: Any) -> dict[str, int] | None:
+    """{matched, requested} of the medium's ids reaching this candidate (None: not measured)."""
+    matched = getattr(row, "medium_matched", None)
+    requested = (getattr(result, "medium_matched", None) or {}).get("requested")
+    if matched is None or requested is None:
+        return None
+    return {"matched": int(matched), "requested": int(requested)}
+
+
+#: Below this matched fraction the console warns that the medium may not be written for these
+#: models (status unaffected: the ids that do not match cannot change the LP).
+LOW_MEDIUM_MATCH_FRACTION = 0.5
+
+
+def _print_pool_not_applicable(
+    ids: Any, matched: Any = None, *, scope: str = "pool", label: str = ""
+) -> None:
+    """Console lines for medium ids no selected model can take up (the run is not degraded),
+    the matched fraction, and a warning when that fraction is low.
+
+    ``scope``: "pool" (the selected models) or "model" (a single-model command).
+    """
+    ids = list(ids or ())
+    prefix = f"{label}: " if label else ""
+    if ids:
+        why = (
+            "it has no exchange for them" if scope == "model"
+            else "no selected model can take them up"
+        )
+        print(
+            f"  warning: {prefix}{len(ids)} medium ids are not applicable to this {scope} ({why}; "
+            f"dropped, LP unchanged, run status unaffected): {ids}"
+        )
+    if (isinstance(matched, dict) and matched.get("requested")
+            and isinstance(matched.get("matched"), int)):
+        n_matched, requested = int(matched["matched"]), int(matched["requested"])
+        print(f"  {prefix}medium ids matched: {n_matched}/{requested} "
+              f"({100 * n_matched / requested:.0f}%)")
+        if n_matched / requested < LOW_MEDIUM_MATCH_FRACTION:
+            target = "this model" if scope == "model" else "the selected models"
+            print(
+                f"  warning: {prefix}only {n_matched} of {requested} medium ids match {target}; "
+                "check that the medium is written for them (run status unaffected)"
+            )
+
+
 def _write_search_outputs(
     result: Any, taxonomy: Any, diagnostics: list[Any], out: Path
 ) -> list[str]:
@@ -7308,9 +7676,16 @@ def _write_search_outputs(
                 "status": row.status,
                 "diagnostic": row.diagnostic,
                 "effective_members": list(getattr(row, "effective_members", ())),
+                "medium_not_applicable": list(getattr(row, "medium_not_applicable", ())),
+                "medium_matched": _candidate_medium_matched(result, row),
             }
             for row in result.unevaluated
         ],
+        "medium_not_applicable": _medium_not_applicable_summary(result),
+        "medium_not_applicable_to_pool": list(
+            getattr(result, "medium_not_applicable_to_pool", ())
+        ),
+        "medium_matched": dict(getattr(result, "medium_matched", {}) or {}),
         "pool_diagnostics": {
             "n_readable": n_readable,
             "n_with_target_exchange": n_with_target,
@@ -7342,6 +7717,8 @@ def _write_search_outputs(
                 "abundances": getattr(row, "abundances", {}),
                 "n_active_members": sum(value > 1e-6 for value in
                                         getattr(row, "member_growth", {}).values()),
+                "medium_not_applicable": list(getattr(row, "medium_not_applicable", ())),
+                "medium_matched": _candidate_medium_matched(result, row),
             }
             for row in result.ranks
         ],
@@ -9037,6 +9414,40 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
                 (str(row["id"]), Path(str(row["file"]))) for row in taxonomy.to_dict("records")
             ]
         medium_spec = load_medium(args.medium) if args.medium else None
+        # Round 11 (pool-scoped medium): surveying a pool runs each model alone, and a pool
+        # medium (the gut overlays) names nutrients only some members can take up. Those are
+        # not applicable to the members that lack them (the LP is the same without them); an
+        # id no pool model has is not applicable to the pool. A single --model is its own pool.
+        medium_pool = None
+        preloaded: dict[str, Any] = {}
+        if medium_spec is not None and not args.model:
+            from cmig.core.medium_spec import pool_medium_coverage_from_taxonomy
+            from cmig.io.agora2 import bigg_exchange_notation
+
+            medium_pool = pool_medium_coverage_from_taxonomy(
+                taxonomy, medium_spec, notation=bigg_exchange_notation
+            )
+            if not args.allow_unknown_medium:
+                medium_pool.check_namespace()
+        elif medium_spec is not None:
+            # Round 11: one model is its own pool — an id it has no exchange for is not
+            # applicable (recorded); a zero-match medium or a near miss is refused. A model that
+            # cannot be read keeps its `load_failed` row below.
+            from cmig.core.medium_spec import SCOPE_ONE_MODEL, pool_medium_coverage
+            from cmig.io.agora2 import bigg_exchange_notation
+
+            member_id, model_path = models[0]
+            try:
+                preloaded[member_id] = load_cobra_model(model_path)
+            except Exception:  # noqa: BLE001 - reported as load_failed by the survey loop
+                preloaded.clear()
+            if preloaded:
+                medium_pool = pool_medium_coverage(
+                    preloaded, medium_spec, sources={member_id: str(model_path)},
+                    notation=bigg_exchange_notation,
+                )
+                if not args.allow_unknown_medium:
+                    medium_pool.check_namespace(scope=SCOPE_ONE_MODEL)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -9046,18 +9457,38 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
     unfixable: dict[str, list[str]] = {}
     for member_id, model_path in models:
         try:
-            model = load_cobra_model(model_path)
+            model = preloaded.pop(member_id, None)
+            if model is None:
+                model = load_cobra_model(model_path)
         except Exception as e:  # noqa: BLE001 - one unreadable model must not end the survey
             rows.append({"id": member_id, "status": "load_failed", "diagnostic": str(e)})
             print(f"  {member_id}: model could not be loaded: {e}", file=sys.stderr)
             continue
+        if medium_pool is not None:
+            # A model left out of the pool check (its exchanges could not be resolved), or one
+            # no medium id reaches while other models match, has no survey on this medium.
+            reason = medium_pool.unusable_reasons.get(member_id)
+            if reason is None:
+                own = medium_pool.by_model.get(member_id, frozenset())
+                try:
+                    medium_pool.split(
+                        [x for x in medium_pool.requested if x not in own], (member_id,)
+                    )
+                except ValueError as error:
+                    reason = str(error)
+            if reason is not None:
+                rows.append({"id": member_id, "status": "failed", "diagnostic": reason})
+                print(f"  {member_id}: not surveyed: {reason}", file=sys.stderr)
+                continue
         try:
             result = medium_gap(
                 model,
                 min_growth=args.min_growth,
                 solver=args.solver,
                 medium=medium_spec,
-                strict_medium=not args.allow_unknown_medium,
+                # With the pool's coverage the strictness decision was made above, at the pool
+                # level; the per-model split below records what each model could not take up.
+                strict_medium=not args.allow_unknown_medium and medium_pool is None,
                 exact_medium=args.exact_medium,
                 oxygen_mode=args.oxygen_mode,
                 candidate_bound=args.candidate_bound,
@@ -9072,8 +9503,18 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
             print(f"  {member_id}: NO SUPPLEMENT REACHES min-growth — {e}")
             continue
         status = "sufficient" if result.base_is_sufficient else "supplement_required"
+        not_applicable: tuple[str, ...] = ()
+        unmatched_medium = list(result.unmatched_medium)
+        if medium_pool is not None:
+            not_applicable, _pool, unknown = medium_pool.split(unmatched_medium, (member_id,))
+            unmatched_medium = list(unknown)
         rows.append({
             "id": member_id,
+            "medium_not_applicable": ";".join(not_applicable),
+            "medium_matched": (
+                len(medium_pool.by_model.get(member_id, frozenset()))
+                if medium_pool is not None else None
+            ),
             "status": status,
             "base_growth": _finite_or_none(result.base_growth),
             "achieved_growth": _finite_or_none(result.achieved_growth),
@@ -9081,7 +9522,7 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
             "supplement": ";".join(result.supplement),
             "essential_supplement": ";".join(result.essential_supplement),
             "pseudo_supply_open": ";".join(result.pseudo_supply_open),
-            "n_unmatched_medium": len(result.unmatched_medium),
+            "n_unmatched_medium": len(unmatched_medium),
         })
         for exchange_id in result.supplement:
             if exchange_id.startswith("EX_") and exchange_id.endswith("_e"):
@@ -9097,7 +9538,8 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
     out.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "id", "status", "base_growth", "achieved_growth", "n_supplement", "supplement",
-        "essential_supplement", "pseudo_supply_open", "n_unmatched_medium", "diagnostic",
+        "essential_supplement", "pseudo_supply_open", "n_unmatched_medium",
+        "medium_not_applicable", "medium_matched", "diagnostic",
     ]
     _write_csv_records(
         out / "medium_gap.csv",
@@ -9120,6 +9562,11 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
         ),
         "supplement_union_exchanges": sorted(supplement_union),
         "not_expressible_as_medium_rows": {k: sorted(v) for k, v in sorted(unfixable.items())},
+        # Medium ids no pool model can take up (others match): not applicable to this pool.
+        "medium_not_applicable_to_pool": list(
+            medium_pool.pool_not_applicable if medium_pool is not None else ()
+        ),
+        "medium_matched": medium_pool.matched_fraction() if medium_pool is not None else None,
         "models": rows,
     }
     atomic_write_text(
@@ -9130,6 +9577,11 @@ def _cmd_medium_gap(args: argparse.Namespace) -> int:
     if supplement_union and args.medium:
         artifacts.append(_write_supplemented_medium(out, Path(args.medium), supplement_union))
     print(f"\nmedium-gap complete -> {out}")
+    _print_pool_not_applicable(
+        medium_pool.pool_not_applicable if medium_pool is not None else (),
+        medium_pool.matched_fraction() if medium_pool is not None else None,
+        scope="model" if args.model else "pool",
+    )
     for artifact in artifacts:
         print(f"  {artifact}")
     if unfixable:
@@ -9763,6 +10215,41 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
         )
         fva_enabled = args.fva or args.fva_metabolites is not None
         fva_metabolites = _parse_optional_csv_strings(args.fva_metabolites)
+        # Round 11 (pool-scoped medium): a --member-sets condition is a sub-community of the
+        # taxonomy pool, so a medium id only non-members can take up is not applicable to it
+        # (LP unchanged) rather than a failed condition. With --namespace-decisions the pool's
+        # coverage is read from the MAPPED model files (the same mapping each condition's solve
+        # applies), so an id another member set has keeps the per-community label. Without
+        # member sets every condition is the whole selection, which is its own pool.
+        pool_scope = bool(args.member_sets)
+        pool_coverage: dict[str, Any] = {}
+        medium_records: dict[str, dict[str, Any]] = {}
+
+        def _sweep_medium_pool(medium_path: str | None) -> Any:
+            if not pool_scope or medium_path is None:
+                return None
+            if medium_path not in pool_coverage:
+                from cmig.core.medium_spec import load_medium, pool_medium_coverage_from_taxonomy
+                from cmig.core.namespace import mapped_taxonomy
+                from cmig.io.agora2 import bigg_exchange_notation
+
+                with mapped_taxonomy(taxonomy, namespace_decisions or []) as (mapped, _applied):
+                    pool_coverage[medium_path] = pool_medium_coverage_from_taxonomy(
+                        mapped, load_medium(medium_path), notation=bigg_exchange_notation
+                    )
+            return pool_coverage[medium_path]
+
+        def _record_medium(medium_path: str | None, record: dict[str, Any] | None) -> None:
+            """Collect a condition's medium record for the sweep summary and the console."""
+            if medium_path is None or not record:
+                return
+            entry = medium_records.setdefault(medium_path, {"ids": set(), "matched": None})
+            entry["ids"].update(record.get("medium_not_applicable_to_pool") or [])
+            if medium_path in pool_coverage:
+                entry["matched"] = pool_coverage[medium_path].matched_fraction()
+            elif entry["matched"] is None:
+                entry["matched"] = record.get("medium_matched")
+
         for cond in enumerate_conditions(axes):
             # Per-condition failure isolation (sweep.py contract: a failed run is recorded with a
             # diagnostic, never dropped, and does not abort the batch). A solver failure on one
@@ -9798,6 +10285,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
                 )
                 cached = cache.get(content_key)
                 if cached is not None:                       # replay — 재계산 회피 (SC-4)
+                    _record_medium(medium_path, cached.get("medium_record"))
                     rows.append(SweepRow(
                         condition_id=cond.condition_id,
                         axis_values=cond.axis_values,
@@ -9828,10 +10316,21 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
                     bounds=bounds,
                     fva=fva_enabled,
                     fva_metabolites=fva_metabolites,
+                    medium_pool=_sweep_medium_pool(medium_path),
                 )
                 status = "ok" if outcome.status == "ok" else "failed"
                 value = None if outcome.result is None else float(outcome.result.objective)
                 run_hash = outcome.run_hash or ""
+                medium_record = None
+                if outcome.manifest_path is not None:
+                    recorded = (_load_json_object(outcome.manifest_path) or {}).get("provenance")
+                    if isinstance(recorded, dict):
+                        medium_record = {
+                            key: recorded[key] for key in (
+                                "medium_not_applicable_to_pool", "medium_matched",
+                            ) if key in recorded
+                        }
+                _record_medium(medium_path, medium_record)
                 profile_pylist = (
                     outcome.bundle.profile.to_pylist() if outcome.bundle is not None else []
                 )
@@ -9852,6 +10351,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
                 cache[content_key] = {
                     "value": value, "run_hash": run_hash, "status": status,
                     "diagnostic": outcome.diagnostic, "profile": profile_pylist,
+                    "medium_record": medium_record,
                 }
             except (GateBlockedError, OSError):
                 raise  # cross-condition / fatal -> abort the whole sweep
@@ -9884,8 +10384,23 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     sweep_status = _sweep_run_status(rows)
     sweep_warnings = _sweep_warnings(rows)
     n_failed = sum(1 for row in rows if str(row.status) != "ok")
+    # Round 11: medium ids no selected model (or no model of the member-set pool) can take up,
+    # over every condition, and the matched fraction per medium file. Not a warning tier.
+    medium_scope: dict[str, Any] = {}
+    if medium_records:
+        # Per medium, keyed by the path exactly as each condition's `medium_variant` records it
+        # (two media may share a file name).
+        medium_scope = {
+            "medium_not_applicable_to_pool": {
+                path: sorted(entry["ids"]) for path, entry in sorted(medium_records.items())
+            },
+            "medium_matched": {
+                path: entry["matched"] for path, entry in sorted(medium_records.items())
+            },
+        }
     _write_json_or_print(
         {
+            **medium_scope,
             # R5 final P0-2: this was the literal "ok", never reassigned, so a grid in which every
             # condition failed was certified ok by the summary, the manifest, `inspect-run` AND the
             # exit code. `sweep.parquet` carried `status: failed` for every row all along.
@@ -9909,6 +10424,11 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     )
     for warning in sweep_warnings:
         print(f"  warning: {warning}")
+    for path, entry in sorted(medium_records.items()):
+        _print_pool_not_applicable(
+            sorted(entry["ids"]), entry["matched"],
+            label=path if len(medium_records) > 1 else "",
+        )
     _emit_workflow_manifest(
         out,
         "sweep",
@@ -9947,6 +10467,7 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
             "n_ok": len(rows) - n_failed,
             "n_failed": n_failed,
             "metric": args.metric,
+            **medium_scope,
         },
     )
     return _exit_code_for_status(sweep_status, args)
@@ -10065,8 +10586,11 @@ def _add_allow_unknown_medium(parser: argparse.ArgumentParser) -> None:
         "--allow-unknown-medium",
         action="store_true",
         dest="allow_unknown_medium",
-        help="apply the medium minus the exchanges this model has no counterpart for, instead of "
-        "refusing; the dropped ids are named in warnings and the run is reported as degraded",
+        help="medium ids no selected model can take up are always dropped and recorded as not "
+        "applicable; this flag lets a medium that matches none of the models, or ids written in "
+        "another notation (near misses such as EX_glc_D_m), run without those rows instead of "
+        "being refused (host commands: also host-medium entries with no host exchange); the "
+        "dropped ids are named in warnings and the run is reported as degraded",
     )
 
 

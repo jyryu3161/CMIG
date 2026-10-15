@@ -777,7 +777,9 @@ class SearchView(AnalysisPage):
         self.medium_mode_combo = QComboBox()
         self.medium_mode_combo.addItem("exact", "exact")
         self.medium_mode_combo.addItem("merge", "merge")
-        self.allow_unknown_medium_check = QCheckBox("Allow unknown medium metabolites")
+        self.allow_unknown_medium_check = QCheckBox(
+            "Run a mismatched medium anyway (drops its unmatched rows; degraded)"
+        )
         medium_row = QHBoxLayout()
         medium_row.addWidget(QLabel("Medium mode"))
         medium_row.addWidget(self.medium_mode_combo)
@@ -786,7 +788,9 @@ class SearchView(AnalysisPage):
         box.addLayout(medium_row)
         self.medium_mode_note = note("")
         self.allow_unknown_note = note(
-            "Unknown medium metabolites are dropped and named in warnings; the run is "
+            "Medium ids no selected model can take up are always dropped and listed (not a "
+            "degradation). This option only lets a medium that matches none of the models, or "
+            "ids in another notation (e.g. EX_glc_D_m), run without those rows; the run is then "
             "reported as degraded."
         )
         box.addWidget(self.medium_mode_note)

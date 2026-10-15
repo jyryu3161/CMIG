@@ -397,7 +397,8 @@ requested `medium_checksum` and minted a `run_hash` certifying it.
   reuse the cached numbers.
 - **The hash will not tell you.** The fix deliberately changed published numbers
   *without* moving any hash. Detection is via
-  `provenance.medium_policy: "exchange_reactions_by_metabolite_v2"` — check it
+  `provenance.medium_policy: "exchange_reactions_by_metabolite_pool_scoped_v3"`
+  (or the earlier `"exchange_reactions_by_metabolite_v2"`) — check it
   with `uv run cmig inspect-run --format json`. Absent, or
   `open_uptakes_exact_key_v1` ⇒ re-run.
 - **Do not hedge namespaces.** Listing one metabolite under two namespaces (e.g.
@@ -427,12 +428,16 @@ requested `medium_checksum` and minted a `run_hash` certifying it.
     retained only as a smoke fixture.
   - A closure block is **pool-specific**, so an overlay carried to a different
     model set may leave nutrients open again. Re-measure rather than assume.
-- **`--allow-unknown-medium` costs more than it looks.** Without it, a medium id
-  with no counterpart in the community is a hard input error (**exit 2**). With
-  it, those nutrients are **dropped** and the run continues. Measured on a
-  2-member community with one bogus id: **exit 0**, `status: degraded`, a
-  `medium_unapplied` diagnostic naming the dropped id — and a `medium_checksum`
-  still computed over the **full requested** medium. So `$?` says success and the
+- **`--allow-unknown-medium` costs more than it looks.** Since `medium_policy` v3
+  a medium id that none of the selected models (or the one model) can take up is
+  never an error: it is dropped with the LP unchanged and recorded as
+  `medium_not_applicable_to_pool` with `medium_matched` — quote both. What is still
+  a hard input error (**exit 2**) is a namespace mismatch: a medium of which no id
+  matches, or an id in another notation of an exchange the models have (a near
+  miss such as `EX_glc_D_m`). With the flag, those nutrients are **dropped** and
+  the run continues: **exit 0**, `status: degraded`, a `medium_unapplied`
+  diagnostic (or warning) naming the dropped ids — and a `medium_checksum` still
+  computed over the **full requested** medium. So `$?` says success and the
   hash certifies a medium only partly applied. Use it to *diagnose* a medium
   file, never for a reported result, and always quote the dropped ids.
   The flag is available on `solve`, `search`, `strain-growth`,

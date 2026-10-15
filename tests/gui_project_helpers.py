@@ -101,3 +101,19 @@ def _deterministic_qt_teardown():
         widget.deleteLater()
     app.processEvents()
     gc.collect()
+
+
+def solved_bundle():
+    """A tidy bundle of a solve that succeeded: one member with growth, no exchange flux.
+
+    Round 11: a bundle with no member nodes is what a failed `cmig solve` publishes, and the GUI
+    no longer draws it as a result, so viewer tests stand on a solved (if minimal) run.
+    """
+    from cmig.core.engine import SolveResult
+    from cmig.core.interactions import build_tidy
+
+    return build_tidy(SolveResult(
+        objective=0.5, member_growth={"A": 0.5}, abundances={"A": 1.0},
+        external_exchange={}, member_exchange={"A": {}}, status="optimal",
+        flux_report_status="full", growth_solver="gurobi", flux_solver="gurobi", members=["A"],
+    ))

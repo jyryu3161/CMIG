@@ -5,6 +5,146 @@ semantic versioning for public releases.
 
 ## [Unreleased]
 
+### Changed — medium rule for every medium command (`medium_policy` v3)
+
+- **Whole-community and single-model commands** (user decision 2026-10-15): the rule below now
+  applies wherever a medium is given. Where the selected models are solved as one community —
+  `solve` (and the GUI Medium page's Check Growth), the community leg of `strain-growth`,
+  `abundance-impact`, `host-microbe-bigg` and `host-ko-impact` (microbial medium), `pair`, a
+  `sweep` without `--member-sets` — that community is the pool; where a command takes one
+  model — `single` (and the model browser's Check Growth), `minimal-medium`, `medium-gap
+  --model` — that model is. A medium id it has no exchange for is dropped with the answer
+  unchanged and recorded as `medium_not_applicable_to_pool`, with `medium_matched: {matched,
+  requested, fraction}` (solve: manifest `provenance`; the others: their summary JSON — per
+  condition in `pair_summary.json` — and the manifest `summary`), printed as a console warning
+  and shown in the GUI; the run is not degraded. Still refused (exit 2, strict): a medium none
+  of whose ids matches ("none of the medium's N exchange ids matches an exchange of any of the
+  selected models / the model …") and near misses in another notation. Measured: `cmig solve`
+  on {iAF987, iHN637, iYO844} with `gut_overlay_agora_high_fiber` exited 2 ("medium exchange
+  has no counterpart in the target model", 19 ids); it now records those 19 ids (114/133
+  matched) and solves — and fails with exit 3 (`solver_failed`) because iAF987's SBML forces
+  Fe3+ uptake ≥ 49.21 while the overlay caps `EX_fe3_m` at 0.1 (lifting only that cap, the same
+  three models solve). {iHN637, iYO844} on the same overlay (32 ids not applicable) solves with
+  growth and every exchange flux identical to the overlay pre-filtered to the pair's exchanges,
+  in merge and exact mode.
+- `--allow-unknown-medium` on these commands now drops only a zero-match medium or near misses,
+  names them (`medium_unapplied` diagnostic or a warning) and reports the run `degraded`.
+  `strain-growth`, `abundance-impact`, `pair`, `single` and `minimal-medium` used to drop
+  unmatched ids under the flag without any record; they now name them. `medium-gap --model`
+  no longer ends in a traceback when its medium is refused.
+- Console: every medium command prints the ids not applicable ("to this pool" for the selected
+  models, "to this model" for `single`/`minimal-medium`/`medium-gap --model`), the matched
+  fraction (`medium ids matched: m/n (p%)`) and a warning when fewer than half of the medium's
+  ids match (status unaffected); `cmig solve` also prints them when the solve fails and names
+  the ids dropped under `--allow-unknown-medium` (recorded as `provenance.medium_unapplied`);
+  `single` and `minimal-medium` print theirs too ("…none of this model's exchanges…").
+  `sweep_summary.json` and the sweep manifest's `summary` carry `medium_not_applicable_to_pool`
+  and `medium_matched` as maps keyed by the medium path exactly as `medium_variant` records it
+  (two media with the same file name stay apart), each list over all conditions of that
+  medium. `sweep --member-sets
+  --namespace-decisions` now reads the pool from the mapped model files, so an id another
+  member set has is `medium_not_applicable` for that condition, as without decisions.
+- GUI: the allow-unknown options read "Run a mismatched medium anyway (drops its unmatched rows;
+  degraded)" (model browser, Medium page, Sweep; English in both catalogues) with a tooltip; a
+  refused Check Growth names the rename for a near miss; Compare Runs refuses a run whose solve
+  failed (it was rebuilt as "optimal, growth 0" and compared); reopening a failed solve run
+  draws no profile or graph and says "Loaded a failed run (…; not a result)" on the page's own
+  status line and in the status bar, and a reopened Medium-page run shows its medium notes.
+- The host medium (`--host-medium`) keeps its own check: an entry the host has no exchange for
+  is refused unless `--allow-unknown-medium` (it is the host model's blood-side supply, resolved
+  through the reviewed interface map, not a community medium).
+- No hash moves: identical inputs give the identical solve `run_hash` and workflow hashes as
+  before (measured on solve merge/exact, single, pair, strain-growth, abundance-impact,
+  minimal-medium, sweep and host-microbe-bigg), and `cmig golden verify` / `verify-envelope`
+  pass. `medium_policy` keeps the value `exchange_reactions_by_metabolite_pool_scoped_v3`: v3
+  was never released, so it is redefined to cover every medium command.
+
+- Workflows that evaluate sub-communities or single members of the selected pool —
+  `search` (single and multi-target, including `--validate-top` and robustness FVA),
+  `host-search-bigg`, `gene-ko-search` (scope: its `--members` consortium), `sweep
+  --member-sets` (with `--namespace-decisions`, the pool is read from the mapped model files)
+  and `medium-gap` over a
+  `--taxonomy`/`--model-dir` — no longer refuse a medium because some of its ids are missing
+  ("일부만 없으면 빼고 진행"). Every id that cannot reach the LP is dropped and recorded, and the
+  LP is identical without it — MICOM's own `grow`/`tradeoff` workflows filter the medium to
+  the community's exchanges the same way:
+  - an id some pool model can take up but this candidate cannot is **not applicable to this
+    community** — `medium_not_applicable`, per candidate;
+  - an id no (readable) model of the selected pool can take up, while other ids match, is
+    **not applicable to this pool** — `medium_not_applicable_to_pool`, once per run.
+  Neither refuses a candidate, degrades the run, or counts as `medium_unapplied`.
+  Previously the shipped `gut_overlay_*` presets (written for the whole bundled pool) failed
+  every Combination Search candidate, and a 3-model selection that lacks 19 of their rows
+  was an input error.
+- The refusals kept are the namespace-mismatch signatures:
+  - (exit 2, before any candidate is evaluated, strict mode) a medium of which **not one** id
+    matches any model of the selected pool (e.g. an untranslated AGORA `EX_x(e)` file, or
+    nonsense ids): "none of the medium's N exchange ids matches an exchange of any model of the
+    selected pool …";
+  - (exit 2, strict mode) a pool-unknown id that would match a pool model in BiGG notation (the
+    `cmig/io/agora2.py` rules: isomer `glc_D` → `glc__D`, compartment `(e)` → `_e`), e.g.
+    `EX_glc_D_m`: the refusal names each id and its likely counterpart (`EX_glc_D_m ->
+    EX_glc__D_m`) — such an id is not "not applicable", it is the same nutrient misspelled;
+  - (per candidate, any mode) a candidate that **none** of the medium's ids reaches while other
+    pool models match is `failed` with a namespace diagnostic ("none of the medium's N exchange
+    ids reaches this candidate …") and never ranked — it would otherwise grow on its models'
+    SBML defaults.
+  A pool model whose file cannot be read, or whose exchanges cannot be resolved, does not count
+  as a match: it is left out and keeps its own failure (a `load_failed` row, failed
+  candidates), and the zero-match refusal names it and why.
+- `--allow-unknown-medium` in these workflows: genuine pool-unknown ids are "not applicable to
+  this pool" with or without it; near-miss ids are dropped and listed as not applied with it;
+  when no id matches it keeps today's behaviour (the run proceeds without the medium's rows,
+  listed as not applied). (The whole-community and single-model commands follow the same
+  rule since the entry above.)
+- Reporting: the matched fraction of the medium (`medium_matched: {matched, requested,
+  fraction}`) per run and per candidate (`{matched, requested}`) in the summaries, and the
+  pool-level not-applicable ids as a console warning and in the GUI status line and details.
+- `medium_policy` provenance marker: `exchange_reactions_by_metabolite_v2` →
+  `exchange_reactions_by_metabolite_pool_scoped_v3`. **No hash moves**: the solve `run_hash`
+  (11 components) and every workflow hash are unchanged, so a v2 and a v3 run of the same
+  inputs share a `run_hash`. Candidates and pools v2 refused for missing medium rows now have
+  answers; every number v2 produced is unchanged. The search checkpoint identity now includes
+  `medium_policy`, so a checkpoint written before this change cannot be resumed (start a new
+  checkpoint path).
+- New outputs: `medium_not_applicable` per candidate in `search_summary.json` (`top_ranked`,
+  `unevaluated`) and `search_evaluations.json`, plus a run-level
+  `medium_not_applicable: {ids, n_candidates}`; per row in `host_search_summary.json`; in
+  `gene_ko_summary.json`; in a sweep condition's solve-manifest `provenance`; a
+  `medium_not_applicable` column in `medium_gap.csv`/`medium_gap.json`; and
+  `medium_not_applicable_to_pool` in `search_summary.json`, `host_search_summary.json`,
+  `gene_ko_summary.json`, `medium_gap.json`, the sweep condition's `provenance` and the search
+  and host-search manifests' `summary` (so also in `inspect-run`'s `manifest.summary`, no
+  payload schema change). The GUI result details show both records.
+
+### Fixed — GUI failure reasons
+
+- A medium cap below an uptake a model's own SBML bounds force is refused in plain words:
+  "iAF987 requires uptake of fe3 ≥ 49.21 (its SBML bounds force it through EX_fe3_m) but the
+  medium allows at most 0.1" instead of cobra's "The lower bound must be less than or equal to
+  the upper bound (-0.1 <= -49.21)." Message only: the same candidates are refused with the
+  same status, and no bound or result changes (every iAF987 pair on the `gut_overlay_*`
+  presets).
+- A failed analysis page now shows the CLI's own reason (e.g. `dfba input error: --initial
+  exchange ids not found in model: […]`) as `"<kind> failed: <reason> (rc=N)"`, not a
+  Diagnostic JSON blob. A CLI exit 2 is recorded as the new job error code `input_error`, never
+  `solver_error`. Applies to Search, Gene Knockout, Strain Growth, Ratio Impact, Community
+  Solve, Host–Microbe, Host Combination Search, dFBA, Spatial Preview, Sweep and the Medium
+  Editor's growth check and minimal medium.
+- The CLI-only hint "pass --allow-failed-run to exit 0 anyway" (and the solver's licence
+  banner) is no longer shown in the GUI. A ranked page (Search, Gene Knockout, Strain Growth,
+  Ratio Impact, Host Combination Search) whose run failed but published its summary shows
+  that summary — status `failed`, an empty ranking (rows the failed run recorded are listed in
+  the details as "Not ranked … (the run failed)") — with a status line such as "10 of 10
+  candidates could not be evaluated: <most common diagnostic>", or, for kinds without
+  per-candidate records (Strain Growth, Ratio Impact), the CLI's reason or the run's own first
+  warning; the details list every unevaluated candidate and its diagnostic before the run
+  warnings. Check Growth's input refusals are `input_error` too.
+- dFBA checks the Initial concentrations against the chosen model's browse index before
+  running and, when ids are missing, does not start a run the CLI would refuse: it shows
+  "Not in iAF987: EX_glc__D_e, EX_o2_e, EX_lac__D_e." and where to find the model's exchange
+  ids. Without a usable index it runs as before. The default composition is unchanged.
+
 ### Changed — GUI appearance
 
 - The GUI opens in light appearance by default, whatever the system setting is.

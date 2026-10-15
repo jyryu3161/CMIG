@@ -26,7 +26,7 @@ CMIG의 소비자는 (1) `cmig` 명령을 부르는 사람·스크립트·LLM �
 | GEM | `.xml`/`.sbml`/`.xml.gz`(SBML), `.json`(cobra), `.mat` | 모르는 확장자·파싱 실패 → 종료 2 |
 | 모델 폴더 | `--model-dir <dir>` | 모델 없음 → 2 |
 | taxonomy CSV | 열 `id`(유일·비어 있지 않음), `file`(모델 경로), 선택 `abundance`(유한 양수) | 중복 id, 잘못된 abundance → 2 |
-| 배지 | CSV `exchange_id,uptake_limit` 또는 JSON. `uptake_limit ≥ 0`, 단위 mmol gDW⁻¹ h⁻¹. 여분 열(`row_role` 등)은 무시 | 음수, 두 namespace 중복, 대응 없는 id(`--allow-unknown-medium` 없을 때) → 2 |
+| 배지 | CSV `exchange_id,uptake_limit` 또는 JSON. `uptake_limit ≥ 0`, 단위 mmol gDW⁻¹ h⁻¹. 여분 열(`row_role` 등)은 무시 | 음수, 두 namespace 중복 → 2. 대응 없는 id는 어느 명령에서도 오류가 아니다(v3): 선택한 모델 어디에도 없으면 빼고 `medium_not_applicable_to_pool`(+ `medium_matched`)로 기록하고, pool의 부분 커뮤니티를 평가하는 workflow(`search`, `host-search-bigg`, `gene-ko-search`, `sweep --member-sets`, pool 대상 `medium-gap`)에서는 다른 pool 모델에 있는 id를 `medium_not_applicable`(후보)로 기록한다. 2는 배지 id가 하나도 선택한 모델(단일 모델 명령은 그 모델)에 대응하지 않을 때와 BiGG 표기로 바꾸면 대응하는 id(near miss)가 있을 때뿐이다(`--allow-unknown-medium`이면 그 id를 빼고 degraded). 배지 id가 하나도 닿지 않는 후보는 `failed`. 숙주 배지(`--host-medium`)는 숙주 exchange가 없는 항목 → 2(business-rules.md 배지 절) |
 | 배지 모드 | `--medium`(숙주 명령은 `--microbe-medium`/`--host-medium`, 배지 행렬은 `--mediums`) = merge 기본, `--exact-medium` = 파일이 전체 환경 | manifest `medium_application_mode`에 기록. workflow manifest에서는 hash 구성요소, legacy `solve` manifest에서는 hash 밖 기록 |
 | 숙주 interface map | `cmig host-map`이 만든 JSON을 사람이 검토한 것 | 미검토 map은 명시적 허용 플래그 없이 거부 |
 | 숙주 biomass 기준 | `--microbial-biomass-gdw`, `--host-biomass-gdw`, `--biomass-basis-kind`, `--biomass-basis-source` | 누락 → 실행 거부 |

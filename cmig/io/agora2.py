@@ -496,6 +496,24 @@ def bigg_stereo(base: str) -> str:
     return _VMH_STEREO_SUFFIX.sub(lambda m: f"__{m.group('token')}", base)
 
 
+def bigg_exchange_notation(exchange_id: str) -> str:
+    """One exchange id in BiGG notation, by the two rules :func:`convert_ids_to_bigg` applies.
+
+    ``EX_but(e)`` -> ``EX_but_e`` (compartment notation) and ``EX_glc_D_m`` -> ``EX_glc__D_m``
+    (isomer separator on a boundary id). Pure notation — no synonym table; an id already in BiGG
+    notation is returned unchanged. Used to recognise a medium id that is the same nutrient as a
+    model exchange written the VMH way.
+    """
+    match = _VMH_REACTION.match(exchange_id)
+    if match is not None:
+        base, compartment = match.group("base"), match.group("compartment")
+    else:
+        base, separator, compartment = exchange_id.rpartition("_")
+        if not separator:
+            return exchange_id
+    return f"{bigg_stereo(base)}_{compartment}"
+
+
 def convert_ids_to_bigg(model: Any) -> ConversionReport:
     """Rewrite VMH identifier conventions to BiGG in place.
 
