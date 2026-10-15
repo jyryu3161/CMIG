@@ -312,3 +312,18 @@ def test_refusal_hint_says_what_to_fix(reason, expected):
     assert expected in hint, hint
     assert "lacks" not in hint
     assert medium_refusal_hint("some solver error") == ""
+
+
+def test_reopening_a_failed_run_into_community_solve_marks_the_page_and_draws_nothing(
+    w, monkeypatch, tmp_path
+):
+    _stub_graph(monkeypatch)
+    good = _tidy_run(tmp_path / "community-ok", failed=False)
+    assert w.load_run_dir(good) is True
+    assert w.community_builder.results.has_results()
+    failed = _tidy_run(tmp_path / "community-failed", failed=True)
+    assert w.load_run_dir(failed) is False
+    status = w.community_builder.status.text()
+    assert "failed run" in status and "not a result" in status, status
+    assert not w.community_builder.results.has_results(), "a failed run is never drawn"
+    assert "Loaded a failed run" in w.statusBar().currentMessage()

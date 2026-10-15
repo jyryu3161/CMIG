@@ -369,17 +369,17 @@ def test_host_search_null_transfer_keeps_range_and_identifiability():
 
 
 def test_tidy_readback_rejects_wrong_manifest_nested_type_without_stale_state(tmp_path):
-    from cmig.core.tidy import empty_bundle
+    from gui_project_helpers import solved_bundle
 
     _app()
     window = build_main_window()
     good = tmp_path / "good"
-    empty_bundle().write(good)
+    solved_bundle().write(good)
     (good / "manifest.json").write_text(json.dumps({"run_hash": "good", "provenance": {}}))
     window.load_run_dir(good)
     assert window.current_manifest is not None
     bad = tmp_path / "bad"
-    empty_bundle().write(bad)
+    solved_bundle().write(bad)
     (bad / "manifest.json").write_text(json.dumps({
         "run_hash": "bad", "provenance": ["wrong type"],
     }))
@@ -987,12 +987,12 @@ def test_failed_search_invalid_manifest_is_not_published(monkeypatch, tmp_path):
 
 
 def test_missing_essential_tidy_nodes_is_readback_failure(tmp_path):
-    from cmig.core.tidy import empty_bundle
+    from gui_project_helpers import solved_bundle
 
     _app()
     run = tmp_path / "tidy"
     run.mkdir()
-    empty_bundle().write(run)
+    solved_bundle().write(run)
     names = sorted(p.name for p in run.glob("*.parquet"))
     (run / "manifest.json").write_text(json.dumps({
         "manifest_scope": "workflow", "manifest_schema_version": "1.2",
@@ -1027,13 +1027,14 @@ def test_runs_entry_with_unreadable_ranking_shows_the_readback_failure(tmp_path)
 
 
 def _community_run(monkeypatch, tmp_path, *, readable: bool):
+    from gui_project_helpers import solved_bundle
+
     import cmig.cli.main
-    from cmig.core.tidy import empty_bundle
 
     def fake_main(argv):
         out = Path(argv[argv.index("--out") + 1])
         if readable:
-            empty_bundle().write(out)
+            solved_bundle().write(out)
         # a solve run without its tidy bundle cannot be read back
         (out / "manifest.json").write_text(json.dumps({"kind": "solve", "run_hash": "abc"}))
         return 0

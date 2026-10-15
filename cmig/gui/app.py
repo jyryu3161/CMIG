@@ -4384,12 +4384,38 @@ class CmigMainWindow(QMainWindow):
             bundle = TidyBundle.read(run_dir)
             manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else None
             payload = graph_payload(bundle)
+            solved = _solve_result_like_from_run_dir(run_dir)
         except Exception as e:
             self._reject_gui_summary(run_dir, e)
             # A failed load must not leave the *previous* run's provenance on screen: the
             # run_hash in the status bar and the profile table would still describe run A.
             self._clear_community_result()
             self._show_status("status_run_load_failed", error=e)
+            return False
+        run_hash = manifest.get("run_hash") if isinstance(manifest, dict) else None
+        suffix = "" if run_hash is None else f" (run_hash {str(run_hash)[:12]})"
+        record = _medium_scope_record(manifest if isinstance(manifest, dict) else {})
+        if record["not_applicable"]:
+            suffix += f" · {len(record['not_applicable'])} medium ids not applicable"
+        matched = record["medium_matched"]
+        if isinstance(matched, dict) and matched.get("requested"):
+            suffix += f" · {matched.get('matched')}/{matched.get('requested')} medium ids matched"
+        if host_key == "medium" and isinstance(manifest, dict):
+            self.medium_editor.dropped_ids_label.setText(self._medium_run_notes(
+                _medium_dropped_ids(manifest), manifest.get("diagnostic"), record,
+            ))
+        if solved.status != "optimal":
+            # A failed `cmig solve` still publishes a tidy bundle (exit 3). Its profile and graph
+            # are not a result, so nothing is drawn (and no earlier run stays on show); the page
+            # and the status bar say why.
+            self._clear_community_result()
+            message = self._message(
+                "status_loaded_failed_run", status=solved.status, run_dir=run_dir, suffix=suffix,
+            )
+            if host_key in self.analysis_pages:
+                self._run_status_label(host_key).setText(message)
+            self._register_run_output(run_dir)
+            self.statusBar().showMessage(message)
             return False
         self.current_manifest = manifest
         self.current_graph_payload = payload
@@ -4406,26 +4432,7 @@ class CmigMainWindow(QMainWindow):
         self.profile_view.load_targets(_read_target_summary(run_dir))
         self._register_run_output(run_dir)
         self._show_profile(host_key)
-        run_hash = None if self.current_manifest is None else self.current_manifest.get("run_hash")
-        suffix = "" if run_hash is None else f" (run_hash {str(run_hash)[:12]})"
-        record = _medium_scope_record(manifest if isinstance(manifest, dict) else {})
-        if record["not_applicable"]:
-            suffix += f" · {len(record['not_applicable'])} medium ids not applicable"
-        matched = record["medium_matched"]
-        if isinstance(matched, dict) and matched.get("requested"):
-            suffix += f" · {matched.get('matched')}/{matched.get('requested')} medium ids matched"
-        if host_key == "medium" and isinstance(manifest, dict):
-            self.medium_editor.dropped_ids_label.setText(self._medium_run_notes(
-                _medium_dropped_ids(manifest), manifest.get("diagnostic"), record,
-            ))
-        # A published failed solve (exit 3) has a tidy bundle too; it is shown, never as a result.
-        solved = _solve_result_like_from_run_dir(run_dir)
-        if solved.status != "optimal":
-            self._show_status(
-                "status_loaded_failed_run", status=solved.status, run_dir=run_dir, suffix=suffix,
-            )
-        else:
-            self._show_status("status_loaded_run", run_dir=run_dir, suffix=suffix)
+        self._show_status("status_loaded_run", run_dir=run_dir, suffix=suffix)
         return True
 
     def load_search_dir(self, path: str | Path) -> bool:
@@ -6353,6 +6360,15 @@ class CmigMainWindow(QMainWindow):
                 ))
 
                 previous = self._last_medium_growth_check
+                if status != "optimal":
+                    # The CLI said the solve failed (exit 3): its published profile is not a
+                    # result, so it is not drawn; the growth and notes lines above say so.
+                    self._empty_community_result_on("medium")
+                    self._show_status(
+                        "medium_growth_failed", status=status,
+                        error=f"CLI rc={job.result.get('cli_rc')}; artifacts retained",
+                    )
+                    continue
                 if not self.load_run_dir(out_dir, host_key="medium"):
                     # The growth figure came from files the GUI could not read back: do not
                     # present it, and keep the failure in the status bar and the inspector.

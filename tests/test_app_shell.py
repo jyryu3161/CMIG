@@ -108,10 +108,10 @@ def test_advanced_tools_are_listed_apart_and_open_on_request():
 
 def test_load_run_dir_updates_profile_and_runs_list(tmp_path):
     """Open Run 워크플로: tidy run 디렉터리 → Profile 화면 + 사이드바 RUNS."""
-    from cmig.core.tidy import empty_bundle
+    from gui_project_helpers import solved_bundle
 
     _app()
-    empty_bundle().write(tmp_path)
+    solved_bundle().write(tmp_path)
     w = build_main_window()
     (tmp_path / "manifest.json").write_text('{"run_hash": "abc1234567890"}\n')
     w.load_run_dir(tmp_path)
@@ -130,10 +130,10 @@ def test_load_run_dir_updates_profile_and_runs_list(tmp_path):
 
 def test_runs_list_entry_reopens_run(tmp_path):
     """Runs in the sidebar RUNS list should reopen their stored output directory."""
-    from cmig.core.tidy import empty_bundle
+    from gui_project_helpers import solved_bundle
 
     _app()
-    empty_bundle().write(tmp_path)
+    solved_bundle().write(tmp_path)
     (tmp_path / "manifest.json").write_text('{"run_hash": "abc1234567890"}\n')
     w = build_main_window()
     w.load_run_dir(tmp_path)
@@ -151,11 +151,11 @@ def test_runs_list_entry_reopens_run(tmp_path):
 
 def test_runs_list_entry_without_viewer_keeps_current_run(tmp_path):
     """Opening a registered search/sweep run must not wipe the community run on screen."""
-    from cmig.core.tidy import empty_bundle
+    from gui_project_helpers import solved_bundle
 
     _app()
     tidy = tmp_path / "community"
-    empty_bundle().write(tidy)
+    solved_bundle().write(tidy)
     (tidy / "manifest.json").write_text('{"run_hash": "abc1234567890"}\n')
     search = tmp_path / "search"
     search.mkdir()
@@ -293,12 +293,13 @@ def test_run_fixture_uses_jobrunner_and_loads_completed_run(tmp_path, monkeypatc
     """Run Fixture 워크플로는 GUI thread 직접 solve 대신 JobRunner 를 사용한다."""
     from types import SimpleNamespace
 
+    from gui_project_helpers import solved_bundle
+
     import cmig.service
-    from cmig.core.tidy import empty_bundle
 
     class FakeEngineService:
         def solve_fixture(self, *, solver, out_dir):
-            empty_bundle().write(out_dir)
+            solved_bundle().write(out_dir)
             manifest = out_dir / "manifest.json"
             manifest.write_text("{}\n")
             return SimpleNamespace(status="ok", manifest_path=manifest, diagnostic=None)
@@ -318,12 +319,13 @@ def test_run_fixture_uses_jobrunner_and_loads_completed_run(tmp_path, monkeypatc
 def test_poll_completed_fixture_auto_loads_run(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
+    from gui_project_helpers import solved_bundle
+
     import cmig.service
-    from cmig.core.tidy import empty_bundle
 
     class FakeEngineService:
         def solve_fixture(self, *, solver, out_dir):
-            empty_bundle().write(out_dir)
+            solved_bundle().write(out_dir)
             manifest = out_dir / "manifest.json"
             manifest.write_text('{"run_hash": "fixturehash"}\n')
             return SimpleNamespace(status="ok", manifest_path=manifest, diagnostic=None)
@@ -743,12 +745,12 @@ def test_community_solve_button_writes_taxonomy_and_overrides_abundance(monkeypa
     seen = {"argv": []}
 
     def fake_main(argv):
-        from cmig.core.tidy import empty_bundle
+        from gui_project_helpers import solved_bundle
 
         seen["argv"] = list(argv)
         out = Path(argv[argv.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
-        empty_bundle().write(out)  # a community run the GUI can read back
+        solved_bundle().write(out)  # a community run the GUI can read back
         (out / "manifest.json").write_text(json.dumps({"run_hash": "abc123def456"}))
         return 0
 

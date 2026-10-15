@@ -107,9 +107,9 @@ def _taxonomy(w, calls) -> dict[str, float]:
 
 
 def _load_run(w, run_dir: Path) -> None:
-    from cmig.core.tidy import empty_bundle
+    from gui_project_helpers import solved_bundle
 
-    empty_bundle().write(run_dir)
+    solved_bundle().write(run_dir)
     (run_dir / "manifest.json").write_text('{"run_hash": "abc1234567890"}\n')
     assert w.load_run_dir(run_dir)
     assert w.community_builder.results.has_results()
